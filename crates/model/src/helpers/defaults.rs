@@ -299,15 +299,19 @@ impl Default for crate::decoration::DecorationLayout {
     }
 }
 
+/// The Grotrian look a host-built series starts with (#357); a document
+/// that omits the value reads `crate::defaults::energy_level_series`.
 impl Default for crate::energy_levels::EnergyLevelSeries {
     fn default() -> Self {
-        crate::defaults::energy_level_series()
+        crate::defaults::grotrian_level_series()
     }
 }
 
+/// The Grotrian look a host-built series starts with (#357); a document
+/// that omits the value reads `crate::defaults::energy_level_style`.
 impl Default for crate::energy_levels::EnergyLevelStyle {
     fn default() -> Self {
-        crate::defaults::energy_level_style()
+        crate::defaults::grotrian_level_style()
     }
 }
 
@@ -329,9 +333,11 @@ impl Default for crate::energy_levels::LevelRole {
     }
 }
 
+/// The Grotrian look a host-built series starts with (#357); a document
+/// that omits the value reads `crate::defaults::level_stroke_style`.
 impl Default for crate::energy_levels::LevelStrokeStyle {
     fn default() -> Self {
-        crate::defaults::level_stroke_style()
+        crate::defaults::grotrian_level_stroke_style()
     }
 }
 
@@ -341,9 +347,11 @@ impl Default for crate::energy_levels::LevelView {
     }
 }
 
+/// The Grotrian look a host-built series starts with (#357); a document
+/// that omits the value reads `crate::defaults::transition_arrow_style`.
 impl Default for crate::energy_levels::TransitionArrowStyle {
     fn default() -> Self {
-        crate::defaults::transition_arrow_style()
+        crate::defaults::grotrian_transition_arrow_style()
     }
 }
 

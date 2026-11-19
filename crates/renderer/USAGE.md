@@ -1025,8 +1025,10 @@ chart.apply_custom_theme(&theme, &mut series)?;
   `palette[i % len]`; an empty palette keeps every colour), then `lines`,
   `bars`, `boxes`, `fields`, `vectors`, `radar`, `range_bars`, `ternary`,
   `parallel`, `surfaces`, `energy_levels` or `feynman`. Energy-level and
-  Feynman charts take a frame of their own (`Grotrian`, `Hidden`). The legend
-  symbols follow the new series look.
+  Feynman charts take a frame of their own (`Grotrian`, `Hidden`). The
+  Grotrian frame draws the energy axis alone and names the term columns
+  without a value frame (#357). The legend symbols follow the new series
+  look.
 - **What it keeps.** Axis ranges, scales, tick spacing, label formats,
   categories, axis breaks, the chart area, every offset, all text content,
   the annotation layer, the overlay and subplot structure, series ids,
@@ -2016,8 +2018,8 @@ chart.apply_custom_theme(&theme, &mut series)?;
   `palette`의 색을 받고(시리즈 `i`는 `palette[i % len]`, 빈 팔레트는 모든 색을 그대로 둔다),
   이어서 `lines`, `bars`, `boxes`, `fields`, `vectors`, `radar`, `range_bars`, `ternary`,
   `parallel`, `surfaces`, `energy_levels`, `feynman` 가운데 해당하는 부분을 받는다. 에너지 준위
-  차트와 파인만 도형은 자기 축 틀(`Grotrian`, `Hidden`)을 받는다. 범례 기호는 바뀐 시리즈
-  모양을 따른다.
+  차트와 파인만 도형은 자기 축 틀(`Grotrian`, `Hidden`)을 받는다. `Grotrian` 틀은 에너지 축만
+  그리고, 항 열은 값 테두리 없이 이름만 단다(#357). 범례 기호는 바뀐 시리즈 모양을 따른다.
 - **그대로 두는 것.** 축 범위, 스케일, 눈금 간격, 라벨 형식, 범주, 축 끊김, 차트 영역, 모든
   오프셋, 모든 텍스트 내용, 주석 레이어, 오버레이와 서브플롯 구조, 시리즈 id·컬럼·라벨, 선택
   자체는 그대로 둔다. 부분의 `Option` 필드가 `None`이면(채움 불투명도, 범위 막대의 `up` 색, 라벨

@@ -41,6 +41,41 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
 `MonotonicLine` series kind, a subplot's `text_scale` and a radial slice's
 `text_generated`) are additive.
 
+- **Grotrian (energy-level) default look** ([#357](https://github.com/shim9610/figgy/issues/357) item 10).
+  Appearance only; values, positions and picks are unchanged, and a saved
+  document draws as it did.
+  - `AxisPreset::Grotrian` frames the energy axis alone, as NIST ASD and
+    textbook term diagrams do: `left_y` keeps its line, outward ticks and
+    labels; `bottom_x` keeps the term-column labels without a line or
+    ticks; `top_x` and `right_y` draw nothing, unless `right_y` has a
+    `unit` (a second energy unit such as cm⁻¹), which then takes the
+    energy axis' frame. It used to draw the boxed frame with outward ticks
+    on the bottom and left. Migration: a host that wants the old frame
+    applies `AxisPreset::BoxedOutward` and switches the grid off itself.
+  - `EnergyLevelSeries::default()`, `EnergyLevelStyle::default()`,
+    `LevelStrokeStyle::default()` and `TransitionArrowStyle::default()`
+    (`helpers`) start with 3 px level strokes, a 2 px limit line and
+    transition arrows with a 2.25 px shaft and a 13 × 10 px head (from
+    2 px, 1.5 px, 1.5 px and 9 × 7 px). A series built from them writes
+    its `style` in full. The serde defaults are unchanged: a document that
+    omits `style` reads the earlier look. `WavelengthLabels::default()`
+    writes its labels at 16 px (from 11); no document reads it.
+  - `EnergyLevelTheme` gains `head_length` and `head_width`
+    (`Option<f32>`, omitted when `None`): set, a theme writes the
+    transition arrowheads; `None`, which a theme saved earlier reads,
+    keeps each series' own. Every family's energy-level member draws
+    3 px levels, a 2 px limit and 2.2 px arrows with 13 × 10 px heads, and
+    sets one text scale: axis title 22, energy ticks 20, term-column
+    labels 24, group headers 21, level labels 20, band and limit labels 19
+    and wavelength labels 18 px (from 20/18/20/19/16/16/15). Migration: a
+    Rust literal of `EnergyLevelTheme` adds the two fields.
+  - The Grotrian examples (`nist_grotrian`, `nist_grotrian_gallery` and
+    the playground's energy-level scenes, `support/grotrian_sets.rs`)
+    write physics notation as host text: term symbols such as ¹P° and
+    ²[3/2]°, configurations such as 1s² and J as a subscript, in Unicode
+    super- and subscripts (#353). They derive each axis break from their
+    own levels (`derived_break`: the widest empty energy range), as the
+    item 13 decision keeps breaks the host's job.
 - **Removed unused and duplicate API** ([#341](https://github.com/shim9610/figgy/issues/341)).
   Public items with no caller, aliases and one-line twins of another entry,
   and builders only tests used are removed; serialized documents are

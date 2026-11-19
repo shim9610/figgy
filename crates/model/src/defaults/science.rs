@@ -40,6 +40,56 @@ pub(crate) fn energy_level_style() -> EnergyLevelStyle {
     }
 }
 
+/// The look a host-built energy-level series starts with
+/// (`EnergyLevelSeries::default()`, #357): the Grotrian look of NIST ASD
+/// and textbook term diagrams. A document that omits its style still reads
+/// [`energy_level_style`], so older documents draw as they did; a series
+/// built from this one writes its style in full.
+pub(crate) fn grotrian_level_series() -> EnergyLevelSeries {
+    EnergyLevelSeries {
+        style: grotrian_level_style(),
+        ..energy_level_series()
+    }
+}
+
+/// [`EnergyLevelStyle::default()`](EnergyLevelStyle) (#357): level strokes
+/// at 3 px, the limit line at 2 px, and transition arrows with a 2.25 px
+/// shaft and a 13 × 10 px head, so the lines and arrowheads read beside
+/// the axis text. The serde default stays [`energy_level_style`].
+pub(crate) fn grotrian_level_style() -> EnergyLevelStyle {
+    let serde = energy_level_style();
+    EnergyLevelStyle {
+        level: grotrian_level_stroke_style(),
+        limit: AnnotationLineStyle {
+            width: 2.0,
+            ..serde.limit
+        },
+        transition: grotrian_transition_arrow_style(),
+        ..serde
+    }
+}
+
+/// [`LevelStrokeStyle::default()`](LevelStrokeStyle) (#357): a 3 px stroke.
+/// The serde default stays [`level_stroke_style`].
+pub(crate) fn grotrian_level_stroke_style() -> LevelStrokeStyle {
+    LevelStrokeStyle {
+        width: 3.0,
+        ..level_stroke_style()
+    }
+}
+
+/// [`TransitionArrowStyle::default()`](TransitionArrowStyle) (#357): a
+/// 2.25 px shaft and a 13 × 10 px head. The serde default stays
+/// [`transition_arrow_style`].
+pub(crate) fn grotrian_transition_arrow_style() -> TransitionArrowStyle {
+    TransitionArrowStyle {
+        width: 2.25,
+        head_length: 13.0,
+        head_width: 10.0,
+        ..transition_arrow_style()
+    }
+}
+
 /// The documented default of [`FeynmanLayout`]: the value a document that
 /// omits it takes.
 pub(crate) fn feynman_layout() -> FeynmanLayout {
@@ -171,13 +221,14 @@ pub(crate) const fn vertex_role() -> VertexRole {
     VertexRole::Internal
 }
 
-/// The documented default of [`WavelengthLabels`]: the value a document that
-/// omits it takes.
+/// `WavelengthLabels::default()`: automatic numbers without a unit in
+/// 16 px dark grey, a size that reads beside the level labels (#357). A
+/// document always writes the labels' text, so no document reads this.
 pub(crate) fn wavelength_labels() -> WavelengthLabels {
     WavelengthLabels {
         format: crate::format::PlainNumberFormat::AUTO,
         unit: None,
-        text: RichText::plain("", Color::from_rgb8(40, 40, 40), 11.0, ""),
+        text: RichText::plain("", Color::from_rgb8(40, 40, 40), 16.0, ""),
     }
 }
 

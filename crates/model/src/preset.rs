@@ -36,8 +36,8 @@ const fn rgb8(r: u8, g: u8, b: u8) -> Color {
 /// overlay's `x_axis` and `y_axis` are data axes and take the bottom/left
 /// style on the side they are drawn on (#283).
 /// `Hidden`, which shows none, and [`AxisPreset::Grotrian`] also switch the
-/// grid off, and `Grotrian` gives a continuous `left_y` break a thin lowest
-/// piece (#205).
+/// grid off, and `Grotrian` frames the energy axis alone and gives a
+/// continuous `left_y` break a thin lowest piece (#205, #357).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AxisPreset {
@@ -61,10 +61,17 @@ pub enum AxisPreset {
     /// one preset that also switches the grid off; titles stay as set.
     Hidden,
     /// A Grotrian (energy-level) diagram
-    /// ([#205](https://github.com/shim9610/figgy/issues/205)): the boxed
-    /// frame with outward ticks and labels on the bottom and left only, no
-    /// grid, and a thin ground-state strip: a `Continuous` break on `left_y`
-    /// shares the height `1 : 9 : …` between its lowest piece and the rest
+    /// ([#205](https://github.com/shim9610/figgy/issues/205),
+    /// [#357](https://github.com/shim9610/figgy/issues/357)), framed as
+    /// NIST ASD Grotrian diagrams and textbook term diagrams are: the
+    /// energy axis on the left alone carries a line, outward ticks and
+    /// labels; the term-column axis (`bottom_x`) keeps its labels, the term
+    /// symbols under each column, without a line or ticks, since its
+    /// position is no value; the top and right sides draw nothing, unless
+    /// `right_y` prints another unit (`unit` set, such as cm⁻¹ beside eV),
+    /// which then takes the energy axis' frame. No grid, and a thin
+    /// ground-state strip: a `Continuous` break on `left_y` shares the
+    /// height `1 : 9 : …` between its lowest piece and the rest
     /// (`PieceSizing::Weights`, one weight per piece). A `Panels` break or
     /// an unbroken axis keeps its sizing.
     Grotrian,
@@ -179,18 +186,36 @@ impl Config {
                     weights[0] = 1.0;
                     breaks.sizing = PieceSizing::Weights(weights);
                 }
-                (
+                // The energy axis alone is framed (#357): the column axis
+                // names its columns without a value frame, and the right
+                // side reads only when it prints a second unit.
+                let energy = SideStyle {
+                    line: true,
+                    tick: Outside,
+                    labels: true,
+                };
+                let bare = SideStyle {
+                    line: false,
+                    tick: NoTick,
+                    labels: false,
+                };
+                for overlay in &mut self.overlays {
+                    apply_side(&mut overlay.x_axis, energy.clone());
+                    apply_side(&mut overlay.y_axis, energy.clone());
+                }
+                let second_unit = self.right_y.unit.is_some();
+                apply_side(&mut self.left_y, energy.clone());
+                apply_side(
+                    &mut self.bottom_x,
                     SideStyle {
-                        line: true,
-                        tick: Outside,
+                        line: false,
+                        tick: NoTick,
                         labels: true,
                     },
-                    SideStyle {
-                        line: true,
-                        tick: NoTick,
-                        labels: false,
-                    },
-                )
+                );
+                apply_side(&mut self.top_x, bare.clone());
+                apply_side(&mut self.right_y, if second_unit { energy } else { bare });
+                return;
             }
         };
 
@@ -481,12 +506,13 @@ mod tests {
         assert!(cfg.bottom_x.label_style.label_visible);
     }
 
-    // #205: the Grotrian preset keeps the boxed frame with labels and
-    // outward ticks on the bottom and left, drops the grid and the mirrored
-    // ticks, and gives a continuous `left_y` break a thin lowest piece; a
-    // `Panels` break or an unbroken axis keeps its sizing.
+    // #205, #357: the Grotrian preset frames the energy axis alone (line,
+    // outward ticks, labels), keeps the term columns' labels without a
+    // line or ticks, draws nothing on the top and right, drops the grid,
+    // and gives a continuous `left_y` break a thin lowest piece; a `Panels`
+    // break or an unbroken axis keeps its sizing.
     #[test]
-    fn grotrian_drops_the_grid_and_mirrored_ticks_and_thins_the_ground_strip() {
+    fn grotrian_frames_the_energy_axis_alone_and_thins_the_ground_strip() {
         use crate::config::{AxisBreak, AxisBreaks};
         let mut cfg = crate::defaults::config();
         cfg.left_y.min = 0.0;
@@ -496,13 +522,12 @@ mod tests {
             ..crate::defaults::axis_breaks()
         });
         cfg.apply_axis_preset(AxisPreset::Grotrian);
-        for axis in [&cfg.top_x, &cfg.bottom_x, &cfg.left_y, &cfg.right_y] {
-            assert!(axis.line_visible);
+        assert!(cfg.left_y.line_visible);
+        for axis in [&cfg.top_x, &cfg.bottom_x, &cfg.right_y] {
+            assert!(!axis.line_visible);
+            assert_eq!(axis.tick, TickVisibility::None);
         }
-        assert_eq!(cfg.bottom_x.tick, TickVisibility::Outside);
         assert_eq!(cfg.left_y.tick, TickVisibility::Outside);
-        assert_eq!(cfg.top_x.tick, TickVisibility::None);
-        assert_eq!(cfg.right_y.tick, TickVisibility::None);
         assert!(cfg.bottom_x.label_style.label_visible && cfg.left_y.label_style.label_visible);
         assert!(!cfg.top_x.label_style.label_visible && !cfg.right_y.label_style.label_visible);
         assert!(!cfg.grid.show_major_x && !cfg.grid.show_major_y);
@@ -525,6 +550,19 @@ mod tests {
         let mut plain = crate::defaults::config();
         plain.apply_axis_preset(AxisPreset::Grotrian);
         assert!(plain.left_y.breaks.is_none());
+    }
+
+    // #357: a right axis that prints a second unit (cm⁻¹ beside eV) takes
+    // the energy axis' frame; without a unit the right side draws nothing.
+    #[test]
+    fn grotrian_frames_a_right_axis_in_a_second_unit() {
+        use crate::config::AxisUnit;
+        let mut cfg = crate::defaults::config();
+        cfg.right_y.unit = Some(AxisUnit::new(8065.544, 0.0));
+        cfg.apply_axis_preset(AxisPreset::Grotrian);
+        assert!(cfg.right_y.line_visible && cfg.right_y.label_style.label_visible);
+        assert_eq!(cfg.right_y.tick, TickVisibility::Outside);
+        assert!(!cfg.top_x.line_visible && !cfg.top_x.label_style.label_visible);
     }
 
     #[test]

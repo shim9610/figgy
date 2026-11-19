@@ -423,6 +423,12 @@ pub struct EnergyLevelTheme {
     pub limit_width: f32,
     pub transition_color: Color,
     pub transition_width: f32,
+    /// The transition arrowheads' length and width, logical pixels (#357);
+    /// `None` keeps each series' own.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub head_length: Option<f32>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub head_width: Option<f32>,
     pub band_fill: Color,
     /// The level labels; `None`, here and below, keeps each text's own
     /// colour and size.
@@ -1060,6 +1066,8 @@ impl Theme {
                     limit_width: levels.limit.width,
                     transition_color: levels.transition.color,
                     transition_width: levels.transition.width,
+                    head_length: None,
+                    head_width: None,
                     band_fill: levels.band.fill,
                     level_labels: None,
                     transition_labels: None,
@@ -1483,6 +1491,12 @@ impl Theme {
                 style.limit.width = energy.limit_width;
                 style.transition.color = energy.transition_color;
                 style.transition.width = energy.transition_width;
+                if let Some(length) = energy.head_length {
+                    style.transition.head_length = length;
+                }
+                if let Some(width) = energy.head_width {
+                    style.transition.head_width = width;
+                }
                 style.band.fill = energy.band_fill;
                 if let (Some(look), Some(labels)) =
                     (energy.transition_labels, &mut style.wavelength_labels)
