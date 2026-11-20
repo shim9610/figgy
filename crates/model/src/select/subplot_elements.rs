@@ -36,6 +36,7 @@ impl SubplotElement {
         let Some(mut chart) = cfg.subplot_config(self.subplot) else {
             return NudgeResult::Rejected(NudgeReject::OutOfBounds);
         };
+        let before = cfg.has_insets().then(|| cfg.clone());
         let result = edit(&mut chart);
         if result == NudgeResult::Moved {
             let stored = &mut cfg.subplots[self.subplot].config;
@@ -99,6 +100,10 @@ impl SubplotElement {
             // The user moved part of the document's layout: a later draw
             // keeps it (#357).
             cfg.layout_state = crate::config::LayoutState::Fixed;
+            // An inset nested in this subplot's plot follows it (#392).
+            if let Some(before) = before {
+                cfg.follow_parent_areas(&before, None);
+            }
         }
         result
     }

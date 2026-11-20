@@ -718,6 +718,7 @@ fn chart_with_inset() -> Chart {
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     });
     chart
 }
@@ -868,6 +869,7 @@ fn nested_and_overlapping_insets_draw_and_pick_in_tree_order() {
             link_y: None,
             marker: None,
             text_scale: Default::default(),
+            anchor: None,
         }
     };
     const GREEN: Color = Color::from_rgb8(190, 235, 190);
@@ -3327,4 +3329,244 @@ fn a_crowded_fan_sets_its_labels_in_a_column_with_leaders() {
         },
     );
     assert!(checked, "the Ar fan sets a column");
+}
+
+/// The edges of subplot 0's frame as fractions of the parent's plot:
+/// left, top, right, bottom (#392).
+fn inset_fractions(config: &renderer::Config) -> [f64; 4] {
+    let plot = config.data_area().unwrap().0;
+    let frame = config.subplots[0].config.chart_area.0;
+    let fx = |v: u32| (f64::from(v) - f64::from(plot.x)) / f64::from(plot.width);
+    let fy = |v: u32| (f64::from(v) - f64::from(plot.y)) / f64::from(plot.height);
+    [
+        fx(frame.x),
+        fy(frame.y),
+        fx(frame.x + frame.width),
+        fy(frame.y + frame.height),
+    ]
+}
+
+/// Each edge of subplot 0's frame within `px` pixels of where `expected`
+/// puts it in the parent's plot.
+fn assert_inset_in_place(config: &renderer::Config, expected: [f64; 4], px: f64, context: &str) {
+    let plot = config.data_area().unwrap().0;
+    let got = inset_fractions(config);
+    let span = [plot.width, plot.height, plot.width, plot.height];
+    for k in 0..4 {
+        let off = (got[k] - expected[k]).abs() * f64::from(span[k]);
+        assert!(
+            off <= px + 1e-9,
+            "{context}: edge {k} {off} px off ({got:?} vs {expected:?})"
+        );
+    }
+    assert_eq!(config.insets().collect::<Vec<_>>(), vec![0], "{context}");
+}
+
+// #392: the He I scene's inset keeps its place in the parent's plot through
+// a resize sequence (smaller, larger, two other aspects, a layout fit after
+// each), stays drawable when the chart is shrunk below what the inset's own
+// plot needs, and is back exactly where it was when the chart grows back.
+// Every export at 2x is the 1x frame scaled: the inset's plot fill sits at
+// its scaled place and the image is twice the size.
+#[test]
+fn the_he_inset_follows_its_parent_through_a_resize_sequence() {
+    let mut r = renderer();
+    let scene = scenes::build(&mut r, scenes::SceneKind::EnergyLevels, 1_000).expect("scene");
+    let mut chart = Chart::new(scene.config.clone());
+    let start = inset_fractions(chart.config());
+    let original = chart.config().chart_area.0;
+    // The scene's layout fitted at its own size: the frame to come back to.
+    chart.fit_layout();
+    assert_inset_in_place(chart.config(), start, 0.5, "fitted");
+    let frame = chart.config().subplots[0].config.chart_area.0;
+    let plot_at_start = chart.config().data_area().unwrap().0;
+    let steps = [
+        (720, 540, true),
+        (1600, 1100, true),
+        (1400, 600, true),
+        (900, 1000, true),
+        // Below what the inset's own plot needs.
+        (420, 300, false),
+        (original.width, original.height, true),
+    ];
+    for (step, (w, h, in_place)) in steps.into_iter().enumerate() {
+        chart.set_area(0, 0, w, h);
+        chart.fit_layout();
+        let context = format!("{w}x{h}");
+        if in_place {
+            // Derived from the remembered placement every time: no drift.
+            assert_inset_in_place(chart.config(), start, 0.5, &context);
+        }
+        let inset = chart.config().subplot_config(0).unwrap();
+        let plot = inset.data_area().expect("the inset keeps a plot").0;
+        let parent = chart.config().data_area().unwrap().0;
+        if plot.width < parent.width && plot.height < parent.height {
+            assert!(
+                inset.chart_area.0.within(&parent) || !in_place,
+                "{context}: inside the parent's plot"
+            );
+        }
+        let images = [1.0f32, 2.0].map(|scale| {
+            r.export_rgba(
+                renderer::ExportSource::chart(&chart, &scene.series),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap()
+        });
+        assert_eq!(
+            (images[1].width, images[1].height),
+            (images[0].width * 2, images[0].height * 2),
+            "{context}"
+        );
+        for (img, scale) in images.iter().zip([1u32, 2]) {
+            if let Ok(dir) = std::env::var("FIGGY_INSET_DUMP") {
+                std::fs::write(
+                    format!("{dir}/he-{step}-{w}x{h}-{scale}x.rgba"),
+                    [
+                        &img.width.to_le_bytes()[..],
+                        &img.height.to_le_bytes()[..],
+                        &img.rgba[..],
+                    ]
+                    .concat(),
+                )
+                .unwrap();
+            }
+            // The inset's opaque plot fill, a few pixels inside its corner;
+            // a plot kept at its smallest is checked for being drawn.
+            let fill = pixel(
+                img,
+                (plot.x + 3) * scale,
+                (plot.y + plot.height - 3) * scale,
+            );
+            if plot.width >= 12 && plot.height >= 12 {
+                assert!(
+                    fill[0] >= 245 && fill[1] >= 245 && fill[2] >= 245,
+                    "{context} {scale}x inset fill {fill:?}"
+                );
+            } else {
+                assert_eq!(fill[3], 255, "{context} {scale}x inset drawn");
+            }
+        }
+        // The pointer on the inset's plot belongs to the inset.
+        let centre = (
+            plot.x as f32 + plot.width as f32 / 2.0,
+            plot.y as f32 + plot.height as f32 / 2.0,
+        );
+        assert_eq!(chart.config().subplot_at(centre.0, centre.1), Some(0));
+        assert_eq!(
+            chart.config().nested_subplot_at(centre.0, centre.1),
+            Some(0)
+        );
+    }
+    // Back at the first size the plot is where it was, and so is the
+    // inset: exactly the frame it started with.
+    assert_eq!(chart.config().data_area().unwrap().0, plot_at_start);
+    assert_eq!(chart.config().subplots[0].config.chart_area.0, frame);
+}
+
+// #392: an inset follows `set_area` with its picks, its frame selection and
+// drag, and the document round trips; an inset the user dragged follows a
+// later resize from where it was put.
+#[test]
+fn a_dragged_inset_follows_later_resizes_and_keeps_its_picks() {
+    use renderer::{HitMap, LayerRef};
+    let mut r = renderer();
+    let mut chart = chart_with_inset();
+    chart.config_mut().chart_area.0 = Rect {
+        x: 0,
+        y: 0,
+        width: 640,
+        height: 480,
+    };
+    let list = [series("he", records()), inset_series()];
+    // The user drags the inset's frame left and down on the base layer.
+    let measure = renderer::CpuTextMeasure::default();
+    let frame = chart.config().subplots[0].config.chart_area.0;
+    let map = HitMap::for_active_layer(chart.config());
+    assert_eq!(chart.config().active_layer, LayerRef::Base);
+    let id = map.find("subplot_0:frame").expect("frame element");
+    let element = map.get(id).unwrap();
+    let grab = [frame.x as f32 + 4.0, frame.y as f32 + 4.0];
+    assert_eq!(
+        element
+            .as_draggable()
+            .unwrap()
+            .drag_from(chart.config_mut(), &measure, grab, -90.0, 40.0),
+        renderer::layout::NudgeResult::Moved
+    );
+    let dropped = chart.config().subplots[0].config.chart_area.0;
+    assert_eq!((dropped.x, dropped.y), (frame.x - 90, frame.y + 40));
+    let placed = inset_fractions(chart.config());
+    for (w, h) in [(560, 420), (960, 720), (900, 560)] {
+        chart.set_area(0, 0, w, h);
+        let context = format!("{w}x{h}");
+        assert_inset_in_place(chart.config(), placed, 1.5, &context);
+        // The inset's component at 45 still picks as the inset's row.
+        let inset = chart.config().subplots[0].config.clone();
+        let space = renderer::annotation::pixel_space_for_config(&inset);
+        use renderer::AnnotationSpace as _;
+        let px = space
+            .value_to_px(renderer::AnnotationAxis::X, -0.25)
+            .unwrap();
+        let py = space
+            .value_to_px(renderer::AnnotationAxis::Y, 45.0)
+            .unwrap();
+        let panel = chart.config().chart_area.0;
+        for scale in [1.0f32, 2.0] {
+            let id = r
+                .register_chart(chart.config().clone(), list.to_vec())
+                .unwrap();
+            r.enable_gpu_picking().unwrap();
+            let request = renderer::GpuPickRequest {
+                canvas_position_px: [px * scale, py * scale],
+                display_panel_px: Rect {
+                    x: 0,
+                    y: 0,
+                    width: (panel.width as f32 * scale) as u32,
+                    height: (panel.height as f32 * scale) as u32,
+                },
+                display_scale: scale,
+                max_distance_px: 4.0 * scale,
+            };
+            let hit =
+                test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+            r.remove_chart(id).unwrap();
+            match hit {
+                Some(renderer::PickedData::HistogramBin {
+                    series_id,
+                    bin_index,
+                    ..
+                }) => assert_eq!((series_id.as_str(), bin_index), ("inset", 2), "{context}"),
+                other => panic!("{context} {scale}x inset pick: {other:?}"),
+            }
+        }
+        // The frame is still the element under the pointer and selects.
+        let map = HitMap::for_active_layer(chart.config());
+        let plot = inset.data_area().unwrap().0;
+        let at = (
+            plot.x as f32 + plot.width as f32 / 2.0,
+            plot.y as f32 + plot.height as f32 / 2.0,
+        );
+        let hit = map.hit_test(chart.config(), &measure, at.0, at.1).unwrap();
+        assert_eq!(
+            map.get(hit).unwrap().element_id(),
+            "subplot_0:frame",
+            "{context}"
+        );
+    }
+    // The document round trips and draws the same.
+    let json = serde_json::to_string(chart.config()).unwrap();
+    // The dragged placement is stored as the inset's anchor.
+    assert!(chart.config().subplots[0].anchor.is_some());
+    assert!(json.contains("\"anchor\""), "anchor serialized");
+    let back: renderer::Config = serde_json::from_str(&json).unwrap();
+    assert_eq!(&back, chart.config());
+    assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    let reloaded = Chart::new(back);
+    for scale in [1.0f32, 2.0] {
+        let a = export(&mut r, &chart, &list, scale);
+        let b = export(&mut r, &reloaded, &list, scale);
+        assert_eq!(a.rgba, b.rgba, "{scale}x");
+    }
 }

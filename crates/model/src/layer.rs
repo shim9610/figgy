@@ -274,6 +274,35 @@ pub struct Subplot {
         serde(skip_serializing_if = "SubplotTextScale::is_auto")
     )]
     pub text_scale: SubplotTextScale,
+    /// Where this inset sits in its parent's plot (#392). `Some`: the owner
+    /// of the inset's placement. `config.chart_area` is then a frame derived
+    /// from it, rewritten by every call that moves the parent's plot
+    /// ([`Config::follow_parent_areas`](crate::config::Config::follow_parent_areas)):
+    /// the anchor mapped into the parent's data area, grown to the size the
+    /// inset's own plot needs and kept inside the parent's plot. The clamp
+    /// is never written back, so a parent that grows again gets the
+    /// remembered placement exactly. `None` (default, omitted): the frame
+    /// owns the placement. The first call that moves the parent's plot
+    /// writes the anchor from the frame; a frame drag or resize and
+    /// [`Config::set_subplot_area`](crate::config::Config::set_subplot_area)
+    /// write it from the placed frame, and clear it for a frame placed
+    /// outside every plot. A host that assigns an anchored inset's
+    /// `chart_area` itself places it through `set_subplot_area` instead, or
+    /// clears the anchor: otherwise the next move of the parent derives the
+    /// frame from the anchor again.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub anchor: Option<InsetAnchor>,
+}
+
+/// An inset's placement in its parent's plot ([`Subplot::anchor`], #392).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct InsetAnchor {
+    /// The panel whose data area holds the inset.
+    pub parent: CellRef,
+    /// The frame's edges as fractions of the parent's data area,
+    /// `[[left, right], [top, bottom]]`.
+    pub frame: [[f64; 2]; 2],
 }
 
 /// How a subplot's text follows the size of its cell

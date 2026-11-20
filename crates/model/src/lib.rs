@@ -40,7 +40,8 @@ pub use annotation::{
     MeasuredText, NoteAlign, PixelSpace, ShapeStyle,
 };
 pub use layer::{
-    AnnotationLayer, CellRef, InsetMarker, LayerRef, OverlayLayer, Subplot, SubplotTextScale,
+    AnnotationLayer, CellRef, InsetAnchor, InsetMarker, LayerRef, OverlayLayer, Subplot,
+    SubplotTextScale,
 };
 pub mod format;
 pub mod layout;

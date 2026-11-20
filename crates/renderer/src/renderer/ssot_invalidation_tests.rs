@@ -1538,6 +1538,7 @@ fn baseline_with_subplot() -> Config {
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     });
     c
 }
@@ -2243,6 +2244,9 @@ fn config_fields_are_classified() {
         link_y: _, // subplots[0].link_y (None -> Parent)
         marker: _,
         text_scale: _, // subplot_text_scale_edits(): chrome Prefix
+        // Owns the inset's placement (#392); drawn only through the frame it
+        // derives, subplots[0].config.chart_area (geometry Packed).
+        anchor: _,
     } = subplots.into_iter().next().unwrap_or_default();
     let _ = baseline_with_subplot();
 }
