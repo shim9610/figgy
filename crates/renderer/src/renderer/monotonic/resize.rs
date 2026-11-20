@@ -92,6 +92,10 @@ impl Renderer {
         if let Some(plot) = plot_area {
             place_plot_area(&mut config, plot)?;
         }
+        // Its insets keep their place in the plot they are nested in (#392).
+        if state.config.has_insets() {
+            config.follow_parent_areas(&state.config, None);
+        }
         let config = self.prepared_chart_config(chart, config)?;
         let state = self
             .chart_states

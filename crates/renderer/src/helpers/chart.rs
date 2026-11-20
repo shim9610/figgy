@@ -40,14 +40,20 @@ impl Chart {
 
     /// Move the chart area of a chart that already exists to `(x, y)` and
     /// resize it to `width` × `height` logical pixels, as a window resize
-    /// does.
+    /// does. Its insets keep their place in the plot they are nested in
+    /// ([`crate::Config::follow_parent_areas`], #392).
     pub fn set_area(&mut self, x: u32, y: u32, width: u32, height: u32) {
-        self.config_mut().chart_area = crate::layout::ChartArea(crate::layout::Rect {
+        let before = self.config().has_insets().then(|| self.config().clone());
+        let config = self.config_mut();
+        config.chart_area = crate::layout::ChartArea(crate::layout::Rect {
             x,
             y,
             width,
             height,
         });
+        if let Some(before) = before {
+            config.follow_parent_areas(&before, None);
+        }
         self.refit_kept_layout();
     }
 
