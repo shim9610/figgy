@@ -31,6 +31,7 @@ impl LayerPickInputs {
     }
 
     /// The transform of member `k`'s panel.
+    #[cfg(test)]
     pub(in crate::renderer) fn member_transform(&self, k: usize) -> data_render::ScatterTransform {
         data_render::scatter_transform_from_config(&self.member_panels[k])
     }

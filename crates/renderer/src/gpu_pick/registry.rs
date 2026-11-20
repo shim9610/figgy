@@ -102,44 +102,6 @@ pub(crate) fn exact_variant_for(
     key
 }
 
-/// The stored key and primitive flags a resident series' slot gets from
-/// `descriptor` (`prepare_series_buffer`), without building the slot: what
-/// the exact pass of a chart's pick will need, known as soon as the chart is
-/// registered, so its pipelines can compile before the first pick (#363).
-/// [`exact_variant_for`] adds a query's bits.
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn resident_exact_key(descriptor: &GpuPickSeriesDescriptor<'_>) -> (PickExactKey, u32) {
-    let mut flags = 0u32;
-    let mut base_shape_id = 0u32;
-    if let Some(scatter) = descriptor.scatter.as_ref() {
-        flags |= FLAG_SCATTER;
-        base_shape_id = scatter.base_shape_id;
-        if scatter.style_map.is_some() {
-            flags |= FLAG_STYLE_MAP;
-        }
-    }
-    if descriptor.vector.is_some() {
-        flags |= FLAG_VECTOR;
-    }
-    if descriptor.line_width_px.is_some() {
-        flags |= FLAG_LINE;
-    }
-    let scatter = descriptor.scatter.is_some();
-    // `prepare_series_buffer` keeps at most eight dash lengths.
-    let line_dash_len = descriptor.line_style.pattern().len().min(8) as u32;
-    let key = series_exact_key(
-        flags,
-        line_dash_len,
-        base_shape_id,
-        descriptor.errorbar.is_some() || (descriptor.stem.is_some() && scatter),
-        descriptor.area.is_some(),
-        descriptor.path_arrows.is_some() && descriptor.line_width_px.is_some(),
-        descriptor.category_jitter.is_some() && scatter,
-        descriptor.ternary_c.is_some(),
-    );
-    (key, flags)
-}
-
 /// The exact variant a streamed chunk of `series` scans with: the resident
 /// series' own variant, so a streamed pick answers bit for bit what the
 /// resident pick does, without the dash walk, the error bars and the fill.
@@ -217,6 +179,7 @@ impl PreparedPickRegistryTransition<'_> {
 
 /// The arc prefix of the series at registry position `index`, when one was
 /// supplied and holds a value for each of its `point_count` points.
+#[cfg(test)]
 pub(super) fn series_arc(
     arcs: &[Option<wgpu::Buffer>],
     index: usize,
@@ -229,6 +192,7 @@ pub(super) fn series_arc(
 
 /// Series `index`'s ring starts (a region series', #49), when one covers its
 /// `point_count` rows.
+#[cfg(test)]
 pub(super) fn series_ring(
     rings: &[Option<wgpu::Buffer>],
     index: usize,
@@ -238,17 +202,4 @@ pub(super) fn series_ring(
         .get(index)
         .and_then(Option::as_ref)
         .filter(|buffer| buffer.size() >= u64::from(point_count) * 4)
-}
-
-/// The identities of a registry's series in registry order.
-pub(crate) struct GpuPickSeriesIdentities(pub(super) Arc<[PickIdentity]>);
-
-impl GpuPickSeriesIdentities {
-    pub(crate) fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub(crate) fn series_ids(&self) -> impl Iterator<Item = &str> {
-        self.0.iter().map(|identity| identity.series_id.as_str())
-    }
 }

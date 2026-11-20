@@ -125,7 +125,7 @@ impl GpuPickTicket {
 
     /// After a wait: the hit and, for a registered chart's pick, every
     /// series' nearest datum.
-    fn finish_full(&mut self) -> Result<PickResult, GpuPickError> {
+    pub(crate) fn finish_full(&mut self) -> Result<PickResult, GpuPickError> {
         if let GpuPickTicketState::Nearest { nearest, ink } = &mut self.state {
             let picked = nearest.decode()?;
             let hit = match ink {

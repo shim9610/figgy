@@ -353,10 +353,6 @@ impl Renderer {
             } else {
                 self.ensure_registered_styles(item.chart_id)?;
             }
-            // A chart on screen compiles its exact pick pipelines ahead of
-            // its first pick (#363).
-            #[cfg(target_arch = "wasm32")]
-            self.warm_exact_picks(item.chart_id);
         }
         // Whether each series of each item is drawn: resident sources only,
         // and in a browser only once its pipelines have compiled (#299).
