@@ -516,6 +516,20 @@ member (`transform.pixel_to_ndc`) is not a read of the whole. The arithmetic
 is unchanged. `a_draw_function_reads_the_whole_transform_once`
 (`shader_assembly.rs`) holds every fragment outside `gpu_pick/` to it.
 
+**One projection per placement helper**
+([#363](https://github.com/shim9610/figgy/issues/363)). A software GPU
+compiler (Chromium's SwiftShader) pays for every inlined copy of
+`data_to_ndc`, and with the full set's axis cuts, probability, log and polar
+paths each copy is large. A helper that projects several points, or one point
+per orientation branch, calls it once inside a short loop and picks the
+arguments and the result component with `select`: `box_slot` (the slot's two
+edges, either orientation), `box_along`, `category_bar` (the bar's two ends
+and the slot's two edges), the range bar's two ends, the violin pick's two
+curve ends, and the value label's radar spoke ends and member search. The
+values are the same as one call per branch; with the full set the violin
+pick kernel compiled in 53.1 s before and 1.6 s after
+(`ci/shader-compilation.md`).
+
 ---
 
 ---
@@ -1594,7 +1608,7 @@ every record lane is `BOX_LANE_ABSENT` and no box draws or picks.
 | `0..9` | the f32 lane bases of the record's fields in `BOX_PLOT_RECORD` order (median, q1, q3, whisker_low, whisker_high, mean, sample_count, ci_low, ci_high); `BOX_LANE_ABSENT` (`0xffffffff`) for an absent optional field |
 | `9`, `10` | the lane bases of the outlier column's values and offsets (`BOX_LANE_OUTLIER_VALUES`, `_OFFSETS`), `BOX_LANE_ABSENT` without one |
 | `11`, `12` | the outlier groups (one per category) and the longest group (`ragged_stats().max_group`) |
-| `BOX_LANE_BOX_WIDTH` (13) | the box's share of its slot as `f32` bits: 1 for a plain box, a violin's `box_width` (0 hides the box); `box_layout` narrows the box about its middle |
+| `BOX_LANE_BOX_WIDTH` (13) | the box's share of its slot as `f32` bits: 1 for a plain box, a violin's `box_width` (0 hides the box); `box_layout` narrows the box about its middle (`box_narrowed`, which a caller holding the full `box_slot` place applies itself) |
 | `BOX_LANE_VIOLIN_CURVES` (14..18) | each violin half's curve values and offsets lanes, `BOX_LANE_ABSENT` without one: the value label clears the curves' ends (§5.17) |
 
 | Member of `CategoryBarParams` | Meaning for a box plot |

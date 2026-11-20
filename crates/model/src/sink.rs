@@ -77,6 +77,19 @@ pub struct PlacedText<'a> {
     pub origin: (f32, f32),
     pub extents: TextExtents,
     pub rotation: Option<(f32, (f32, f32))>,
+    /// A stroke around every glyph and rule of the block, drawn under its
+    /// fill (#357); `None` draws none. Decided per draw, never stored. The
+    /// extents and [`Self::rect`] do not include it, so hit boxes stay
+    /// those of the text.
+    pub outline: Option<TextOutline>,
+}
+
+/// The outline of a [`PlacedText`] (#357): its colour and how far it
+/// reaches past the glyphs' edges, logical pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextOutline {
+    pub color: Color,
+    pub width: f32,
 }
 
 impl PlacedText<'_> {

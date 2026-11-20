@@ -610,12 +610,10 @@ impl DataPickKernelSet {
         Self(self.0 | (1 << kernel.index()))
     }
 
-    #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
     pub(crate) const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub(crate) const fn contains(self, kernel: DataPickKernel) -> bool {
         self.0 & (1 << kernel.index()) != 0
     }
@@ -726,6 +724,17 @@ impl DataPickKernels {
     #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
     pub(crate) fn get(&self, kernel: DataPickKernel) -> Option<&wgpu::ComputePipeline> {
         self.pipelines.get(kernel.index())?.as_ref()
+    }
+
+    /// Drop each kernel `keep` leaves out (#363); the shared modules stay.
+    pub(crate) fn retain(&mut self, keep: DataPickKernelSet) {
+        for kernel in DataPickKernel::ALL {
+            if !keep.contains(kernel)
+                && let Some(slot) = self.pipelines.get_mut(kernel.index())
+            {
+                *slot = None;
+            }
+        }
     }
 }
 

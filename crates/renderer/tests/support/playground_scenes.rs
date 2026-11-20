@@ -5181,6 +5181,7 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         label_offset: [0.0; 2],
         value: None,
         x_offset,
+        color: None,
         wavelength: Some(nm),
         wavelength_uncertainty: None,
         intensity: String::new(),

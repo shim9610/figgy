@@ -44,7 +44,6 @@ impl DataPickRoute {
     }
 
     /// The kernels a series on this route can dispatch.
-    #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
     pub(super) fn kernels(
         self,
         primitives: EffectiveSeriesPrimitives,
@@ -210,7 +209,7 @@ impl Renderer {
         id: ChartId,
         request: GpuPickRequest,
     ) -> Result<crate::gpu_data_pick::DataPickKernelSet> {
-        use crate::gpu_data_pick::{DataPickKernel, DataPickKernelSet};
+        use crate::gpu_data_pick::DataPickKernelSet;
         self.admit_chart_shaders(id);
         let state = self
             .chart_states
@@ -233,19 +232,81 @@ impl Renderer {
         }
         let mut needed = DataPickKernelSet::EMPTY;
         for cfg in inputs.series.iter() {
-            let primitives =
-                effective_series_primitives(&inputs.panel.draw_style, &cfg.render_type);
-            needed = needed.union(DataPickRoute::of(primitives).kernels(primitives));
-            // The series `value_label_pick_group` places labels over.
-            let placed = primitives.category_bars
-                || primitives.box_plot
-                || primitives.range_bars
-                || (primitives.line && cfg.render_type.radar().is_some());
-            if placed && value_label_atlas_input(&display_config, cfg).is_some() {
-                needed = needed.with(DataPickKernel::ValueLabels);
+            needed = needed.union(series_data_pick_kernels(&inputs.panel, cfg, |cfg| {
+                value_label_atlas_input(&display_config, cfg).is_some()
+            }));
+        }
+        Ok(needed)
+    }
+
+    /// Every typed data pick kernel a pick of chart `id` can dispatch,
+    /// wherever it lands (#363): for each layer a pick can reach (the
+    /// active layer and, from the base layer, each subplot), each series'
+    /// kernels as [`Self::data_pick_kernels_for`] reads them, with the value
+    /// label kernel for a series that draws value labels selected or not. A
+    /// superset of what any one pick needs; empty for a 3D layer.
+    pub(in crate::renderer) fn data_pick_kernels_of_chart(
+        &self,
+        id: ChartId,
+    ) -> Result<crate::gpu_data_pick::DataPickKernelSet> {
+        use crate::gpu_data_pick::DataPickKernelSet;
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let mut needed = DataPickKernelSet::EMPTY;
+        let mut layer = |config: &Config| -> Result<()> {
+            let inputs = active_layer_pick_inputs(config, &state.series)?;
+            if inputs.panel.view_3d().is_some() {
+                return Ok(());
+            }
+            for cfg in inputs.series.iter() {
+                needed = needed.union(series_data_pick_kernels(&inputs.panel, cfg, |cfg| {
+                    [false, true].into_iter().any(|selected| {
+                        data_render::value_label_kind(&cfg.render_type, selected).is_some()
+                    })
+                }));
+            }
+            Ok(())
+        };
+        layer(&state.config)?;
+        if state.config.active_layer() == crate::LayerRef::Base {
+            for index in 0..state.config.subplots.len() {
+                let mut routed = state.config.clone();
+                routed.active_layer = crate::LayerRef::Subplot(index);
+                layer(&routed)?;
             }
         }
         Ok(needed)
+    }
+
+    /// Drop the typed data pick kernels no registered chart can dispatch
+    /// any more (#363). Run by the host's release of unused GPU memory,
+    /// never on its own: a removed chart's kernels stay until then, so the
+    /// same or a similar chart registered again reuses them instead of
+    /// compiling, and a live chart's are never dropped. While any chart
+    /// draws from a stream, whose typed picks also run the stream's
+    /// reduction kernels, every kernel is kept.
+    pub(in crate::renderer) fn release_unused_data_pick_kernels(&mut self) {
+        use crate::gpu_data_pick::DataPickKernelSet;
+        let streamed = self.chart_states.values().any(|state| {
+            state
+                .series
+                .iter()
+                .any(|series| self.require_resident_series(series).is_err())
+        });
+        if streamed {
+            return;
+        }
+        let mut live = DataPickKernelSet::EMPTY;
+        for &id in self.chart_states.keys() {
+            match self.data_pick_kernels_of_chart(id) {
+                Ok(kernels) => live = live.union(kernels),
+                // A chart whose kernels cannot be read keeps every kernel.
+                Err(_) => return,
+            }
+        }
+        self.picker.data_kernels.retain(live);
     }
 
     /// Submit one typed data pick across points/lines, histogram bins, heatmap
@@ -562,4 +623,26 @@ impl Renderer {
             cpu,
         ))
     }
+}
+
+/// The typed data pick kernels a pick of series `cfg` on `panel`
+/// dispatches (#327): its route's kernels, and the value label kernel when
+/// the series is one `value_label_pick_group` places labels over and
+/// `labelled` says it draws them.
+fn series_data_pick_kernels(
+    panel: &Config,
+    cfg: &SeriesConfig,
+    labelled: impl Fn(&SeriesConfig) -> bool,
+) -> crate::gpu_data_pick::DataPickKernelSet {
+    use crate::gpu_data_pick::DataPickKernel;
+    let primitives = effective_series_primitives(&panel.draw_style, &cfg.render_type);
+    let mut needed = DataPickRoute::of(primitives).kernels(primitives);
+    let placed = primitives.category_bars
+        || primitives.box_plot
+        || primitives.range_bars
+        || (primitives.line && cfg.render_type.radar().is_some());
+    if placed && labelled(cfg) {
+        needed = needed.with(DataPickKernel::ValueLabels);
+    }
+    needed
 }

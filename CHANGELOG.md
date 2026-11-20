@@ -42,6 +42,54 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and `catego
 `text_generated`, the chart's `layout_state` and the categorical, box plot
 and radar documents' `text_sizes`) are additive.
 
+- **Grotrian transition colours and label knockout**
+  ([#357](https://github.com/shim9610/figgy/issues/357)). Appearance only:
+  no value is rewritten.
+  - New `Transition.color: Option<Color>`, an arrow colour set by the host.
+  - New `TransitionArrowStyle.color_by_wavelength: Option<SpectralColors>`
+    with `SpectralColors { unit: WavelengthUnit, ultraviolet, infrared }`
+    and `WavelengthUnit { Nm, Angstrom, Um }`. Inside 380–750 nm (after
+    converting from `unit`) an arrow takes the spectral colour of its
+    `wavelength`: the standard piecewise approximation, gamma 0.8, falling
+    off over 380–420 and 700–750 nm. Outside the band it takes the UV or
+    IR colour. `SpectralColors::default()` (`helpers`) is nanometres, a
+    violet-grey UV and a warm-grey IR. `wavelength` is never rewritten.
+  - **Precedence:** `Transition.color`, then the wavelength, then
+    `color_by_value`, then `TransitionArrowStyle.color`.
+  - A label formatted from `wavelength_labels` takes its arrow's own colour
+    (from the host or the wavelength) as it is. When that colour reads
+    below 4.5:1 against the chart side its ink implies, the label is drawn
+    with a 1 px glyph outline (near-black on a light chart, near-white on a
+    dark one), so the hue stays true and the edge carries the contrast. A
+    label that passes stays plain, and a host `label` keeps its colour.
+  - **Glyph outlines** (new text path, approved on #357). New
+    `PlacedText.outline: Option<TextOutline { color, width }>` (logical px,
+    draw-time only, never serialized). The raster strokes each glyph with
+    zeno under the fill, with the stroke width in the glyph-mask cache key;
+    SVG writes `stroke`, `stroke-width` and `paint-order="stroke"` on the
+    glyph; PDF strokes the glyph's path before filling it. Extents and hit
+    boxes do not include the outline. A Rust `PlacedText { .. }` literal
+    adds `outline: None`.
+  - New `TransitionArrowStyle.label_knockout: bool`: every shaft is broken
+    where it passes under a drawn transition label's glyph ink, each
+    glyph's tight box grown by 1.5 px (a gap, not a halo); a shaft that
+    only crosses a label's empty corners or spaces stays whole. The boxes
+    come from the new `MeasureText::ink_boxes` (default: the block's
+    rectangle), which the renderer answers from the placement it draws.
+    Arrowheads are not cut. The pick keeps the whole arrow, so both sides
+    of a gap hit; the picked highlight, PNG, SVG and PDF draw the gap. A
+    document that omits it reads `false`; `EnergyLevelSeries::default()`
+    (`helpers`) starts with it on.
+  - All three fields are omitted while unset, so older documents read back
+    byte for byte.
+  - **Migration:** an exhaustive `Transition { .. }` literal adds
+    `color: None`, and an exhaustive `TransitionArrowStyle { .. }` literal
+    adds `label_knockout: false, color_by_wavelength: None`. A
+    `MeasureText` implementor needs no change (`ink_boxes` has a default).
+  - Tests: `transition_colours_follow_their_precedence_and_labels_knock_out_shafts`
+    (`energy_levels_render.rs`), `wavelengths_map_to_spectral_colours`,
+    `a_shaft_is_cut_where_it_crosses_each_box`,
+    `a_stroked_glyph_has_its_own_wider_mask` (`text_render.rs`).
 - **Contour ink, sunburst separators and readable labels, Grotrian limit
   labels** ([#357](https://github.com/shim9610/figgy/issues/357), round
   2). Appearance only; no value, position or pick target moves, and
@@ -2156,6 +2204,10 @@ and radar documents' `text_sizes`) are additive.
 ### Renderer (`figgy-renderer` 0.19.0)
 
 - **Nearest-datum pick** ([#381](https://github.com/shim9610/figgy/issues/381), phase 1 of the picking redesign). New `Renderer::pick_chart_nearest(id, request)` and `MonotonicChart::pick_nearest(request)` return a `NearestPickTicket` that resolves to a `NearestPick`: every series' datum nearest to the cursor (`NearestDatum`: layer, source and series ids, logical index, screen distance), in drawing order, and the nearest of them. There is no pick reach (`request.max_distance_px` is not used) and no style is read: each datum is placed with the projection its panel draws it with and measured to its centre. One pick covers every pickable layer at the cursor (the base layer and its overlays, or the subplot under the cursor and its overlays), each series on its own axes, line offset members on their own panels and 3D charts through their camera; an exact tie between layers goes to the active layer, then to the series drawn later. One compute kernel per column kind (`gpu_pick/nearest_entry.wgsl`, the xy kind) is assembled with one placement fragment per projection (`nearest_project_2d.wgsl`, `nearest_project_3d.wgsl`, which splices the shared `common/project_3d.wgsl`), and runs in the point picker's registry slots and per-series reduction: two pipelines per shader set, whatever the styles, and no render target. A monotonic series answers the logical sample index of the kept point through its envelope. A streamed source is refused (`ColumnNotResident`). `Renderer::pick_chart`, the typed data picks and the DataLess picks are unchanged in this step. Tests: `tests/nearest_pick.rs` (`one_pick_covers_every_layer_with_its_own_axes`, `an_exact_tie_between_layers_goes_to_the_active_layer`, `there_is_no_pick_reach`, `a_subplot_under_the_cursor_is_picked_on_its_own_axes`, `a_3d_chart_is_picked_through_its_camera`, `a_monotonic_chart_answers_the_logical_sample_index`, `a_streamed_source_is_refused`; 1x and 2x) and `gpu_pick::nearest::tests` (`a_series_past_the_direct_scan_size_answers_its_original_index`, past the exact pass's direct-scan size over a 2D dispatch, rule 10; `unplaced_data_never_answer_and_ties_go_on_top`).
+
+- **Violin, box, range bar, category bar and value label picks compile much faster on SwiftShader** ([#363](https://github.com/shim9610/figgy/issues/363)). Their shared placement helpers (`box_slot`, `box_along`, `category_bar`, the range bar's ends, the violin's curve ends, the value label's radar spoke and member search) call the projection once inside short loops instead of inlining it per branch and per end. Calls and arguments are unchanged, so picks and drawn pixels are the same. With the full shader set the violin pick kernel fell from 53.1 s to 1.6 s and the value label kernel from 12.2 s to 4.0 s ([`ci/shader-compilation.md`](ci/shader-compilation.md#data-pick-kernel-compile-times-363)).
+
+- **Releasing unused GPU memory also drops unused typed data pick kernels** ([#363](https://github.com/shim9610/figgy/issues/363)). `release_unused_pool_memory` (and its blocking form, which the web wrapper's `release_unused_gpu_memory` calls) drops each typed data pick kernel that no registered chart can dispatch, over every layer a pick can reach. Removing a chart frees nothing by itself, so the same or a similar chart registered again reuses its kernels without compiling; a live chart's are never dropped, and while any chart draws from a stream every kernel is kept.
 
 - **Dependency links for range bars** ([#357](https://github.com/shim9610/figgy/issues/357), item 14 D). The bar module splices a new input fragment, `common/range_links.wgsl` (approved on #357), after `range_bars.wgsl`. A link series binds the group 3 of the range bar series it names, with a lane-table head (the count, and the width, head and inset in render pixels) followed by three entries per SSOT link (`from`, `to`, exit offset), written into the mapped buffer when the series is prepared, so a link always meets the bars as they are drawn and takes no pool column. Each link is routed on every draw in the web Gantt convention: out of the predecessor's edge facing the successor, a small inset from its start, across to the successor's centre line through one rounded corner, and into its start with an open chevron. When the successor starts first, the exit moves back, so a route never turns back through a bar. Links from one bar share their trunk. One quad per link covers the route by distance, and nothing per link is stored. Two new precise pipelines (`RangeLink`, `RangeLinkSelection`) and a pick kernel (`pick_range_links`) answer `PickedData::HistogramBin` for the link's own series and row. The picked highlight redraws the route wider in the selection colour (the bar selection layer now carries its vertex count). Links draw on overlays and subplots and export to PNG at any scale and to SVG and PDF. A streamed source is refused. The `timeline` scene of `examples/range_bars.rs` draws its links with this series in place of `Arrow` elbows, and the `gantt` scene and `gallery-gantt.png` gain dependency links. Tests (`range_bars_render.rs`): `range_links_route_between_their_bars_and_keep_every_interaction` (routes, pick, highlight, `step_selection`, 1x and 2x, SVG, PDF, serde), `range_links_draw_on_overlays_and_subplots`, `dragged_link_exits_move_the_trunk_and_snap_back` (a registered chart edited in place, 1x and 2x, the pick at the moved trunk, the snap back to the default image, serde) and `three_thousand_links_draw_and_pick` (3749 links; `series_draw_info` reports a link past its bars as `truncated`); the `range links` row of `streamed_series_are_rejected_per_family`.
 

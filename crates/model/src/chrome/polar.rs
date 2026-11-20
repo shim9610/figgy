@@ -355,6 +355,7 @@ pub fn place_centered(
         origin: centered_origin(center, m),
         extents: m,
         rotation: None,
+        outline: None,
     };
     sink.text(Slot::Above, &placed);
 }

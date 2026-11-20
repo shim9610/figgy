@@ -349,6 +349,19 @@ impl Default for crate::energy_levels::LevelView {
 
 /// The Grotrian look a host-built series starts with (#357); a document
 /// that omits the value reads `crate::defaults::transition_arrow_style`.
+/// Wavelengths in nanometres, a violet-grey for the ultraviolet and a warm
+/// grey for the infrared (#357): muted, so a line outside the visible band
+/// does not read as the deep violet or red at its edges.
+impl Default for crate::energy_levels::SpectralColors {
+    fn default() -> Self {
+        Self {
+            unit: crate::energy_levels::WavelengthUnit::Nm,
+            ultraviolet: crate::Color::from_rgb8(118, 104, 164),
+            infrared: crate::Color::from_rgb8(140, 96, 84),
+        }
+    }
+}
+
 impl Default for crate::energy_levels::TransitionArrowStyle {
     fn default() -> Self {
         crate::defaults::grotrian_transition_arrow_style()
@@ -560,9 +573,47 @@ impl Default for crate::radar::RadarStyle {
 /// [`RadialStyle::default`]: crate::radial::RadialStyle
 impl Default for crate::radial::RadialChart {
     fn default() -> Self {
+        let crate::radial::RadialChart {
+            decorations,
+            chart_title,
+            active_layer,
+            annotations,
+            slices,
+            kind,
+            start_angle_degrees,
+            split,
+            style: _,
+            labels,
+            label_format,
+            label_decimals,
+            value_suffix,
+            interaction,
+            font_family,
+            font_size,
+            label_color,
+            background,
+            inner_label_fallback,
+        } = crate::defaults::radial_chart();
         Self {
+            decorations,
+            chart_title,
+            active_layer,
+            annotations,
+            slices,
+            kind,
+            start_angle_degrees,
+            split,
             style: crate::radial::RadialStyle::default(),
-            ..crate::defaults::radial_chart()
+            labels,
+            label_format,
+            label_decimals,
+            value_suffix,
+            interaction,
+            font_family,
+            font_size,
+            label_color,
+            background,
+            inner_label_fallback,
         }
     }
 }

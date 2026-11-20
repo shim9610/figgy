@@ -393,23 +393,26 @@ fn category_bar(row: u32, resolved: ResolvedBarStyle) -> CategoryBar {
     }
     let horizontal = category_params.horizontal != 0u;
     // The value axis: from the stack start to its end.
-    var a: f32;
-    var b: f32;
-    var slot_a: f32;
-    var slot_b: f32;
     let low = category_slot_edge(position, -1.0);
     let high = category_slot_edge(position, 1.0);
-    if (horizontal) {
-        a = category_px(data_to_ndc(tf, start, position)).x;
-        b = category_px(data_to_ndc(tf, end, position)).x;
-        slot_a = category_px(data_to_ndc(tf, start, low)).y;
-        slot_b = category_px(data_to_ndc(tf, start, high)).y;
-    } else {
-        a = category_px(data_to_ndc(tf, position, start)).y;
-        b = category_px(data_to_ndc(tf, position, end)).y;
-        slot_a = category_px(data_to_ndc(tf, low, start)).x;
-        slot_b = category_px(data_to_ndc(tf, high, start)).x;
+    // The bar's two ends along the value axis (`start` and `end` at the
+    // category) and the slot's two edges across it (`low` and `high` at
+    // `start`), through one inlined projection for all four and either
+    // orientation (#363): a software GPU compiler pays for every copy of
+    // `data_to_ndc`, and each pick of bars, value labels or a range reads
+    // this.
+    var px4 = vec4<f32>(0.0);
+    for (var k = 0u; k < 4u; k = k + 1u) {
+        let along = k < 2u;
+        let value = select(start, end, k == 1u);
+        let cross = select(select(high, low, k == 2u), position, along);
+        let px = category_px(data_to_ndc(tf, select(cross, value, horizontal), select(value, cross, horizontal)));
+        px4[k] = select(select(px.x, px.y, horizontal), select(px.y, px.x, horizontal), along);
     }
+    let a = px4.x;
+    let b = px4.y;
+    let slot_a = px4.z;
+    let slot_b = px4.w;
     // The category slot along the other axis: the group covers its centred
     // `group_width`, grouped bars side by side `gap_px` apart in series
     // order from the slot's left (or top) edge.

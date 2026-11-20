@@ -98,6 +98,7 @@ pub fn emit_chart_title_in(
             origin: placement.origin,
             extents: measured.ink,
             rotation: None,
+            outline: None,
         },
     );
 }
@@ -167,6 +168,7 @@ fn emit_axis_title(cfg: &Config, side: &Side, measure: &dyn MeasureText, sink: &
             extents: m,
             rotation: (placement.rotation_degrees != 0.0)
                 .then_some((placement.rotation_degrees, placement.rotation_center)),
+            outline: None,
         },
     );
 }
@@ -201,6 +203,7 @@ fn emit_legend(cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) {
             origin: (rect.x + lg.padding, rect.y + lg.padding + m.ascent),
             extents: m,
             rotation: None,
+            outline: None,
         },
     );
 }
@@ -253,6 +256,7 @@ fn emit_colorbar_title(cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn S
             extents: m,
             rotation: (placement.rotation_degrees != 0.0)
                 .then_some((placement.rotation_degrees, placement.rotation_center)),
+            outline: None,
         },
     );
 }
