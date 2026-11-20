@@ -886,7 +886,14 @@ fn offset_pick(
         display_scale: 1.0,
         max_distance_px,
     };
-    crate::test_gpu::block_on(r.pick_chart(id, request).unwrap().resolve()).unwrap()
+    // A pick hits the ink its on-screen prepare drew (#381).
+    crate::test_gpu::block_on(
+        r.shown_for_pick(id, &request)
+            .pick_chart(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap()
 }
 
 // The members draw exactly where a host-shifted copy draws, at 1x and 2x,
@@ -1147,7 +1154,8 @@ fn offset_picks_take_the_painted_member_first() {
     let at = offset_px(&config, 0.3, 0.6, 1.0);
     let on = offset_pick(&mut r, id, at, 10.0).unwrap();
     assert_eq!((on.series_id.as_str(), on.point_index), ("m0", 1));
-    assert_eq!(on.distance_px, 0.0, "the cursor is on m0's line");
+    // The nearest datum is measured to its centre (#381).
+    assert!(on.distance_px < 1e-3, "the cursor is on m0's point");
     let near = offset_pick(&mut r, id, at, 1.0).unwrap();
     assert_eq!(near.series_id, "m0", "only the bottom member is in reach");
     // Between `m0` and `m1`, 2.5 px above `m0`'s peak and 1.5 px below

@@ -555,16 +555,15 @@ fn a_subplot_document_is_displayed_and_picked_as_one_document() {
     // Point 3 of `s1`: x = 0.7 of -0.5..1, y = 50 of 0..60.
     let px = area.x as f32 + (0.7 + 0.5) / 1.5 * area.width as f32;
     let py = (area.y + area.height) as f32 - 50.0 / 60.0 * area.height as f32;
+    let request = GpuPickRequest {
+        canvas_position_px: [px, py],
+        display_panel_px: fit_display_panel((320, 240), (320, 240)).1,
+        display_scale: scale,
+        max_distance_px: 6.0,
+    };
     let ticket = r
-        .pick_chart(
-            id,
-            GpuPickRequest {
-                canvas_position_px: [px, py],
-                display_panel_px: fit_display_panel((320, 240), (320, 240)).1,
-                display_scale: scale,
-                max_distance_px: 6.0,
-            },
-        )
+        .shown_for_pick(id, &request)
+        .pick_chart(id, request)
         .unwrap();
     let picked = crate::test_gpu::block_on(ticket.resolve())
         .unwrap()
