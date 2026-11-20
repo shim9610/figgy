@@ -17,6 +17,7 @@ use harness::{
     save,
 };
 
+use harness::ShowForPick as _;
 use renderer::config::{DataSelectionsConfig, PickedDataRef, TickVisibility};
 use renderer::data_config::LineInterpolation;
 use renderer::layout::{ChartArea, Element, NudgeResult, Rect, Side};
@@ -211,7 +212,13 @@ fn pick(
         display_scale: scale,
         max_distance_px: reach,
     };
-    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let hit = test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap();
     r.remove_chart(id).unwrap();
     hit
 }
@@ -744,7 +751,13 @@ fn a_registered_ternary_subplot_beside_a_cartesian_root_draws_and_picks() {
         display_scale: 1.0,
         max_distance_px: 6.0,
     };
-    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let hit = test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap();
     assert_eq!(picked_point(hit), Some(("p".to_string(), 1)));
     r.remove_chart(id).unwrap();
 }
