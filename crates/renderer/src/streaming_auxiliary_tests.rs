@@ -367,6 +367,18 @@ fn streamed_pick_matches_resident_and_preserves_display() {
     resident.enable_gpu_picking().unwrap();
     let panel = snapshot.config.chart_area.0;
     drop(snapshot);
+    // The resident pick hits drawn ink and answers the nearest datum (#381);
+    // the streamed pick keeps the exact picker. They agree on what is hit,
+    // not on the distance, which the nearest datum measures to its centre.
+    let same = |picked: &Option<crate::PickedData>| match picked {
+        Some(crate::PickedData::Point {
+            series_id,
+            point_index,
+            ..
+        }) => Some((series_id.clone(), *point_index)),
+        Some(other) => panic!("{other:?}"),
+        None => None,
+    };
     for position in [[80.0, 60.0], [130.0, 75.0], [2.0, 2.0]] {
         let request = GpuPickRequest {
             canvas_position_px: position,
@@ -374,6 +386,7 @@ fn streamed_pick_matches_resident_and_preserves_display() {
             display_scale: 1.0,
             max_distance_px: 20.0,
         };
+        resident.shown_for_pick(resident_id, &request);
         let expected = crate::test_gpu::block_on(
             resident
                 .pick_chart_data(resident_id, request)
@@ -388,8 +401,8 @@ fn streamed_pick_matches_resident_and_preserves_display() {
         let actual =
             crate::test_gpu::block_on(renderer.finish_stream_pick_data(operation)).unwrap();
         assert_eq!(
-            actual,
-            expected,
+            same(&actual),
+            same(&expected),
             "position={position:?}, chart={:?}",
             chart.config().chart_area
         );
@@ -402,7 +415,10 @@ fn streamed_pick_matches_resident_and_preserves_display() {
         pump(&mut renderer, point_operation, &x, &y);
         let actual_point =
             crate::test_gpu::block_on(renderer.finish_stream_pick_point(point_operation)).unwrap();
-        assert_eq!(actual_point, expected_point);
+        let point = |picked: Option<crate::PickedPoint>| {
+            picked.map(|picked| (picked.series_id, picked.point_index))
+        };
+        assert_eq!(point(actual_point), point(expected_point));
         assert_eq!(renderer.active_stream_job(id), job);
     }
 }

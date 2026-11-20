@@ -1999,19 +1999,18 @@ fn picker_ticket_resolves_after_chart_registry_pool_and_renderer_drop() {
     renderer.enable_gpu_picking().unwrap();
     let (display, panel, scale) = display_config_for_surface(&config, (320, 240));
     let area = display.data_area().unwrap().0;
+    let request = GpuPickRequest {
+        canvas_position_px: [
+            area.x as f32 + area.width as f32 * 0.5,
+            area.y as f32 + area.height as f32 * 0.5,
+        ],
+        display_panel_px: panel,
+        display_scale: scale,
+        max_distance_px: 20.0,
+    };
     let ticket = renderer
-        .pick_chart(
-            chart,
-            GpuPickRequest {
-                canvas_position_px: [
-                    area.x as f32 + area.width as f32 * 0.5,
-                    area.y as f32 + area.height as f32 * 0.5,
-                ],
-                display_panel_px: panel,
-                display_scale: scale,
-                max_distance_px: 20.0,
-            },
-        )
+        .shown_for_pick(chart, &request)
+        .pick_chart(chart, request)
         .unwrap();
     renderer.remove_chart(chart).unwrap();
     drop(renderer);
@@ -16244,7 +16243,14 @@ fn pick_style_meta_counts_stay_within_the_style_rows() {
     let pick = |renderer: &mut Renderer, x: f64| {
         let mut request = typed_pick_request(&config, typed_pick_position(&config, x, 4.0));
         request.max_distance_px = 2.0;
-        crate::test_gpu::block_on(renderer.pick_chart(chart, request).unwrap().resolve()).unwrap()
+        crate::test_gpu::block_on(
+            renderer
+                .shown_for_pick(chart, &request)
+                .pick_chart(chart, request)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap()
     };
     let hit = pick(&mut renderer, 1.0).expect("the painted bar picks");
     assert_eq!(
@@ -16499,6 +16505,8 @@ fn wait_test_chart(renderer: &mut Renderer) -> (ChartId, GpuPickRequest, Config)
         display_scale: scale,
         max_distance_px: 20.0,
     };
+    // A pick hits the ink its on-screen prepare drew (#381).
+    renderer.shown_for_pick(chart, &request);
     (chart, request, config)
 }
 

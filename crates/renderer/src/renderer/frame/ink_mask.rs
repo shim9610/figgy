@@ -126,3 +126,29 @@ impl InkMaskPipeline {
         pass.draw(0..3, 0..1);
     }
 }
+
+#[cfg(test)]
+impl Renderer {
+    /// Show registered chart `id` as `request` sees it and run one
+    /// on-screen prepare, so its pick reads drawn ink (#381): letterboxed
+    /// onto the request's display panel, or as stored when the panel is the
+    /// stored document at 1x. Test support.
+    pub(crate) fn shown_for_pick(&mut self, id: ChartId, request: &GpuPickRequest) -> &mut Self {
+        let panel = request.display_panel_px;
+        let document = self.chart_config(id).unwrap().document_area();
+        if request.display_scale != 1.0 || panel != document {
+            assert_eq!((panel.x, panel.y), (0, 0), "a display panel at the origin");
+            self.set_chart_display(id, Some((panel.width, panel.height)))
+                .unwrap();
+        }
+        let (config, rect, scale) = self.chart_display_config(id).unwrap();
+        let chart = Chart::new(config.into_owned());
+        let mut view = self.create_chart_view_at(&chart, rect, scale).unwrap();
+        self.prepare_registered(&mut [RegisteredChartDrawItem {
+            chart_id: id,
+            view: &mut view,
+        }])
+        .unwrap();
+        self
+    }
+}
