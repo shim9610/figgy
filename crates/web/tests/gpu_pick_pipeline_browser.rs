@@ -114,6 +114,8 @@ async fn raw_figgy_prewarm_is_idempotent_and_pick_reuses_it() {
         .set_config(&serde_json::to_string(&config).expect("raw config serialization failed"))
         .expect("raw config update failed");
     chart.resize(100, 100).expect("raw chart resize failed");
+    // A pick hits the ink the chart's frames drew (#381).
+    chart.series_ready().await.expect("raw chart draws");
 
     chart
         .prewarm_gpu_picking()
@@ -198,6 +200,8 @@ async fn streamline_series_round_trip_and_pick_through_the_wrapper() {
         .set_config(&serde_json::to_string(&config).expect("config serialization failed"))
         .expect("config update failed");
     chart.resize(100, 100).expect("chart resize failed");
+    // A pick hits the ink the chart's frames drew (#381).
+    chart.series_ready().await.expect("chart draws");
     chart
         .prewarm_gpu_picking()
         .await
@@ -335,6 +339,17 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
     let chart_id = renderer
         .register_chart(config, series)
         .expect("chart registration failed");
+    // A pick hits the ink the chart's on-screen prepare drew (#381).
+    let stored = renderer.chart_config(chart_id).expect("stored").clone();
+    let mut view = renderer
+        .create_chart_view(&renderer::Chart::new(stored.clone()), stored.chart_area.0)
+        .expect("chart view");
+    renderer
+        .prepare_registered(&mut [renderer::RegisteredChartDrawItem {
+            chart_id,
+            view: &mut view,
+        }])
+        .expect("on-screen prepare");
 
     push_validation_scope(&device);
     renderer
