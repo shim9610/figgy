@@ -290,34 +290,30 @@ impl Probe {
         test_gpu::block_on(renderer.pick_chart(self.id, request).unwrap().resolve()).unwrap()
     }
 
-    /// The exact point query at the centre of export pixel `(x, y)`: the
-    /// typed data pick's point part, which keeps the exact geometry the CPU
-    /// twin mirrors (#381: `pick_chart` hits drawn ink and answers the
-    /// nearest datum instead).
-    pub fn exact_point(
+    /// The nearest-datum hit of the typed data pick at canvas position
+    /// `(x, y)` (#381): the datum the pick selects when drawn ink is
+    /// within `max` of the cursor.
+    pub fn nearest_hit(
         &self,
         renderer: &mut Renderer,
         x: f32,
         y: f32,
         max: f32,
     ) -> Option<PickedPoint> {
-        match self.pick_data_at(renderer, (x, y), max) {
-            Some(renderer::PickedData::Point {
-                source_id,
-                series_id,
-                point_index,
-                distance_px,
-            }) => Some(PickedPoint {
-                source_id,
-                series_id,
-                point_index,
-                distance_px,
-            }),
-            _ => None,
-        }
+        let request = self.request(x, y, max);
+        test_gpu::block_on(
+            renderer
+                .pick_chart_data(self.id, request)
+                .unwrap()
+                .resolve_full(),
+        )
+        .unwrap()
+        .point
+        .hit
     }
 
-    /// The typed data pick at canvas position `(x, y)`.
+    /// The typed hit of the typed data pick at canvas position `(x, y)`
+    /// ([`renderer::DataPickResult::data`], #381).
     pub fn pick_data_at(
         &self,
         renderer: &mut Renderer,
@@ -329,12 +325,33 @@ impl Probe {
             renderer
                 .pick_chart_data(self.id, request)
                 .unwrap()
-                .resolve(),
+                .resolve_full(),
+        )
+        .unwrap()
+        .data
+    }
+
+    /// Every answer of the typed data pick at the centre of export pixel
+    /// `(x, y)` (#381).
+    pub fn pick_full(
+        &self,
+        renderer: &mut Renderer,
+        x: u32,
+        y: u32,
+        max: f32,
+    ) -> renderer::DataPickResult {
+        let request = self.request(x as f32 + 0.5, y as f32 + 0.5, max);
+        test_gpu::block_on(
+            renderer
+                .pick_chart_data(self.id, request)
+                .unwrap()
+                .resolve_full(),
         )
         .unwrap()
     }
 
-    /// The typed data pick at the centre of export pixel `(x, y)`.
+    /// The typed hit of the typed data pick at the centre of export pixel
+    /// `(x, y)`.
     pub fn pick_data(
         &self,
         renderer: &mut Renderer,
@@ -347,9 +364,10 @@ impl Probe {
             renderer
                 .pick_chart_data(self.id, request)
                 .unwrap()
-                .resolve(),
+                .resolve_full(),
         )
         .unwrap()
+        .data
     }
 }
 
@@ -1483,111 +1501,6 @@ impl renderer::pick::cpu_twin::PointColumnLookup for F32Columns {
     }
 }
 
-/// The CPU twin (`pick_nearest_point`) answers what the GPU picker answers
-/// under every draw style: the styled marker distances, the sketch stroke's
-/// wobble on the arc prefix the CPU sums itself, the ribbon envelope and the
-/// dash phase.
-#[cfg(feature = "cpu-twin")]
-#[test]
-fn cpu_twin_agrees_with_the_gpu_picker_under_every_draw_style() {
-    use renderer::config::{ConstellationOptions, DrawStyle, MilkywayOptions, SketchOptions};
-    use renderer::data_config::LineInterpolation;
-    use renderer::line::LineStylePreset;
-    let xs = vec![3.8, 4.6, 5.3, 6.2];
-    let ys = vec![4.4, 5.7, 4.5, 5.6];
-    let mut renderer = renderer();
-    upload_xy(&mut renderer, xs.clone(), ys.clone());
-    let columns = F32Columns(vec![
-        ("x".into(), xs.iter().map(|v| *v as f32).collect()),
-        ("y".into(), ys.iter().map(|v| *v as f32).collect()),
-    ]);
-    let scatter_line = |shape: ScatterShape, style: LineStylePreset| SeriesConfig {
-        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
-            scatter: Some(DataScatterStyleConfig {
-                point_color: BLUE,
-                point_shape: shape,
-                point_size: 5.0,
-                point_style_table: None,
-                point_style_index_column: None,
-                point_style_overrides: None,
-                point_color_map: None,
-                point_size_map: None,
-            }),
-            line: Some(renderer::DataLineStyleConfig {
-                line_style: style,
-                line_color: RED,
-                line_width: 2.0,
-                fill: None,
-                fill_color: None,
-                interpolation: LineInterpolation::Linear,
-            }),
-            errors: None,
-            stem: None,
-        }),
-        ..scatter("path", ScatterShape::Circle, 5.0, BLUE)
-    };
-    for style in [
-        DrawStyle::Precise,
-        DrawStyle::Sketch(SketchOptions {
-            amplitude_px: 3.0,
-            wavelength_px: 15.0,
-            seed: 3,
-        }),
-        DrawStyle::Milkyway(MilkywayOptions::default()),
-        DrawStyle::Constellation(ConstellationOptions::default()),
-    ] {
-        let chart = styled_chart(style.clone());
-        for series in [
-            scatter_line(ScatterShape::Star, LineStylePreset::Solid),
-            scatter_line(ScatterShape::Triangle, LineStylePreset::DashDot),
-        ] {
-            let series = [series];
-            let probe = Probe::register(&mut renderer, &chart, &series, 1.0);
-            let (x0, y0) = data_to_px(&chart, 3.5, 6.0, 1.0);
-            let (x1, y1) = data_to_px(&chart, 6.5, 4.0, 1.0);
-            let mut compared = 0;
-            for y in (y0 as u32..y1 as u32).step_by(3) {
-                for x in (x0 as u32..x1 as u32).step_by(3) {
-                    let gpu = probe.exact_point(&mut renderer, x as f32 + 0.5, y as f32 + 0.5, 3.0);
-                    let cpu = renderer::pick::cpu_twin::pick_nearest_point(
-                        chart.config(),
-                        &series,
-                        &columns,
-                        x as f32 + 0.5,
-                        y as f32 + 0.5,
-                        renderer::pick::cpu_twin::PointPickOptions {
-                            max_distance_px: 3.0,
-                        },
-                    );
-                    match (&cpu, &gpu) {
-                        (Some(cpu), Some(gpu)) => {
-                            assert!(
-                                (cpu.distance_px - gpu.distance_px).abs() < 0.05,
-                                "{style:?} ({x}, {y}): CPU {cpu:?} GPU {gpu:?}"
-                            );
-                            if cpu.distance_px > 0.05 {
-                                assert_eq!(
-                                    cpu.point_index, gpu.point_index,
-                                    "{style:?} ({x}, {y})"
-                                );
-                            }
-                            compared += 1;
-                        }
-                        (None, None) => {}
-                        // A distance at the threshold may round either way.
-                        (Some(hit), None) | (None, Some(hit)) => assert!(
-                            hit.distance_px > 2.9,
-                            "{style:?} ({x}, {y}): CPU {cpu:?} GPU {gpu:?}"
-                        ),
-                    }
-                }
-            }
-            assert!(compared > 20, "{style:?}: {compared} hits compared");
-            renderer.remove_chart(probe.id).unwrap();
-        }
-    }
-}
-
 #[cfg(feature = "cpu-twin")]
 fn arrows(
     id: &str,
@@ -1627,7 +1540,6 @@ fn arrows(
 /// pivot, the scale mode and the head scaled down on a short arrow — and an
 /// arrow that is not drawn (a zero vector, one under the minimum length)
 /// picks nowhere, at 1x and 2x.
-#[cfg(feature = "cpu-twin")]
 #[test]
 fn point_vectors_pick_the_arrow_they_draw() {
     use renderer::data_config::{VectorPivot, VectorScale};
@@ -1637,13 +1549,6 @@ fn point_vectors_pick_the_arrow_they_draw() {
     let ys = vec![2.0, 6.5, 2.5, 8.0];
     let us = vec![30.0, -6.0, 0.0, 2.0];
     let vs = vec![18.0, 4.0, 0.0, 2.0];
-    let f32s = |values: &[f64]| values.iter().map(|v| *v as f32).collect::<Vec<_>>();
-    let columns = F32Columns(vec![
-        ("x".into(), f32s(&xs)),
-        ("y".into(), f32s(&ys)),
-        ("u".into(), f32s(&us)),
-        ("v".into(), f32s(&vs)),
-    ]);
     renderer
         .add_columns(&[
             ("x", &col(xs) as &dyn renderer::ColumnSource),
@@ -1688,45 +1593,6 @@ fn point_vectors_pick_the_arrow_they_draw() {
                 &format!("{what}: undrawn arrows"),
             );
         }
-
-        // The CPU twin answers what the GPU picker answers.
-        let series = [arrows("quiver", scale_mode.clone(), pivot.clone())];
-        let probe = Probe::register(&mut renderer, &chart, &series, 1.0);
-        let (x0, y0) = data_to_px(&chart, 1.0, 9.0, 1.0);
-        let (x1, y1) = data_to_px(&chart, 8.0, 1.0, 1.0);
-        let mut compared = 0;
-        for y in (y0 as u32..y1 as u32).step_by(3) {
-            for x in (x0 as u32..x1 as u32).step_by(3) {
-                let gpu = probe.exact_point(&mut renderer, x as f32 + 0.5, y as f32 + 0.5, 3.0);
-                let cpu = renderer::pick::cpu_twin::pick_nearest_point(
-                    chart.config(),
-                    &series,
-                    &columns,
-                    x as f32 + 0.5,
-                    y as f32 + 0.5,
-                    renderer::pick::cpu_twin::PointPickOptions {
-                        max_distance_px: 3.0,
-                    },
-                );
-                match (&cpu, &gpu) {
-                    (Some(cpu), Some(gpu)) => {
-                        assert!(
-                            (cpu.distance_px - gpu.distance_px).abs() < 0.05
-                                && cpu.point_index == gpu.point_index,
-                            "{scale_mode:?} ({x}, {y}): CPU {cpu:?} GPU {gpu:?}"
-                        );
-                        compared += 1;
-                    }
-                    (None, None) => {}
-                    (Some(hit), None) | (None, Some(hit)) => assert!(
-                        hit.distance_px > 2.9,
-                        "{scale_mode:?} ({x}, {y}): CPU {cpu:?} GPU {gpu:?}"
-                    ),
-                }
-            }
-        }
-        assert!(compared > 20, "{scale_mode:?}: {compared} hits compared");
-        renderer.remove_chart(probe.id).unwrap();
     }
 }
 
@@ -3063,7 +2929,7 @@ fn cpu_and_gpu_place_points_alike_at_every_magnitude() {
                 // The GPU and the CPU pickers find it there.
                 let at = (expected.0 as f32, expected.1 as f32);
                 let gpu = probe
-                    .exact_point(&mut renderer, at.0, at.1, 3.0)
+                    .nearest_hit(&mut renderer, at.0, at.1, 3.0)
                     .unwrap_or_else(|| panic!("{case}: GPU misses point {index} at {at:?}"));
                 let cpu = renderer::pick::cpu_twin::pick_nearest_point(
                     &cfg,
@@ -3195,7 +3061,7 @@ fn probability_axis_places_points_at_every_tail() {
                 );
                 let at = (expected.0 as f32, expected.1 as f32);
                 let gpu = probe
-                    .exact_point(&mut renderer, at.0, at.1, 3.0)
+                    .nearest_hit(&mut renderer, at.0, at.1, 3.0)
                     .unwrap_or_else(|| panic!("{case}: GPU misses point {index} at {at:?}"));
                 let cpu = renderer::pick::cpu_twin::pick_nearest_point(
                     &cfg,
@@ -3490,7 +3356,7 @@ fn inverted_and_broken_probability_axes_place_points_as_their_chrome() {
             );
             let at = (expected.0 as f32, expected.1 as f32);
             let gpu = probe
-                .exact_point(&mut renderer, at.0, at.1, 3.0)
+                .nearest_hit(&mut renderer, at.0, at.1, 3.0)
                 .unwrap_or_else(|| panic!("{case}: GPU misses point {index} at {at:?}"));
             assert_eq!(gpu.point_index, index, "{case}");
         }
@@ -4214,9 +4080,8 @@ fn area_fills_pick_where_they_paint() {
 
 /// G10 tie-break: a marker over a fill picks the marker, though its series
 /// comes first (every fill is drawn before every series body); inside the
-/// fill away from the marker the exact query picks the fill, naming the
-/// nearer endpoint of the filled segment, and `pick_chart` hits the fill's
-/// ink and answers the nearest datum (#381).
+/// fill away from the marker `pick_chart` hits the fill's ink and answers
+/// the nearest datum (#381).
 #[test]
 fn a_marker_over_a_fill_picks_the_marker() {
     use renderer::data_config::{LineFill, LineInterpolation};
@@ -4246,22 +4111,8 @@ fn a_marker_over_a_fill_picks_the_marker() {
             .pick(&mut renderer, mx as u32, my as u32, 0.0)
             .expect("marker hit");
         assert_eq!((hit.series_id.as_str(), hit.point_index), ("dot", 0));
-        for (x, index) in [(3.0, 0), (7.0, 1)] {
+        for x in [3.0, 7.0] {
             let (px, py) = data_to_px(&chart, x, 3.0, scale);
-            // The exact query: the fill, naming its nearer endpoint.
-            let hit = probe
-                .exact_point(
-                    &mut renderer,
-                    px as u32 as f32 + 0.5,
-                    py as u32 as f32 + 0.5,
-                    0.0,
-                )
-                .expect("fill hit");
-            assert_eq!(
-                (hit.series_id.as_str(), hit.point_index, hit.distance_px),
-                ("area", index, 0.0),
-                "{scale}x at x {x}"
-            );
             // `pick_chart` (#381): the fill's ink hits, and the hit is the
             // nearest datum of all, the marker's or the fill's.
             let hit = probe
@@ -4984,29 +4835,36 @@ fn violins_and_raincloud_points_pick_what_they_paint() {
                 let ink = difference(&with, &without, px, py);
                 let i = ((py * with.width + px) * 4) as usize;
                 let point_pixel = is_point(&with.rgba[i..i + 4]);
-                let hit = probe.pick_data(&mut renderer, px, py, 0.0);
-                match &hit {
-                    Some(renderer::PickedData::HistogramBin { series_id, .. })
-                    | Some(renderer::PickedData::Point { series_id, .. }) => {
-                        assert_eq!(series_id, "rain", "{what}")
+                // The typed hit (the body, exactly as before) and the
+                // selection, which is the nearest raw point wherever the
+                // series' ink is hit (#381).
+                let result = probe.pick_full(&mut renderer, px, py, 0.0);
+                let (hit, selected) = (&result.data, &result.picked);
+                for answer in [hit, selected] {
+                    match answer {
+                        Some(renderer::PickedData::HistogramBin { series_id, .. })
+                        | Some(renderer::PickedData::Point { series_id, .. }) => {
+                            assert_eq!(series_id, "rain", "{what}")
+                        }
+                        None => {}
+                        Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
                     }
-                    None => {}
-                    Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
                 }
-                if ink > 160 && hit.is_none() {
+                if ink > 160 && selected.is_none() {
                     failures.push(format!("({px}, {py}) painted (ink {ink}) but not picked"));
                 }
                 if ink < MSAA_EDGE.zero_ink && hit.is_some() {
                     failures.push(format!("({px}, {py}) picks {hit:?} but ink is only {ink}"));
                 }
                 if ink > 240 {
-                    match hit {
-                        Some(renderer::PickedData::Point { .. }) => points += 1,
-                        Some(renderer::PickedData::HistogramBin { .. }) => bodies += 1,
-                        _ => {}
-                    }
-                    if point_pixel && !matches!(hit, Some(renderer::PickedData::Point { .. })) {
-                        failures.push(format!("({px}, {py}) a point's pixel picked {hit:?}"));
+                    if point_pixel {
+                        points += 1;
+                        if !matches!(selected, Some(renderer::PickedData::Point { .. })) {
+                            failures
+                                .push(format!("({px}, {py}) a point's pixel selects {selected:?}"));
+                        }
+                    } else if matches!(hit, Some(renderer::PickedData::HistogramBin { .. })) {
+                        bodies += 1;
                     }
                 }
             }
@@ -5602,9 +5460,12 @@ fn assert_member_pick_matches_paint(
             .min_by_key(|&(x, y)| x.abs_diff(mx).pow(2) + y.abs_diff(my).pow(2))
             .unwrap()
     };
-    match probe.pick_data(renderer, cx, cy, tolerance.fringe) {
-        Some(renderer::PickedData::Point { series_id, .. }) if series_id == subject => {}
-        other => failures.push(format!("typed pick at ({cx}, {cy}): {other:?}")),
+    // The member's ink hits, selecting the nearest datum (#381).
+    if probe
+        .nearest_hit(renderer, cx as f32 + 0.5, cy as f32 + 0.5, tolerance.fringe)
+        .is_none()
+    {
+        failures.push(format!("pick at ({cx}, {cy}) of {subject}'s ink misses"));
     }
     renderer.remove_chart(probe.id).unwrap();
     assert!(
