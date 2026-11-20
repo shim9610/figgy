@@ -578,6 +578,15 @@ A `TriMesh` series ([#210](https://github.com/shim9610/figgy/issues/210), [guide
 - Registry: the point picker's slots, dispatch layout, per-workgroup candidates and per-series reduction (`pick_reduce_candidates`), into each slot's result buffer. One registry holds every pickable layer at the cursor (the base layer and its overlays, or the subplot under the cursor and its overlays); each slot carries its panel's transform, chart rectangle and camera (`NearestSlot`). The readback holds one candidate per series; the panel's nearest is chosen from them on the CPU (an exact tie to the active layer, then to the series drawn later).
 - Results live in storage buffers: no render target, so MSAA and integer formats do not apply. A monotonic series' row maps to its logical sample index through the shared envelope. Streamed sources are refused.
 
+### Pick hit: the ink mask
+
+`Renderer::pick_chart` ([#381](https://github.com/shim9610/figgy/issues/381)) is the nearest-datum pick above plus a hit decided by drawn pixels: the cursor hits when the chart's data layer has ink within `request.max_distance_px` canvas pixels of it, and the hit is the nearest datum.
+- Mask: one `InkMask` per panel of each chart drawn on screen (`src/renderer/frame/ink_mask.rs`): `R8Unorm`, one sample, panel-sized at the display scale, 1 where the panel's data layer has a channel above 1/255. Every draw style, overlay, subplot and line offset member has one; coverage only, no colour.
+- Drawing: the on-screen prepare of a registered chart (`prepare_registered_resident`, so also `prepare_monotonic` and the mixed prepare) checks each panel's mask against the resident display's key (`ResidentDisplayKey`) and draws it again only when it changed: the data layer into a transient transparent target with the panel composite (`draw_panel_composite`), then `ink_mask.wgsl` into the mask. Exports and picks never draw it.
+- Identity: keyed by `ChartId` and panel index (issued number), not by the view; a chart shown in several views has the mask of its most recent on-screen prepare. Masks go with `remove_chart` and `release_unused_pool_memory`; the next on-screen prepare draws them again, and until then a pick hits nothing.
+- Read: the pick copies the (2r+1)² texel window around the cursor of each mask in the searched layer group into one readback (`InkRead`) and tests the distance from the cursor to each inked texel's square. `GpuPickTicket::resolve` answers the hit, `resolve_full` the hit and every series' nearest datum (`PickResult`).
+- Memory: one byte per panel pixel per layer (a 480×360 panel: 172,800 bytes), charged as a panel texture; the transient data-layer targets live until their submission completes.
+
 ### Monotonic-x lines (M4 envelope)
 
 A `MonotonicLine` series ([#271](https://github.com/shim9610/figgy/issues/271),
@@ -1086,6 +1095,15 @@ annotation_selection_dirty = false;
 - 커널: 열 종류마다 compute 커널 하나(`gpu_pick/nearest_entry.wgsl`, xy 종류)를 두고, 투영마다 배치 조각 하나를 붙여 조립한다. `nearest_project_2d.wgsl`은 그리기와 같은 `pick_data_px`(로그·끊긴·확률 축, 극좌표)나 `pick_ternary_px`로 놓고, `nearest_project_3d.wgsl`은 공유 `common/project_3d.wgsl`과 커서 픽셀을 클립 공간에 맞춘 패널 카메라를 쓴다(3D ID 픽과 같은 방식). 스타일과 관계없이 셰이더 세트마다 파이프라인 둘이다.
 - 레지스트리: 점 피커의 슬롯, 디스패치 배치, 워크그룹별 후보, 시리즈별 리듀스를 그대로 쓴다. 커서 위의 픽 가능한 레이어(기본 레이어와 오버레이, 또는 커서 아래 서브플롯과 그 오버레이)를 레지스트리 하나에 담고, 슬롯마다 자기 패널의 변환·차트 영역·카메라를 둔다(`NearestSlot`). 읽어 오는 값은 시리즈마다 후보 하나이고, 패널 전체의 최근접은 CPU에서 고른다(거리가 같으면 활성 레이어, 그다음 나중에 그린 시리즈).
 - 결과는 저장 버퍼에 있어 렌더 타깃이 없으므로 MSAA와 정수 포맷 제약이 없다. 단조 시리즈의 행은 공유 엔벌로프로 논리 샘플 인덱스가 된다. 스트리밍 소스는 거부한다.
+
+### 픽 적중: 잉크 마스크
+
+`Renderer::pick_chart`([#381](https://github.com/shim9610/figgy/issues/381))는 위의 최근접 데이터 픽에, 그려진 픽셀로 정하는 적중을 더한다. 차트의 데이터 레이어에 커서로부터 `request.max_distance_px` 캔버스 픽셀 안에 잉크가 있으면 적중이고, 적중은 최근접 데이터다.
+- 마스크: 화면에 그린 차트의 패널마다 `InkMask` 하나(`src/renderer/frame/ink_mask.rs`). `R8Unorm`, 샘플 하나, 디스플레이 배율의 패널 크기이고, 패널 데이터 레이어의 채널 하나라도 1/255를 넘는 곳이 1이다. 모든 그리기 스타일, 오버레이, 서브플롯, 줄 오프셋 멤버가 하나씩 가진다. 덮임만 담고 색은 없다.
+- 그리기: 등록 차트의 화면 prepare(`prepare_registered_resident`, 그래서 `prepare_monotonic`과 혼합 prepare도)가 패널 마스크를 상주 디스플레이 키(`ResidentDisplayKey`)와 비교해 바뀌었을 때만 다시 그린다. 데이터 레이어를 패널 합성(`draw_panel_composite`)으로 임시 투명 타깃에 그리고, `ink_mask.wgsl`로 마스크에 옮긴다. 내보내기와 픽은 마스크를 그리지 않는다.
+- 식별: 뷰가 아니라 `ChartId`와 패널 번호(발급 번호)로 찾는다. 한 차트를 여러 뷰에 띄우면 가장 최근 화면 prepare의 마스크를 쓴다. `remove_chart`와 `release_unused_pool_memory`에서 함께 지워지고, 다음 화면 prepare가 다시 그린다. 그 전까지 픽은 아무것도 적중하지 않는다.
+- 읽기: 픽은 찾는 레이어 묶음의 마스크마다 커서 둘레 (2r+1)² 텍셀 창을 읽기 버퍼 하나(`InkRead`)로 복사하고, 커서에서 잉크 텍셀 사각형까지의 거리를 본다. `GpuPickTicket::resolve`는 적중을, `resolve_full`은 적중과 시리즈별 최근접 데이터(`PickResult`)를 돌려준다.
+- 메모리: 레이어마다 패널 픽셀당 1바이트(480×360 패널이면 172,800바이트)이고 패널 텍스처로 장부에 잡힌다. 임시 데이터 레이어 타깃은 제출이 끝날 때까지만 산다.
 
 ### 단조 x 선(M4 엔벌로프)
 

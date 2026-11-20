@@ -124,6 +124,12 @@ pub(super) struct PrepareContext<'a> {
     pub(super) target_sample_count: u32,
     pub(super) resident_displays: &'a mut Vec<ResidentDisplay>,
     pub(super) resident_display_serial: &'a mut u64,
+    pub(super) ink_masks: &'a mut Vec<InkMask>,
+    pub(super) ink_mask_pipeline: &'a mut Option<InkMaskPipeline>,
+    /// The registered chart each item of an on-screen prepare draws, in
+    /// item order: its panels' ink masks are drawn (#381). Empty for every
+    /// other preparation (a pick's, a host-owned chart's, an export's).
+    pub(super) ink_charts: &'a [ChartId],
     pub(super) contour_label_pipelines: &'a mut Option<crate::gpu_contour::ContourLabelPipelines>,
     pub(super) arc_pipelines: &'a mut Option<data_render::line_arc::ArcScanPipelines>,
     pub(super) surface_format: wgpu::TextureFormat,
@@ -135,6 +141,7 @@ pub(super) struct PrepareContext<'a> {
 
 impl PrepareContext<'_> {
     pub(super) fn prepare(&mut self, items: &[PanelDraw<'_>]) -> Result<PreparedFrame> {
+        let source = items;
         // One expansion path: a layered document becomes one item per panel
         // here, so everything below sees single-layer panels only.
         // A frame without layered items is drawn from the caller's slice as
@@ -258,6 +265,7 @@ impl PrepareContext<'_> {
             lift_annotation_overlays(&mut prepared, &group_sizes);
         }
         self.attach_resident_displays(items, &mut prepared);
+        self.attach_ink_masks(source, &group_sizes, items, &prepared);
         Ok(PreparedFrame {
             renderer_identity: self.renderer_identity,
             items: prepared,
@@ -283,45 +291,13 @@ impl PrepareContext<'_> {
         let max = self.caps.max_texture_dimension_2d;
         let mut encoder: Option<wgpu::CommandEncoder> = None;
         for (input, item) in inputs.iter().zip(prepared.iter_mut()) {
-            if item.stream_display.is_some()
-                || item.series.is_empty()
-                || !input.chart_config.draw_style.is_precise()
-            {
+            if !input.chart_config.draw_style.is_precise() {
                 continue;
             }
-            let panel = item.view.panel_rect;
-            let (w, h) = (panel.width, panel.height);
-            let (Some(data_x), Some(data_y)) = (
-                item.data_area.x.checked_sub(panel.x),
-                item.data_area.y.checked_sub(panel.y),
-            ) else {
+            let Some((probe, pieces)) = self.panel_probe(input, item, max) else {
                 continue;
             };
-            if w == 0 || h == 0 || w > max || h > max || data_x >= w || data_y >= h {
-                continue;
-            }
-            let data_area = Rect {
-                x: data_x,
-                y: data_y,
-                width: item.data_area.width,
-                height: item.data_area.height,
-            };
-            let Some(pieces) = item.data_pieces.relative_to(panel.x, panel.y) else {
-                continue;
-            };
-            let probe = ResidentDisplayProbe {
-                size: (w, h),
-                data_area,
-                transform: data_render::scatter_transform_from_config(input.chart_config),
-                chart_config: input.chart_config,
-                series: input.series,
-                font_generation: crate::text_render::font_generation(),
-                columns: self.panel_columns(item.column_fingerprint, input.series),
-                pool_layout_generation: self.pool.layout_generation(),
-                target_pipeline_generation: self.target_pipeline_generation,
-                camera: panel_camera(input.chart_config, panel),
-                stencil: panel_stencil(input.chart_config, input.series),
-            };
+            let (w, h) = probe.size;
             let view_id = Arc::as_ptr(&item.view.content_revision) as usize;
             let slot = self
                 .resident_displays
@@ -417,6 +393,239 @@ impl PrepareContext<'_> {
         if let Some(encoder) = encoder {
             self.queue.submit([encoder.finish()]);
         }
+    }
+
+    /// Draw the ink mask of every panel of each registered chart in
+    /// `source` ([`Self::ink_charts`]) whose data layer changed since its
+    /// mask was drawn: the panel's data layer into a transient transparent
+    /// target, then the mask from it (#381). `inputs` and `prepared` are
+    /// the expanded panels, `group_sizes` how many each source item drew as
+    /// (empty when none is layered). A panel that draws no data layer has
+    /// no mask. All masks drawn here go out in one submission.
+    pub(super) fn attach_ink_masks(
+        &mut self,
+        source: &[PanelDraw<'_>],
+        group_sizes: &[usize],
+        inputs: &[PanelDraw<'_>],
+        prepared: &[PreparedItem],
+    ) {
+        if self.ink_charts.len() != source.len() || inputs.len() != prepared.len() {
+            return;
+        }
+        let max = self.caps.max_texture_dimension_2d;
+        let mut encoder: Option<wgpu::CommandEncoder> = None;
+        let mut first = 0;
+        for (index, chart) in self.ink_charts.iter().enumerate() {
+            let count = group_sizes.get(index).copied().unwrap_or(1);
+            let panels = first..first + count;
+            first += count;
+            // Panels the chart no longer draws as lose their masks.
+            self.ink_masks
+                .retain(|mask| mask.chart != *chart || mask.panel < count);
+            for (panel, position) in panels.enumerate() {
+                let (input, item) = (&inputs[position], &prepared[position]);
+                let slot = self
+                    .ink_masks
+                    .iter()
+                    .position(|mask| mask.chart == *chart && mask.panel == panel);
+                let Some((probe, pieces)) = self.panel_probe(input, item, max) else {
+                    if let Some(slot) = slot {
+                        self.ink_masks.swap_remove(slot);
+                    }
+                    continue;
+                };
+                let panel_rect = item.view.panel_rect;
+                if let Some(slot) = slot.filter(|&slot| self.ink_masks[slot].key.matches(&probe)) {
+                    self.ink_masks[slot].panel_rect = panel_rect;
+                    continue;
+                }
+                let (w, h) = probe.size;
+                let key = ResidentDisplayKey::from_probe(&probe);
+                let reusable = slot.filter(|&slot| {
+                    let texture = &self.ink_masks[slot].texture;
+                    texture.width() == w && texture.height() == h
+                });
+                let mask = match reusable {
+                    Some(slot) => {
+                        let mask = &mut self.ink_masks[slot];
+                        mask.key = key;
+                        mask.panel_rect = panel_rect;
+                        slot
+                    }
+                    None => {
+                        let mask = InkMask {
+                            chart: *chart,
+                            panel,
+                            key,
+                            panel_rect,
+                            texture: self.panel_texture(
+                                "panel ink mask",
+                                (w, h),
+                                1,
+                                INK_MASK_FORMAT,
+                                wgpu::TextureUsages::RENDER_ATTACHMENT
+                                    | wgpu::TextureUsages::COPY_SRC,
+                            ),
+                        };
+                        match slot {
+                            Some(slot) => {
+                                self.ink_masks[slot] = mask;
+                                slot
+                            }
+                            None => {
+                                self.ink_masks.push(mask);
+                                self.ink_masks.len() - 1
+                            }
+                        }
+                    }
+                };
+                // The data layer, drawn as the resident display draws it,
+                // into targets that live until the submission completes.
+                let layer = self.panel_texture(
+                    "panel ink layer",
+                    (w, h),
+                    1,
+                    self.surface_format,
+                    wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                );
+                let msaa = (self.target_sample_count > 1).then(|| {
+                    self.panel_texture(
+                        "panel ink layer",
+                        (w, h),
+                        self.target_sample_count,
+                        self.surface_format,
+                        wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    )
+                });
+                let depth = probe.needs_depth_stencil().then(|| {
+                    create_composite_depth(
+                        self.device,
+                        self.gpu_ledger,
+                        (w, h),
+                        self.target_sample_count,
+                    )
+                });
+                let layer_view = layer.create_view(&Default::default());
+                let msaa_view = msaa
+                    .as_ref()
+                    .map(|texture| texture.create_view(&Default::default()));
+                let depth_view = depth
+                    .as_ref()
+                    .map(|texture| texture.create_view(&Default::default()));
+                let encoder = encoder.get_or_insert_with(|| {
+                    self.device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("panel ink masks"),
+                        })
+                });
+                let series_list: Vec<_> = item.series.iter().map(PreparedSeries::layers).collect();
+                let own = item.own_piece_layers();
+                draw_panel_composite(
+                    encoder,
+                    PanelCompositeTargets {
+                        color: msaa_view.as_ref().unwrap_or(&layer_view),
+                        resolve: msaa_view.as_ref().map(|_| &layer_view),
+                        depth: depth_view.as_ref(),
+                    },
+                    (w, h),
+                    &pieces,
+                    super::composite::PieceSeries::of(&series_list, &own),
+                );
+                let pipeline = self
+                    .ink_mask_pipeline
+                    .get_or_insert_with(|| InkMaskPipeline::new(self.device));
+                pipeline.record(
+                    self.device,
+                    encoder,
+                    &layer_view,
+                    &self.ink_masks[mask]
+                        .texture
+                        .create_view(&Default::default()),
+                );
+            }
+        }
+        if let Some(encoder) = encoder {
+            self.queue.submit([encoder.finish()]);
+        }
+    }
+
+    /// A panel-sized texture charged to the device ledger: a multisampled
+    /// target when `sample_count` is above 1, a panel texture otherwise.
+    fn panel_texture(
+        &self,
+        label: &'static str,
+        (w, h): (u32, u32),
+        sample_count: u32,
+        format: wgpu::TextureFormat,
+        usage: wgpu::TextureUsages,
+    ) -> TrackedTexture {
+        TrackedTexture::new(
+            self.gpu_ledger,
+            if sample_count > 1 {
+                GpuResourceKind::MsaaTarget
+            } else {
+                GpuResourceKind::PanelTexture
+            },
+            self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            }),
+        )
+    }
+
+    /// The data layer of `item` (drawn from `input`) as a
+    /// [`ResidentDisplayProbe`], with its data pieces relative to the
+    /// panel: `None` for a streamed display, a panel without series, or a
+    /// panel past `max` or whose data area falls outside it. Both panel
+    /// caches of the data layer (the resident display and the ink mask)
+    /// are keyed by it.
+    pub(super) fn panel_probe<'p>(
+        &self,
+        input: &PanelDraw<'p>,
+        item: &PreparedItem,
+        max: u32,
+    ) -> Option<(ResidentDisplayProbe<'p>, super::composite::DataPieces)> {
+        if item.stream_display.is_some() || item.series.is_empty() {
+            return None;
+        }
+        let panel = item.view.panel_rect;
+        let (w, h) = (panel.width, panel.height);
+        let data_x = item.data_area.x.checked_sub(panel.x)?;
+        let data_y = item.data_area.y.checked_sub(panel.y)?;
+        if w == 0 || h == 0 || w > max || h > max || data_x >= w || data_y >= h {
+            return None;
+        }
+        let data_area = Rect {
+            x: data_x,
+            y: data_y,
+            width: item.data_area.width,
+            height: item.data_area.height,
+        };
+        let pieces = item.data_pieces.relative_to(panel.x, panel.y)?;
+        let probe = ResidentDisplayProbe {
+            size: (w, h),
+            data_area,
+            transform: data_render::scatter_transform_from_config(input.chart_config),
+            chart_config: input.chart_config,
+            series: input.series,
+            font_generation: crate::text_render::font_generation(),
+            columns: self.panel_columns(item.column_fingerprint, input.series),
+            pool_layout_generation: self.pool.layout_generation(),
+            target_pipeline_generation: self.target_pipeline_generation,
+            camera: panel_camera(input.chart_config, item.view.panel_rect),
+            stencil: panel_stencil(input.chart_config, input.series),
+        };
+        Some((probe, pieces))
     }
 
     /// `looked_up` plus the grid columns of the panel's field, contour and

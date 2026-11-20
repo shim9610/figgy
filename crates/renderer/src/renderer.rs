@@ -442,6 +442,12 @@ pub struct Renderer {
     resident_displays: Vec<ResidentDisplay>,
     /// Serial of the last composite drawn into any [`ResidentDisplay`].
     resident_display_serial: u64,
+    /// One ink mask per panel of each chart drawn on screen (#381); see
+    /// [`InkMask`].
+    ink_masks: Vec<InkMask>,
+    /// The pass that writes an [`InkMask`]: compiled on the first prepare
+    /// that draws one.
+    ink_mask_pipeline: Option<InkMaskPipeline>,
     /// Anchor compute pipelines plus the label draw's module and layouts.
     /// Compiled on the first frame that asks for a contour label; a chart with
     /// none never pays for the shader.

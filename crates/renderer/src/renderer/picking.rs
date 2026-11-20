@@ -33,6 +33,12 @@ pub struct GpuPickRequest {
     /// displayed chart panel.
     pub display_panel_px: Rect,
     pub display_scale: f32,
+    /// How far from the cursor, in canvas pixels, drawn ink still makes a
+    /// registered chart's pick ([`Renderer::pick_chart`]) hit: the host's
+    /// pick reach around what is drawn (#381). The datum answered is the
+    /// nearest one, whatever its distance. A streamed display's pick and
+    /// the typed data picks keep reading it as the reach around the
+    /// picked primitive.
     pub max_distance_px: f32,
 }
 

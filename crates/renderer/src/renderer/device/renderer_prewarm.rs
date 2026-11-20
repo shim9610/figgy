@@ -164,6 +164,10 @@ impl Renderer {
             finished(observer, "renderer.prewarm", "fit extent compute");
             crate::init::yield_init_frame().await;
         }
+        // The ink mask pass every on-screen prepare of a chart runs (#381).
+        if self.ink_mask_pipeline.is_none() {
+            self.ink_mask_pipeline = Some(InkMaskPipeline::new(&self.device));
+        }
         started(observer, "renderer.prewarm", "point picking compute");
         self.enable_gpu_picking_observed_async(observer)
             .await
@@ -219,6 +223,10 @@ impl Renderer {
             self.ensure_errorbar_extent_engine_blocking()
                 .map_err(prewarm_extent_failure)?;
             finished(observer, "renderer.prewarm", "fit extent compute");
+        }
+        // The ink mask pass every on-screen prepare of a chart runs (#381).
+        if self.ink_mask_pipeline.is_none() {
+            self.ink_mask_pipeline = Some(InkMaskPipeline::new(&self.device));
         }
         started(observer, "renderer.prewarm", "point picking compute");
         self.enable_gpu_picking_observed(observer)

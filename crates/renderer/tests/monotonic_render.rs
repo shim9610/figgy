@@ -1761,6 +1761,7 @@ fn pixel_of(config: &renderer::Config, x: f64, y: f64) -> [f32; 2] {
 fn pick(r: &mut Renderer, id: MonotonicChartId, at: [f32; 2]) -> Option<renderer::PickedData> {
     r.enable_gpu_picking().expect("picker");
     let config = r.monotonic_config(id).expect("config").clone();
+    harness::show_monotonic_for_pick(r, id);
     r.monotonic_chart(id)
         .expect("chart")
         .pick_data(pick_request(&config, at))
@@ -1773,7 +1774,9 @@ fn pick(r: &mut Renderer, id: MonotonicChartId, at: [f32; 2]) -> Option<renderer
 fn pick_full(r: &mut Renderer, id: ChartId, at: [f32; 2]) -> Option<renderer::PickedData> {
     r.enable_gpu_picking().expect("picker");
     let config = r.chart_config(id).expect("config").clone();
-    r.pick_chart_data(id, pick_request(&config, at))
+    let request = pick_request(&config, at);
+    harness::show_for_pick(r, id, &request);
+    r.pick_chart_data(id, request)
         .expect("pick")
         .resolve_blocking()
         .expect("resolve")

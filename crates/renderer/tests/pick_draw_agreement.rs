@@ -264,7 +264,10 @@ impl Probe {
         let id = renderer
             .register_chart(chart.config().clone(), series.to_vec())
             .expect("register chart");
-        Self { id, scale }
+        let probe = Self { id, scale };
+        // A pick hits the ink its on-screen prepare drew (#381).
+        harness::show_for_pick(renderer, id, &probe.request(0.0, 0.0, 0.0));
+        probe
     }
 
     fn request(&self, x: f32, y: f32, max: f32) -> GpuPickRequest {
@@ -285,22 +288,6 @@ impl Probe {
     pub fn pick(&self, renderer: &mut Renderer, x: u32, y: u32, max: f32) -> Option<PickedPoint> {
         let request = self.request(x as f32 + 0.5, y as f32 + 0.5, max);
         test_gpu::block_on(renderer.pick_chart(self.id, request).unwrap().resolve()).unwrap()
-    }
-
-    /// Whether the zero-distance region of `subject` ends within [`TIE_PX`]
-    /// of the centre of export pixel `(x, y)`: a cursor moved that far along
-    /// an axis no longer picks `subject` at distance zero.
-    pub fn on_zero_edge(&self, renderer: &mut Renderer, x: u32, y: u32, subject: &str) -> bool {
-        let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
-        [(TIE_PX, 0.0), (-TIE_PX, 0.0), (0.0, TIE_PX), (0.0, -TIE_PX)]
-            .into_iter()
-            .any(|(dx, dy)| {
-                let request = self.request(cx + dx, cy + dy, 0.0);
-                test_gpu::block_on(renderer.pick_chart(self.id, request).unwrap().resolve())
-                    .unwrap()
-                    .filter(|hit| hit.series_id == subject)
-                    .is_none_or(|hit| hit.distance_px > 0.0)
-            })
     }
 
     /// The typed data pick at canvas position `(x, y)`.
@@ -395,29 +382,22 @@ pub fn assert_pick_matches_paint_with(
     let window = (x0, y0, x1.min(with.width), y1.min(with.height));
     let is_painted = |x, y| difference(&with, &without, x, y) >= tolerance.painted;
     let painted = count_painted(window, is_painted);
+    let empty = empty_export(renderer, chart, renderer::ExportOptions::panel(scale));
     let probe = Probe::register(renderer, chart, series, scale);
     let mut failures = Vec::new();
     for (x, y) in edge_band(window, is_painted) {
-        let ink = difference(&with, &without, x, y);
-        let hit = probe
-            .pick(renderer, x, y, tolerance.fringe)
-            .filter(|hit| hit.series_id == subject);
         let skipped = tolerance.skip_near.is_some_and(|(cx, cy, radius)| {
             (f64::from(x) + 0.5 - cx).hypot(f64::from(y) + 0.5 - cy) <= radius
         });
-        if ink >= tolerance.painted && hit.is_none() && !skipped {
-            failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
-        }
-        if let Some(hit) = hit
-            && hit.distance_px == 0.0
-            && ink < tolerance.zero_ink
-            && !probe.on_zero_edge(renderer, x, y, subject)
-        {
-            failures.push(format!(
-                "({x}, {y}) picked at distance 0 (index {}) but ink is only {ink}",
-                hit.point_index
-            ));
-        }
+        check_ink_pixel(
+            renderer,
+            &probe,
+            (&with, &without, &empty),
+            (x, y),
+            tolerance,
+            skipped,
+            &mut failures,
+        );
     }
     renderer.remove_chart(probe.id).unwrap();
     assert!(
@@ -427,6 +407,59 @@ pub fn assert_pick_matches_paint_with(
         &failures[..failures.len().min(12)]
     );
     painted
+}
+
+/// Whether `with` has any ink over `empty` (the chart without any series)
+/// at export pixel `(x, y)` or one of its eight neighbours: the export's
+/// antialiasing and the screen's (the ink mask's) may put a faint edge one
+/// pixel apart.
+pub fn inked_near(with: &RasterImage, empty: &RasterImage, x: u32, y: u32) -> bool {
+    (y.saturating_sub(1)..(y + 2).min(with.height)).any(|ny| {
+        (x.saturating_sub(1)..(x + 2).min(with.width)).any(|nx| difference(with, empty, nx, ny) > 0)
+    })
+}
+
+/// The pick rule of a registered chart (#381) at one export pixel: a pixel
+/// painted with at least `tolerance.painted` hits within the fringe (any
+/// series answers: the hit is the nearest datum), and a pick with no reach
+/// hits only where some ink is drawn.
+#[allow(clippy::too_many_arguments)]
+fn check_ink_pixel(
+    renderer: &mut Renderer,
+    probe: &Probe,
+    (with, without, empty): (&RasterImage, &RasterImage, &RasterImage),
+    (x, y): (u32, u32),
+    tolerance: Tolerance,
+    skipped: bool,
+    failures: &mut Vec<String>,
+) {
+    let ink = difference(with, without, x, y);
+    if ink >= tolerance.painted
+        && !skipped
+        && probe.pick(renderer, x, y, tolerance.fringe).is_none()
+    {
+        failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
+    }
+    if let Some(hit) = probe.pick(renderer, x, y, 0.0)
+        && !inked_near(with, empty, x, y)
+    {
+        failures.push(format!(
+            "({x}, {y}) hit with no reach ({} index {}) but nothing is drawn there",
+            hit.series_id, hit.point_index
+        ));
+    }
+}
+
+/// The chart drawn without any series: the background a pick never hits.
+fn empty_export(
+    renderer: &mut Renderer,
+    chart: &Chart,
+    options: renderer::ExportOptions,
+) -> RasterImage {
+    renderer
+        .export_rgba(renderer::ExportSource::chart(chart, &[]), options)
+        .block_on()
+        .unwrap()
 }
 
 /// The bounding box of every pixel where the two exports differ, grown by
@@ -865,9 +898,8 @@ pub fn assert_painted_pixels_pick(
                 continue;
             }
             painted += 1;
-            let hit = probe
-                .pick(renderer, x, y, STRICT.fringe)
-                .filter(|hit| hit.series_id == subject);
+            // Any series answers: the hit is the nearest datum (#381).
+            let hit = probe.pick(renderer, x, y, STRICT.fringe);
             if hit.is_none() {
                 failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
             }
@@ -5479,26 +5511,19 @@ fn assert_member_pick_matches_paint(
     let window = ink_window(&with, &without, 4);
     let is_painted = |x, y| difference(&with, &without, x, y) >= tolerance.painted;
     let painted = count_painted(window, is_painted);
+    let empty = empty_export(renderer, chart, renderer::ExportOptions::document(scale));
     let probe = Probe::register(renderer, chart, series, scale);
     let mut failures = Vec::new();
     for (x, y) in edge_band(window, is_painted) {
-        let ink = difference(&with, &without, x, y);
-        let hit = probe
-            .pick(renderer, x, y, tolerance.fringe)
-            .filter(|hit| hit.series_id == subject);
-        if ink >= tolerance.painted && hit.is_none() {
-            failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
-        }
-        if let Some(hit) = hit
-            && hit.distance_px == 0.0
-            && ink < tolerance.zero_ink
-            && !probe.on_zero_edge(renderer, x, y, subject)
-        {
-            failures.push(format!(
-                "({x}, {y}) picked at distance 0 (index {}) but ink is only {ink}",
-                hit.point_index
-            ));
-        }
+        check_ink_pixel(
+            renderer,
+            &probe,
+            (&with, &without, &empty),
+            (x, y),
+            tolerance,
+            false,
+            &mut failures,
+        );
     }
     // The typed pick names the member too, at the centre of its ink.
     let (cx, cy) = {

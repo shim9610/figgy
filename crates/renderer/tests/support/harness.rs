@@ -20,9 +20,66 @@ use ::renderer::data_config::{
 use ::renderer::layout::{Rect, RectF};
 use ::renderer::radial::RadialRenderer;
 use ::renderer::{
-    Chart, Color, Config, CpuTextMeasure, DataRenderType, GpuPickRequest, Material, PickedData,
-    RasterImage, Renderer, RendererDevice, SeriesConfig,
+    Chart, ChartId, Color, Config, CpuTextMeasure, DataRenderType, GpuPickRequest, Material,
+    PickedData, RasterImage, RegisteredChartDrawItem, Renderer, RendererDevice, SeriesConfig,
 };
+
+// ── Showing a registered chart ──────────────────────────────────────────
+
+/// Show registered chart `id` as a pick `request` sees it, and run one
+/// on-screen prepare: a registered chart's pick hits only drawn ink, read
+/// from the ink masks its on-screen prepare draws (#381). The chart is
+/// letterboxed onto the request's display panel (the document fills it
+/// when the panel is the document at `display_scale`), or drawn as stored
+/// when the panel is the stored document at 1x.
+pub fn show_for_pick(r: &mut Renderer, id: ChartId, request: &GpuPickRequest) {
+    let panel = request.display_panel_px;
+    let document = r.chart_config(id).unwrap().document_area();
+    let stored = request.display_scale == 1.0
+        && panel.x == document.x
+        && panel.y == document.y
+        && panel.width == document.width
+        && panel.height == document.height;
+    if !stored {
+        assert_eq!((panel.x, panel.y), (0, 0), "a display panel at the origin");
+        r.set_chart_display(id, Some((panel.width, panel.height)))
+            .unwrap();
+    }
+    let (config, rect, scale) = r.chart_display_config(id).unwrap();
+    let chart = Chart::new(config.into_owned());
+    let mut view = r.create_chart_view_at(&chart, rect, scale).unwrap();
+    r.prepare_registered(&mut [RegisteredChartDrawItem {
+        chart_id: id,
+        view: &mut view,
+    }])
+    .unwrap();
+}
+
+/// [`show_for_pick`] for monotonic chart `id` (#271), drawn as stored.
+pub fn show_monotonic_for_pick(r: &mut Renderer, id: ::renderer::MonotonicChartId) {
+    let config = r.monotonic_config(id).unwrap().clone();
+    let chart = Chart::new(config.clone());
+    let mut view = r.create_chart_view(&chart, config.chart_area.0).unwrap();
+    r.prepare_monotonic(&mut [::renderer::MonotonicChartDrawItem {
+        chart: id,
+        view: &mut view,
+    }])
+    .unwrap();
+}
+
+/// [`show_for_pick`] as a method, so a pick reads
+/// `r.shown(id, &request).pick_chart(id, request)` whether `r` is a
+/// renderer or a borrow of one.
+pub trait ShowForPick {
+    fn shown(&mut self, id: ChartId, request: &GpuPickRequest) -> &mut Renderer;
+}
+
+impl ShowForPick for Renderer {
+    fn shown(&mut self, id: ChartId, request: &GpuPickRequest) -> &mut Renderer {
+        show_for_pick(self, id, request);
+        self
+    }
+}
 
 // ── Renderers ───────────────────────────────────────────────────────────
 

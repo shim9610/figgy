@@ -4,8 +4,11 @@
 //! a saved document keeps. Nothing recolours a loaded document.
 #![cfg(not(target_arch = "wasm32"))]
 
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::ShowForPick as _;
 use test_gpu::BlockOn as _;
 
 use renderer::config::{DataSelectionsConfig, PickedDataRef};
@@ -149,7 +152,12 @@ fn cycled_series_pick_highlight_and_step() {
         display_scale: 1.0,
         max_distance_px: 4.0,
     };
-    let picked = r.pick_chart_data(id, request).unwrap().resolve().block_on();
+    let picked = r
+        .shown(id, &request)
+        .pick_chart_data(id, request)
+        .unwrap()
+        .resolve()
+        .block_on();
     r.remove_chart(id).unwrap();
     match picked.unwrap() {
         Some(renderer::PickedData::Point {

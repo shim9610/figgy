@@ -235,6 +235,7 @@ impl Renderer {
             waited?;
         }
         self.release_unused_data_pick_kernels();
+        self.release_ink_masks();
         Ok(())
     }
 
@@ -252,9 +253,16 @@ impl Renderer {
                 waited?;
             }
             self.release_unused_data_pick_kernels();
+            self.release_ink_masks();
             Ok(())
         })();
         self.reported(result)
+    }
+
+    /// Drop every ink mask (#381); the next on-screen prepare of each chart
+    /// draws its masks again, and until then its picks hit nothing.
+    pub(super) fn release_ink_masks(&mut self) {
+        self.ink_masks = Vec::new();
     }
 
     /// The release's first step, once the queued work is done: drop the

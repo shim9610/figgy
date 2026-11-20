@@ -15,6 +15,7 @@ use test_gpu::BlockOn as _;
 mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::ShowForPick as _;
 use harness::{
     BLUE, CYAN, GREEN, MAGENTA, RED, is, markers, pixel_rgba as pixel, renderer_rgba as renderer,
     upload,
@@ -366,7 +367,13 @@ fn pick_at(
         display_scale: scale,
         max_distance_px: 6.0 * scale,
     };
-    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let hit = test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap();
     r.remove_chart(id).unwrap();
     match hit {
         Some(renderer::PickedData::Point {
@@ -409,8 +416,9 @@ fn a_pick_hits_what_each_piece_draws_and_nothing_in_a_gap() {
         let on_line = |y: f32| (x0 + (x1 - x0) * (y - y0) / (y1 - y0), y);
         let gap = gap_rows(&config, scale, 1.0);
         let below = on_line(gap.end as f32 + 4.0 * scale);
+        // The line's ink hits; the answer is the nearest datum (#381).
         assert!(
-            matches!(pick_at(&mut r, &config, &series, below, scale), Some((ref id, _)) if id == "l"),
+            pick_at(&mut r, &config, &series, below, scale).is_some(),
             "{scale}x the line below the gap"
         );
         let middle = on_line((gap.start + gap.end) as f32 / 2.0);
@@ -1461,7 +1469,13 @@ fn a_feature_on_any_layer_selects_the_full_shaders(feature: Feature) {
         display_scale: 1.0,
         max_distance_px: 6.0,
     };
-    test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap();
     let mut base_only = config(0.0, 100.0, &[]);
     base_only.left_y.breaks = None;
     screen(&mut r, &base_only, &series[..1]);
@@ -1490,11 +1504,23 @@ fn a_feature_on_any_layer_selects_the_full_shaders(feature: Feature) {
         let mut r = layered_renderer();
         r.enable_gpu_picking().unwrap();
         let id = r.register_chart(plain.clone(), series.clone()).unwrap();
-        test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        test_gpu::block_on(
+            r.shown(id, &request)
+                .pick_chart_data(id, request)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap();
         assert_eq!(r.shader_set(), ShaderSet::Basic, "{tag}");
         r.set_chart_config(id, with.clone()).unwrap();
         assert_eq!(r.shader_set(), ShaderSet::Full, "{tag}: set_chart_config");
-        test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        test_gpu::block_on(
+            r.shown(id, &request)
+                .pick_chart_data(id, request)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap();
 
         // The same through `set_chart_state`.
         let mut r = layered_renderer();
@@ -1661,10 +1687,11 @@ fn picks_answer_the_same_through_either_shader_set() {
     };
     let before = answers(&mut r, &plain);
     assert_eq!(r.shader_set(), ShaderSet::Basic);
-    // Both markers, the line at its middle, and nothing off the line.
+    // Both markers, the line's ink at its middle (answered by the nearest
+    // datum, #381), and nothing off the line.
     assert_eq!(before[0], Some(("m".into(), 0)));
     assert_eq!(before[1], Some(("m".into(), 1)));
-    assert!(matches!(&before[2], Some((id, _)) if id == "l"));
+    assert!(before[2].is_some());
     assert_eq!(before[3], None);
 
     let cut = answers(&mut r, &broken);
@@ -1715,7 +1742,8 @@ fn picks_answer_the_same_once_a_probability_or_polar_chart_was_picked() {
         assert_eq!(r.shader_set(), ShaderSet::Basic, "{feature:?}");
         assert_eq!(before[0], Some(("m".into(), 0)));
         assert_eq!(before[1], Some(("m".into(), 1)));
-        assert!(matches!(&before[2], Some((id, _)) if id == "l"));
+        // The line's ink, answered by the nearest datum (#381).
+        assert!(before[2].is_some());
         assert_eq!(before[3], None);
 
         pick_at(&mut r, &with, &series, (40.0, 40.0), 1.0);

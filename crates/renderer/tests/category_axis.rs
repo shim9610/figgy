@@ -15,6 +15,7 @@ use test_gpu::BlockOn as _;
 mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::ShowForPick as _;
 use harness::{fresh_gpu as gpu, upload};
 
 use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at};
@@ -280,9 +281,14 @@ fn data_on_a_categorical_axis_picks_and_highlights_at_its_category() {
             display_scale: 1.0,
             max_distance_px: 3.0,
         };
-        let picked = test_gpu::block_on(r.pick_chart(id, request).unwrap().resolve())
-            .unwrap()
-            .expect("a marker at its category");
+        let picked = test_gpu::block_on(
+            r.shown(id, &request)
+                .pick_chart(id, request)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap()
+        .expect("a marker at its category");
         assert_eq!((picked.series_id.as_str(), picked.point_index), ("m", i));
     }
 

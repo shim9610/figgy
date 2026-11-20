@@ -1,9 +1,18 @@
 //! The pick ticket and its readback.
 
 use super::*;
+use crate::PickResult;
+use crate::gpu_pick::nearest::InkRead;
 
 pub(in crate::gpu_pick) enum GpuPickTicketState {
     ReadyNone,
+    /// A registered chart's pick (#381): each series' nearest datum, and
+    /// the ink around the cursor that decides whether it hits (`None`: no
+    /// ink mask meets the reach, so nothing hits).
+    Nearest {
+        nearest: Box<NearestPickTicket>,
+        ink: Option<InkRead>,
+    },
     Pending {
         /// The candidates' `MAP_READ` buffer, mapped once the pick completes.
         readback: GpuReadback,
@@ -50,6 +59,18 @@ impl From<GpuIndexedPick> for PickedPoint {
 }
 
 impl GpuPickTicket {
+    /// A registered chart's pick (#381): its nearest-datum pick and the
+    /// ink read that decides the hit.
+    pub(crate) fn from_nearest(nearest: NearestPickTicket, ink: Option<InkRead>) -> Self {
+        Self {
+            state: GpuPickTicketState::Nearest {
+                nearest: Box::new(nearest),
+                ink,
+            },
+            monotonic: Vec::new(),
+        }
+    }
+
     pub(in crate::gpu_pick) fn ready_none() -> Self {
         Self {
             state: GpuPickTicketState::ReadyNone,
@@ -58,29 +79,68 @@ impl GpuPickTicket {
     }
 
     /// Wait for the pick: the bundle's poll thread completes the wait on
-    /// native (see [`crate::RendererDevice::new`]).
+    /// native (see [`crate::RendererDevice::new`]). The hit alone; see
+    /// [`Self::resolve_full`] for every series' nearest datum.
     pub async fn resolve(self) -> Result<Option<PickedPoint>, GpuPickError> {
-        Ok(self.resolve_indexed().await?.map(PickedPoint::from))
+        Ok(self.resolve_full().await?.hit)
     }
 
     /// [`Self::resolve`], polling the device on this thread until the pick
     /// completes.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn resolve_blocking(mut self) -> Result<Option<PickedPoint>, GpuPickError> {
-        self.wait_blocking()?;
-        Ok(self.finish()?.map(PickedPoint::from))
+    pub fn resolve_blocking(self) -> Result<Option<PickedPoint>, GpuPickError> {
+        Ok(self.resolve_full_blocking()?.hit)
     }
 
     /// The pick if it has completed, or the ticket back, without blocking.
-    pub fn try_resolve(
-        mut self,
-    ) -> Result<crate::TryResolve<Option<PickedPoint>, Self>, GpuPickError> {
+    pub fn try_resolve(self) -> Result<crate::TryResolve<Option<PickedPoint>, Self>, GpuPickError> {
+        Ok(match self.try_resolve_full()? {
+            crate::TryResolve::Ready(result) => crate::TryResolve::Ready(result.hit),
+            crate::TryResolve::Pending(ticket) => crate::TryResolve::Pending(ticket),
+        })
+    }
+
+    /// Wait for the pick: the hit and every series' nearest datum (#381).
+    pub async fn resolve_full(mut self) -> Result<PickResult, GpuPickError> {
+        self.wait().await?;
+        self.finish_full()
+    }
+
+    /// [`Self::resolve_full`], polling the device on this thread until the
+    /// pick completes.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn resolve_full_blocking(mut self) -> Result<PickResult, GpuPickError> {
+        self.wait_blocking()?;
+        self.finish_full()
+    }
+
+    /// [`Self::resolve_full`] if the pick has completed, or the ticket
+    /// back, without blocking.
+    pub fn try_resolve_full(mut self) -> Result<crate::TryResolve<PickResult, Self>, GpuPickError> {
         if !self.poll_ready()? {
             return Ok(crate::TryResolve::Pending(self));
         }
-        Ok(crate::TryResolve::Ready(
-            self.finish()?.map(PickedPoint::from),
-        ))
+        Ok(crate::TryResolve::Ready(self.finish_full()?))
+    }
+
+    /// After a wait: the hit and, for a registered chart's pick, every
+    /// series' nearest datum.
+    fn finish_full(&mut self) -> Result<PickResult, GpuPickError> {
+        if let GpuPickTicketState::Nearest { nearest, ink } = &mut self.state {
+            let picked = nearest.decode()?;
+            let hit = match ink {
+                Some(ink) => ink.hit()?,
+                None => false,
+            };
+            return Ok(PickResult {
+                hit: picked.nearest.filter(|_| hit).map(PickedPoint::from),
+                nearest: picked.per_series,
+            });
+        }
+        Ok(PickResult {
+            hit: self.finish()?.map(PickedPoint::from),
+            nearest: Vec::new(),
+        })
     }
 
     pub(crate) async fn resolve_indexed(mut self) -> Result<Option<GpuIndexedPick>, GpuPickError> {
@@ -90,8 +150,15 @@ impl GpuPickTicket {
 
     /// Await the readback; nothing to wait for without one.
     pub(crate) async fn wait(&mut self) -> Result<(), GpuPickError> {
-        if let GpuPickTicketState::Pending { readback, .. } = &mut self.state {
-            readback.wait().await?;
+        match &mut self.state {
+            GpuPickTicketState::Pending { readback, .. } => readback.wait().await?,
+            GpuPickTicketState::Nearest { nearest, ink } => {
+                nearest.wait().await?;
+                if let Some(ink) = ink {
+                    ink.wait().await?;
+                }
+            }
+            GpuPickTicketState::ReadyNone => {}
         }
         Ok(())
     }
@@ -99,8 +166,15 @@ impl GpuPickTicket {
     /// Poll the device on this thread until the readback completes.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn wait_blocking(&mut self) -> Result<(), GpuPickError> {
-        if let GpuPickTicketState::Pending { readback, .. } = &mut self.state {
-            readback.wait_blocking()?;
+        match &mut self.state {
+            GpuPickTicketState::Pending { readback, .. } => readback.wait_blocking()?,
+            GpuPickTicketState::Nearest { nearest, ink } => {
+                nearest.wait_blocking()?;
+                if let Some(ink) = ink {
+                    ink.wait_blocking()?;
+                }
+            }
+            GpuPickTicketState::ReadyNone => {}
         }
         Ok(())
     }
@@ -109,6 +183,14 @@ impl GpuPickTicket {
     pub(crate) fn poll_ready(&mut self) -> Result<bool, GpuPickError> {
         match &mut self.state {
             GpuPickTicketState::Pending { readback, .. } => Ok(readback.poll_ready()?),
+            GpuPickTicketState::Nearest { nearest, ink } => {
+                // Both, so the first call hands both waits to the poll thread.
+                let ready = nearest.poll_ready()?;
+                Ok(match ink {
+                    Some(ink) => ink.poll_ready()? && ready,
+                    None => ready,
+                })
+            }
             GpuPickTicketState::ReadyNone => Ok(true),
         }
     }
@@ -116,6 +198,21 @@ impl GpuPickTicket {
     /// After a wait: decode the candidates. Dropping the ticket afterwards
     /// credits the readback buffer.
     pub(crate) fn finish(&mut self) -> Result<Option<GpuIndexedPick>, GpuPickError> {
+        if let GpuPickTicketState::Nearest { nearest, ink } = &mut self.state {
+            let picked = nearest.decode()?;
+            let hit = match ink {
+                Some(ink) => ink.hit()?,
+                None => false,
+            };
+            return Ok(picked.nearest.filter(|_| hit).map(|datum| GpuIndexedPick {
+                series_order: nearest.series_order(&datum),
+                point_index: u32::try_from(datum.point_index).unwrap_or(u32::MAX),
+                logical_index: Some(datum.point_index),
+                source_id: datum.source_id,
+                series_id: datum.series_id,
+                distance_px: datum.distance_px,
+            }));
+        }
         let GpuPickTicketState::Pending {
             readback,
             identities,

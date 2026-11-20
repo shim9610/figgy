@@ -46,6 +46,20 @@ impl Renderer {
         request: GpuPickRequest,
     ) -> std::result::Result<crate::gpu_pick::NearestPickTicket, crate::gpu_pick::GpuPickError>
     {
+        self.pick_chart_nearest_grouped(id, request)
+            .map(|(ticket, _)| ticket)
+    }
+
+    /// [`Self::pick_chart_nearest`], with the subplot whose layer group it
+    /// searched (`None`: the base layer and its overlays).
+    fn pick_chart_nearest_grouped(
+        &mut self,
+        id: ChartId,
+        request: GpuPickRequest,
+    ) -> std::result::Result<
+        (crate::gpu_pick::NearestPickTicket, Option<usize>),
+        crate::gpu_pick::GpuPickError,
+    > {
         self.pick_health()?;
         self.admit_chart_shaders(id);
         let state = self
@@ -198,6 +212,72 @@ impl Renderer {
             active,
         )?;
         ticket.monotonic = monotonic_rows;
-        Ok(ticket)
+        Ok((ticket, subplot))
+    }
+
+    /// The pick of a registered chart (#381), [`Self::pick_chart`]: the
+    /// nearest-datum pick of [`Self::pick_chart_nearest`], and a read of
+    /// the ink masks of the same layer group around the cursor. The cursor
+    /// hits when ink lies within `request.max_distance_px` canvas pixels
+    /// of it; the hit is then the nearest datum.
+    pub(super) fn pick_chart_inked(
+        &mut self,
+        id: ChartId,
+        request: GpuPickRequest,
+    ) -> std::result::Result<crate::gpu_pick::GpuPickTicket, crate::gpu_pick::GpuPickError> {
+        let (nearest, subplot) = self.pick_chart_nearest_grouped(id, request)?;
+        let reach = request.max_distance_px;
+        let cursor = request.canvas_position_px;
+        if !reach.is_finite() || reach < 0.0 || !cursor.iter().all(|c| c.is_finite()) {
+            return Ok(crate::gpu_pick::GpuPickTicket::from_nearest(nearest, None));
+        }
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?;
+        let layers = state.config.panel_layers();
+        let in_group = |layer: crate::LayerRef| match (subplot, layer) {
+            (None, crate::LayerRef::Base | crate::LayerRef::Overlay(_)) => true,
+            (
+                Some(index),
+                crate::LayerRef::Subplot(at) | crate::LayerRef::SubplotOverlay(at, _),
+            ) => at == index,
+            _ => false,
+        };
+        let mut masks = Vec::new();
+        masks.try_reserve_exact(layers.len()).map_err(|_| {
+            crate::gpu_pick::GpuPickError::AllocationFailed {
+                resource: "ink read masks",
+            }
+        })?;
+        masks.extend(
+            self.ink_masks
+                .iter()
+                .filter(|mask| {
+                    mask.chart == id
+                        && in_group(
+                            layers
+                                .get(mask.panel)
+                                .copied()
+                                .unwrap_or(crate::LayerRef::Base),
+                        )
+                })
+                .map(|mask| {
+                    (
+                        &*mask.texture,
+                        [i64::from(mask.panel_rect.x), i64::from(mask.panel_rect.y)],
+                    )
+                }),
+        );
+        let active = self
+            .picker
+            .active
+            .as_ref()
+            .ok_or(crate::gpu_pick::GpuPickError::Internal(
+                "successful chart preparation publishes an active picker registry",
+            ))?;
+        let ink =
+            crate::gpu_pick::InkRead::submit(&active.engine.handles(), &masks, cursor, reach)?;
+        Ok(crate::gpu_pick::GpuPickTicket::from_nearest(nearest, ink))
     }
 }
