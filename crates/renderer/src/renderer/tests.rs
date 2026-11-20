@@ -1075,30 +1075,28 @@ fn a_data_pick_compiles_only_the_kernels_its_chart_dispatches() {
 
     // A histogram compiles its own kernel on its first pick, once.
     let hist_config = typed_pick_config((0.0, 2.0), (0.0, 10.0));
+    let hist_series = vec![SeriesConfig {
+        series_id: "hist".into(),
+        source_id: None,
+        label: None,
+        x_column: "edges".into(),
+        y_column: "counts".into(),
+        z_column: None,
+        render_type: DataRenderType::Histogram(HistogramSeries {
+            bar: crate::data_config::DataBarStyleConfig {
+                fill_color: Color::BLACK,
+                border_color: Color::BLACK,
+                border_width: 1.0,
+                baseline: 0.0,
+                gap_px: 2.0,
+                width_ratio: 1.0,
+                orientation: crate::data_config::BarOrientation::Vertical,
+                bar_style_overrides: None,
+            },
+        }),
+    }];
     let hist = renderer
-        .register_chart(
-            hist_config.clone(),
-            vec![SeriesConfig {
-                series_id: "hist".into(),
-                source_id: None,
-                label: None,
-                x_column: "edges".into(),
-                y_column: "counts".into(),
-                z_column: None,
-                render_type: DataRenderType::Histogram(HistogramSeries {
-                    bar: crate::data_config::DataBarStyleConfig {
-                        fill_color: Color::BLACK,
-                        border_color: Color::BLACK,
-                        border_width: 1.0,
-                        baseline: 0.0,
-                        gap_px: 2.0,
-                        width_ratio: 1.0,
-                        orientation: crate::data_config::BarOrientation::Vertical,
-                        bar_style_overrides: None,
-                    },
-                }),
-            }],
-        )
+        .register_chart(hist_config.clone(), hist_series.clone())
         .unwrap();
     let request = typed_pick_request(&hist_config, typed_pick_position(&hist_config, 1.5, 4.0));
     assert_eq!(
@@ -1117,6 +1115,66 @@ fn a_data_pick_compiles_only_the_kernels_its_chart_dispatches() {
     assert_eq!(
         created_data_kernels(&capture::snapshot_pipelines()),
         [DataPickKernel::Histogram]
+    );
+    // What any pick of each chart can dispatch (#363): the histogram's
+    // kernel, and none for the radar or XY chart.
+    assert_eq!(
+        renderer.data_pick_kernels_of_chart(hist).unwrap(),
+        DataPickKernelSet::EMPTY.with(DataPickKernel::Histogram)
+    );
+    for chart in [radar, xy] {
+        assert_eq!(
+            renderer.data_pick_kernels_of_chart(chart).unwrap(),
+            DataPickKernelSet::EMPTY
+        );
+    }
+    // A release keeps a live chart's kernel.
+    renderer
+        .release_unused_pool_memory_blocking(1024 * 1024)
+        .unwrap();
+    assert!(
+        renderer
+            .picker
+            .data_kernels
+            .get(DataPickKernel::Histogram)
+            .is_some()
+    );
+    // Removed, its kernel stays for reuse: the same chart registered again
+    // picks without compiling.
+    renderer.remove_chart(hist).unwrap();
+    let hist = renderer
+        .register_chart(hist_config.clone(), hist_series.clone())
+        .unwrap();
+    crate::test_gpu::block_on(renderer.pick_chart_data(hist, request).unwrap().resolve()).unwrap();
+    assert_eq!(
+        created_data_kernels(&capture::snapshot_pipelines()),
+        [DataPickKernel::Histogram]
+    );
+    // Once no registered chart dispatches it, the host's release of unused
+    // GPU memory drops it, and the next histogram creates it again, once.
+    renderer.remove_chart(hist).unwrap();
+    renderer
+        .release_unused_pool_memory_blocking(1024 * 1024)
+        .unwrap();
+    assert!(
+        DataPickKernel::ALL.into_iter().all(|kernel| renderer
+            .picker
+            .data_kernels
+            .get(kernel)
+            .is_none()),
+        "no registered chart dispatches a data pick kernel"
+    );
+    let hist = renderer
+        .register_chart(hist_config.clone(), hist_series)
+        .unwrap();
+    for _ in 0..2 {
+        crate::test_gpu::block_on(renderer.pick_chart_data(hist, request).unwrap().resolve())
+            .unwrap();
+    }
+    assert_eq!(
+        created_data_kernels(&capture::snapshot_pipelines()),
+        [DataPickKernel::Histogram, DataPickKernel::Histogram],
+        "created again after the release, once"
     );
     drop(session);
 }

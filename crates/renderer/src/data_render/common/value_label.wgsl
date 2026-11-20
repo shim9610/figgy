@@ -323,9 +323,11 @@ fn value_label_box_plot(row: u32, size: vec2<f32>) -> ValueLabelBox {
     let s = box_stats(row);
     let style = box_body_style(category_geometry_style(), row);
     let horizontal = category_params.horizontal != 0u;
-    let boxed = box_layout(s, style);
+    // The box's full place, and the narrowed place it is drawn at, from
+    // one `box_slot` (#363).
+    let slot = box_slot(s.position, s.q_low, style);
+    let boxed = box_narrowed(slot);
     if (s.valid && boxed.valid) {
-        let slot = box_slot(s.position, s.q_low, style);
         let median = box_along(s.position, s.median);
         if (!slot.valid || !bar_finite(median)) {
             return value_label_hidden();
@@ -470,9 +472,21 @@ fn value_label_radar(row: u32, size: vec2<f32>) -> ValueLabelBox {
     if (!category_finite(x)) {
         return value_label_hidden();
     }
-    // The spoke from the inner ring to the outer one at the category.
-    let inner = category_px(data_to_ndc(tf, x, vec2<f32>(transform.data_min.y, transform.data_min_lo.y)));
-    let outer = category_px(data_to_ndc(tf, x, vec2<f32>(transform.data_max.y, transform.data_max_lo.y)));
+    // The spoke from the inner ring to the outer one at the category, both
+    // ends through one inlined projection (#363): `data_to_ndc` is what a
+    // software GPU compiler pays for per copy.
+    var ends: array<vec2<f32>, 2>;
+    for (var k = 0u; k < 2u; k = k + 1u) {
+        let outer_end = k == 1u;
+        let y = select(
+            vec2<f32>(transform.data_min.y, transform.data_min_lo.y),
+            vec2<f32>(transform.data_max.y, transform.data_max_lo.y),
+            outer_end,
+        );
+        ends[k] = category_px(data_to_ndc(tf, x, y));
+    }
+    let inner = ends[0];
+    let outer = ends[1];
     let along = outer - inner;
     if (!(dot(along, along) > 0.0) || !bar_finite(inner.x) || !bar_finite(inner.y)) {
         return value_label_hidden();
@@ -484,12 +498,20 @@ fn value_label_radar(row: u32, size: vec2<f32>) -> ValueLabelBox {
     var prev1 = value_label_no_rect();
     var prev2 = value_label_no_rect();
     var split = 0.0;
-    var cur = value_label_radar_next(value_label_radar_none(), row, x, spoke);
-    for (var step = 0u; step < value_label.shape.w; step = step + 1u) {
+    // One call site of the member search (#363): the first pass finds the
+    // first label, and each later pass the label after the current one.
+    var cur = value_label_radar_none();
+    var started = false;
+    for (var step = 0u; step <= value_label.shape.w; step = step + 1u) {
+        let following = value_label_radar_next(cur, row, x, spoke);
+        if (!started) {
+            started = true;
+            cur = following;
+            continue;
+        }
         if (!cur.valid) {
             break;
         }
-        let following = value_label_radar_next(cur, row, x, spoke);
         let placed = value_label_radar_choose(cur, following, split, prev1, prev2, spoke);
         if (cur.member == own) {
             return value_label_box_at(row, placed.xy, size);

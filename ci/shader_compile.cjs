@@ -31,7 +31,7 @@ if (process.argv[2] === '--pick-variants') {
   try {
     // Driver selection is explicit. This script never forces SwiftShader on a
     // hardware machine. GPU-less CI may supply its existing browser wrapper.
-    browser = await chromium.launch({headless: true, executablePath: process.env.BROWSER_EXECUTABLE_PATH || undefined, args: ['--enable-unsafe-webgpu']});
+    browser = await chromium.launch({headless: true, executablePath: process.env.BROWSER_EXECUTABLE_PATH || undefined, args: ['--enable-unsafe-webgpu', ...(process.env.BROWSER_ARGS || '').split(/\s+/).filter(Boolean)]});
     report.browser = browser.version();
     const page = await browser.newPage();
     await page.goto(`http://127.0.0.1:${server.address().port}`);
@@ -158,7 +158,7 @@ async function pickVariants(args) {
   let page;
   async function open() {
     if (browser) await browser.close().catch(() => {});
-    browser = await chromium.launch({headless: true, executablePath: process.env.BROWSER_EXECUTABLE_PATH || undefined, args: ['--enable-unsafe-webgpu']});
+    browser = await chromium.launch({headless: true, executablePath: process.env.BROWSER_EXECUTABLE_PATH || undefined, args: ['--enable-unsafe-webgpu', ...(process.env.BROWSER_ARGS || '').split(/\s+/).filter(Boolean)]});
     page = await browser.newPage();
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.evaluate(({sources, layout}) => { window.pickSources = sources; window.pickLayout = layout; }, {sources, layout});
