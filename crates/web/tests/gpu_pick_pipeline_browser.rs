@@ -125,8 +125,11 @@ async fn raw_figgy_prewarm_is_idempotent_and_pick_reuses_it() {
         .prewarm_gpu_picking()
         .await
         .expect("idempotent raw picker prewarm failed");
+    // The first draw fits the margins to the tick labels; the line's
+    // middle datum is the centre of the data area it drew in.
+    let [x, y] = data_area_centre(&chart);
     let picked = chart
-        .pick_point(50.0, 50.0, 2.0)
+        .pick_point(x, y, 2.0)
         .await
         .expect("raw pick failed")
         .as_string()
@@ -206,9 +209,11 @@ async fn streamline_series_round_trip_and_pick_through_the_wrapper() {
         .prewarm_gpu_picking()
         .await
         .expect("picker prewarm failed");
-    // The first streamline runs along y = 1, the middle of the panel.
+    // The first streamline runs along y = 1, the middle of the data area
+    // the first draw fitted to the tick labels.
+    let [x, y] = data_area_centre(&chart);
     let picked = chart
-        .pick_point(50.0, 50.0, 2.0)
+        .pick_point(x, y, 2.0)
         .await
         .expect("pick failed")
         .as_string()
@@ -395,4 +400,14 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
     assert_eq!(picked.series_id, "browser-series");
     assert_eq!(picked.point_index, point_count / 2);
     assert_eq!(picked.distance_px, 0.0);
+}
+
+/// The centre of the chart's data area in canvas pixels, as drawn.
+fn data_area_centre(chart: &figgy::FiggyChart) -> [f32; 2] {
+    let area: serde_json::Value =
+        serde_json::from_str(&chart.data_area_rect().expect("data area read failed"))
+            .expect("data area JSON failed to parse");
+    let rect = &area["canvas"];
+    let at = |i: usize| rect[i].as_f64().expect("data area rect") as f32;
+    [at(0) + at(2) * 0.5, at(1) + at(3) * 0.5]
 }
