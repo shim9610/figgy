@@ -582,7 +582,9 @@ fn violins_and_points_pick_and_highlight_what_they_paint() {
         along(&chart, direction, 65.0, 1.0),
     );
     assert!(is_blue(pixel(&img, at.0 as u32, at.1 as u32)));
-    let hit = pick(&mut r, &chart, &series, 1.0, (at.0 + 0.5, at.1 + 0.5));
+    // The body is the typed hit; the selection is the nearest raw point
+    // (#381 phase 4).
+    let hit = pick_full(&mut r, &chart, &series, (at.0 + 0.5, at.1 + 0.5)).data;
     assert!(
         matches!(
             &hit,
