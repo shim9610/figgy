@@ -290,6 +290,33 @@ impl Probe {
         test_gpu::block_on(renderer.pick_chart(self.id, request).unwrap().resolve()).unwrap()
     }
 
+    /// The exact point query at the centre of export pixel `(x, y)`: the
+    /// typed data pick's point part, which keeps the exact geometry the CPU
+    /// twin mirrors (#381: `pick_chart` hits drawn ink and answers the
+    /// nearest datum instead).
+    pub fn exact_point(
+        &self,
+        renderer: &mut Renderer,
+        x: f32,
+        y: f32,
+        max: f32,
+    ) -> Option<PickedPoint> {
+        match self.pick_data_at(renderer, (x, y), max) {
+            Some(renderer::PickedData::Point {
+                source_id,
+                series_id,
+                point_index,
+                distance_px,
+            }) => Some(PickedPoint {
+                source_id,
+                series_id,
+                point_index,
+                distance_px,
+            }),
+            _ => None,
+        }
+    }
+
     /// The typed data pick at canvas position `(x, y)`.
     pub fn pick_data_at(
         &self,
@@ -382,8 +409,8 @@ pub fn assert_pick_matches_paint_with(
     let window = (x0, y0, x1.min(with.width), y1.min(with.height));
     let is_painted = |x, y| difference(&with, &without, x, y) >= tolerance.painted;
     let painted = count_painted(window, is_painted);
-    let empty = empty_export(renderer, chart, renderer::ExportOptions::panel(scale));
     let probe = Probe::register(renderer, chart, series, scale);
+    let screen = screen_images(renderer, chart, &probe, &without_series);
     let mut failures = Vec::new();
     for (x, y) in edge_band(window, is_painted) {
         let skipped = tolerance.skip_near.is_some_and(|(cx, cy, radius)| {
@@ -392,7 +419,7 @@ pub fn assert_pick_matches_paint_with(
         check_ink_pixel(
             renderer,
             &probe,
-            (&with, &without, &empty),
+            (&screen.0, &screen.1, &screen.2),
             (x, y),
             tolerance,
             skipped,
@@ -404,7 +431,7 @@ pub fn assert_pick_matches_paint_with(
         failures.is_empty(),
         "{what} at {scale}x: {} disagreements, first {:?}",
         failures.len(),
-        &failures[..failures.len().min(12)]
+        &failures[failures.len().saturating_sub(13)..]
     );
     painted
 }
@@ -450,16 +477,27 @@ fn check_ink_pixel(
     }
 }
 
-/// The chart drawn without any series: the background a pick never hits.
-fn empty_export(
+/// The screen's images of a pick check (#381: the ink a pick reads is what
+/// the screen draws): the chart with `series`, with `without` (the subject
+/// removed or blanked) and with no series, each through its own on-screen
+/// prepare placed as `probe` places the pick.
+fn screen_images(
     renderer: &mut Renderer,
     chart: &Chart,
-    options: renderer::ExportOptions,
-) -> RasterImage {
-    renderer
-        .export_rgba(renderer::ExportSource::chart(chart, &[]), options)
-        .block_on()
-        .unwrap()
+    probe: &Probe,
+    without: &[SeriesConfig],
+) -> (RasterImage, RasterImage, RasterImage) {
+    let request = probe.request(0.0, 0.0, 0.0);
+    let with = harness::screen_rgba(renderer, probe.id, &request);
+    let mut other = |series: &[SeriesConfig]| {
+        let shown = Probe::register(renderer, chart, series, probe.scale);
+        let image = harness::screen_rgba(renderer, shown.id, &request);
+        renderer.remove_chart(shown.id).unwrap();
+        image
+    };
+    let without = other(without);
+    let empty = other(&[]);
+    (with, without, empty)
 }
 
 /// The bounding box of every pixel where the two exports differ, grown by
@@ -1495,7 +1533,7 @@ fn cpu_twin_agrees_with_the_gpu_picker_under_every_draw_style() {
             let mut compared = 0;
             for y in (y0 as u32..y1 as u32).step_by(3) {
                 for x in (x0 as u32..x1 as u32).step_by(3) {
-                    let gpu = probe.pick(&mut renderer, x, y, 3.0);
+                    let gpu = probe.exact_point(&mut renderer, x as f32 + 0.5, y as f32 + 0.5, 3.0);
                     let cpu = renderer::pick::cpu_twin::pick_nearest_point(
                         chart.config(),
                         &series,
@@ -1644,7 +1682,7 @@ fn point_vectors_pick_the_arrow_they_draw() {
         let mut compared = 0;
         for y in (y0 as u32..y1 as u32).step_by(3) {
             for x in (x0 as u32..x1 as u32).step_by(3) {
-                let gpu = probe.pick(&mut renderer, x, y, 3.0);
+                let gpu = probe.exact_point(&mut renderer, x as f32 + 0.5, y as f32 + 0.5, 3.0);
                 let cpu = renderer::pick::cpu_twin::pick_nearest_point(
                     chart.config(),
                     &series,
@@ -3009,14 +3047,9 @@ fn cpu_and_gpu_place_points_alike_at_every_magnitude() {
                 );
                 // The GPU and the CPU pickers find it there.
                 let at = (expected.0 as f32, expected.1 as f32);
-                let gpu = test_gpu::block_on(
-                    renderer
-                        .pick_chart(probe.id, probe.request(at.0, at.1, 3.0))
-                        .unwrap()
-                        .resolve(),
-                )
-                .unwrap()
-                .unwrap_or_else(|| panic!("{case}: GPU misses point {index} at {at:?}"));
+                let gpu = probe
+                    .exact_point(&mut renderer, at.0, at.1, 3.0)
+                    .unwrap_or_else(|| panic!("{case}: GPU misses point {index} at {at:?}"));
                 let cpu = renderer::pick::cpu_twin::pick_nearest_point(
                     &cfg,
                     &series,
@@ -3146,14 +3179,9 @@ fn probability_axis_places_points_at_every_tail() {
                     ps[index]
                 );
                 let at = (expected.0 as f32, expected.1 as f32);
-                let gpu = test_gpu::block_on(
-                    renderer
-                        .pick_chart(probe.id, probe.request(at.0, at.1, 3.0))
-                        .unwrap()
-                        .resolve(),
-                )
-                .unwrap()
-                .unwrap_or_else(|| panic!("{case}: GPU misses point {index} at {at:?}"));
+                let gpu = probe
+                    .exact_point(&mut renderer, at.0, at.1, 3.0)
+                    .unwrap_or_else(|| panic!("{case}: GPU misses point {index} at {at:?}"));
                 let cpu = renderer::pick::cpu_twin::pick_nearest_point(
                     &cfg,
                     &series,
@@ -3446,14 +3474,9 @@ fn inverted_and_broken_probability_axes_place_points_as_their_chrome() {
                 "{case}: point {index} (p {p}) drawn at {drawn:?}, the chrome puts it at {expected:?}"
             );
             let at = (expected.0 as f32, expected.1 as f32);
-            let gpu = test_gpu::block_on(
-                renderer
-                    .pick_chart(probe.id, probe.request(at.0, at.1, 3.0))
-                    .unwrap()
-                    .resolve(),
-            )
-            .unwrap()
-            .unwrap_or_else(|| panic!("{case}: GPU misses point {index} at {at:?}"));
+            let gpu = probe
+                .exact_point(&mut renderer, at.0, at.1, 3.0)
+                .unwrap_or_else(|| panic!("{case}: GPU misses point {index} at {at:?}"));
             assert_eq!(gpu.point_index, index, "{case}");
         }
         renderer.remove_chart(probe.id).unwrap();
@@ -4176,8 +4199,9 @@ fn area_fills_pick_where_they_paint() {
 
 /// G10 tie-break: a marker over a fill picks the marker, though its series
 /// comes first (every fill is drawn before every series body); inside the
-/// fill away from the marker the fill picks, naming the nearer endpoint of
-/// the filled segment.
+/// fill away from the marker the exact query picks the fill, naming the
+/// nearer endpoint of the filled segment, and `pick_chart` hits the fill's
+/// ink and answers the nearest datum (#381).
 #[test]
 fn a_marker_over_a_fill_picks_the_marker() {
     use renderer::data_config::{LineFill, LineInterpolation};
@@ -4209,12 +4233,29 @@ fn a_marker_over_a_fill_picks_the_marker() {
         assert_eq!((hit.series_id.as_str(), hit.point_index), ("dot", 0));
         for (x, index) in [(3.0, 0), (7.0, 1)] {
             let (px, py) = data_to_px(&chart, x, 3.0, scale);
+            // The exact query: the fill, naming its nearer endpoint.
             let hit = probe
-                .pick(&mut renderer, px as u32, py as u32, 0.0)
+                .exact_point(
+                    &mut renderer,
+                    px as u32 as f32 + 0.5,
+                    py as u32 as f32 + 0.5,
+                    0.0,
+                )
                 .expect("fill hit");
             assert_eq!(
                 (hit.series_id.as_str(), hit.point_index, hit.distance_px),
                 ("area", index, 0.0),
+                "{scale}x at x {x}"
+            );
+            // `pick_chart` (#381): the fill's ink hits, and the hit is the
+            // nearest datum of all, the marker's or the fill's.
+            let hit = probe
+                .pick(&mut renderer, px as u32, py as u32, 0.0)
+                .expect("the fill's ink hits");
+            // The marker at (4, 4) is nearer than either endpoint at y 8.
+            assert_eq!(
+                (hit.series_id.as_str(), hit.point_index),
+                ("dot", 0),
                 "{scale}x at x {x}"
             );
         }
@@ -5511,14 +5552,14 @@ fn assert_member_pick_matches_paint(
     let window = ink_window(&with, &without, 4);
     let is_painted = |x, y| difference(&with, &without, x, y) >= tolerance.painted;
     let painted = count_painted(window, is_painted);
-    let empty = empty_export(renderer, chart, renderer::ExportOptions::document(scale));
     let probe = Probe::register(renderer, chart, series, scale);
+    let screen = screen_images(renderer, chart, &probe, &blank);
     let mut failures = Vec::new();
     for (x, y) in edge_band(window, is_painted) {
         check_ink_pixel(
             renderer,
             &probe,
-            (&with, &without, &empty),
+            (&screen.0, &screen.1, &screen.2),
             (x, y),
             tolerance,
             false,
@@ -5764,5 +5805,74 @@ fn overlapping_offset_members_pick_what_is_painted_on_top() {
             );
             assert!(painted > 30, "{subject} at {scale}x: {painted}");
         }
+    }
+}
+
+/// A registered chart's screen draws point vectors as its export does, at
+/// 1x and 2x: the on-screen prepare builds each vector series at its
+/// style's display scale (#381; the screen's 2x arrows were drawn with 1x
+/// pixel sizes, and the ink a pick reads is the screen's).
+#[test]
+fn point_vectors_draw_alike_on_screen_and_in_an_export() {
+    use renderer::data_config::{VectorPivot, VectorScale};
+    let mut renderer = renderer();
+    let xs = vec![2.0, 6.5, 8.0, 3.0];
+    let ys = vec![2.0, 6.5, 2.5, 8.0];
+    let us = vec![30.0, -6.0, 0.0, 2.0];
+    let vs = vec![18.0, 4.0, 0.0, 2.0];
+    renderer
+        .add_columns(&[
+            ("x", &col(xs) as &dyn renderer::ColumnSource),
+            ("y", &col(ys) as &dyn renderer::ColumnSource),
+            ("u", &col(us) as &dyn renderer::ColumnSource),
+            ("v", &col(vs) as &dyn renderer::ColumnSource),
+        ])
+        .expect("upload");
+    let chart = bare_chart();
+    for scale in [1.0f32, 2.0] {
+        let series = [arrows(
+            "quiver",
+            VectorScale::Pixels { px_per_unit: 1.0 },
+            VectorPivot::Tail,
+        )];
+        let with = renderer
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        let without = renderer
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &[]),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        let probe = Probe::register(&mut renderer, &chart, &series, scale);
+        let req = probe.request(0.0, 0.0, 0.0);
+        let s_with = harness::screen_rgba(&mut renderer, probe.id, &req);
+        let empty = Probe::register(&mut renderer, &chart, &[], scale);
+        let s_without = harness::screen_rgba(&mut renderer, empty.id, &req);
+        let (mut e, mut sc, mut both) = (0, 0, 0);
+        for y in 0..with.height.min(s_with.height) {
+            for x in 0..with.width.min(s_with.width) {
+                let a = difference(&with, &without, x, y) >= 6;
+                let b = difference(&s_with, &s_without, x, y) >= 6;
+                if a && b {
+                    both += 1
+                } else if a {
+                    e += 1
+                } else if b {
+                    sc += 1
+                }
+            }
+        }
+        assert!(both > 100, "{scale}x: nothing drawn");
+        assert_eq!(
+            (e, sc),
+            (0, 0),
+            "{scale}x: export-only and screen-only ink ({both} alike)"
+        );
     }
 }

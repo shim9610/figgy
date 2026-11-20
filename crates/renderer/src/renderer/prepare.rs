@@ -254,7 +254,7 @@ impl PrepareContext<'_> {
         );
         let mut grid_sources = self.ensure_field_scratches(items)?;
         self.ensure_value_map_scratches(items, 1.0)?;
-        grid_sources.append(&mut self.ensure_vector_scratches(items, 1.0)?);
+        grid_sources.append(&mut self.ensure_vector_scratches(items, None)?);
         let mut contour_sources = self.ensure_contour_scratches(items, 1.0, &mut panels)?;
         grid_sources.append(&mut contour_sources);
         grid_sources.append(&mut self.ensure_mesh_scratches(items, 1.0)?);

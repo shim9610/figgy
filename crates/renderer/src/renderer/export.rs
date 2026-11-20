@@ -1066,7 +1066,7 @@ impl Renderer {
         // receipts have nothing to be held for.
         let _ = self.ensure_field_scratches(items)?;
         self.ensure_value_map_scratches(items, scale)?;
-        let _ = self.ensure_vector_scratches(items, scale)?;
+        let _ = self.ensure_vector_scratches(items, Some(scale))?;
         let _ = self.ensure_contour_scratches(items, scale, &mut panels)?;
         let _ = self.ensure_mesh_scratches(items, scale)?;
         self.prepare_arc_items(items, &mut panels)?;

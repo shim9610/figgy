@@ -67,6 +67,119 @@ pub fn show_monotonic_for_pick(r: &mut Renderer, id: ::renderer::MonotonicChartI
     .unwrap();
 }
 
+/// What the screen shows of registered chart `id` placed as `request`
+/// places it: its on-screen prepare painted into a target of the display
+/// panel's size, cleared to transparent, read back as straight RGBA. The
+/// ink a pick reads is this draw's data layer (#381).
+pub fn screen_rgba(r: &mut Renderer, id: ChartId, request: &GpuPickRequest) -> RasterImage {
+    let panel = request.display_panel_px;
+    let document = r.chart_config(id).unwrap().document_area();
+    let stored = request.display_scale == 1.0 && panel == document;
+    if !stored {
+        r.set_chart_display(id, Some((panel.width, panel.height)))
+            .unwrap();
+    }
+    let (config, rect, scale) = r.chart_display_config(id).unwrap();
+    let chart = Chart::new(config.into_owned());
+    let mut view = r.create_chart_view_at(&chart, rect, scale).unwrap();
+    let prepared = r
+        .prepare_registered(&mut [RegisteredChartDrawItem {
+            chart_id: id,
+            view: &mut view,
+        }])
+        .unwrap();
+    let (w, h) = (panel.x + panel.width, panel.y + panel.height);
+    let (device, queue) = test_gpu::shared_device();
+    let format = r.surface_format();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("screen capture"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let target = texture.create_view(&Default::default());
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("screen capture"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        r.paint_prepared(&mut pass, (w, h), &prepared).unwrap();
+    }
+    let bpr = (w * 4).div_ceil(256) * 256;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("screen capture readback"),
+        size: u64::from(bpr) * u64::from(h),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bpr),
+                rows_per_image: Some(h),
+            },
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    r.end_gpu_frame();
+    buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    let mapped = buffer.slice(..).get_mapped_range().unwrap();
+    let bgra = matches!(
+        format,
+        wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+    );
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        let row = &mapped[(y * bpr) as usize..][..(w * 4) as usize];
+        for px in row.chunks_exact(4) {
+            let [r0, g, b, a] = [px[0], px[1], px[2], px[3]];
+            let (red, blue) = if bgra { (b, r0) } else { (r0, b) };
+            // Premultiplied to straight alpha.
+            let un = |c: u8| {
+                if a == 0 {
+                    0
+                } else {
+                    ((u32::from(c) * 255 + u32::from(a) / 2) / u32::from(a)).min(255) as u8
+                }
+            };
+            rgba.extend_from_slice(&[un(red), un(g), un(blue), a]);
+        }
+    }
+    drop(mapped);
+    RasterImage {
+        width: w,
+        height: h,
+        rgba,
+    }
+}
+
 /// [`show_for_pick`] as a method, so a pick reads
 /// `r.shown(id, &request).pick_chart(id, request)` whether `r` is a
 /// renderer or a borrow of one.
