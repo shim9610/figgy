@@ -1572,6 +1572,7 @@ fn the_grotrian_theme_writes_the_diagram_s_texts_and_continuum() {
         label_offset: [0.0; 2],
         value: None,
         x_offset: 0.0,
+        color: None,
         wavelength: Some(500.0),
         wavelength_uncertainty: None,
         intensity: String::new(),

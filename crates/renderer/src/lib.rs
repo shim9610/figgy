@@ -248,7 +248,7 @@ pub mod energy_levels {
 }
 pub use model::energy_levels::{
     EnergyLevel, EnergyLevelSeries, EnergyLevelStyle, IonizationLimit, LabelPart, LevelRole,
-    LevelView, Transition, TransitionDirection, WavelengthLabels,
+    LevelView, SpectralColors, Transition, TransitionDirection, WavelengthLabels, WavelengthUnit,
 };
 /// Triangle mesh fields (#210): the [`DataRenderType::TriMesh`] series, its
 /// value location and look.

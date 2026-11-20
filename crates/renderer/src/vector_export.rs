@@ -104,6 +104,10 @@ pub(crate) trait VectorOut {
     /// The outline of glyph `glyph` of `font` at `size`, hinted when `hint`
     /// says so (the raster's [`crate::text_render::glyph_hinting`]), its pen
     /// at `pen` relative to the text origin.
+    ///
+    /// With `outline` (#357, its colour and stroke width in output units),
+    /// the glyph is stroked that wide along its outline under its fill.
+    #[allow(clippy::too_many_arguments)]
     fn glyph(
         &mut self,
         font: FontRef<'static>,
@@ -112,6 +116,7 @@ pub(crate) trait VectorOut {
         hint: bool,
         pen: [f32; 2],
         color: Color,
+        outline: Option<(Color, f32)>,
     );
     fn end_text(&mut self);
     /// Clip what follows, until [`Self::pop_clip`], to `rect`.
@@ -329,6 +334,9 @@ pub(crate) struct VectorSink<'a> {
     clip: Rect,
     /// The origin of the text being written, in output pixels.
     text_origin: [f32; 2],
+    /// The outline of the text being written (#357): its colour and its
+    /// reach past the glyph edges, output pixels.
+    text_outline: Option<(Color, f32)>,
     /// The first image that could not be written.
     pub(crate) error: Option<FiggyError>,
 }
@@ -351,6 +359,7 @@ impl<'a> VectorSink<'a> {
             carried: 1.0,
             clip,
             text_origin: [0.0, 0.0],
+            text_outline: None,
             error: None,
         }
     }
@@ -445,6 +454,7 @@ impl Sink for VectorSink<'_> {
             (degrees, [c.0, c.1])
         });
         self.text_origin = [origin.0, origin.1];
+        self.text_outline = text.outline.map(|o| (o.color, o.width * self.scale));
         self.out.begin_text([origin.0, origin.1], rotation);
         let (scale, policy) = (self.scale, self.policy);
         match text.text {
@@ -475,6 +485,7 @@ impl Sink for VectorSink<'_> {
             }
         }
         self.out.end_text();
+        self.text_outline = None;
     }
 
     fn stroke(&mut self, _slot: Slot, a: [f32; 2], b: [f32; 2], style: &StrokeStyle<'_>) {
@@ -655,7 +666,11 @@ impl GlyphSink for VectorSink<'_> {
         let pen = [pen.0 - self.text_origin[0], pen.1 - self.text_origin[1]];
         let pixel_scale = self.scale * self.carried;
         let hint = crate::text_render::glyph_hinting(font, size, pixel_scale, script);
-        self.out.glyph(font, glyph, size, hint, pen, *color);
+        // The stroke is centred on the edge: twice the reach, the inner
+        // half under the fill.
+        let outline = self.text_outline.map(|(c, reach)| (c, 2.0 * reach));
+        self.out
+            .glyph(font, glyph, size, hint, pen, *color, outline);
     }
 
     fn rect(&mut self, r: RectF, color: &Color) {
@@ -666,6 +681,19 @@ impl GlyphSink for VectorSink<'_> {
         };
         if !has_area(r) {
             return;
+        }
+        if let Some((outline, reach)) = self.text_outline {
+            self.out.begin_path(PathPaint::Fill(outline));
+            rect_path(
+                self.out,
+                RectF {
+                    x: r.x - reach,
+                    y: r.y - reach,
+                    width: r.width + 2.0 * reach,
+                    height: r.height + 2.0 * reach,
+                },
+            );
+            self.out.end_path();
         }
         self.out.begin_path(PathPaint::Fill(*color));
         rect_path(self.out, r);

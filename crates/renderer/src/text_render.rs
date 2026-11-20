@@ -689,7 +689,10 @@ struct GlyphMask {
 type MetricsKey = (swash::CacheKey, u32, u16);
 /// Mask key: face, size, glyph, horizontal subpixel bin (quarter-pixel
 /// phases) and hinting.
-type MaskKey = (swash::CacheKey, u32, u16, u8, bool);
+/// A glyph mask's key: face, size bits, glyph, quarter-pixel phase,
+/// hinting, and the outline stroke width in render pixels as bits (#357;
+/// `0` for the plain fill).
+type MaskKey = (swash::CacheKey, u32, u16, u8, bool, u32);
 
 /// The largest glyph size in pixels the raster draws. A glyph mask holds
 /// about `size²` bytes, so this bounds one mask at about 16 MiB; a larger
@@ -839,6 +842,7 @@ fn glyph_extents_id(font: FontRef<'static>, size: f32, glyph: u16) -> GlyphExten
 /// subpixel offset is baked into the rasterization instead of resampling the
 /// finished mask, which is what kept text crisp under skia. A size above
 /// [`MAX_GLYPH_PX`] (or not a number) is an error, nothing is rasterized.
+#[cfg(test)]
 fn with_glyph_mask_id(
     font: FontRef<'static>,
     size: f32,
@@ -847,13 +851,41 @@ fn with_glyph_mask_id(
     hint: bool,
     use_mask: impl FnOnce(&GlyphMask),
 ) -> crate::Result<()> {
+    with_glyph_mask_stroked(font, size, glyph, xbin, hint, 0.0, use_mask)
+}
+
+/// [`with_glyph_mask_id`] for the glyph stroked `stroke` render pixels wide
+/// along its outline (#357), centred on its edge; `0` is the plain fill.
+/// The stroked mask has its own cache key.
+#[allow(clippy::too_many_arguments)]
+fn with_glyph_mask_stroked(
+    font: FontRef<'static>,
+    size: f32,
+    glyph: u16,
+    xbin: u8,
+    hint: bool,
+    stroke: f32,
+    use_mask: impl FnOnce(&GlyphMask),
+) -> crate::Result<()> {
     if !(size <= MAX_GLYPH_PX) {
         return Err(crate::FiggyError::InvalidConfig {
             field: "font size",
             kind: crate::RuleKind::GlyphTooLarge,
         });
     }
-    let key = (font.key, size.to_bits(), glyph, xbin, hint);
+    let stroke = if stroke.is_finite() && stroke > 0.0 {
+        stroke
+    } else {
+        0.0
+    };
+    let key = (
+        font.key,
+        size.to_bits(),
+        glyph,
+        xbin,
+        hint,
+        stroke.to_bits(),
+    );
     MASK_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if !cache.masks.contains_key(&key) {
@@ -865,6 +897,11 @@ fn with_glyph_mask_id(
                 let embolden = font_embolden(font, size);
                 if embolden > 0.0 {
                     render.embolden(embolden);
+                }
+                let mut style = swash::zeno::Stroke::new(stroke);
+                style.join(swash::zeno::Join::Round);
+                if stroke > 0.0 {
+                    render.style(&style);
                 }
                 render.render(&mut scaler, glyph).and_then(|image| {
                     let p = image.placement;
@@ -967,6 +1004,7 @@ pub(crate) fn glyph_outline(
 /// Rasterize glyph id `glyph` of `font` and blit it with `color` at
 /// (`pen_x`, `baseline`).
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn draw_glyph(
     canvas: &mut Canvas,
     font: FontRef<'static>,
@@ -976,6 +1014,23 @@ fn draw_glyph(
     pen_x: f32,
     baseline: f32,
     color: &Color,
+) -> crate::Result<()> {
+    draw_glyph_stroked(canvas, font, size, glyph, hint, pen_x, baseline, color, 0.0)
+}
+
+/// [`draw_glyph`] of the glyph stroked `stroke` render pixels wide along its
+/// outline (#357); `0` draws the fill.
+#[allow(clippy::too_many_arguments)]
+fn draw_glyph_stroked(
+    canvas: &mut Canvas,
+    font: FontRef<'static>,
+    size: f32,
+    glyph: u16,
+    hint: bool,
+    pen_x: f32,
+    baseline: f32,
+    color: &Color,
+    stroke: f32,
 ) -> crate::Result<()> {
     match canvas.orthogonal_text_transform() {
         // Crisp path: snap to the pixel grid, carry the sub-pixel x phase
@@ -991,7 +1046,7 @@ fn draw_glyph(
                 xbin = 0;
                 ix += 1;
             }
-            with_glyph_mask_id(font, size, glyph, xbin, hint, |m| {
+            with_glyph_mask_stroked(font, size, glyph, xbin, hint, stroke, |m| {
                 canvas.blit_mask_orthogonal(
                     ix + m.left,
                     gy - m.top,
@@ -1005,7 +1060,7 @@ fn draw_glyph(
         }
         // General transforms (non-right-angle rotation or scaling) retain
         // the filtered fallback. Axis titles use the crisp path above.
-        None => with_glyph_mask_id(font, size, glyph, 0, hint, |m| {
+        None => with_glyph_mask_stroked(font, size, glyph, 0, hint, stroke, |m| {
             canvas.draw_mask(
                 pen_x + m.left as f32,
                 baseline - m.top as f32,
@@ -1183,6 +1238,39 @@ impl GlyphSink for MeasureSink {
     fn rect(&mut self, _: RectF, _: &Color) {}
 }
 
+/// The sink of [`CpuTextMeasure::ink_boxes`] (#357): hands each glyph's
+/// tight ink box (its pen plus its outline's bounds) and each rule's
+/// rectangle; paints nothing.
+struct InkSink<'a>(&'a mut dyn FnMut(RectF));
+
+impl GlyphSink for InkSink<'_> {
+    fn paints(&self) -> bool {
+        false
+    }
+    fn glyph(
+        &mut self,
+        font: FontRef<'static>,
+        glyph: u16,
+        size: f32,
+        _: bool,
+        pen: (f32, f32),
+        _: &Color,
+    ) {
+        let g = glyph_extents_id(font, size, glyph);
+        if g.ink_right > g.ink_left && g.ink_bottom > g.ink_top {
+            (self.0)(RectF {
+                x: pen.0 + g.ink_left,
+                y: pen.1 + g.ink_top,
+                width: g.ink_right - g.ink_left,
+                height: g.ink_bottom - g.ink_top,
+            });
+        }
+    }
+    fn rect(&mut self, r: RectF, _: &Color) {
+        (self.0)(r);
+    }
+}
+
 /// The sink of [`draw_rich_text`]: paints onto the canvas. Its third field
 /// is the pixel scale the text's sizes carry (pixels per logical pixel),
 /// from which each glyph's hinting is decided ([`glyph_hinting`]). The first glyph that cannot be rasterized
@@ -1234,6 +1322,112 @@ impl GlyphSink for CanvasSink<'_> {
             r.height,
             &crate::raster::Paint::fill(color),
         );
+    }
+}
+
+/// The outline pass of a text block (#357): every glyph stroked `.2`
+/// render pixels wide (twice the outline's reach, centred on the edge, so
+/// the fill drawn after covers the inner half) and every rule grown by the
+/// reach, all in the outline colour `.3`. Errors as [`CanvasSink`].
+struct OutlineCanvasSink<'a>(&'a mut Canvas, Option<crate::FiggyError>, f32, Color, f32);
+
+impl GlyphSink for OutlineCanvasSink<'_> {
+    fn paints(&self) -> bool {
+        true
+    }
+    fn glyph(
+        &mut self,
+        font: FontRef<'static>,
+        glyph: u16,
+        size: f32,
+        script: bool,
+        pen: (f32, f32),
+        _: &Color,
+    ) {
+        if self.1.is_some() {
+            return;
+        }
+        let hint = glyph_hinting(font, size, self.4, script);
+        let (color, stroke) = (self.3, self.2);
+        if let Err(error) = draw_glyph_stroked(
+            self.0, font, size, glyph, hint, pen.0, pen.1, &color, stroke,
+        ) {
+            self.1 = Some(error);
+        }
+    }
+    fn rect(&mut self, r: RectF, _: &Color) {
+        let reach = self.2 / 2.0;
+        self.0.draw_rect(
+            r.x - reach,
+            r.y - reach,
+            r.width + 2.0 * reach,
+            r.height + 2.0 * reach,
+            &crate::raster::Paint::fill(&self.3),
+        );
+    }
+}
+
+/// The outline of [`draw_rich_text_at`] (#357): every glyph and rule of
+/// `rt` at `origin` stroked in `outline.color`, reaching `outline.width`
+/// canvas pixels past the glyph edges. Drawn before the text.
+pub(crate) fn draw_rich_text_outline_at(
+    canvas: &mut Canvas,
+    rt: &RichText,
+    origin: (f32, f32),
+    policy: FontPolicy,
+    pixel_scale: f32,
+    outline: model::sink::TextOutline,
+) -> crate::Result<()> {
+    let mut sink = OutlineCanvasSink(
+        canvas,
+        None,
+        2.0 * outline.width,
+        outline.color,
+        pixel_scale,
+    );
+    place_rich_text(&mut sink, rt, origin, policy);
+    match sink.1 {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// The outline of [`draw_plain_text_at`] (#357), as
+/// [`draw_rich_text_outline_at`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_plain_text_outline_at(
+    canvas: &mut Canvas,
+    text: &str,
+    origin: (f32, f32),
+    family: &str,
+    size: f32,
+    bold: bool,
+    italic: bool,
+    policy: FontPolicy,
+    pixel_scale: f32,
+    outline: model::sink::TextOutline,
+) -> crate::Result<()> {
+    let mut sink = OutlineCanvasSink(
+        canvas,
+        None,
+        2.0 * outline.width,
+        outline.color,
+        pixel_scale,
+    );
+    place_plain_text(
+        &mut sink,
+        text,
+        origin,
+        outline.color,
+        family,
+        size,
+        bold,
+        italic,
+        policy,
+    );
+    match sink.1 {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }
 
@@ -1528,6 +1722,33 @@ mod dashed_rule_tests {
         }
     }
 
+    /// A stroked glyph (#357) is its own mask, reaching half the stroke past
+    /// the fill on every side, and the plain fill is unchanged by it.
+    #[test]
+    fn a_stroked_glyph_has_its_own_wider_mask() {
+        let font = glyph_font(FontPolicy::Standard, "", false, false, 'o');
+        let glyph = font.charmap().map('o');
+        let size_of = |stroke: f32| {
+            let mut out = (0i32, 0i32, 0u32, 0u32);
+            with_glyph_mask_stroked(font, 24.0, glyph, 0, false, stroke, |m| {
+                out = (m.left, m.top, m.width, m.height);
+            })
+            .unwrap();
+            out
+        };
+        let plain = size_of(0.0);
+        let stroked = size_of(4.0);
+        assert_eq!(size_of(0.0), plain, "the fill keeps its mask");
+        assert!(
+            stroked.2 >= plain.2 + 3 && stroked.3 >= plain.3 + 3,
+            "{plain:?} -> {stroked:?}"
+        );
+        assert!(
+            stroked.0 < plain.0 && stroked.1 > plain.1,
+            "{plain:?} -> {stroked:?}"
+        );
+    }
+
     /// A glyph above `MAX_GLYPH_PX` is an error, not a mask of gigabytes,
     /// and the error reaches the caller of the draw (#152).
     #[test]
@@ -1807,6 +2028,12 @@ impl CpuTextMeasure {
 impl crate::text::MeasureText for CpuTextMeasure {
     fn measure_rich(&self, rt: &RichText) -> crate::text::TextExtents {
         measure_rich_text(rt, self.policy)
+    }
+
+    /// Every glyph's ink box and every rule of `rt` at `origin`, from the
+    /// placement the raster and the vector export draw (#357).
+    fn ink_boxes(&self, rt: &RichText, origin: (f32, f32), each: &mut dyn FnMut(RectF)) {
+        place_rich_text(&mut InkSink(each), rt, origin, self.policy);
     }
 
     /// A tick label's extents as the raster draws plain text: per glyph,

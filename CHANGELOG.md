@@ -42,6 +42,54 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and `catego
 `text_generated`, the chart's `layout_state` and the categorical, box plot
 and radar documents' `text_sizes`) are additive.
 
+- **Grotrian transition colours and label knockout**
+  ([#357](https://github.com/shim9610/figgy/issues/357)). Appearance only:
+  no value is rewritten.
+  - New `Transition.color: Option<Color>`, an arrow colour set by the host.
+  - New `TransitionArrowStyle.color_by_wavelength: Option<SpectralColors>`
+    with `SpectralColors { unit: WavelengthUnit, ultraviolet, infrared }`
+    and `WavelengthUnit { Nm, Angstrom, Um }`. Inside 380–750 nm (after
+    converting from `unit`) an arrow takes the spectral colour of its
+    `wavelength`: the standard piecewise approximation, gamma 0.8, falling
+    off over 380–420 and 700–750 nm. Outside the band it takes the UV or
+    IR colour. `SpectralColors::default()` (`helpers`) is nanometres, a
+    violet-grey UV and a warm-grey IR. `wavelength` is never rewritten.
+  - **Precedence:** `Transition.color`, then the wavelength, then
+    `color_by_value`, then `TransitionArrowStyle.color`.
+  - A label formatted from `wavelength_labels` takes its arrow's own colour
+    (from the host or the wavelength) as it is. When that colour reads
+    below 4.5:1 against the chart side its ink implies, the label is drawn
+    with a 1 px glyph outline (near-black on a light chart, near-white on a
+    dark one), so the hue stays true and the edge carries the contrast. A
+    label that passes stays plain, and a host `label` keeps its colour.
+  - **Glyph outlines** (new text path, approved on #357). New
+    `PlacedText.outline: Option<TextOutline { color, width }>` (logical px,
+    draw-time only, never serialized). The raster strokes each glyph with
+    zeno under the fill, with the stroke width in the glyph-mask cache key;
+    SVG writes `stroke`, `stroke-width` and `paint-order="stroke"` on the
+    glyph; PDF strokes the glyph's path before filling it. Extents and hit
+    boxes do not include the outline. A Rust `PlacedText { .. }` literal
+    adds `outline: None`.
+  - New `TransitionArrowStyle.label_knockout: bool`: every shaft is broken
+    where it passes under a drawn transition label's glyph ink, each
+    glyph's tight box grown by 1.5 px (a gap, not a halo); a shaft that
+    only crosses a label's empty corners or spaces stays whole. The boxes
+    come from the new `MeasureText::ink_boxes` (default: the block's
+    rectangle), which the renderer answers from the placement it draws.
+    Arrowheads are not cut. The pick keeps the whole arrow, so both sides
+    of a gap hit; the picked highlight, PNG, SVG and PDF draw the gap. A
+    document that omits it reads `false`; `EnergyLevelSeries::default()`
+    (`helpers`) starts with it on.
+  - All three fields are omitted while unset, so older documents read back
+    byte for byte.
+  - **Migration:** an exhaustive `Transition { .. }` literal adds
+    `color: None`, and an exhaustive `TransitionArrowStyle { .. }` literal
+    adds `label_knockout: false, color_by_wavelength: None`. A
+    `MeasureText` implementor needs no change (`ink_boxes` has a default).
+  - Tests: `transition_colours_follow_their_precedence_and_labels_knock_out_shafts`
+    (`energy_levels_render.rs`), `wavelengths_map_to_spectral_colours`,
+    `a_shaft_is_cut_where_it_crosses_each_box`,
+    `a_stroked_glyph_has_its_own_wider_mask` (`text_render.rs`).
 - **Contour ink, sunburst separators and readable labels, Grotrian limit
   labels** ([#357](https://github.com/shim9610/figgy/issues/357), round
   2). Appearance only; no value, position or pick target moves, and

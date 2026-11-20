@@ -202,6 +202,7 @@ fn transition(id: &str, lower: &str, upper: &str, nm: f64, aki: Option<f64>) -> 
         label_offset: [0.0; 2],
         value: aki,
         x_offset: 0.0,
+        color: None,
         wavelength: Some(nm),
         wavelength_uncertainty: None,
         intensity: String::new(),

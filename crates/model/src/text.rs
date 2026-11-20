@@ -558,6 +558,26 @@ impl TextExtents {
 pub trait MeasureText {
     fn measure_rich(&self, rt: &RichText) -> TextExtents;
 
+    /// The tight ink box of every glyph and rule of `rt` laid out with its
+    /// first baseline at `origin` (the block's left edge), handed to `each`
+    /// in placement coordinates (#357): what a knockout cuts a stroke
+    /// under. The default hands the block's measured rectangle; a renderer
+    /// hands the boxes of the glyphs it draws.
+    fn ink_boxes(
+        &self,
+        rt: &RichText,
+        origin: (f32, f32),
+        each: &mut dyn FnMut(crate::layout::RectF),
+    ) {
+        let e = self.measure_rich(rt);
+        each(crate::layout::RectF {
+            x: origin.0,
+            y: origin.1 - e.ascent,
+            width: e.width,
+            height: e.ascent + e.descent,
+        });
+    }
+
     /// The extents of `text` drawn in plain characters in `family` at
     /// `size` (no bold, italic or script): what a tick label measures. The
     /// default measures it as a plain [`RichText`] through

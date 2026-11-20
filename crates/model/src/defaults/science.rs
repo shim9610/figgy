@@ -86,6 +86,7 @@ pub(crate) fn grotrian_transition_arrow_style() -> TransitionArrowStyle {
         width: 2.25,
         head_length: 13.0,
         head_width: 10.0,
+        label_knockout: true,
         ..transition_arrow_style()
     }
 }
@@ -213,6 +214,8 @@ pub(crate) fn transition_arrow_style() -> TransitionArrowStyle {
         head_width: 7.0,
         direction: TransitionDirection::Emission,
         color_by_value: false,
+        label_knockout: false,
+        color_by_wavelength: None,
     }
 }
 

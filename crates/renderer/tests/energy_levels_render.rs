@@ -52,6 +52,7 @@ fn transition(id: &str, lower: &str, upper: &str) -> Transition {
         label_offset: [0.0; 2],
         value: None,
         x_offset: 0.0,
+        color: None,
         wavelength: None,
         wavelength_uncertainty: None,
         intensity: String::new(),
@@ -2238,6 +2239,427 @@ fn a_wavelength_label_draws_picks_and_drags_like_a_host_label() {
     // A host label wins over the formatted one.
     levels.transitions[0].label = Some(renderer::text::RichText::plain("He", BLUE, 14.0, ""));
     assert_eq!(transition_label(&chart, &levels).unwrap().0, "He");
+}
+
+/// The arrow of transition 0 of `levels` in the main view of `chart`, at
+/// 1x, tail then tip.
+fn transition_0_arrow(chart: &Chart, levels: &EnergyLevelSeries) -> ([f32; 2], [f32; 2]) {
+    use renderer::energy_levels::LevelPlacement;
+    let (space, measure) = layout_of(chart, levels);
+    let placement = LevelPlacement {
+        space: &space,
+        categories: chart.config().bottom_x.categories.as_deref().unwrap_or(&[]),
+        view: LevelView::Main,
+        colorbar: chart.config().colorbar.as_ref(),
+        picked: None,
+    };
+    let layout = placement.layout(levels, &levels.style, &measure);
+    placement
+        .transition_arrow(&layout, 0)
+        .expect("the arrow is drawn")
+}
+
+/// The pixel `t` of the way along `arrow`, at `scale`.
+fn along(arrow: ([f32; 2], [f32; 2]), t: f32, scale: f32) -> (u32, u32) {
+    let (a, b) = arrow;
+    (
+        ((a[0] + (b[0] - a[0]) * t) * scale) as u32,
+        ((a[1] + (b[1] - a[1]) * t) * scale) as u32,
+    )
+}
+
+/// The mean colour of the 3 x 3 pixels around `p`.
+fn mean_rgb(img: &RasterImage, p: (u32, u32)) -> [f32; 3] {
+    let mut sum = [0.0f32; 3];
+    for dy in 0..3 {
+        for dx in 0..3 {
+            let px = pixel(img, p.0 + dx - 1, p.1 + dy - 1);
+            for c in 0..3 {
+                sum[c] += f32::from(px[c]) / 255.0 / 9.0;
+            }
+        }
+    }
+    sum
+}
+
+// #357: an arrow's colour is its own (`Transition.color`), else its
+// wavelength's (`color_by_wavelength`), else its value's through the colour
+// bar (`color_by_value`), else the style's; the wavelength is never
+// rewritten, and a formatted label takes its arrow's own colour, darkened
+// for contrast on a light chart. A label's knockout breaks every shaft under
+// its box, the arrow still picks on both sides of the gap, the picked
+// highlight draws the gap too, and the fields round-trip and are omitted
+// while unset. At 1x and 2x.
+#[test]
+fn transition_colours_follow_their_precedence_and_labels_knock_out_shafts() {
+    use renderer::energy_levels::{LabelPart, SpectralColors};
+    let mut r = renderer();
+    let mut chart = chart();
+    chart.config_mut().colorbar = Some(renderer::config::ColorBarOptions::default());
+    let colorbar = chart.config().colorbar.clone().unwrap();
+    let mut levels = labelled_records();
+    levels.style.transition.label_knockout = false;
+    levels.transitions[0].value = Some(colorbar.axis.min);
+    let arrow = transition_0_arrow(&chart, &levels);
+    let colour_at = |r: &mut Renderer, levels: &EnergyLevelSeries, scale: f32| {
+        let img = export(r, &chart, &[series("he", levels.clone())], scale);
+        mean_rgb(&img, along(arrow, 0.15, scale))
+    };
+    let near = |got: [f32; 3], want: Color, what: &str| {
+        let d = (got[0] - want.r).abs() + (got[1] - want.g).abs() + (got[2] - want.b).abs();
+        assert!(d < 0.35, "{what}: {got:?} vs {want:?}");
+    };
+    let spectral = SpectralColors::default();
+    let yellow = spectral.color(587.56).unwrap();
+    assert!(
+        yellow.r > 0.9 && yellow.g > 0.8 && yellow.b < 0.1,
+        "{yellow:?}"
+    );
+    let mapped = colorbar
+        .colormap
+        .sample(colorbar.normalized_z(colorbar.axis.min).unwrap());
+    for scale in [1.0f32, 2.0] {
+        // The style's colour.
+        near(
+            colour_at(&mut r, &levels, scale),
+            GREEN,
+            &format!("{scale}x style"),
+        );
+        // The value's, through the colour bar.
+        let mut by_value = levels.clone();
+        by_value.style.transition.color_by_value = true;
+        near(
+            colour_at(&mut r, &by_value, scale),
+            mapped,
+            &format!("{scale}x value"),
+        );
+        // The wavelength's, over the value's.
+        let mut by_wavelength = by_value.clone();
+        by_wavelength.style.transition.color_by_wavelength = Some(spectral);
+        near(
+            colour_at(&mut r, &by_wavelength, scale),
+            yellow,
+            &format!("{scale}x wavelength"),
+        );
+        assert_eq!(by_wavelength.transitions[0].wavelength, Some(587.56));
+        // The host's, over every mapping.
+        let mut own = by_wavelength.clone();
+        own.transitions[0].color = Some(BLUE);
+        near(
+            colour_at(&mut r, &own, scale),
+            BLUE,
+            &format!("{scale}x own"),
+        );
+    }
+    // The formatted label takes its arrow's own colour as it is. A colour
+    // below 4.5:1 on the chart (587.6 nm yellow on white) is outlined in
+    // near-black; one that reads (447 nm blue) stays plain, as does a host
+    // label.
+    let label_of = |levels: &EnergyLevelSeries| {
+        let (space, measure) = layout_of(&chart, levels);
+        let placement = renderer::energy_levels::LevelPlacement {
+            space: &space,
+            categories: chart.config().bottom_x.categories.as_deref().unwrap_or(&[]),
+            view: LevelView::Main,
+            colorbar: None,
+            picked: None,
+        };
+        let layout = placement.layout(levels, &levels.style, &measure);
+        let text = placement
+            .label(
+                levels,
+                &levels.style,
+                &layout,
+                LabelPart::Transition,
+                0,
+                &measure,
+            )
+            .expect("the label");
+        let renderer::sink::TextRef::Rich(rich) = text.text else {
+            panic!("a rich label");
+        };
+        (rich.color, text.outline, text.rect())
+    };
+    let mut by_wavelength = levels.clone();
+    by_wavelength.style.transition.color_by_wavelength = Some(spectral);
+    let (ink, outline, outlined_rect) = label_of(&by_wavelength);
+    assert_eq!(ink, yellow, "the label keeps its arrow's hue");
+    let outline = outline.expect("a faint label is outlined");
+    assert!(outline.color.r < 0.2 && outline.width == 1.0, "{outline:?}");
+    let mut blue = by_wavelength.clone();
+    blue.transitions[0].wavelength = Some(447.15);
+    let (ink, outline, _) = label_of(&blue);
+    assert_eq!(Some(ink), spectral.color(447.15));
+    assert_eq!(outline, None, "a readable label stays plain");
+    let mut hosted = by_wavelength.clone();
+    hosted.transitions[0].label = Some(renderer::text::RichText::plain("x", BLUE, 14.0, ""));
+    assert_eq!(label_of(&hosted).1, None, "a host label is not outlined");
+    let (_, _, plain_rect) = label_of(&levels);
+    assert_eq!(outlined_rect, plain_rect, "the outline leaves the hit box");
+    // Drawn: dark outline pixels ring the yellow glyphs at 1x and 2x, with
+    // four times the count at 2x (2x is 1x scaled), and the label still
+    // picks as before.
+    let is_dark = |p: &[u8]| p[0] < 60 && p[1] < 60 && p[2] < 70;
+    let mut counts = Vec::new();
+    for scale in [1.0f32, 2.0] {
+        let lit = export(
+            &mut r,
+            &chart,
+            &[series("he", by_wavelength.clone())],
+            scale,
+        );
+        let plain = export(&mut r, &chart, &[series("he", blue.clone())], scale);
+        // The pixels the faint label darkens over the same chart with a
+        // readable label: its outline.
+        let (x0, y0) = (
+            (outlined_rect.x * scale) as u32,
+            (outlined_rect.y * scale) as u32,
+        );
+        let (x1, y1) = (
+            ((outlined_rect.x + outlined_rect.width) * scale).ceil() as u32,
+            ((outlined_rect.y + outlined_rect.height) * scale).ceil() as u32,
+        );
+        let added = (y0..y1)
+            .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+            .filter(|&(x, y)| is_dark(pixel(&lit, x, y)) && !is_dark(pixel(&plain, x, y)))
+            .count();
+        assert!(added > 20, "{scale}x the outline is drawn: {added}");
+        counts.push(added as f32);
+        match pick(
+            &mut r,
+            &chart,
+            &[series("he", by_wavelength.clone())],
+            scale,
+            centre_px(outlined_rect, scale),
+        ) {
+            Some(renderer::PickedData::ValueLabel {
+                part: Some(LabelPart::Transition),
+                ..
+            }) => {}
+            other => panic!("{scale}x the outlined label picks: {other:?}"),
+        }
+    }
+    let ratio = counts[1] / counts[0];
+    assert!((2.5..=5.5).contains(&ratio), "2x outline ink {ratio} x 1x");
+    // SVG and PDF carry the stroke under the fill.
+    let svg = r
+        .export_svg_blocking(
+            renderer::ExportSource::chart(&chart, &[series("he", by_wavelength.clone())]),
+            renderer::ExportOptions::document(1.0),
+        )
+        .expect("svg");
+    assert!(
+        svg.contains("paint-order=\"stroke\""),
+        "the SVG strokes the glyphs"
+    );
+    let plain_svg = r
+        .export_svg_blocking(
+            renderer::ExportSource::chart(&chart, &[series("he", blue.clone())]),
+            renderer::ExportOptions::document(1.0),
+        )
+        .expect("svg");
+    assert!(
+        !plain_svg.contains("paint-order"),
+        "no stroke without an outline"
+    );
+    let pdf = r
+        .export_pdf_blocking(
+            renderer::ExportSource::chart(&chart, &[series("he", by_wavelength.clone())]),
+            renderer::ExportOptions::document(1.0),
+        )
+        .expect("pdf");
+    let plain_pdf = r
+        .export_pdf_blocking(
+            renderer::ExportSource::chart(&chart, &[series("he", blue.clone())]),
+            renderer::ExportOptions::document(1.0),
+        )
+        .expect("pdf");
+    assert!(pdf.len() > plain_pdf.len(), "the PDF strokes the glyphs");
+
+    // Knockout: a label dragged onto the middle of its arrow. The shaft is
+    // broken only under the glyphs' ink: under every glyph no shaft ink is
+    // left, while a spaced label's empty middle leaves the shaft whole.
+    use renderer::text::MeasureText as _;
+    let placed = |levels: &EnergyLevelSeries| {
+        let (space, measure) = layout_of(&chart, levels);
+        let placement = renderer::energy_levels::LevelPlacement {
+            space: &space,
+            categories: chart.config().bottom_x.categories.as_deref().unwrap_or(&[]),
+            view: LevelView::Main,
+            colorbar: None,
+            picked: None,
+        };
+        let layout = placement.layout(levels, &levels.style, &measure);
+        let text = placement
+            .label(
+                levels,
+                &levels.style,
+                &layout,
+                LabelPart::Transition,
+                0,
+                &measure,
+            )
+            .expect("the label");
+        let (rich, _) = text.text.rich().expect("a rich label");
+        let mut ink = Vec::new();
+        measure.ink_boxes(rich, text.origin, &mut |r| ink.push(r));
+        (text.rect(), ink)
+    };
+    // The label's place depends on its offset only through the drag, so a
+    // few corrections centre it on the arrow's middle.
+    let onto_middle = |levels: &mut EnergyLevelSeries| {
+        let mid = [
+            (arrow.0[0] + arrow.1[0]) / 2.0,
+            (arrow.0[1] + arrow.1[1]) / 2.0,
+        ];
+        for _ in 0..4 {
+            let (rect, _) = placed(levels);
+            let offset = &mut levels.transitions[0].label_offset;
+            offset[0] += mid[0] - (rect.x + rect.width / 2.0);
+            offset[1] += mid[1] - (rect.y + rect.height / 2.0);
+        }
+    };
+    // Points along the arrow's centre line: those inside a glyph's ink, and
+    // those inside the label's rectangle at least 3 px from every glyph.
+    let samples = |rect: renderer::layout::RectF, ink: &[renderer::layout::RectF]| {
+        let inside = |r: &renderer::layout::RectF, p: [f32; 2], m: f32| {
+            p[0] >= r.x - m
+                && p[0] <= r.x + r.width + m
+                && p[1] >= r.y - m
+                && p[1] <= r.y + r.height + m
+        };
+        let (mut under, mut clear) = (Vec::new(), Vec::new());
+        for k in 0..=400 {
+            let t = k as f32 / 400.0;
+            let p = [
+                arrow.0[0] + (arrow.1[0] - arrow.0[0]) * t,
+                arrow.0[1] + (arrow.1[1] - arrow.0[1]) * t,
+            ];
+            if ink.iter().any(|r| inside(r, p, -0.5)) {
+                under.push(p);
+            } else if inside(&rect, p, 0.0) && ink.iter().all(|r| !inside(r, p, 3.0)) {
+                clear.push(p);
+            }
+        }
+        (under, clear)
+    };
+    let green_at = |img: &RasterImage, p: [f32; 2], scale: f32| {
+        is_green(pixel(img, (p[0] * scale) as u32, (p[1] * scale) as u32))
+    };
+    let mut knocked = levels.clone();
+    knocked.style.transition.label_knockout = true;
+    onto_middle(&mut knocked);
+    let (on, ink) = placed(&knocked);
+    let (under, _) = samples(on, &ink);
+    assert!(!under.is_empty(), "the arrow passes under the glyphs");
+    // A label with an empty middle: two glyphs far apart.
+    let mut spaced = knocked.clone();
+    spaced.transitions[0].label = Some(renderer::text::RichText::plain(
+        "a                    a",
+        MAGENTA,
+        14.0,
+        "",
+    ));
+    onto_middle(&mut spaced);
+    let (spaced_rect, spaced_ink) = placed(&spaced);
+    let (_, clear) = samples(spaced_rect, &spaced_ink);
+    assert!(
+        !clear.is_empty(),
+        "the arrow crosses the label's empty middle"
+    );
+    let mut unknocked = knocked.clone();
+    unknocked.style.transition.label_knockout = false;
+    for scale in [1.0f32, 2.0] {
+        let plain = export(&mut r, &chart, &[series("he", unknocked.clone())], scale);
+        let cut = export(&mut r, &chart, &[series("he", knocked.clone())], scale);
+        assert!(
+            under.iter().any(|p| green_at(&plain, *p, scale)),
+            "{scale}x without the knockout the shaft runs under the glyphs"
+        );
+        assert!(
+            under.iter().all(|p| !green_at(&cut, *p, scale)),
+            "{scale}x the shaft is cut under the glyphs"
+        );
+        assert!(
+            ink_in(&cut, on, scale, is_magenta) > 0,
+            "{scale}x the label draws"
+        );
+        let open = export(&mut r, &chart, &[series("he", spaced.clone())], scale);
+        assert!(
+            clear.iter().all(|p| green_at(&open, *p, scale)),
+            "{scale}x the shaft stays whole across the label's empty area"
+        );
+        // Both sides of the gap still pick the arrow.
+        for t in [0.2f32, 0.8] {
+            match pick(
+                &mut r,
+                &chart,
+                &[series("he", knocked.clone())],
+                scale,
+                along(arrow, t, scale),
+            ) {
+                Some(renderer::PickedData::Point { point_index: 0, .. }) => {}
+                other => panic!("{scale}x {t}: {other:?}"),
+            }
+        }
+        // The picked highlight draws the same gap.
+        let mut picked = Chart::new(chart.config().clone());
+        picked.config_mut().picked_data = Some(DataSelectionsConfig {
+            refs: vec![PickedDataRef::Point {
+                source_id: None,
+                series_id: "he".into(),
+                point_index: 0,
+            }],
+            ..DataSelectionsConfig::default()
+        });
+        let lit = export(&mut r, &picked, &[series("he", knocked.clone())], scale);
+        assert!(
+            under.iter().all(|p| !green_at(&lit, *p, scale)),
+            "{scale}x picked"
+        );
+        assert!(
+            ink_in(
+                &lit,
+                renderer::layout::RectF {
+                    x: on.x - 30.0,
+                    width: on.width + 60.0,
+                    ..on
+                },
+                scale,
+                is_green
+            ) > 0,
+            "{scale}x picked arrow drawn"
+        );
+    }
+
+    // The fields round-trip and are omitted while unset.
+    let mut all = knocked.clone();
+    all.style.transition.color_by_wavelength = Some(SpectralColors {
+        unit: renderer::energy_levels::WavelengthUnit::Angstrom,
+        ..spectral
+    });
+    all.transitions[0].color = Some(BLUE);
+    let json = serde_json::to_string(&all).unwrap();
+    assert!(json.contains("label_knockout") && json.contains("color_by_wavelength"));
+    let back: EnergyLevelSeries = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, all);
+    let mut unset = all.clone();
+    unset.style.transition.label_knockout = false;
+    unset.style.transition.color_by_wavelength = None;
+    unset.transitions[0].color = None;
+    let json = serde_json::to_string(&unset).unwrap();
+    assert!(
+        !json.contains("label_knockout") && !json.contains("color_by_wavelength"),
+        "{json}"
+    );
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(
+        value["transitions"][0].get("color").is_none(),
+        "no transition colour: {json}"
+    );
+    // A document written before the fields reads them unset.
+    let back: EnergyLevelSeries = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, unset);
 }
 
 // #258: a picked transition is widened under its formatted label, which

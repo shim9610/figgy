@@ -16,6 +16,16 @@ pub struct LevelPlacement<'a> {
 
 /// The gap between a stroke's end and its label, logical pixels.
 pub(super) const LABEL_GAP: f32 = 4.0;
+/// The pad around each glyph's ink that a knockout
+/// ([`TransitionArrowStyle::label_knockout`], #357) cuts from the shafts,
+/// logical pixels.
+pub(super) const KNOCKOUT_PAD: f32 = 1.5;
+/// The contrast a formatted transition label in its arrow's colour needs
+/// to stand without an outline (#357, WCAG AA for text).
+pub(super) const LABEL_CONTRAST: f32 = 4.5;
+/// How far a faint label's outline reaches past its glyphs, logical
+/// pixels (#357).
+pub(super) const LABEL_OUTLINE_PX: f32 = 1.0;
 /// The narrowest stroke share of a column slot the one-time fit
 /// ([`LevelPlacement::fitted_slot_fraction`], #357) narrows a style to.
 pub(super) const MIN_FITTED_SLOT_FRACTION: f32 = 0.35;
@@ -512,7 +522,19 @@ impl LevelPlacement<'_> {
                 .transitions
                 .iter()
                 .map(|t| match t.drawn_label(Some(labels)) {
-                    Some(std::borrow::Cow::Owned(text)) => Some(text),
+                    Some(std::borrow::Cow::Owned(mut text)) => {
+                        // A label formatted for an arrow coloured on its
+                        // own (by the host or by its wavelength) takes that
+                        // colour as it is (#357); [`Self::label`] outlines
+                        // it where it reads too faintly.
+                        if let Some(color) = self.own_transition_color(style, t) {
+                            text.color = color;
+                            for segment in &mut text.segments {
+                                segment.color = None;
+                            }
+                        }
+                        Some(text)
+                    }
                     _ => None,
                 })
                 .collect(),
@@ -1718,6 +1740,7 @@ impl LevelPlacement<'_> {
             origin,
             extents,
             rotation: None,
+            outline: None,
         })
     }
 
@@ -1941,7 +1964,15 @@ impl LevelPlacement<'_> {
         (conflicts, moved)
     }
 
+    /// The colour of a transition's arrow (#357): its own
+    /// ([`Transition::color`]), else its wavelength's
+    /// ([`TransitionArrowStyle::color_by_wavelength`]), else its value's
+    /// through the colour bar ([`TransitionArrowStyle::color_by_value`]),
+    /// else the style's.
     fn transition_color(&self, style: &EnergyLevelStyle, transition: &Transition) -> Color {
+        if let Some(color) = self.own_transition_color(style, transition) {
+            return color;
+        }
         let arrow = &style.transition;
         if !arrow.color_by_value {
             return arrow.color;
@@ -1953,6 +1984,20 @@ impl LevelPlacement<'_> {
             },
             _ => arrow.color,
         }
+    }
+
+    /// The colour a transition's arrow takes on its own, from the host
+    /// ([`Transition::color`]) or from its wavelength, or `None` when it
+    /// takes a mapped value's or the style's.
+    fn own_transition_color(
+        &self,
+        style: &EnergyLevelStyle,
+        transition: &Transition,
+    ) -> Option<Color> {
+        transition.color.or_else(|| {
+            let spectral = style.transition.color_by_wavelength.as_ref()?;
+            spectral.color(transition.wavelength?)
+        })
     }
 
     /// The text block of a label at `anchor` (a stroke end or a midpoint),
@@ -1980,6 +2025,7 @@ impl LevelPlacement<'_> {
             origin: (origin.0 + offset[0], origin.1 + offset[1]),
             extents,
             rotation: None,
+            outline: None,
         }
     }
 
@@ -2112,14 +2158,18 @@ impl LevelPlacement<'_> {
             LabelPart::Transition => {
                 let transition = records.transitions.get(index)?;
                 let (spot, side) = layout.transition_spot.get(index).copied().flatten()?;
-                Some(Self::label_block(
-                    layout.transition_text(records, index)?,
-                    measure,
-                    spot,
-                    spot[0],
-                    side,
-                    transition.label_offset,
-                ))
+                let text = layout.transition_text(records, index)?;
+                let mut block =
+                    Self::label_block(text, measure, spot, spot[0], side, transition.label_offset);
+                // A formatted label in its arrow's own colour that reads
+                // below 4.5:1 is outlined (#357); a host label is not.
+                if transition.label.is_none()
+                    && self.own_transition_color(style, transition).is_some()
+                    && let Some(labels) = &style.wavelength_labels
+                {
+                    block.outline = faint_label_outline(text.color, labels.text.color);
+                }
+                Some(block)
             }
             LabelPart::Limit => self.limit_label(records, index, measure),
         }
@@ -2192,6 +2242,36 @@ impl LevelPlacement<'_> {
             }
         }
         let arrow = &style.transition;
+        // The knockout boxes (#357): the ink of every glyph of every drawn
+        // transition label, grown by a pad. A shaft is broken only where it
+        // passes under them, not across a label's empty corners.
+        let mut knockouts: Vec<crate::layout::RectF> = Vec::new();
+        if arrow.label_knockout {
+            for index in 0..records.transitions.len() {
+                let Some(text) = self.label(
+                    records,
+                    style,
+                    &layout,
+                    LabelPart::Transition,
+                    index,
+                    measure,
+                ) else {
+                    continue;
+                };
+                let Some((rich, _)) = text.text.rich() else {
+                    continue;
+                };
+                measure.ink_boxes(rich, text.origin, &mut |r| {
+                    knockouts.push(crate::layout::RectF {
+                        x: r.x - KNOCKOUT_PAD,
+                        y: r.y - KNOCKOUT_PAD,
+                        width: r.width + 2.0 * KNOCKOUT_PAD,
+                        height: r.height + 2.0 * KNOCKOUT_PAD,
+                    });
+                });
+            }
+        }
+        let mut cuts: Vec<(f32, f32)> = Vec::new();
         for (index, transition) in records.transitions.iter().enumerate() {
             let Some((tail, tip)) = self.transition_arrow(&layout, index) else {
                 continue;
@@ -2212,17 +2292,31 @@ impl LevelPlacement<'_> {
                 (0.0, 0.0)
             };
             let base = [tip[0] - ux * head, tip[1] - uy * head];
-            sink.stroke(
-                slot,
-                tail,
-                if head > 0.0 { base } else { tip },
-                &StrokeStyle {
-                    width,
-                    color,
-                    dash: &[],
-                    tag: "energy_transition",
-                },
-            );
+            let end = if head > 0.0 { base } else { tip };
+            let shaft = StrokeStyle {
+                width,
+                color,
+                dash: &[],
+                tag: "energy_transition",
+            };
+            // The shaft's pieces between the knockout boxes it crosses.
+            knockout_cuts(tail, end, &knockouts, &mut cuts);
+            let at = |t: f32| {
+                [
+                    tail[0] + (end[0] - tail[0]) * t,
+                    tail[1] + (end[1] - tail[1]) * t,
+                ]
+            };
+            let mut from = 0.0f32;
+            for &(a, b) in &cuts {
+                if a > from {
+                    sink.stroke(slot, at(from), at(a), &shaft);
+                }
+                from = from.max(b);
+            }
+            if from < 1.0 {
+                sink.stroke(slot, at(from), end, &shaft);
+            }
             if head > 0.0 {
                 let half = widen(picked, arrow.head_width) / 2.0;
                 let (nx, ny) = (-uy * half, ux * half);
@@ -2395,5 +2489,117 @@ impl LevelPlacement<'_> {
             }
         }
         best
+    }
+}
+
+/// The outline of a formatted transition label drawn in `color` on a
+/// chart whose label ink is `ink` (#357): `None` when `color` reaches a
+/// WCAG contrast of [`LABEL_CONTRAST`] against the side `ink` implies
+/// (white when `ink` is dark, a relative luminance below 0.4; black
+/// otherwise), else a 1 px near-black (or near-white) outline that carries
+/// the contrast while the glyphs keep their colour.
+fn faint_label_outline(color: Color, ink: Color) -> Option<crate::sink::TextOutline> {
+    let linear = |c: f32| {
+        if c <= 0.040_45 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let luminance = |c: Color| 0.2126 * linear(c.r) + 0.7152 * linear(c.g) + 0.0722 * linear(c.b);
+    let dark_ink = luminance(ink) < 0.4;
+    let (l, background) = (luminance(color), if dark_ink { 1.0 } else { 0.0 });
+    let contrast = (l.max(background) + 0.05) / (l.min(background) + 0.05);
+    (contrast < LABEL_CONTRAST).then(|| crate::sink::TextOutline {
+        color: if dark_ink {
+            Color::from_rgb8(26, 26, 31)
+        } else {
+            Color::from_rgb8(245, 245, 245)
+        },
+        width: LABEL_OUTLINE_PX,
+    })
+}
+
+/// The parts of the segment from `a` to `b` (as fractions `0..=1` along
+/// it) that lie inside any of `boxes`, sorted and merged, written into
+/// `cuts` (#357). Each box clips the segment as a slab intersection.
+fn knockout_cuts(
+    a: [f32; 2],
+    b: [f32; 2],
+    boxes: &[crate::layout::RectF],
+    cuts: &mut Vec<(f32, f32)>,
+) {
+    cuts.clear();
+    let d = [b[0] - a[0], b[1] - a[1]];
+    for r in boxes {
+        let (mut t0, mut t1) = (0.0f32, 1.0f32);
+        let mut inside = true;
+        for (p, q) in [
+            (-d[0], a[0] - r.x),
+            (d[0], r.x + r.width - a[0]),
+            (-d[1], a[1] - r.y),
+            (d[1], r.y + r.height - a[1]),
+        ] {
+            if p == 0.0 {
+                if q < 0.0 {
+                    inside = false;
+                    break;
+                }
+            } else {
+                let t = q / p;
+                if p < 0.0 {
+                    t0 = t0.max(t);
+                } else {
+                    t1 = t1.min(t);
+                }
+            }
+        }
+        if inside && t0 < t1 {
+            cuts.push((t0, t1));
+        }
+    }
+    cuts.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+}
+
+#[cfg(test)]
+mod knockout_tests {
+    use super::knockout_cuts;
+    use crate::layout::RectF;
+
+    // #357: a shaft is cut where it crosses each box, in order along it;
+    // a box it misses cuts nothing, and a box over one end cuts from it.
+    #[test]
+    fn a_shaft_is_cut_where_it_crosses_each_box() {
+        let boxes = [
+            RectF {
+                x: 60.0,
+                y: -5.0,
+                width: 10.0,
+                height: 10.0,
+            },
+            RectF {
+                x: 20.0,
+                y: -5.0,
+                width: 10.0,
+                height: 10.0,
+            },
+            RectF {
+                x: 40.0,
+                y: 20.0,
+                width: 10.0,
+                height: 10.0,
+            },
+            RectF {
+                x: -5.0,
+                y: -5.0,
+                width: 10.0,
+                height: 10.0,
+            },
+        ];
+        let mut cuts = Vec::new();
+        knockout_cuts([0.0, 0.0], [100.0, 0.0], &boxes, &mut cuts);
+        assert_eq!(cuts, vec![(0.0, 0.05), (0.2, 0.3), (0.6, 0.7)]);
+        knockout_cuts([0.0, 50.0], [100.0, 50.0], &boxes, &mut cuts);
+        assert!(cuts.is_empty());
     }
 }

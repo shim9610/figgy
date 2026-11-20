@@ -483,6 +483,7 @@ impl VectorOut for PdfOut {
         hint: bool,
         pen: [f32; 2],
         color: Color,
+        outline: Option<(Color, f32)>,
     ) {
         if !(pen[0].is_finite() && pen[1].is_finite() && size.is_finite() && size > 0.0) {
             return;
@@ -491,6 +492,23 @@ impl VectorOut for PdfOut {
         self.content.extend_from_slice(b"1 0 0 1 ");
         push_nums(&mut self.content, &pen);
         self.content.extend_from_slice(b"cm\n");
+        // The outline (#357): the glyph's path stroked first, so the fill
+        // covers the stroke's inner half.
+        if let Some((stroke, width)) = outline.filter(|(_, w)| w.is_finite() && *w > 0.0) {
+            self.set_alpha(stroke.a);
+            self.color(stroke, b"RG");
+            push_nums(&mut self.content, &[width]);
+            self.content.extend_from_slice(b"w 1 j\n");
+            let start = self.content.len();
+            crate::text_render::glyph_outline(font, glyph, size, hint, &mut |segment| {
+                if segment_is_finite(&segment) {
+                    self.push_segment(segment);
+                }
+            });
+            if self.content.len() > start {
+                self.content.extend_from_slice(b"S\n");
+            }
+        }
         self.set_alpha(color.a);
         self.color(color, b"rg");
         let start = self.content.len();
