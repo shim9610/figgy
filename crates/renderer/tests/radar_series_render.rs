@@ -19,6 +19,7 @@ use test_gpu::BlockOn as _;
 mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::ShowForPick as _;
 use harness::{
     BLUE, MID_GREEN as GREEN, RED, categories, col, export, is_empty_rgba as is_empty, save,
 };
@@ -1274,9 +1275,14 @@ fn a_hundred_spokes_draw_pick_and_highlight() {
         display_scale: 1.0,
         max_distance_px: 2.0,
     };
-    let hit = test_gpu::block_on(r.pick_chart(id, request).unwrap().resolve())
-        .unwrap()
-        .expect("the last vertex picks");
+    let hit = test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap()
+    .expect("the last vertex picks");
     assert_eq!((hit.series_id.as_str(), hit.point_index), ("many", N - 1));
     // Its picked ring draws outside the marker, and nowhere near vertex 0.
     chart.config_mut().picked_data = Some(DataSelectionsConfig {
@@ -1373,9 +1379,14 @@ fn twenty_radar_series_draw_pick_and_highlight() {
         display_scale: 1.0,
         max_distance_px: 2.0,
     };
-    let hit = test_gpu::block_on(r.pick_chart(id, request).unwrap().resolve())
-        .unwrap()
-        .expect("the last series' vertex picks");
+    let hit = test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap()
+    .expect("the last series' vertex picks");
     assert_eq!((hit.series_id.as_str(), hit.point_index), ("s19", 3));
     chart.config_mut().picked_data = Some(DataSelectionsConfig {
         refs: vec![PickedDataRef::Point {
