@@ -920,9 +920,15 @@ fn subplot_members_draw_shifted_in_their_own_area() {
         display_scale: 1.0,
         max_distance_px: 3.0,
     };
-    let hit = crate::test_gpu::block_on(r.pick_chart(id, request).unwrap().resolve())
-        .unwrap()
-        .expect("the shifted subplot member picks");
+    // A pick hits the ink its on-screen prepare drew (#381).
+    let hit = crate::test_gpu::block_on(
+        r.shown_for_pick(id, &request)
+            .pick_chart(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap()
+    .expect("the shifted subplot member picks");
     assert_eq!((hit.series_id.as_str(), hit.point_index), ("t1", 0));
 }
 
