@@ -411,6 +411,7 @@ fn a_subplot_linked_to_a_weibull_axis_takes_its_scale() {
         link_y: Some(renderer::CellRef::Parent),
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     }];
     let linked = config.subplot_config(0).expect("the subplot resolves");
     assert_eq!(

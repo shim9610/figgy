@@ -2064,6 +2064,7 @@ mod box_plot_tests {
             link_y: None,
             marker: None,
             text_scale: Default::default(),
+            anchor: None,
         });
         // The subplot's own groups decide: stacked there is rejected.
         assert!(config.validate_box_plots(&[boxes("a")]).is_ok());

@@ -943,6 +943,7 @@ fn overlays_and_subplots_draw_their_own_bar_groups() {
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     });
     let mut sub_one = bars("sub_one", GREEN, direction);
     sub_one.y_column = "one".into();

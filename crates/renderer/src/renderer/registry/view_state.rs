@@ -231,7 +231,13 @@ impl ChartViewState {
                 marker: _,
                 // A mode, not a range or an area.
                 text_scale: _,
+                anchor,
             } = subplot;
+            // A frame the view state places owns the inset's placement
+            // again (#392): the next parent move anchors it from there.
+            if config.chart_area.0 != state.chart_area {
+                *anchor = None;
+            }
             state.apply_to(config);
         }
     }

@@ -15846,6 +15846,7 @@ fn layered_test_config(overlays: usize, members: usize, subplots: usize) -> Conf
                 link_y: None,
                 marker: None,
                 text_scale: Default::default(),
+                anchor: None,
             }
         })
         .collect();

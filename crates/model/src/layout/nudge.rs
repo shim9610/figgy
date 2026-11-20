@@ -294,6 +294,10 @@ impl Config {
             if let Some(before) = before {
                 self.follow_parent_areas(&before, placed);
             }
+            // A dragged or resized frame is the subplot's new placement.
+            if let Some(index) = placed {
+                self.anchor_placed(index);
+            }
         }
         result
     }

@@ -718,6 +718,7 @@ fn chart_with_inset() -> Chart {
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     });
     chart
 }
@@ -868,6 +869,7 @@ fn nested_and_overlapping_insets_draw_and_pick_in_tree_order() {
             link_y: None,
             marker: None,
             text_scale: Default::default(),
+            anchor: None,
         }
     };
     const GREEN: Color = Color::from_rgb8(190, 235, 190);
@@ -3361,8 +3363,10 @@ fn assert_inset_in_place(config: &renderer::Config, expected: [f64; 4], px: f64,
 }
 
 // #392: the He I scene's inset keeps its place in the parent's plot through
-// a resize sequence (smaller, larger, another aspect, a layout fit), and
-// every export at 2x is the 1x frame scaled: the inset's plot fill sits at
+// a resize sequence (smaller, larger, two other aspects, a layout fit after
+// each), stays drawable when the chart is shrunk below what the inset's own
+// plot needs, and is back exactly where it was when the chart grows back.
+// Every export at 2x is the 1x frame scaled: the inset's plot fill sits at
 // its scaled place and the image is twice the size.
 #[test]
 fn the_he_inset_follows_its_parent_through_a_resize_sequence() {
@@ -3370,20 +3374,38 @@ fn the_he_inset_follows_its_parent_through_a_resize_sequence() {
     let scene = scenes::build(&mut r, scenes::SceneKind::EnergyLevels, 1_000).expect("scene");
     let mut chart = Chart::new(scene.config.clone());
     let start = inset_fractions(chart.config());
-    let mut previous = start;
-    for (step, (w, h)) in [(720, 540), (1600, 1100), (1400, 600), (900, 1000)]
-        .into_iter()
-        .enumerate()
-    {
+    let original = chart.config().chart_area.0;
+    // The scene's layout fitted at its own size: the frame to come back to.
+    chart.fit_layout();
+    assert_inset_in_place(chart.config(), start, 0.5, "fitted");
+    let frame = chart.config().subplots[0].config.chart_area.0;
+    let plot_at_start = chart.config().data_area().unwrap().0;
+    let steps = [
+        (720, 540, true),
+        (1600, 1100, true),
+        (1400, 600, true),
+        (900, 1000, true),
+        // Below what the inset's own plot needs.
+        (420, 300, false),
+        (original.width, original.height, true),
+    ];
+    for (step, (w, h, in_place)) in steps.into_iter().enumerate() {
         chart.set_area(0, 0, w, h);
-        let context = format!("{w}x{h}");
-        assert_inset_in_place(chart.config(), previous, 0.5, &context);
-        assert_inset_in_place(chart.config(), start, 1.5 + step as f64, &context);
         chart.fit_layout();
-        assert_inset_in_place(chart.config(), start, 2.5 + step as f64, &context);
-        previous = inset_fractions(chart.config());
+        let context = format!("{w}x{h}");
+        if in_place {
+            // Derived from the remembered placement every time: no drift.
+            assert_inset_in_place(chart.config(), start, 0.5, &context);
+        }
         let inset = chart.config().subplot_config(0).unwrap();
-        let plot = inset.data_area().unwrap().0;
+        let plot = inset.data_area().expect("the inset keeps a plot").0;
+        let parent = chart.config().data_area().unwrap().0;
+        if plot.width < parent.width && plot.height < parent.height {
+            assert!(
+                inset.chart_area.0.within(&parent) || !in_place,
+                "{context}: inside the parent's plot"
+            );
+        }
         let images = [1.0f32, 2.0].map(|scale| {
             r.export_rgba(
                 renderer::ExportSource::chart(&chart, &scene.series),
@@ -3410,16 +3432,21 @@ fn the_he_inset_follows_its_parent_through_a_resize_sequence() {
                 )
                 .unwrap();
             }
-            // The inset's opaque plot fill, a few pixels inside its corner.
+            // The inset's opaque plot fill, a few pixels inside its corner;
+            // a plot kept at its smallest is checked for being drawn.
             let fill = pixel(
                 img,
                 (plot.x + 3) * scale,
                 (plot.y + plot.height - 3) * scale,
             );
-            assert!(
-                fill[0] >= 245 && fill[1] >= 245 && fill[2] >= 245,
-                "{context} {scale}x inset fill {fill:?}"
-            );
+            if plot.width >= 12 && plot.height >= 12 {
+                assert!(
+                    fill[0] >= 245 && fill[1] >= 245 && fill[2] >= 245,
+                    "{context} {scale}x inset fill {fill:?}"
+                );
+            } else {
+                assert_eq!(fill[3], 255, "{context} {scale}x inset drawn");
+            }
         }
         // The pointer on the inset's plot belongs to the inset.
         let centre = (
@@ -3432,6 +3459,10 @@ fn the_he_inset_follows_its_parent_through_a_resize_sequence() {
             Some(0)
         );
     }
+    // Back at the first size the plot is where it was, and so is the
+    // inset: exactly the frame it started with.
+    assert_eq!(chart.config().data_area().unwrap().0, plot_at_start);
+    assert_eq!(chart.config().subplots[0].config.chart_area.0, frame);
 }
 
 // #392: an inset follows `set_area` with its picks, its frame selection and
@@ -3526,6 +3557,9 @@ fn a_dragged_inset_follows_later_resizes_and_keeps_its_picks() {
     }
     // The document round trips and draws the same.
     let json = serde_json::to_string(chart.config()).unwrap();
+    // The dragged placement is stored as the inset's anchor.
+    assert!(chart.config().subplots[0].anchor.is_some());
+    assert!(json.contains("\"anchor\""), "anchor serialized");
     let back: renderer::Config = serde_json::from_str(&json).unwrap();
     assert_eq!(&back, chart.config());
     assert_eq!(serde_json::to_string(&back).unwrap(), json);

@@ -2,6 +2,7 @@ use super::{
     ChartArea, Config, DataArea, LayoutError, Side, chart_title_contribution, colorbar_parts,
     tick_contribution,
 };
+use crate::layer::{CellRef, InsetAnchor};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FitStrategy {
@@ -179,7 +180,12 @@ impl Config {
     /// (#205): anywhere, inside the parent chart, over another panel or
     /// beside every one. The subplot's plot must fit in the new frame; on an
     /// error, including an `index` past the subplot list
-    /// ([`LayoutError::Infeasible`]), nothing changes.
+    /// ([`LayoutError::Infeasible`]), nothing changes. The placed frame is
+    /// the subplot's new placement: its [`Subplot::anchor`] is written from
+    /// it, or cleared when the frame lies in no plot, and the insets nested
+    /// in it follow it (#392).
+    ///
+    /// [`Subplot::anchor`]: crate::layer::Subplot::anchor
     pub fn set_subplot_area(&mut self, index: usize, area: ChartArea) -> Result<(), LayoutError> {
         let mut probe = self.subplot_config(index).ok_or(LayoutError::Infeasible)?;
         probe.chart_area = area.clone();
@@ -189,91 +195,176 @@ impl Config {
         if let Some(before) = before {
             self.follow_parent_areas(&before, Some(index));
         }
+        self.anchor_placed(index);
         Ok(())
     }
 
-    /// Whether a subplot of this document is an inset now, nested in
-    /// another panel's data area ([`Self::insets`]).
+    /// Whether a subplot of this document is an inset: nested in another
+    /// panel's data area ([`Self::insets`]) or anchored in one
+    /// ([`Subplot::anchor`](crate::layer::Subplot::anchor)).
     pub fn has_insets(&self) -> bool {
-        self.insets().next().is_some()
+        self.subplots.iter().any(|s| s.anchor.is_some()) || self.insets().next().is_some()
     }
 
-    /// Move and scale every inset of `before` with its parent's data area
-    /// (#392): each edge of the inset's frame keeps its fraction of the
-    /// parent's data area, from `before`'s parent area to `self`'s, rounded
-    /// to whole pixels. The frame stored in `chart_area` stays the one owner
-    /// of where the inset is; each call that moves a parent's data area
-    /// (a plot-area drag or resize, a band drag, a layout fit,
-    /// [`Self::fit_to_data_area`], a chart's new area) calls this with the
-    /// document as it was before the call.
+    /// Carry every inset of `before` with its parent's data area (#392).
     ///
-    /// Insets are visited parents first ([`crate::layout::inset_paint_order`]),
-    /// so an inset nested in an inset follows the moved one. Every frame is
-    /// mapped from its frame in `before`, so a call never compounds the
-    /// rounding of an earlier one in the same edit. `placed` is a subplot
-    /// the edit placed itself (a frame drag or resize,
-    /// [`Self::set_subplot_area`]): its frame stays as placed and only its
-    /// own insets follow it. A parent without a data area in either
-    /// document, or a document whose subplot list changed, moves nothing.
+    /// An inset's placement is its [`Subplot::anchor`]: the edges of its
+    /// frame as fractions of its parent's data area. Its frame
+    /// (`chart_area`) is derived from it here: the anchor mapped into the
+    /// parent's data area in `self`, rounded to whole pixels, grown about its
+    /// centre to the size the inset's own plot needs and kept inside the
+    /// parent's plot when it fits there. The growth is never written back,
+    /// so a parent that grows again gets the remembered placement exactly.
+    /// An inset without an anchor (a released document, a subplot never
+    /// carried) is anchored from its frame in `before` the first time its
+    /// parent's data area changes; while it stays where it was, nothing is
+    /// written.
     ///
-    /// An inset is never made smaller than the frame its own plot needs: a
-    /// parent shrunk past that keeps the inset at that size about the
-    /// proportional centre, inside the parent's plot, and a later growth
-    /// carries it from that size.
+    /// Each call that moves a parent's data area (a plot-area drag or
+    /// resize, a band drag, a layout fit, [`Self::fit_to_data_area`], a
+    /// chart's new area) calls this with the document as it was before the
+    /// call. Insets are visited parents first (the anchor's parent, else
+    /// [`crate::layout::inset_parent`] in `before`), so an inset nested in an
+    /// inset follows it, also while the growth keeps it larger than its
+    /// parent's plot. `placed` is a subplot the edit placed itself (a frame
+    /// drag or resize, [`Self::set_subplot_area`]): its frame stays as placed
+    /// and only its own insets follow it. A parent without a data area, or a
+    /// document whose subplot list changed, moves nothing.
+    ///
+    /// [`Subplot::anchor`]: crate::layer::Subplot::anchor
     pub fn follow_parent_areas(&mut self, before: &Config, placed: Option<usize>) {
-        use crate::layout::{Rect, inset_parent};
         if self.subplots.len() != before.subplots.len() {
             return;
         }
-        let empty = Rect {
+        self.follow_children(before, placed, 0);
+    }
+
+    /// [`Self::follow_parent_areas`] for the insets whose parent is panel
+    /// `panel` (0 the document, `k + 1` subplot `k`), then theirs.
+    fn follow_children(&mut self, before: &Config, placed: Option<usize>, panel: usize) {
+        for index in 0..before.subplots.len() {
+            if before.parent_panel(index) != Some(panel) {
+                continue;
+            }
+            if placed != Some(index) {
+                self.follow_one(before, index, panel);
+            }
+            self.follow_children(before, placed, index + 1);
+        }
+    }
+
+    /// Derive inset `index`'s frame from its anchor in parent panel `panel`.
+    fn follow_one(&mut self, before: &Config, index: usize, panel: usize) {
+        let area = |config: &Config, panel: usize| {
+            let chart = match panel {
+                0 => Some(config),
+                _ => config.subplots.get(panel - 1).map(|s| &s.config),
+            };
+            chart
+                .and_then(|chart| chart.data_area().ok())
+                .map(|d| d.0)
+                .filter(|d| d.width > 0 && d.height > 0)
+        };
+        let (Some(old), Some(new)) = (area(before, panel), area(self, panel)) else {
+            return;
+        };
+        let stored = &before.subplots[index];
+        let frame = stored.config.chart_area.0;
+        let anchor = match stored.anchor {
+            Some(anchor) => anchor,
+            // A frame that owns its placement keeps it while its parent
+            // stays where it was.
+            None if old == new => return,
+            None => InsetAnchor {
+                parent: cell_of_panel(panel),
+                frame: fractions_of(frame, old),
+            },
+        };
+        let Some(placed) = rect_at(anchor.frame, new) else {
+            return;
+        };
+        let derived = self.with_plot_room(index, placed, frame, new);
+        let subplot = &mut self.subplots[index];
+        subplot.config.chart_area.0 = derived;
+        subplot.anchor = Some(anchor);
+    }
+
+    /// The panel subplot `index` is placed in: its anchor's parent, else
+    /// the panel whose data area holds its frame
+    /// ([`crate::layout::inset_parent`]). `None` for a panel of its own.
+    fn parent_panel(&self, index: usize) -> Option<usize> {
+        let subplot = self.subplots.get(index)?;
+        if let Some(anchor) = subplot.anchor {
+            return match anchor.parent {
+                CellRef::Parent => Some(0),
+                CellRef::Subplot(p) if p < self.subplots.len() && p != index => Some(p + 1),
+                CellRef::Subplot(_) => None,
+            };
+        }
+        crate::layout::inset_parent(self.subplots.len() + 1, |i| self.panel_rects(i), index + 1)
+    }
+
+    /// Panel `panel`'s frame and data area (0 the document, `k + 1` subplot
+    /// `k`); an empty data area when it has none.
+    fn panel_rects(&self, panel: usize) -> (crate::layout::Rect, crate::layout::Rect) {
+        let config = match panel {
+            0 => self,
+            _ => &self.subplots[panel - 1].config,
+        };
+        let empty = crate::layout::Rect {
             x: 0,
             y: 0,
             width: 0,
             height: 0,
         };
-        let rects = |index: usize| {
-            let config = match index {
-                0 => before,
-                _ => &before.subplots[index - 1].config,
-            };
-            (
-                config.chart_area.0,
-                config.data_area().map_or(empty, |d| d.0),
-            )
+        (
+            config.chart_area.0,
+            config.data_area().map_or(empty, |d| d.0),
+        )
+    }
+
+    /// Anchor subplot `index` where its frame was placed (#392): in the
+    /// plot that holds the frame, or, for a frame larger than the plot its
+    /// anchor names, in that plot while it holds the frame's centre. A frame
+    /// in no plot owns its placement (`anchor: None`).
+    pub(crate) fn anchor_placed(&mut self, index: usize) {
+        let Some(subplot) = self.subplots.get(index) else {
+            return;
         };
-        let count = before.subplots.len() + 1;
-        for index in before.insets() {
-            if placed == Some(index) {
-                continue;
-            }
-            let Some(parent) = inset_parent(count, rects, index + 1) else {
-                continue;
-            };
-            let old = rects(parent).1;
-            let new = match parent {
-                0 => self.data_area(),
-                _ => self.subplots[parent - 1].config.data_area(),
-            };
-            let Ok(new) = new else {
-                continue;
-            };
-            let new = new.0;
-            if old.width == 0 || old.height == 0 {
-                continue;
-            }
-            let frame = before.subplots[index].config.chart_area.0;
-            if let Some(moved) = follow_rect(frame, old, new) {
-                let moved = self.with_plot_room(index, moved, frame, new);
-                self.subplots[index].config.chart_area.0 = moved;
-            }
-        }
+        let frame = subplot.config.chart_area.0;
+        let count = self.subplots.len() + 1;
+        let nested = crate::layout::inset_parent(count, |i| self.panel_rects(i), index + 1);
+        let kept = || {
+            let panel = self.parent_panel(index)?;
+            let plot = self.panel_rects(panel).1;
+            let (cx, cy) = (
+                u64::from(frame.x) * 2 + u64::from(frame.width),
+                u64::from(frame.y) * 2 + u64::from(frame.height),
+            );
+            let inside = cx >= u64::from(plot.x) * 2
+                && cx <= (u64::from(plot.x) + u64::from(plot.width)) * 2
+                && cy >= u64::from(plot.y) * 2
+                && cy <= (u64::from(plot.y) + u64::from(plot.height)) * 2;
+            inside.then_some(panel)
+        };
+        let anchor = nested.or_else(kept).and_then(|panel| {
+            let plot = self.panel_rects(panel).1;
+            (plot.width > 0 && plot.height > 0).then(|| InsetAnchor {
+                parent: cell_of_panel(panel),
+                frame: fractions_of(frame, plot),
+            })
+        });
+        self.subplots[index].anchor = anchor;
     }
 
     /// `frame` for subplot `index`, grown about its centre until the
     /// subplot's plot fits in it, as every frame edit requires
-    /// ([`Self::set_subplot_area`]), and kept inside `within` (the parent's
-    /// plot) when it fits there. A frame its plot still cannot fit in after
-    /// a few steps becomes `fallback`'s size about the same centre.
+    /// ([`Self::set_subplot_area`]), at least
+    /// [`crate::layout::MIN_VISIBLE_DATA_AREA_PX`] wide and high, and kept inside `within` (the parent's
+    /// plot) when it fits there. The plot is measured at the subplot's
+    /// stored text sizes, so the result depends on the frame alone. A frame
+    /// its plot still cannot fit in after a few steps becomes `fallback`'s
+    /// size about the same centre.
     fn with_plot_room(
         &self,
         index: usize,
@@ -281,16 +372,14 @@ impl Config {
         fallback: crate::layout::Rect,
         within: crate::layout::Rect,
     ) -> crate::layout::Rect {
-        let Some(mut probe) = self.subplot_config(index) else {
+        let Some(subplot) = self.subplots.get(index) else {
             return frame;
         };
-        let centre = |r: crate::layout::Rect| {
-            (
-                f64::from(r.x) + f64::from(r.width) / 2.0,
-                f64::from(r.y) + f64::from(r.height) / 2.0,
-            )
-        };
-        let (cx, cy) = centre(frame);
+        let mut probe = subplot.config.clone();
+        let (cx, cy) = (
+            f64::from(frame.x) + f64::from(frame.width) / 2.0,
+            f64::from(frame.y) + f64::from(frame.height) / 2.0,
+        );
         let about = |width: u32, height: u32| crate::layout::Rect {
             x: (cx - f64::from(width) / 2.0).round().max(0.0) as u32,
             y: (cy - f64::from(height) / 2.0).round().max(0.0) as u32,
@@ -298,18 +387,25 @@ impl Config {
             height,
         };
         let mut rect = frame;
-        // Each step settles one direction; a margin that grows with the
-        // frame (a scaled text size) can take one more.
+        // Each step settles one direction; one more covers a margin that
+        // the first growth uncovers.
         const STEPS: usize = 4;
+        const MIN_PLOT: u32 = crate::layout::MIN_VISIBLE_DATA_AREA_PX;
         let mut fits = false;
         for _ in 0..STEPS {
             probe.chart_area.0 = rect;
             let grow = |required: f32| (required.ceil() as u32).saturating_add(1);
             rect = match probe.data_area() {
-                Ok(_) => {
+                Ok(plot) if plot.width >= MIN_PLOT && plot.height >= MIN_PLOT => {
                     fits = true;
                     break;
                 }
+                // A plot too small to grab grows to the size the data area
+                // keeps visible elsewhere.
+                Ok(plot) => about(
+                    rect.width + MIN_PLOT.saturating_sub(plot.width),
+                    rect.height + MIN_PLOT.saturating_sub(plot.height),
+                ),
                 Err(LayoutError::OverflowHorizontal { required, .. }) => {
                     about(grow(required).max(rect.width + 1), rect.height)
                 }
@@ -335,22 +431,35 @@ impl Config {
     }
 }
 
-/// `frame` inside `old` moved and scaled to `new`: each edge keeps its
-/// fraction of the area, rounded to whole pixels, at least one pixel wide
-/// and high. `None` when the result does not fit in `u32`.
-fn follow_rect(
-    frame: crate::layout::Rect,
-    old: crate::layout::Rect,
-    new: crate::layout::Rect,
-) -> Option<crate::layout::Rect> {
-    let edge = |at: u32, from: u32, length: u32, to: u32, to_length: u32| -> f64 {
-        let fraction = (f64::from(at) - f64::from(from)) / f64::from(length);
-        (f64::from(to) + fraction * f64::from(to_length)).round()
+/// The cell panel `panel` names (0 the document, `k + 1` subplot `k`).
+fn cell_of_panel(panel: usize) -> CellRef {
+    match panel {
+        0 => CellRef::Parent,
+        _ => CellRef::Subplot(panel - 1),
+    }
+}
+
+/// `frame`'s edges as fractions of `area`, `[[left, right], [top, bottom]]`.
+fn fractions_of(frame: crate::layout::Rect, area: crate::layout::Rect) -> [[f64; 2]; 2] {
+    let fx = |v: u32| (f64::from(v) - f64::from(area.x)) / f64::from(area.width);
+    let fy = |v: u32| (f64::from(v) - f64::from(area.y)) / f64::from(area.height);
+    [
+        [fx(frame.x), fx(frame.x + frame.width)],
+        [fy(frame.y), fy(frame.y + frame.height)],
+    ]
+}
+
+/// The frame whose edges are at `fractions` of `area`, rounded to whole
+/// pixels, at least one pixel wide and high. `None` when it does not fit in
+/// `u32` or a fraction is not finite.
+fn rect_at(fractions: [[f64; 2]; 2], area: crate::layout::Rect) -> Option<crate::layout::Rect> {
+    let edge = |fraction: f64, from: u32, length: u32| {
+        (f64::from(from) + fraction * f64::from(length)).round()
     };
-    let x0 = edge(frame.x, old.x, old.width, new.x, new.width);
-    let x1 = edge(frame.x + frame.width, old.x, old.width, new.x, new.width);
-    let y0 = edge(frame.y, old.y, old.height, new.y, new.height);
-    let y1 = edge(frame.y + frame.height, old.y, old.height, new.y, new.height);
+    let x0 = edge(fractions[0][0], area.x, area.width);
+    let x1 = edge(fractions[0][1], area.x, area.width);
+    let y0 = edge(fractions[1][0], area.y, area.height);
+    let y1 = edge(fractions[1][1], area.y, area.height);
     let fits = |v: f64| (v >= 0.0 && v <= f64::from(u32::MAX)).then_some(v as u32);
     let (x, y) = (fits(x0)?, fits(y0)?);
     let width = fits((x1 - x0).max(1.0))?;
@@ -559,6 +668,16 @@ mod tests {
         cfg.subplots.push(inset);
         let inner = cfg.subplots[0].config.data_area().unwrap().0;
         let mut nested = crate::defaults::subplot();
+        // Narrow bands, so the nested inset keeps a plot at every size the
+        // tests place the parent at.
+        for axis in [
+            &mut nested.config.top_x,
+            &mut nested.config.bottom_x,
+            &mut nested.config.left_y,
+            &mut nested.config.right_y,
+        ] {
+            axis.out_margin = 4.0;
+        }
         nested.config.chart_area = ChartArea(Rect {
             x: inner.x + inner.width / 2,
             y: inner.y + 4,
@@ -610,9 +729,8 @@ mod tests {
     #[test]
     fn insets_keep_their_place_when_the_parent_plot_is_placed() {
         let mut cfg = parent_with_insets();
-        let start = fractions(inset_frame(&cfg, 0), plot(&cfg));
-        let mut outer = start;
-        let mut inner = fractions(
+        let outer = fractions(inset_frame(&cfg, 0), plot(&cfg));
+        let inner = fractions(
             inset_frame(&cfg, 1),
             cfg.subplots[0].config.data_area().unwrap().0,
         );
@@ -631,16 +749,18 @@ mod tests {
             cfg.fit_to_data_area(target, FitStrategy::PreserveTitles)
                 .unwrap();
             let context = format!("{width}x{height}");
-            // Each placement rounds the frame it was given to whole
-            // pixels; the rounding of earlier ones adds at most a pixel.
+            // Every frame is derived from the remembered placement, so the
+            // rounding of earlier steps never adds up.
             assert_keeps_place(inset_frame(&cfg, 0), plot(&cfg), outer, 0.5, &context);
-            assert_keeps_place(inset_frame(&cfg, 0), plot(&cfg), start, 2.0, &context);
             assert_eq!(cfg.insets().collect::<Vec<_>>(), vec![0, 1], "{context}");
             let host = cfg.subplots[0].config.data_area().unwrap().0;
-            // The nested inset follows the rounded frame of its parent.
             assert_keeps_place(inset_frame(&cfg, 1), host, inner, 0.5, &context);
-            outer = fractions(inset_frame(&cfg, 0), plot(&cfg));
-            inner = fractions(inset_frame(&cfg, 1), host);
+            let anchor = cfg.subplots[0].anchor.expect("anchored");
+            assert_eq!(anchor.parent, CellRef::Parent);
+            assert_eq!(
+                cfg.subplots[1].anchor.expect("anchored").parent,
+                CellRef::Subplot(0)
+            );
         }
     }
 
@@ -693,8 +813,8 @@ mod tests {
 
         // Resizing the inset's frame keeps it as placed; the nested inset
         // follows the inset's plot.
-        let host = cfg.subplots[0].config.data_area().unwrap().0;
-        let inner = fractions(inset_frame(&cfg, 1), host);
+        let [[left, right], [top, bottom]] = cfg.subplots[1].anchor.expect("anchored").frame;
+        let inner = [left, top, right, bottom];
         let resized = inset_frame(&cfg, 0);
         assert_eq!(
             cfg.nudge(Element::SubplotFrameEdge(0, Side::Right), &Ems, 60.0, 0.0),
@@ -773,39 +893,135 @@ mod tests {
         assert_eq!(crate::layout::auto_layout(&fitted, &Ems), fitted);
     }
 
-    // Shrinking and growing back returns the frame within the rounding of
-    // the small plot, and repeating the cycle does not drift (#392).
+    // A parent shrunk below what the inset's plot needs and grown back
+    // gives every inset the frame it had before the shrink, exactly, however
+    // often it is repeated: the growth is never written back (#392).
     #[test]
-    fn a_shrink_and_grow_cycle_does_not_drift() {
+    fn shrinking_below_the_minimum_and_growing_back_restores_the_frames() {
         let mut cfg = parent_with_insets();
         let start = plot(&cfg);
-        let frame = inset_frame(&cfg, 0);
-        let small = DataArea(Rect {
-            x: start.x,
-            y: start.y,
-            width: start.width / 3,
-            height: start.height / 3,
-        });
-        cfg.fit_to_data_area(small.clone(), FitStrategy::PreserveTitles)
-            .unwrap();
+        // The first move anchors the insets from their frames.
+        cfg.fit_to_data_area(
+            DataArea(Rect {
+                x: start.x + 1,
+                ..start
+            }),
+            FitStrategy::PreserveTitles,
+        )
+        .unwrap();
         cfg.fit_to_data_area(DataArea(start), FitStrategy::PreserveTitles)
             .unwrap();
-        let once = inset_frame(&cfg, 0);
-        for (a, b) in [
-            (once.x, frame.x),
-            (once.y, frame.y),
-            (once.x + once.width, frame.x + frame.width),
-            (once.y + once.height, frame.y + frame.height),
+        let frames = [inset_frame(&cfg, 0), inset_frame(&cfg, 1)];
+        let anchors = [cfg.subplots[0].anchor, cfg.subplots[1].anchor];
+        for small in [
+            Rect {
+                width: 260,
+                height: 200,
+                ..start
+            },
+            Rect {
+                width: start.width / 3,
+                height: start.height / 3,
+                ..start
+            },
+            Rect {
+                width: 180,
+                height: start.height,
+                ..start
+            },
         ] {
-            assert!(a.abs_diff(b) <= 2, "{once:?} vs {frame:?}");
+            for _ in 0..3 {
+                cfg.fit_to_data_area(DataArea(small), FitStrategy::PreserveTitles)
+                    .unwrap();
+                assert!(cfg.subplot_config(0).unwrap().data_area().is_ok());
+                assert_eq!([cfg.subplots[0].anchor, cfg.subplots[1].anchor], anchors);
+                cfg.fit_to_data_area(DataArea(start), FitStrategy::PreserveTitles)
+                    .unwrap();
+                assert_eq!(
+                    [inset_frame(&cfg, 0), inset_frame(&cfg, 1)],
+                    frames,
+                    "{small:?}"
+                );
+            }
         }
-        for _ in 0..5 {
-            cfg.fit_to_data_area(small.clone(), FitStrategy::PreserveTitles)
-                .unwrap();
-            cfg.fit_to_data_area(DataArea(start), FitStrategy::PreserveTitles)
-                .unwrap();
-            assert_eq!(inset_frame(&cfg, 0), once);
-        }
+    }
+
+    // A drag while the parent is shrunk places the inset anew: the dragged
+    // frame is its new anchor, and growing the parent back maps that
+    // placement, not the one before the shrink (#392).
+    #[test]
+    fn a_drag_while_shrunk_becomes_the_remembered_placement() {
+        use crate::layout::{Element, NudgeResult};
+        let mut cfg = parent_with_insets();
+        let start = plot(&cfg);
+        let small = Rect {
+            width: 900,
+            height: 700,
+            ..start
+        };
+        cfg.fit_to_data_area(DataArea(small), FitStrategy::PreserveTitles)
+            .unwrap();
+        assert_eq!(
+            cfg.nudge(Element::SubplotFrame(0), &Ems, -150.0, 40.0),
+            NudgeResult::Moved
+        );
+        let dragged = inset_frame(&cfg, 0);
+        let expected = fractions(dragged, plot(&cfg));
+        let anchor = cfg.subplots[0].anchor.expect("anchored");
+        assert_eq!(anchor.parent, CellRef::Parent);
+        assert_eq!(
+            [
+                anchor.frame[0][0],
+                anchor.frame[1][0],
+                anchor.frame[0][1],
+                anchor.frame[1][1]
+            ],
+            expected
+        );
+        cfg.fit_to_data_area(DataArea(start), FitStrategy::PreserveTitles)
+            .unwrap();
+        assert_keeps_place(inset_frame(&cfg, 0), plot(&cfg), expected, 0.5, "grown");
+
+        // A frame dragged out of every plot owns its placement again.
+        let mut out = cfg.clone();
+        let frame = inset_frame(&out, 0);
+        assert_eq!(
+            out.set_subplot_area(0, ChartArea(Rect { x: 2100, ..frame })),
+            Ok(())
+        );
+        assert_eq!(out.subplots[0].anchor, None);
+    }
+
+    // A released document (no anchor) is not changed by an edit that leaves
+    // the plot where it was, and is anchored from its stored frame the first
+    // time the plot moves (#392).
+    #[test]
+    fn an_unanchored_inset_is_anchored_only_when_its_parent_moves() {
+        use crate::layout::{Element, NudgeResult};
+        let mut cfg = parent_with_insets();
+        let frame = inset_frame(&cfg, 0);
+        let mut moved = cfg.clone();
+        assert_eq!(
+            moved.nudge(Element::Axis(Side::Left), &Ems, -3.0, 0.0),
+            NudgeResult::Moved
+        );
+        assert_eq!(moved.subplots[0].anchor, None);
+        assert_eq!(inset_frame(&moved, 0), frame);
+        let expected = fractions(frame, plot(&cfg));
+        assert_eq!(
+            cfg.nudge(Element::DataArea, &Ems, 12.0, 0.0),
+            NudgeResult::Moved
+        );
+        let anchor = cfg.subplots[0].anchor.expect("anchored");
+        assert_eq!(
+            [
+                anchor.frame[0][0],
+                anchor.frame[1][0],
+                anchor.frame[0][1],
+                anchor.frame[1][1]
+            ],
+            expected
+        );
     }
 
     // `set_subplot_area` places the subplot and carries its insets; a

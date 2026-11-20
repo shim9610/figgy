@@ -72,8 +72,8 @@ fn released_configs() -> Vec<(String, Config)> {
 /// What `auto_layout` may write, set back to the input's, so the rest can be
 /// compared whole: the bands, the title offsets across them, the label
 /// formats, the chart title band and its offset down (a grid row's shared
-/// baseline), the legend's placement and an inset's frame, which keeps its
-/// place in the plot the fit moves (#392).
+/// baseline), the legend's placement and an inset's frame and anchor, which
+/// keep its place in the plot the fit moves (#392).
 fn without_layout(mut out: Config, input: &Config) -> Config {
     fn axis(to: &mut renderer::config::AxisOptions, from: &renderer::config::AxisOptions) {
         to.out_margin = from.out_margin;
@@ -104,6 +104,7 @@ fn without_layout(mut out: Config, input: &Config) -> Config {
         chart(&mut to.config, &from.config);
         if insets.contains(&index) {
             to.config.chart_area = from.config.chart_area.clone();
+            to.anchor = from.anchor;
         }
     }
     out

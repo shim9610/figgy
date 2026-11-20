@@ -376,6 +376,7 @@ fn a_polar_subplot_has_its_own_category_labels_and_ring() {
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     });
     let chart = parent.subplot_config(0).unwrap();
     let (x, y) = centre(label_box(&chart, 2));
@@ -574,6 +575,7 @@ fn linked_polar_charts_keep_their_own_label_offsets() {
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     });
     let m = measure(&parent);
     // Drag the subplot's label 1.
