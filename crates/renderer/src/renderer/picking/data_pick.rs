@@ -312,6 +312,13 @@ impl Renderer {
     /// Submit one typed data pick across points/lines, histogram bins, heatmap
     /// cells, and contour levels.
     ///
+    /// The ticket answers the registered chart's pick (the nearest datum
+    /// and the ink hit, [`Self::pick_chart`]) and the typed hit separately
+    /// ([`crate::DataPickResult`], #381): the selected element is the
+    /// nearest datum when the ink hits and the chart has a series with
+    /// point data, the typed hit otherwise. A datum never competes with a
+    /// body, bar or cell by distance.
+    ///
     /// Source values stay in `ColumnPool`. The CPU supplies only current
     /// render metadata (lane bases, counts, styles and identity indices), while
     /// the bar/field render shaders themselves compute the exact hit geometry.
