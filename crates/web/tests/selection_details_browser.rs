@@ -256,14 +256,21 @@ async fn offset_lines_round_trip_hit_test_and_report_unshifted_values() {
         back["line_offsets"],
         serde_json::json!({ "series": ["low", "high"], "step_y": 5.0, "step_x": 0.5 })
     );
+    // The kernel's chart keeps its layout fitted (`LayoutState::Fitted`,
+    // #357): `set_config` fits the margins to the new ranges' tick labels,
+    // the fit `auto_layout` makes with the draw style's font.
+    assert!(config.layout_state.is_fitted());
+    let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
+    let fitted = renderer::layout::auto_layout(&config, &measure);
     assert_eq!(
         serde_json::from_value::<renderer::Config>(back).unwrap(),
-        config
+        fitted
     );
-    chart.frame().unwrap();
+    // A pick hits the ink the chart's frames drew (#381): draw every series.
+    chart.series_ready().await.unwrap();
 
     // Data (x, y) to canvas pixels through the displayed base panel.
-    let (display, _, _) = renderer::display_config_for_surface(&config, (480, 320));
+    let (display, _, _) = renderer::display_config_for_surface(&fitted, (480, 320));
     let area = display.data_area().unwrap().0;
     let px = |x: f64, y: f64| {
         (

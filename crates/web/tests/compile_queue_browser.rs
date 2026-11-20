@@ -26,6 +26,24 @@ fn hook(cores: Option<u32>) {
         r#"(() => {{
   Object.defineProperty(navigator, 'hardwareConcurrency', {{ configurable: true, get: () => {cores} }});
   const Q = globalThis.__queue = {{ labels: [], open: 0, peak: 0, reject: null, hold: null, device: null, resolved: new Set(), cold: [] }};
+  // The devices requested since this hook, and the device each compile is
+  // issued on: a chart an earlier test leaked (a wasm panic does not drop
+  // its locals) keeps compiling on its own device.
+  Q.created = [];
+  Q.issuedOn = [];
+  Q.inflightOn = [];
+  const settledOn = (device) => {{
+    const at = Q.inflightOn.indexOf(device);
+    if (at >= 0) Q.inflightOn.splice(at, 1);
+  }};
+  const A = GPUAdapter.prototype;
+  if (!A.__figgyOriginalRequestDevice) A.__figgyOriginalRequestDevice = A.requestDevice;
+  A.requestDevice = function (...args) {{
+    return A.__figgyOriginalRequestDevice.apply(this, args).then((device) => {{
+      globalThis.__queue.created.push(device);
+      return device;
+    }});
+  }};
   const P = GPUDevice.prototype;
   if (!P.__figgyOriginalAsync) P.__figgyOriginalAsync = P.createRenderPipelineAsync;
   if (!P.__figgyOriginalSync) P.__figgyOriginalSync = P.createRenderPipeline;
@@ -47,17 +65,22 @@ fn hook(cores: Option<u32>) {
     return P.__figgyOriginalCompute.call(this, d);
   }};
   P.createComputePipelineAsync = function (d) {{
+    Q.issuedOn.push(this);
+    Q.inflightOn.push(this);
     Q.labels.push(d.label || '');
     Q.keys.push(key(d));
     Q.open += 1;
     Q.peak = Math.max(Q.peak, Q.open);
     const p = P.__figgyOriginalComputeAsync.call(this, d);
-    const done = () => {{ Q.open -= 1; }};
+    const device = this;
+    const done = () => {{ Q.open -= 1; settledOn(device); }};
     p.then(() => {{ Q.resolved.add(key(d)); done(); }}, done);
     return p;
   }};
   P.createRenderPipelineAsync = function (d) {{
     Q.device = this;
+    Q.issuedOn.push(this);
+    Q.inflightOn.push(this);
     Q.labels.push(d.label || '');
     Q.keys.push(key(d));
     Q.open += 1;
@@ -67,7 +90,8 @@ fn hook(cores: Option<u32>) {
     const p = d.label === Q.reject ? Promise.reject(new Error('rejected by the test'))
       : d.label === Q.hold ? this.lost.then(() => undefined)
       : original.call(this, d);
-    const done = () => {{ Q.open -= 1; }};
+    const device = this;
+    const done = () => {{ Q.open -= 1; settledOn(device); }};
     p.then(() => {{ Q.resolved.add(key(d)); done(); }}, done);
     return p;
   }};
@@ -336,14 +360,28 @@ async fn device_loss_ends_a_wait_on_an_open_compile() {
     assert_eq!(after["all"]["compiling"], 0, "{after}");
 }
 
+/// The compiles issued so far on the devices requested since `hook`, the
+/// devices of the charts the test created. Another device on the page (a
+/// chart an earlier failed test leaked) is not counted.
+fn issued_on_own_devices() -> u32 {
+    number("globalThis.__queue.issuedOn.filter(d => globalThis.__queue.created.includes(d)).length")
+}
+
 /// A chart dropped while its compiles are in flight issues no further
-/// compile: those in flight settle, and the rest are never issued.
+/// compile: those in flight settle, and the rest are never issued. Counted
+/// on the chart's own device: the hook is page-wide, and a chart an earlier
+/// test leaked by panicking keeps compiling on its device.
 #[wasm_bindgen_test(async)]
 async fn a_dropped_chart_issues_no_more_compiles() {
     hook(Some(2));
     let chart = FiggyChart::create(canvas()).await.unwrap();
+    assert_eq!(
+        number("globalThis.__queue.created.length"),
+        1,
+        "the chart requested one device"
+    );
     // No await between this count and the drop.
-    let issued = number("globalThis.__queue.labels.length");
+    let issued = issued_on_own_devices();
     assert!(issued >= 2, "{issued}");
     assert!(
         status(&chart)["all"]["total"].as_u64().unwrap() > issued as u64 + 20,
@@ -351,7 +389,10 @@ async fn a_dropped_chart_issues_no_more_compiles() {
     );
     drop(chart);
     let start = js_sys::Date::now();
-    while number("globalThis.__queue.open") > 0 {
+    while number(
+        "globalThis.__queue.inflightOn.filter(d => globalThis.__queue.created.includes(d)).length",
+    ) > 0
+    {
         assert!(
             js_sys::Date::now() - start < 60_000.0,
             "the dropped chart's compiles in flight never settled"
@@ -362,7 +403,7 @@ async fn a_dropped_chart_issues_no_more_compiles() {
         turn().await;
     }
     assert_eq!(
-        number("globalThis.__queue.labels.length"),
+        issued_on_own_devices(),
         issued,
         "a dropped chart issues nothing more"
     );
