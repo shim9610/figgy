@@ -711,6 +711,8 @@ pub fn pick_at(
         display_scale: scale,
         max_distance_px: 6.0 * scale,
     };
+    // A pick hits the ink its on-screen prepare drew (#381).
+    show_for_pick(r, id, &request);
     let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
     r.remove_chart(id).unwrap();
     match hit {
