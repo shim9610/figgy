@@ -243,6 +243,8 @@ impl Renderer {
                 revisions: ChartRevisions::initial(chart_revision),
                 fit_extents: HashMap::new(),
                 display: None,
+                #[cfg(target_arch = "wasm32")]
+                pick_warmup: None,
             },
         );
         if monotonic {

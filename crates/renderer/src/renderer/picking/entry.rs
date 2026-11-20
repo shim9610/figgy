@@ -104,6 +104,26 @@ impl Renderer {
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         self.pick_health()?;
+        // The gate and reduce compiles a chart's warm-up scheduled (#363,
+        // #381) are waited for, issued first if they still wait, so the
+        // enable finds them compiled instead of starting its own.
+        #[cfg(target_arch = "wasm32")]
+        if let Some(queue) = self.compile_queue.clone()
+            && matches!(
+                self.picker.ready_bundle(),
+                Err(crate::gpu_pick::GpuPickError::PickerDisabled)
+            )
+        {
+            let mut warmed = true;
+            for label in crate::gpu_pick::GATE_PIPELINE_LABELS {
+                warmed &= queue.wait_pick(self.pipelines.shaders.set, label).await;
+            }
+            // Every one compiled: the bundle is created from the browser's
+            // cache, with no second compile.
+            if warmed {
+                return self.enable_gpu_picking_observed_unreported(observer);
+            }
+        }
         self.picker
             .enable_observed_async(
                 self.device.clone(),
@@ -200,11 +220,19 @@ impl Renderer {
             }
             _ => (false, !view3d),
         };
+        let [flat_module, module_3d] = crate::gpu_pick::NEAREST_PICK_COMPILES;
         let modules = [
-            (!flat).then_some(crate::gpu_pick::NEAREST_PICK_MODULE),
-            (!flat_3d).then_some(crate::gpu_pick::NEAREST_PICK_3D_MODULE),
+            (!flat).then_some(flat_module),
+            (!flat_3d).then_some(module_3d),
         ];
-        for (label, module) in modules.into_iter().flatten() {
+        for (tracked, (label, module)) in modules.into_iter().flatten() {
+            // A compile the chart's warm-up scheduled is waited for instead
+            // of compiling the pipeline a second time (#381).
+            if let Some(queue) = self.compile_queue.clone()
+                && queue.wait_pick(set, tracked).await
+            {
+                continue;
+            }
             let compiled = crate::browser_compile::compute_with_constants(
                 self.device(),
                 label,
@@ -277,6 +305,14 @@ impl Renderer {
             if self.picker.data_kernels.get(kernel).is_some() {
                 continue;
             }
+            // A compile the chart's warm-up scheduled is waited for instead
+            // of compiling the kernel a second time (#381).
+            if let Some(queue) = self.compile_queue.clone()
+                && queue.wait_pick(bundle.set, kernel.label()).await
+            {
+                self.picker.data_kernels.ensure(&bundle, kernel)?;
+                continue;
+            }
             let compiled = crate::browser_compile::compute_with_constants(
                 self.device(),
                 kernel.label(),
@@ -292,6 +328,223 @@ impl Renderer {
             self.picker.data_kernels.ensure(&bundle, kernel)?;
         }
         Ok(())
+    }
+
+    /// Compile, on the browser's compile queue, the pipelines chart `id`'s
+    /// first pick needs, ahead of the waiting draw compiles (#363, #381),
+    /// and create each in the picker's own cache as its compile resolves,
+    /// so the first pick finds them created or compiling. Called for each
+    /// chart a screen frame draws. When the chart's config or series
+    /// revision or the shader set moves, it schedules what the picker has
+    /// not created yet: the gate and reduce pipelines while the picker is
+    /// not enabled, the nearest-datum kernel of the chart's projection, and
+    /// the typed data pick kernels of its series' families
+    /// ([`Self::data_pick_kernels_of_chart`]). On later frames, only when a
+    /// compile has ended since, it enables the picker once the gate and
+    /// reduce compiles are ready and creates each pipeline whose compile is
+    /// ready. A pick that comes first waits for the scheduled compiles
+    /// instead of starting its own. A monotonic chart picks through its own
+    /// query and a chart with a streamed series through the stream's
+    /// variants (rule 8): neither is warmed. A failure leaves the pick to
+    /// compile, or to report, as it always did, so nothing is reported
+    /// here.
+    #[cfg(target_arch = "wasm32")]
+    pub(in crate::renderer) fn warm_first_pick(&mut self, id: ChartId) {
+        use crate::renderer::registry::PickWarmup;
+        let Some(queue) = self.compile_queue.clone() else {
+            return;
+        };
+        let set = self.pipelines.shaders.set;
+        let Some(state) = self.chart_states.get(&id) else {
+            return;
+        };
+        let stamp = (state.revisions.config, state.revisions.series, set);
+        let mut warmup = state.pick_warmup;
+        if warmup.map(|w| w.stamp) != Some(stamp) {
+            let pickable = !state.series.is_empty()
+                && !self.monotonic_order.contains(&id)
+                && state
+                    .series
+                    .iter()
+                    .all(|series| self.require_resident_series(series).is_ok());
+            let view3d = state.config.view_3d().is_some();
+            let kernels = self.data_pick_kernels_of_chart(id);
+            let mut scheduled = pickable && kernels.is_ok();
+            if scheduled {
+                // Each pick compile goes to the front of the queue: the
+                // typed kernels are scheduled first so the gate, reduce and
+                // nearest pipelines, which every pick needs, are issued
+                // before them.
+                if let Ok(kernels) = kernels {
+                    for kernel in kernels.iter() {
+                        if self.picker.data_kernels.get(kernel).is_none() {
+                            scheduled &= queue
+                                .schedule_pick_entry(
+                                    set,
+                                    kernel.label(),
+                                    kernel.source(set),
+                                    kernel.entry(),
+                                    &[],
+                                )
+                                .is_ok();
+                        }
+                    }
+                }
+                let created = match &self.picker.nearest {
+                    Some(pipelines) if pipelines.set() == set => {
+                        [pipelines.has_flat(), pipelines.has_3d() || !view3d]
+                    }
+                    _ => [false, !view3d],
+                };
+                for (done, (tracked, (_, module))) in created
+                    .into_iter()
+                    .zip(crate::gpu_pick::NEAREST_PICK_COMPILES)
+                {
+                    if !done {
+                        scheduled &= queue
+                            .schedule_pick_entry(
+                                set,
+                                tracked,
+                                module.of(set).source,
+                                "pick_nearest_points",
+                                &[],
+                            )
+                            .is_ok();
+                    }
+                }
+                if matches!(
+                    self.picker.ready_bundle(),
+                    Err(crate::gpu_pick::GpuPickError::PickerDisabled)
+                ) {
+                    scheduled &= queue
+                        .schedule_pick_compute(
+                            set,
+                            crate::gpu_pick::PickShader::Gate.assembled_for(set).source,
+                            &crate::gpu_pick::GATE_PIPELINE_LABELS,
+                        )
+                        .is_ok();
+                }
+            }
+            // A chart that cannot be warmed is left to its first pick,
+            // which compiles or reports why, until an edit moves the stamp.
+            warmup = Some(PickWarmup {
+                stamp,
+                adopting: scheduled.then_some(u64::MAX),
+            });
+        }
+        let Some(PickWarmup {
+            adopting: Some(seen),
+            ..
+        }) = warmup
+        else {
+            if let Some(state) = self.chart_states.get_mut(&id) {
+                state.pick_warmup = warmup;
+            }
+            return;
+        };
+        let settled = queue.settled();
+        let adopting = if settled == seen {
+            Some(seen)
+        } else {
+            self.adopt_warmed_picks(id, &queue, set).then_some(settled)
+        };
+        if let Some(state) = self.chart_states.get_mut(&id) {
+            state.pick_warmup = Some(PickWarmup { stamp, adopting });
+        }
+    }
+
+    /// Create the pick pipelines of chart `id` whose warm-up compiles have
+    /// resolved ([`Self::warm_first_pick`]): the picker's bundles once the
+    /// gate and reduce compiles are ready, then the nearest-datum kernel and
+    /// each typed data pick kernel that is ready, in the picker's caches.
+    /// `true` while some compile it waits for is still pending.
+    #[cfg(target_arch = "wasm32")]
+    fn adopt_warmed_picks(
+        &mut self,
+        id: ChartId,
+        queue: &crate::browser_compile::CompileQueue,
+        set: crate::shader_assembly::ShaderSet,
+    ) -> bool {
+        use crate::compile_schedule::LabelReadiness;
+        if matches!(
+            self.picker.ready_bundle(),
+            Err(crate::gpu_pick::GpuPickError::PickerDisabled)
+        ) {
+            let mut pending = false;
+            let mut ready = true;
+            for label in crate::gpu_pick::GATE_PIPELINE_LABELS {
+                match queue.readiness(set, label) {
+                    LabelReadiness::Ready => {}
+                    LabelReadiness::Pending => pending = true,
+                    _ => ready = false,
+                }
+            }
+            if pending {
+                return true;
+            }
+            if !ready || self.enable_gpu_picking_unreported().is_err() {
+                // The first pick enables the picker, or reports why it
+                // cannot, as it always did.
+                return false;
+            }
+        }
+        let (Ok(bundle), Ok(data_bundle)) =
+            (self.picker.ready_bundle(), self.picker.ready_data_bundle())
+        else {
+            return false;
+        };
+        if bundle.set != set {
+            return false;
+        }
+        let mut pending = false;
+        let view3d = self
+            .chart_states
+            .get(&id)
+            .is_some_and(|state| state.config.view_3d().is_some());
+        let [flat, module_3d] = crate::gpu_pick::NEAREST_PICK_COMPILES;
+        let pipelines = match &mut self.picker.nearest {
+            Some(pipelines) if pipelines.set() == set => pipelines,
+            slot => slot.insert(crate::gpu_pick::NearestPickPipelines::new(set)),
+        };
+        match queue.readiness(set, flat.0) {
+            LabelReadiness::Ready => {
+                pipelines.ensure(&bundle);
+            }
+            LabelReadiness::Pending => pending = true,
+            _ => {}
+        }
+        if view3d {
+            match queue.readiness(set, module_3d.0) {
+                LabelReadiness::Ready => {
+                    pipelines.ensure_3d(&bundle);
+                }
+                LabelReadiness::Pending => pending = true,
+                _ => {}
+            }
+        }
+        let Ok(kernels) = self.data_pick_kernels_of_chart(id) else {
+            return pending;
+        };
+        for kernel in kernels.iter() {
+            if self.picker.data_kernels.get(kernel).is_some() {
+                continue;
+            }
+            match queue.readiness(set, kernel.label()) {
+                LabelReadiness::Ready => {
+                    if self
+                        .picker
+                        .data_kernels
+                        .ensure(&data_bundle, kernel)
+                        .is_err()
+                    {
+                        // The pick creates it and reports the failure.
+                    }
+                }
+                LabelReadiness::Pending => pending = true,
+                _ => {}
+            }
+        }
+        pending
     }
 
     /// Submit one pick against renderer-owned chart state (#381): every

@@ -781,13 +781,19 @@ screen frame needed for its own target (`Rgba16Float`, its sample count) through
 second queue, and waits for them before it prepares; its creations then find the
 browser's cache. It also waits for the compute passes the screen's queue has
 scheduled, which do not depend on the target. A pipeline the screen did not draw is created by the export as before.
-The picks' compute pipelines are not in these queues: the bundles compile through
-`enable_gpu_picking_async`, and `WindowedRenderer::compile_pick_pipelines_at` (or
-`Renderer::compile_pick_pipelines_async`) compiles, through
-`createComputePipelineAsync`, each exact pick variant a pick at that position needs
-and has not created yet, then creates it from the browser's cache. The web
-`pick_point` and `pick_data` call it before they submit, so a first pick no longer
-compiles its exact variants on the page's thread. Fit needs nothing of this: `fit_ranges`
+A chart a screen frame draws also queues what its first pick needs (#363, #381),
+ahead of the waiting draw compiles and outside the screen's counts, waits and
+failures: the picker's gate and reduce pipelines while picking is off, the
+nearest-datum kernel of the chart's projection, and the typed data pick kernels of its
+series' families. Each is scheduled once per chart revision and shader set, and the
+frames that follow create each in the picker's cache as its compile resolves. A
+monotonic chart and a chart with a streamed series are not warmed.
+`enable_gpu_picking_async`, `WindowedRenderer::compile_pick_pipelines_at` (or
+`Renderer::compile_pick_pipelines_async`) and `compile_data_pick_pipelines_at` wait for
+a scheduled compile instead of starting their own, and otherwise compile, through
+`createComputePipelineAsync`, what a pick at that position needs and has not created
+yet, then create it from the browser's cache. The web `pick_point` and `pick_data` call
+them before they submit, so a first pick compiles nothing on the page's thread. Fit needs nothing of this: `fit_ranges`
 reads column statistics only, and the GPU auto-fit awaits its compute pipelines through
 `createComputePipelineAsync` already. Natively every frame is complete,
 the counts are zero and both waits resolve at once.

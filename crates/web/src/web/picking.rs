@@ -359,14 +359,17 @@ impl FiggyChart {
         self.prepare_gpu_picking().await
     }
 
-    /// Pick the nearest visible data primitive to canvas pixel `(x, y)`.
-    /// Scatter hits use the visible marker size, including per-point style
-    /// mapping; error-bar stems and caps name their point; line strokes and
-    /// the inside of a line's fill snap to the nearest endpoint data point on
-    /// the hit segment.
+    /// Pick at canvas pixel `(x, y)` (#381): a hit when the chart's drawn
+    /// data has ink within `max_distance_px` of it, naming the datum nearest
+    /// to the cursor.
     /// Resolves to a JSON string
-    /// `{ source_id, series_id, point_index, distance_px }`, or
-    /// `undefined` when no visible primitive is within `max_distance_px`.
+    /// `{ source_id, series_id, point_index, distance_px, nearest }`:
+    /// `nearest` lists every pickable series' datum nearest to the cursor
+    /// (`{ layer, source_id, series_id, point_index, distance_px }`), and
+    /// when no drawn ink is within `max_distance_px` the point fields are
+    /// `null` and `nearest` is still filled (#381). A streamed display's
+    /// pick resolves to `{ source_id, series_id, point_index, distance_px }`
+    /// or `undefined` on a miss, as before.
     /// On a chart that draws value labels a label under the pointer wins
     /// (it is drawn over the data): the hit then names the label's series,
     /// its category as `point_index`, and its `label_id`
@@ -458,11 +461,10 @@ impl FiggyChart {
         };
         // The hit, with every series' nearest datum (#381).
         let result = ticket.resolve_full().await.map_err(js_err)?;
-        let Some(picked) = &result.hit else {
-            return Ok(JsValue::UNDEFINED);
-        };
-        let json = crate::picked_point_with_nearest_json_string(picked, &result.nearest)
-            .map_err(js_err)?;
+        // A miss still answers every series' nearest datum (#381).
+        let json =
+            crate::picked_point_with_nearest_json_string(result.hit.as_ref(), &result.nearest)
+                .map_err(js_err)?;
         Ok(JsValue::from_str(&json))
     }
 

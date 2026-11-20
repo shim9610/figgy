@@ -613,6 +613,16 @@ impl PickPipelineBundle {
     }
 }
 
+/// The labels of the gate module's pipelines a pick always needs, as the
+/// shader contract records them: compiled on a browser renderer's queue
+/// ahead of a chart's first pick (#363).
+#[cfg(target_arch = "wasm32")]
+pub(crate) const GATE_PIPELINE_LABELS: [&str; 3] = [
+    "figgy GPU pick X gate pipeline",
+    "figgy GPU pick Y gate pipeline",
+    "figgy GPU pick candidate reduction pipeline",
+];
+
 pub(super) async fn create_pipeline_bundle_observed_async(
     device: wgpu::Device,
     queue: wgpu::Queue,
