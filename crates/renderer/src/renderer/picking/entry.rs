@@ -219,8 +219,7 @@ impl Renderer {
             (!flat_3d).then_some(crate::gpu_pick::NEAREST_PICK_3D_MODULE),
         ];
         for (label, module) in modules.into_iter().flatten() {
-            // A rejected compile is left to the pick (see above).
-            let _ = crate::browser_compile::compute_with_constants(
+            let compiled = crate::browser_compile::compute_with_constants(
                 self.device(),
                 label,
                 module.of(set).source,
@@ -228,6 +227,10 @@ impl Renderer {
                 &[],
             )
             .await;
+            if compiled.is_err() {
+                // The pick creates it synchronously and reports the same
+                // failure through the device's error scope (see above).
+            }
         }
         let bundle = self.picker.ready_bundle()?;
         let pipelines = match &mut self.picker.nearest {
