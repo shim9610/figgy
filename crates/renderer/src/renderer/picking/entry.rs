@@ -457,64 +457,6 @@ impl Renderer {
         Ok(())
     }
 
-    /// The query a pick of chart `id` at `request` scans with, after the
-    /// chart is prepared and the layer routed as [`Self::pick_chart`] does:
-    /// its exact variants are the active registry's under it. `None` when
-    /// the chart needs the full shaders and the picker's are basic (the
-    /// pick reports this itself). Also the pick variant table's source
-    /// (`picking/variant_table_tests.rs`, #363).
-    #[cfg(test)]
-    pub(super) fn exact_pick_query(
-        &mut self,
-        id: ChartId,
-        request: GpuPickRequest,
-    ) -> std::result::Result<Option<crate::gpu_pick::GpuPickQuery>, crate::gpu_pick::GpuPickError>
-    {
-        self.pick_health()?;
-        self.admit_chart_shaders(id);
-        let state = self
-            .chart_states
-            .get(&id)
-            .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?;
-        let mut displayed = place_document(
-            &state.config,
-            request.display_scale,
-            request.display_panel_px,
-        );
-        let routed = subplot_route(&state.config, &displayed, request.canvas_position_px);
-        if let Some(config) = &routed {
-            displayed.active_layer = config.active_layer;
-        }
-        for series in &state.series {
-            if let Err(FiggyError::ColumnNotResident { id }) = self.require_resident_series(series)
-            {
-                return Err(crate::gpu_pick::GpuPickError::ColumnNotResident(id));
-            }
-        }
-        let series = pickable_series(&self.pool, &state.series);
-        self.picker.prepare_chart(
-            &self.pool,
-            id,
-            routed.as_ref().unwrap_or(&state.config),
-            &series,
-        )?;
-        let inputs = active_layer_pick_inputs(&displayed, &series)?;
-        let display_config = &inputs.panel;
-        let transform = data_render::scatter_transform_from_config(display_config);
-        if transform.needs_full_shaders() && self.picker.ready_bundle()?.set == ShaderSet::Basic {
-            // The pick reports this itself.
-            return Ok(None);
-        }
-        Ok(Some(crate::gpu_pick::GpuPickQuery {
-            transform,
-            chart_rect_px: [0.0; 4],
-            data_area_px: None,
-            canvas_position_px: request.canvas_position_px,
-            max_distance_px: request.max_distance_px,
-            draw_style: crate::gpu_pick::GpuPickDrawStyle::of(&display_config.draw_style),
-        }))
-    }
-
     /// Each exact pick pipeline a pick of chart `id` can need, given to
     /// `each`, possibly more than once: for every layer a pick can reach (the
     /// active one and, from the base layer, each subplot the pointer can
@@ -525,7 +467,7 @@ impl Renderer {
     /// compile before its first pick (#363). A monotonic chart picks through
     /// its own query and a chart with a streamed series through the stream's
     /// variants (rule 8): neither gives any.
-    #[cfg(any(target_arch = "wasm32", test))]
+    #[cfg(target_arch = "wasm32")]
     pub(in crate::renderer) fn for_each_exact_pick_key(
         &self,
         id: ChartId,

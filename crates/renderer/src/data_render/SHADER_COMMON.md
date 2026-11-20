@@ -2065,7 +2065,9 @@ point's index and the series salt, the same on every draw and pick, so a
 point never moves while the chart is panned, resized or exported.
 
 The point picker places such a point through the exact variant
-`PICK_VARIANT_CATEGORY_JITTER` (256): `pick_category_jitter_px` measures the
+`PICK_VARIANT_CATEGORY_JITTER` (256), and the nearest-datum pick (#381)
+whenever the series has a category slot: `pick_category_jitter_px` (the
+fragment `gpu_pick/category_place.wgsl`, spliced by both) measures the
 slot of the point's category position as the draw does, from
 `PickQueryParams.category` (group width, gap in logical pixels, jitter,
 offset) and `.category_slot` (member, members, horizontal, seed), and
