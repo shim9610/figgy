@@ -66,6 +66,9 @@ pub(in crate::renderer) struct RendererPicker {
     /// The typed data pick kernels created so far: compiled on the first
     /// pick that dispatches each (`DataPickKernels`, #327).
     pub(in crate::renderer) data_kernels: crate::gpu_data_pick::DataPickKernels,
+    /// The nearest-datum pipelines (#381), created on the first nearest
+    /// pick for the bundle's shader set.
+    pub(in crate::renderer) nearest: Option<crate::gpu_pick::NearestPickPipelines>,
     #[cfg(test)]
     pub(in crate::renderer) injected_activation_failure: Option<crate::gpu_pick::GpuPickError>,
 }
@@ -77,6 +80,7 @@ impl RendererPicker {
             active: None,
             exact: crate::gpu_pick::PickExactPipelines::default(),
             data_kernels: crate::gpu_data_pick::DataPickKernels::default(),
+            nearest: None,
             #[cfg(test)]
             injected_activation_failure: None,
         }
@@ -266,8 +270,19 @@ impl RendererPicker {
         config: &Config,
         series: &[SeriesConfig],
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
-        let bundle = self.ready_bundle()?;
         let plan = PickChartPlan::for_active_layer_in(pool, config, series)?;
+        self.prepare_plan(pool, chart_id, plan)
+    }
+
+    /// Makes `plan` the active registry of chart `chart_id`, reusing every
+    /// slot whose descriptor it already holds.
+    pub(in crate::renderer) fn prepare_plan(
+        &mut self,
+        pool: &ColumnPool,
+        chart_id: ChartId,
+        plan: PickChartPlan,
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        let bundle = self.ready_bundle()?;
         if self.active.as_ref().is_some_and(|active| {
             active.chart_id == chart_id && active.descriptors == plan.descriptors
         }) {

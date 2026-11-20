@@ -75,6 +75,10 @@ fn all_shader_compilation_times_and_entry_coverage() {
             for kernel in crate::gpu_data_pick::DataPickKernel::ALL {
                 renderer.picker.data_kernels.ensure(&data, kernel).unwrap();
             }
+            // The nearest-datum kernel in both projections (#381).
+            let mut nearest = crate::gpu_pick::NearestPickPipelines::new(set);
+            nearest.ensure(&bundle);
+            nearest.ensure_3d(&bundle);
         }
         data_render::stream_field::Pipelines::new(
             &device,

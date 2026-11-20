@@ -571,6 +571,13 @@ A `TriMesh` series ([#210](https://github.com/shim9610/figgy/issues/210), [guide
 - Pick: on a flat chart a one-workgroup compute scan over every triangle (`pick_tri_mesh`, `GpuDataPickGeometry::TriMesh`) answers the triangle under the cursor, or a contour over it; on a 3D chart the 1×1 ID pass writes kind 2 for the surface and the floor-contour word for its levels. Both read the draw's own group 2 snapshot.
 - The CPU keeps only the pool's scalar statistics of the index column (count, smallest and largest index); registration checks the largest index against the vertex count. Streamed sources are refused with an explicit error.
 
+### Nearest-datum pick
+
+`Renderer::pick_chart_nearest` ([#381](https://github.com/shim9610/figgy/issues/381)) answers every series' datum nearest to the cursor and the nearest of them, with no pick reach and without reading any style.
+- Kernels: one compute kernel per column kind (`gpu_pick/nearest_entry.wgsl`, the xy kind), assembled with one placement fragment per projection: `nearest_project_2d.wgsl` places a datum with the draw's own `pick_data_px` (logarithmic, broken and probability axes, polar coordinates) or `pick_ternary_px`; `nearest_project_3d.wgsl` splices the shared `common/project_3d.wgsl` and the panel's camera premultiplied by the map from the cursor's pixel onto clip space, as the 3D ID pick does. Two pipelines per shader set, whatever the styles.
+- Registry: the point picker's slots, dispatch layout, per-workgroup candidates and per-series reduction (`pick_reduce_candidates`), into each slot's result buffer. One registry holds every pickable layer at the cursor (the base layer and its overlays, or the subplot under the cursor and its overlays); each slot carries its panel's transform, chart rectangle and camera (`NearestSlot`). The readback holds one candidate per series; the panel's nearest is chosen from them on the CPU (an exact tie to the active layer, then to the series drawn later).
+- Results live in storage buffers: no render target, so MSAA and integer formats do not apply. A monotonic series' row maps to its logical sample index through the shared envelope. Streamed sources are refused.
+
 ### Monotonic-x lines (M4 envelope)
 
 A `MonotonicLine` series ([#271](https://github.com/shim9610/figgy/issues/271),
@@ -1072,6 +1079,13 @@ annotation_selection_dirty = false;
 - 그리기: 삼각형마다 인스턴스 하나, 정점 셋이며 정점 버퍼는 없다(렌더러의 현재 세트에 맞는 `TRI_MESH_SHADER_BY_SET`. `TRI_MESH_SHADER`는 그 전체 세트 조립본이다). 정점 단계가 삼각형의 인덱스와 정점을 읽고, 그리는 개수를 넘는 인덱스나 놓을 수 없는 정점이 있는 삼각형은 버린다. 조각 단계는 값을 무게중심 좌표로 섞고, 등고선은 삼각형마다 선형 보간의 등위선이다. 3D 차트에서는 `TRI_SURFACE_SHADER`가 정점을 카메라로 놓고, 바닥 등고선은 메시 모듈의 바닥 진입점이 그린다.
 - 피킹: 평면 차트에서는 워크그룹 하나짜리 계산 셰이더가 모든 삼각형을 훑어(`pick_tri_mesh`, `GpuDataPickGeometry::TriMesh`) 커서 아래의 삼각형이나 그 위의 등고선을 답한다. 3D 차트에서는 1×1 ID 패스가 표면에 종류 2를, 바닥 등고선에 등고선 단어를 쓴다. 둘 다 그리기와 같은 그룹 2 스냅샷을 읽는다.
 - CPU는 인덱스 컬럼의 스칼라 통계(개수, 가장 작은 인덱스와 가장 큰 인덱스)만 갖는다. 등록할 때 가장 큰 인덱스를 정점 개수와 비교한다. 스트리밍 계열은 명시적인 오류로 거부한다.
+
+### 최근접 데이터 픽
+
+`Renderer::pick_chart_nearest`([#381](https://github.com/shim9610/figgy/issues/381))는 커서에 가장 가까운 데이터를 시리즈마다 하나씩, 그리고 그중 가장 가까운 것을 돌려준다. 픽 반경이 없고 스타일을 읽지 않는다.
+- 커널: 열 종류마다 compute 커널 하나(`gpu_pick/nearest_entry.wgsl`, xy 종류)를 두고, 투영마다 배치 조각 하나를 붙여 조립한다. `nearest_project_2d.wgsl`은 그리기와 같은 `pick_data_px`(로그·끊긴·확률 축, 극좌표)나 `pick_ternary_px`로 놓고, `nearest_project_3d.wgsl`은 공유 `common/project_3d.wgsl`과 커서 픽셀을 클립 공간에 맞춘 패널 카메라를 쓴다(3D ID 픽과 같은 방식). 스타일과 관계없이 셰이더 세트마다 파이프라인 둘이다.
+- 레지스트리: 점 피커의 슬롯, 디스패치 배치, 워크그룹별 후보, 시리즈별 리듀스를 그대로 쓴다. 커서 위의 픽 가능한 레이어(기본 레이어와 오버레이, 또는 커서 아래 서브플롯과 그 오버레이)를 레지스트리 하나에 담고, 슬롯마다 자기 패널의 변환·차트 영역·카메라를 둔다(`NearestSlot`). 읽어 오는 값은 시리즈마다 후보 하나이고, 패널 전체의 최근접은 CPU에서 고른다(거리가 같으면 활성 레이어, 그다음 나중에 그린 시리즈).
+- 결과는 저장 버퍼에 있어 렌더 타깃이 없으므로 MSAA와 정수 포맷 제약이 없다. 단조 시리즈의 행은 공유 엔벌로프로 논리 샘플 인덱스가 된다. 스트리밍 소스는 거부한다.
 
 ### 단조 x 선(M4 엔벌로프)
 

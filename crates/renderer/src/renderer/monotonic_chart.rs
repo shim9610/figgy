@@ -286,6 +286,18 @@ impl MonotonicChart<'_> {
         self.renderer.pick_chart(self.id, request)
     }
 
+    /// The nearest-datum pick ([`Renderer::pick_chart_nearest`], #381): a
+    /// monotonic series answers the logical sample index of the kept point
+    /// nearest to the cursor, mapped through the envelope its columns were
+    /// written from, without the source.
+    pub fn pick_nearest(
+        &mut self,
+        request: GpuPickRequest,
+    ) -> std::result::Result<crate::gpu_pick::NearestPickTicket, crate::gpu_pick::GpuPickError>
+    {
+        self.renderer.pick_chart_nearest(self.id, request)
+    }
+
     /// Builds the chart's GPU picker
     /// ([`Renderer::prepare_gpu_picking_for_chart`]).
     pub fn prepare_picking(&mut self) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
