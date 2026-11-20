@@ -1854,6 +1854,7 @@ fn render_type_name(t: &DataRenderType) -> &'static str {
         DataRenderType::CategoryBars(_) => "category bars",
         DataRenderType::BoxPlot(_) => "box plot",
         DataRenderType::RangeBars(_) => "range bars",
+        DataRenderType::RangeLinks(_) => "range links",
         DataRenderType::Ternary(_) => "ternary",
         DataRenderType::Radar(_) => "radar",
         DataRenderType::RgbImage(_) => "image",
@@ -2317,6 +2318,14 @@ fn series_controls(
                 color(ui, "connector colour", &mut c.color);
                 slider(ui, "connector width", &mut c.width, 0.0..=8.0);
             }
+        }
+        // Dependency links (#357): their look; the links themselves are
+        // the scene's. The ranges are the ones `RangeLinkStyle` accepts.
+        DataRenderType::RangeLinks(links) => {
+            color(ui, "colour", &mut links.color);
+            slider(ui, "line width", &mut links.width, 0.0..=24.0);
+            slider(ui, "head", &mut links.head, 0.0..=32.0);
+            slider(ui, "inset", &mut links.inset, 0.0..=64.0);
         }
         // The grid shape, the spoke direction and the rings are the polar
         // chart's (the "Chart" section); the look is the series'.
