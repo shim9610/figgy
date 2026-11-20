@@ -18,6 +18,7 @@ use test_gpu::BlockOn as _;
 mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::ShowForPick as _;
 use harness::{
     BLUE, CYAN, GREEN, ORANGE, RED, YELLOW, col, is_blue, is_cyan, is_magenta, is_orange, is_red,
     pixel,
@@ -339,7 +340,13 @@ fn pick(
         display_scale: scale,
         max_distance_px: 0.0,
     };
-    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let hit = test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap();
     r.remove_chart(id).unwrap();
     hit
 }
@@ -1111,13 +1118,25 @@ fn long_curves_many_categories_and_a_million_points_draw_and_pick() {
         display_scale: 1.0,
         max_distance_px: 0.0,
     };
-    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let hit = test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap();
     assert!(
         matches!(&hit, Some(renderer::PickedData::HistogramBin { bin_index, .. }) if *bin_index == N - 1),
         "{hit:?}"
     );
     let started = std::time::Instant::now();
-    let _ = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let _ = test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap();
     eprintln!(
         "violin pick over {N} categories of {POINTS} curve points: {:?}",
         started.elapsed()
@@ -1184,9 +1203,21 @@ fn long_curves_many_categories_and_a_million_points_draw_and_pick() {
             display_scale: 1.0,
             max_distance_px: 4.0,
         };
-        let _ = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        let _ = test_gpu::block_on(
+            r.shown(id, &request)
+                .pick_chart_data(id, request)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap();
         let started = std::time::Instant::now();
-        let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        let hit = test_gpu::block_on(
+            r.shown(id, &request)
+                .pick_chart_data(id, request)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap();
         let pick = started.elapsed();
         assert!(
             matches!(&hit, Some(renderer::PickedData::Point { .. })),
