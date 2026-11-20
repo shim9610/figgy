@@ -495,8 +495,23 @@ fn screen_images(
         renderer.remove_chart(shown.id).unwrap();
         image
     };
+    let empty = if chart.config().line_offsets.is_some() {
+        // A line offset group names its members: each is kept, blanked to
+        // the all-NaN `nan_x` / `nan_y` columns.
+        let blanked: Vec<SeriesConfig> = without
+            .iter()
+            .cloned()
+            .map(|mut s| {
+                s.x_column = "nan_x".into();
+                s.y_column = "nan_y".into();
+                s
+            })
+            .collect();
+        other(&blanked)
+    } else {
+        other(&[])
+    };
     let without = other(without);
-    let empty = other(&[]);
     (with, without, empty)
 }
 
