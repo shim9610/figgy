@@ -3815,7 +3815,9 @@ fn a_pick_readback_holds_one_candidate_per_clamped_member() {
         GpuPickTicketState::Pending {
             readback, members, ..
         } => (readback.buffer_size(), *members),
-        GpuPickTicketState::ReadyNone => panic!("a registered pick is submitted"),
+        GpuPickTicketState::ReadyNone | GpuPickTicketState::Nearest { .. } => {
+            panic!("an exact engine pick is submitted")
+        }
     };
     let series =
         |i: usize| scatter_descriptor(&format!("readback-{i}"), "readback-x", "readback-y");

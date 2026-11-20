@@ -269,6 +269,7 @@ impl Renderer {
         let visual_revision = self.visual_revision.successor("renderer visual revision")?;
         self.chart_states.remove(&id);
         self.chart_order.retain(|candidate| *candidate != id);
+        self.ink_masks.retain(|mask| mask.chart != id);
         self.monotonic_order.retain(|candidate| *candidate != id);
         if self
             .picker

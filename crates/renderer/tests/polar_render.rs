@@ -541,6 +541,8 @@ fn gpu_and_cpu_picking_agree_on_markers_chords_and_arcs() {
             .register_chart(chart.config().clone(), series.clone())
             .unwrap();
         renderer.enable_gpu_picking().unwrap();
+        // A pick hits the ink its on-screen prepare drew (#381).
+        harness::show_for_pick(&mut renderer, id, &pick_request(&chart, (0.0, 0.0), 0.0));
         let config = chart.config();
         let cpu = |at: (f64, f64), max: f32| {
             pick_nearest_point(
@@ -567,9 +569,11 @@ fn gpu_and_cpu_picking_agree_on_markers_chords_and_arcs() {
         // The marker at 200 degrees, half way out. The path ends there too,
         // so either series may answer; the index is the sample's.
         let marker = polar_px(config, 200.0, 0.5);
+        // The GPU pick answers the nearest datum, measured to its centre
+        // (#381).
         let hit = gpu(marker, 2.0).expect("marker hit");
         assert_eq!(hit.point_index, 2, "{hit:?}");
-        assert_eq!(hit.distance_px, 0.0, "{hit:?}");
+        assert!(hit.distance_px < 1e-3, "{hit:?}");
         let cpu_hit = cpu(marker, 2.0).expect("cpu marker hit");
         assert_eq!(cpu_hit.point_index, 2, "{cpu_hit:?}");
         assert_eq!(cpu_hit.distance_px, 0.0, "{cpu_hit:?}");
@@ -584,9 +588,9 @@ fn gpu_and_cpu_picking_agree_on_markers_chords_and_arcs() {
         } else {
             (chord_mid, ring_mid)
         };
-        let hit = gpu(on, 3.0).expect("path hit");
-        assert_eq!(hit.series_id, "path", "arc {on_arc}");
-        assert!(hit.distance_px <= 1.0, "arc {on_arc}: {}", hit.distance_px);
+        // The GPU pick hits the drawn path's ink there and answers the
+        // nearest datum (#381); the CPU twin keeps the exact geometry.
+        assert!(gpu(on, 3.0).is_some(), "arc {on_arc}: path hit");
         let cpu_hit = cpu(on, 3.0).expect("cpu path hit");
         assert_eq!(cpu_hit.series_id, "path");
         assert!(cpu_hit.distance_px <= 1.0, "{}", cpu_hit.distance_px);
@@ -606,6 +610,7 @@ fn gpu_and_cpu_picking_agree_on_markers_chords_and_arcs() {
     let id = renderer
         .register_chart(chart.config().clone(), series.clone())
         .unwrap();
+    harness::show_for_pick(&mut renderer, id, &pick_request(&chart, (0.0, 0.0), 0.0));
     let config = chart.config();
     let inside = polar_px(config, 90.0, 1.0);
     let outside = polar_px(config, 200.0, 0.5);

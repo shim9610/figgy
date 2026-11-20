@@ -597,6 +597,33 @@ fn picked_point_json_string(picked: &renderer::PickedPoint) -> serde_json::Resul
     }))
 }
 
+/// A registered chart's point hit as `pick_point` reports it (#381): the
+/// point fields, and `nearest`, every pickable series' datum nearest to the
+/// cursor with its layer (in the form `active_layer` answers) and screen
+/// distance.
+#[cfg(any(target_arch = "wasm32", test))]
+fn picked_point_with_nearest_json_string(
+    picked: &renderer::PickedPoint,
+    nearest: &[renderer::NearestDatum],
+) -> serde_json::Result<String> {
+    serde_json::to_string(&serde_json::json!({
+        "source_id": picked.source_id.as_ref(),
+        "series_id": &picked.series_id,
+        "point_index": picked.point_index,
+        "distance_px": picked.distance_px,
+        "nearest": nearest
+            .iter()
+            .map(|datum| serde_json::json!({
+                "layer": datum.layer,
+                "source_id": datum.source_id.as_ref(),
+                "series_id": &datum.series_id,
+                "point_index": datum.point_index,
+                "distance_px": datum.distance_px,
+            }))
+            .collect::<Vec<_>>(),
+    }))
+}
+
 /// A value label hit as `pick_point` reports it: the point fields with the
 /// label's category as `point_index`, and the label's id, which
 /// `press_value_label` takes.
@@ -1503,8 +1530,8 @@ mod tests {
     use super::{
         ColumnRegistryAction, FrameDecision, consume_successful_frame, frame_decision,
         picked_data_json_string, picked_label_json_string, picked_point_json_string,
-        prepare_demo_declarations, set_chart_title_label, validate_column_batch,
-        validate_column_data_len, validate_column_registry_action,
+        picked_point_with_nearest_json_string, prepare_demo_declarations, set_chart_title_label,
+        validate_column_batch, validate_column_data_len, validate_column_registry_action,
     };
     use super::{
         ShownDocument, annotation_preview_json, radial_annotation_preview, render_warning_json,
@@ -2657,6 +2684,63 @@ mod tests {
         );
         assert_eq!(display.chart_area.0.width, 500);
         assert!((display.bottom_x.label_style.font_size - 9.0).abs() < 1e-6);
+    }
+
+    /// A registered chart's hit carries every series' nearest datum with
+    /// its layer in the form `active_layer` answers (#381).
+    #[test]
+    fn picked_point_with_nearest_json_matches_public_contract() {
+        let picked = renderer::PickedPoint {
+            source_id: None,
+            series_id: "series-a".into(),
+            point_index: 7,
+            distance_px: 0.5,
+        };
+        let nearest = [
+            renderer::NearestDatum {
+                layer: renderer::LayerRef::Base,
+                source_id: None,
+                series_id: "series-a".into(),
+                point_index: 7,
+                distance_px: 0.5,
+            },
+            renderer::NearestDatum {
+                layer: renderer::LayerRef::Overlay(0),
+                source_id: Some("src".into()),
+                series_id: "series-b".into(),
+                point_index: 2,
+                distance_px: 12.0,
+            },
+        ];
+        let json: serde_json::Value = serde_json::from_str(
+            &picked_point_with_nearest_json_string(&picked, &nearest).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "source_id": null,
+                "series_id": "series-a",
+                "point_index": 7,
+                "distance_px": 0.5,
+                "nearest": [
+                    {
+                        "layer": serde_json::to_value(renderer::LayerRef::Base).unwrap(),
+                        "source_id": null,
+                        "series_id": "series-a",
+                        "point_index": 7,
+                        "distance_px": 0.5,
+                    },
+                    {
+                        "layer": serde_json::to_value(renderer::LayerRef::Overlay(0)).unwrap(),
+                        "source_id": "src",
+                        "series_id": "series-b",
+                        "point_index": 2,
+                        "distance_px": 12.0,
+                    },
+                ],
+            })
+        );
     }
 
     #[test]

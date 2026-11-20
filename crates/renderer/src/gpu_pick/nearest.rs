@@ -36,6 +36,17 @@ pub(crate) const NEAREST_PICK_MODULE: (&str, AssembledBySet) = (
         set,
         "data_render/common/projection.wgsl",
         "data_render/common/sample_validity.wgsl",
+        "data_render/common/ramp.wgsl",
+        "data_render/common/grid_pair.wgsl",
+        "data_render/common/arc_pair.wgsl",
+        "data_render/common/sketch_noise.wgsl",
+        "data_render/common/line_stroke.wgsl",
+        "data_render/common/category_jitter.wgsl",
+        "data_render/common/errorbar_segment.wgsl",
+        "data_render/common/marker.wgsl",
+        "gpu_pick/marker.wgsl",
+        "gpu_pick/errorbar.wgsl",
+        "gpu_pick/no_line.wgsl",
         "gpu_pick/nearest_project_2d.wgsl",
         "gpu_pick/nearest_entry.wgsl",
     ),
@@ -118,6 +129,18 @@ impl NearestPickPipelines {
                 cache: None,
             },
         )
+    }
+
+    /// Whether the flat chart's pipeline has been created.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn has_flat(&self) -> bool {
+        self.flat.is_some()
+    }
+
+    /// Whether the 3D chart's pipeline has been created.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn has_3d(&self) -> bool {
+        self.view3d.is_some()
     }
 
     /// The flat chart's pipeline.
@@ -248,6 +271,42 @@ impl NearestPickTicket {
         Ok(crate::TryResolve::Ready(self.finish()?))
     }
 
+    pub(crate) async fn wait(&mut self) -> Result<(), GpuPickError> {
+        if let Some(readback) = self.readback.as_mut() {
+            readback.wait().await?;
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn wait_blocking(&mut self) -> Result<(), GpuPickError> {
+        if let Some(readback) = self.readback.as_mut() {
+            readback.wait_blocking()?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn poll_ready(&mut self) -> Result<bool, GpuPickError> {
+        match self.readback.as_mut() {
+            Some(readback) => Ok(readback.poll_ready()?),
+            None => Ok(true),
+        }
+    }
+
+    /// The series order (registry identity position) of `datum`.
+    pub(crate) fn series_order(&self, datum: &NearestDatum) -> u32 {
+        self.identities
+            .iter()
+            .position(|identity| {
+                identity.series_id == datum.series_id && identity.source_id == datum.source_id
+            })
+            .map_or(0, |order| order as u32)
+    }
+
+    pub(crate) fn decode(&mut self) -> Result<NearestPick, GpuPickError> {
+        self.finish()
+    }
+
     fn finish(&mut self) -> Result<NearestPick, GpuPickError> {
         let series = self.layers.len();
         let Some(readback) = self.readback.as_mut() else {
@@ -319,6 +378,201 @@ impl NearestPickTicket {
             nearest,
             per_series,
         })
+    }
+}
+
+/// One mask's part of an ink read: the texels of the window that fall on
+/// the panel, copied at `offset` of the readback, `bytes_per_row` apart.
+pub(crate) struct InkWindow {
+    /// The canvas pixel of the copy's first texel.
+    pub(crate) origin: [i64; 2],
+    pub(crate) size: [u32; 2],
+    pub(crate) offset: u64,
+    pub(crate) bytes_per_row: u32,
+}
+
+/// The ink around the cursor (#381): every pickable panel's ink mask
+/// texels within the pick's reach, read back. The cursor hits when any
+/// texel with ink lies within `reach` canvas pixels of it (the distance
+/// from the cursor to the texel's square; a reach of 0 is the texel under
+/// the cursor).
+pub(crate) struct InkRead {
+    readback: GpuReadback,
+    windows: Vec<InkWindow>,
+    cursor: [f32; 2],
+    reach: f32,
+    _charge: GpuByteCharge,
+}
+
+impl InkRead {
+    /// The texel window of a pick at `cursor` with `reach`, as canvas pixel
+    /// bounds `[x0, y0, x1, y1)`.
+    pub(crate) fn bounds(cursor: [f32; 2], reach: f32) -> [i64; 4] {
+        let [x, y] = cursor.map(f64::from);
+        let r = f64::from(reach);
+        [
+            (x - r).floor() as i64,
+            (y - r).floor() as i64,
+            (x + r).floor() as i64 + 1,
+            (y + r).floor() as i64 + 1,
+        ]
+    }
+
+    /// Copy each `(mask, canvas origin of its texel 0)` texel window that
+    /// meets the pick's bounds, and request the read.
+    pub(crate) fn submit(
+        bundle: &PickEngineHandles<'_>,
+        masks: &[(&wgpu::Texture, [i64; 2])],
+        cursor: [f32; 2],
+        reach: f32,
+    ) -> Result<Option<Self>, GpuPickError> {
+        let [bx0, by0, bx1, by1] = Self::bounds(cursor, reach);
+        let mut windows = Vec::new();
+        windows
+            .try_reserve_exact(masks.len())
+            .map_err(|_| GpuPickError::AllocationFailed {
+                resource: "ink read windows",
+            })?;
+        let mut size = 0u64;
+        let mut copies = Vec::new();
+        copies
+            .try_reserve_exact(masks.len())
+            .map_err(|_| GpuPickError::AllocationFailed {
+                resource: "ink read windows",
+            })?;
+        for (index, (texture, origin)) in masks.iter().enumerate() {
+            let x0 = bx0.max(origin[0]);
+            let y0 = by0.max(origin[1]);
+            let x1 = bx1.min(origin[0] + i64::from(texture.width()));
+            let y1 = by1.min(origin[1] + i64::from(texture.height()));
+            if x0 >= x1 || y0 >= y1 {
+                continue;
+            }
+            let width = (x1 - x0) as u32;
+            let height = (y1 - y0) as u32;
+            let bytes_per_row = width.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+                * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+            windows.push(InkWindow {
+                origin: [x0, y0],
+                size: [width, height],
+                offset: size,
+                bytes_per_row,
+            });
+            copies.push(index);
+            size += u64::from(bytes_per_row) * u64::from(height);
+        }
+        if windows.is_empty() {
+            return Ok(None);
+        }
+        let tally = ChargeTally::new();
+        let buffer = create_buffer_checked(
+            &tally,
+            bundle.device,
+            &wgpu::BufferDescriptor {
+                label: Some("figgy GPU pick ink readback"),
+                size,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            },
+            "ink readback",
+        )?;
+        let mut encoder = bundle
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("figgy GPU pick ink read"),
+            });
+        for (window, &index) in windows.iter().zip(&copies) {
+            let (texture, origin) = masks[index];
+            encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: (window.origin[0] - origin[0]) as u32,
+                        y: (window.origin[1] - origin[1]) as u32,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: window.offset,
+                        bytes_per_row: Some(window.bytes_per_row),
+                        rows_per_image: Some(window.size[1]),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: window.size[0],
+                    height: window.size[1],
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        bundle.queue.submit(std::iter::once(encoder.finish()));
+        Ok(Some(Self {
+            readback: GpuReadback::map(bundle.device, bundle.health, &buffer, None),
+            windows,
+            cursor,
+            reach,
+            _charge: tally.into_charge(bundle.ledger, GpuResourceKind::Readback),
+        }))
+    }
+
+    pub(crate) async fn wait(&mut self) -> Result<(), GpuPickError> {
+        Ok(self.readback.wait().await?)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn wait_blocking(&mut self) -> Result<(), GpuPickError> {
+        Ok(self.readback.wait_blocking()?)
+    }
+
+    pub(crate) fn poll_ready(&mut self) -> Result<bool, GpuPickError> {
+        Ok(self.readback.poll_ready()?)
+    }
+
+    /// After a wait: whether any texel with ink lies within the reach.
+    pub(crate) fn hit(&mut self) -> Result<bool, GpuPickError> {
+        let windows = &self.windows;
+        let [cx, cy] = self.cursor;
+        let reach = self.reach;
+        Ok(self.readback.finish_checked(|mapped| {
+            windows.iter().any(|window| {
+                (0..window.size[1]).any(|row| {
+                    let start =
+                        window.offset as usize + row as usize * window.bytes_per_row as usize;
+                    let texels = &mapped[start..start + window.size[0] as usize];
+                    let y = (window.origin[1] + i64::from(row)) as f32;
+                    texels.iter().enumerate().any(|(column, &ink)| {
+                        let x = (window.origin[0] + column as i64) as f32;
+                        let dx = (x - cx).max(cx - (x + 1.0)).max(0.0);
+                        let dy = (y - cy).max(cy - (y + 1.0)).max(0.0);
+                        ink != 0 && dx * dx + dy * dy <= reach * reach
+                    })
+                })
+            })
+        })?)
+    }
+}
+
+/// What an ink read borrows from the picker's device bundle.
+pub(crate) struct PickEngineHandles<'a> {
+    pub(crate) device: &'a wgpu::Device,
+    pub(crate) queue: &'a wgpu::Queue,
+    pub(crate) health: &'a crate::renderer::DeviceHealth,
+    pub(crate) ledger: &'a Arc<GpuLedger>,
+}
+
+impl GpuPickEngine {
+    /// The device handles an ink read submits with.
+    pub(crate) fn handles(&self) -> PickEngineHandles<'_> {
+        PickEngineHandles {
+            device: &self.bundle.device,
+            queue: &self.bundle.queue,
+            health: &self.bundle.health,
+            ledger: &self.bundle.ledger,
+        }
     }
 }
 

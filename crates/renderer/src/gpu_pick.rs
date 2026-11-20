@@ -43,7 +43,7 @@ use engine::query_params;
 use engine::{GPU_PICK_DIRECT_SCAN_POINTS, GPU_PICK_WORKGROUP_SIZE, GpuPickTicketState};
 use engine::{ReduceResources, create_buffer_checked, gate_dispatch_layout, lane_base};
 pub(crate) use nearest::{
-    NEAREST_PICK_3D_MODULE, NEAREST_PICK_MODULE, NearestPickPipelines, NearestSlot,
+    InkRead, NEAREST_PICK_3D_MODULE, NEAREST_PICK_MODULE, NearestPickPipelines, NearestSlot,
 };
 pub use nearest::{NearestDatum, NearestPick, NearestPickTicket};
 #[cfg(test)]

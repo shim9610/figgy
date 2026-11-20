@@ -162,7 +162,7 @@ pub use gpu_memory::{
 pub use gpu_pick::{GpuPickError, GpuPickTicket, NearestDatum, NearestPick, NearestPickTicket};
 pub use gpu_readback::TryResolve;
 pub use init::{INIT_EVENT_SCHEMA_VERSION, InitEvent, InitPhase};
-pub use pick::{PickedData, PickedPoint};
+pub use pick::{PickResult, PickedData, PickedPoint};
 pub use preset::{AxisPreset, ColorCycle};
 pub use render_warning::{
     AnnotationSkip, RenderWarning, SpacingRejection, SubplotAxis, WarningAxis,

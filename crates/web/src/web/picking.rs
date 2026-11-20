@@ -453,10 +453,13 @@ impl FiggyChart {
                 .pick_chart_at(self.chart_id, [x, y], max_distance_px)
                 .map_err(js_err)?,
         };
-        let Some(picked) = ticket.resolve().await.map_err(js_err)? else {
+        // The hit, with every series' nearest datum (#381).
+        let result = ticket.resolve_full().await.map_err(js_err)?;
+        let Some(picked) = &result.hit else {
             return Ok(JsValue::UNDEFINED);
         };
-        let json = crate::picked_point_json_string(&picked).map_err(js_err)?;
+        let json = crate::picked_point_with_nearest_json_string(picked, &result.nearest)
+            .map_err(js_err)?;
         Ok(JsValue::from_str(&json))
     }
 

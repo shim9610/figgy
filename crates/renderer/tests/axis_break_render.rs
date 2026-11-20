@@ -15,6 +15,7 @@ use test_gpu::BlockOn as _;
 mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::ShowForPick as _;
 use harness::{
     BLUE, CYAN, GREEN, MAGENTA, RED, is, markers, pixel_rgba as pixel, renderer_rgba as renderer,
     upload,
@@ -366,7 +367,13 @@ fn pick_at(
         display_scale: scale,
         max_distance_px: 6.0 * scale,
     };
-    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let hit = test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap();
     r.remove_chart(id).unwrap();
     match hit {
         Some(renderer::PickedData::Point {
@@ -1461,7 +1468,13 @@ fn a_feature_on_any_layer_selects_the_full_shaders(feature: Feature) {
         display_scale: 1.0,
         max_distance_px: 6.0,
     };
-    test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap();
     let mut base_only = config(0.0, 100.0, &[]);
     base_only.left_y.breaks = None;
     screen(&mut r, &base_only, &series[..1]);
@@ -1490,11 +1503,23 @@ fn a_feature_on_any_layer_selects_the_full_shaders(feature: Feature) {
         let mut r = layered_renderer();
         r.enable_gpu_picking().unwrap();
         let id = r.register_chart(plain.clone(), series.clone()).unwrap();
-        test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        test_gpu::block_on(
+            r.shown(id, &request)
+                .pick_chart_data(id, request)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap();
         assert_eq!(r.shader_set(), ShaderSet::Basic, "{tag}");
         r.set_chart_config(id, with.clone()).unwrap();
         assert_eq!(r.shader_set(), ShaderSet::Full, "{tag}: set_chart_config");
-        test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        test_gpu::block_on(
+            r.shown(id, &request)
+                .pick_chart_data(id, request)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap();
 
         // The same through `set_chart_state`.
         let mut r = layered_renderer();

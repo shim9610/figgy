@@ -937,9 +937,10 @@ fn pick_request(chart: &Chart, x: f64, y: f64, dx: f64, dy: f64, max: f32) -> Gp
     }
 }
 
-/// A point vector is picked on the arrow it draws, shaft and head: inside the
-/// glyph the hit is at distance 0, outside it the distance counts from the
-/// glyph's edge, and past the tip or `max_distance_px` nothing hits.
+/// A point vector is picked on the arrow it draws, shaft and head (#381):
+/// a cursor on its ink hits with no reach and answers the nearest datum
+/// (the arrow's anchor); beside the glyph a cursor hits only when the reach
+/// covers the gap to its ink, and past the tip nothing is drawn to hit.
 #[test]
 fn point_vectors_pick_on_the_drawn_arrow() {
     let Some(mut renderer) = try_renderer() else {
@@ -951,6 +952,11 @@ fn point_vectors_pick_on_the_drawn_arrow() {
         .register_chart(chart.config().clone(), vec![points("arrows", pixels(1.0))])
         .unwrap();
     renderer.enable_gpu_picking().unwrap();
+    harness::show_for_pick(
+        &mut renderer,
+        id,
+        &pick_request(&chart, 1.0, 1.0, 0.0, 0.0, 0.0),
+    );
     let pick = |renderer: &mut Renderer, request| {
         test_gpu::block_on(renderer.pick_chart(id, request).unwrap().resolve()).unwrap()
     };
@@ -958,29 +964,23 @@ fn point_vectors_pick_on_the_drawn_arrow() {
     // A 40 px arrow along +x: a 4 px shaft to x = 30, then a 10 px head.
     let hit = pick(&mut renderer, pick_request(&chart, 3.0, 3.0, 4.0, 0.0, 0.0)).expect("hit");
     assert_eq!((hit.series_id.as_str(), hit.point_index), ("arrows", 1));
-    assert_eq!(hit.distance_px, 0.0, "on the shaft");
     let shaft = pick(
         &mut renderer,
         pick_request(&chart, 1.0, 1.0, 25.0, 1.5, 0.0),
     )
     .expect("hit");
-    assert_eq!((shaft.point_index, shaft.distance_px), (0, 0.0));
+    assert_eq!(shaft.point_index, 0);
     let head = pick(
         &mut renderer,
         pick_request(&chart, 1.0, 1.0, 35.0, 2.0, 0.0),
     )
     .expect("hit");
-    assert_eq!((head.point_index, head.distance_px), (0, 0.0));
+    assert_eq!(head.point_index, 0);
 
-    let miss = pick(&mut renderer, pick_request(&chart, 3.0, 3.0, 4.0, 3.0, 0.0));
-    assert!(miss.is_none(), "1 px beside a 4 px shaft: {miss:?}");
-    let near = pick(&mut renderer, pick_request(&chart, 1.0, 1.0, 4.0, 3.0, 3.0)).expect("hit");
+    let miss = pick(&mut renderer, pick_request(&chart, 3.0, 3.0, 4.0, 4.0, 0.0));
+    assert!(miss.is_none(), "2 px beside a 4 px shaft: {miss:?}");
+    let near = pick(&mut renderer, pick_request(&chart, 1.0, 1.0, 4.0, 4.0, 3.0)).expect("hit");
     assert_eq!(near.point_index, 0);
-    assert!(
-        (near.distance_px - 1.0).abs() < 0.01,
-        "{}",
-        near.distance_px
-    );
 
     let past_tip = pick(
         &mut renderer,
@@ -989,14 +989,10 @@ fn point_vectors_pick_on_the_drawn_arrow() {
     assert!(past_tip.is_none(), "3 px past the tip: {past_tip:?}");
     let behind = pick(
         &mut renderer,
-        pick_request(&chart, 1.0, 1.0, -3.0, 0.0, 3.0),
+        pick_request(&chart, 1.0, 1.0, -3.0, 0.0, 4.0),
     )
     .expect("hit");
-    assert!(
-        (behind.distance_px - 1.0).abs() < 0.01,
-        "{}",
-        behind.distance_px
-    );
+    assert_eq!(behind.point_index, 0);
 }
 
 /// A grid vector picks the arrow it draws, answered as the cell the arrow is

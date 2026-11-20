@@ -14,6 +14,7 @@ use test_gpu::BlockOn as _;
 mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::ShowForPick as _;
 use harness::{
     BLUE, GREEN, RED, col as col_f64, count, data_y_to_px, is_blue_ink as is_blue,
     is_empty_ink as is_empty, is_green_ink as is_green, is_red_ink as is_red,
@@ -1482,9 +1483,14 @@ fn offset_lines_report_unshifted_values() {
             display_scale: 1.0,
             max_distance_px: 2.0,
         };
-        let hit = test_gpu::block_on(r.pick_chart(id, request).unwrap().resolve())
-            .unwrap()
-            .expect("the shifted point picks");
+        let hit = test_gpu::block_on(
+            r.shown(id, &request)
+                .pick_chart(id, request)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap()
+        .expect("the shifted point picks");
         assert_eq!((hit.series_id.as_str(), hit.point_index), ("high", index));
         let values = pool_values(&r, "x", &[index])
             .into_iter()
@@ -1499,9 +1505,14 @@ fn offset_lines_report_unshifted_values() {
             ],
             ..request
         };
-        let low = test_gpu::block_on(r.pick_chart(id, unshifted).unwrap().resolve())
-            .unwrap()
-            .expect("the first member is unshifted");
+        let low = test_gpu::block_on(
+            r.shown(id, &unshifted)
+                .pick_chart(id, unshifted)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap()
+        .expect("the first member is unshifted");
         assert_eq!((low.series_id.as_str(), low.point_index), ("low", index));
     }
     let slot = r.pool().slot("y").expect("resident column");
@@ -1573,9 +1584,14 @@ fn forty_offset_members_draw_and_pick() {
             display_scale: 1.0,
             max_distance_px: 2.0,
         };
-        let hit = test_gpu::block_on(r.pick_chart(id, request).unwrap().resolve())
-            .unwrap()
-            .expect("the shifted member picks");
+        let hit = test_gpu::block_on(
+            r.shown(id, &request)
+                .pick_chart(id, request)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap()
+        .expect("the shifted member picks");
         assert_eq!(
             (hit.series_id.as_str(), hit.point_index),
             (ids[k].as_str(), index)

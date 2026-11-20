@@ -172,13 +172,15 @@ impl Renderer {
             .prepare_chart(&self.pool, id, &state.config, &series)
     }
 
-    /// Compile, through the browser's async API, the exact pick pipelines
-    /// a pick of chart `id` at `request` needs and has not created yet
-    /// (#299), so the pick itself creates them from the device's
-    /// compilation cache instead of compiling on the page's thread. Each
-    /// is then created and kept, as the pick would. A compile the browser
-    /// rejects is left to the pick, which creates the pipeline
-    /// synchronously and reports its error the way it always does.
+    /// Compile, through the browser's async API, the pipelines a pick of
+    /// chart `id` ([`Self::pick_chart`]) needs and has not created yet
+    /// (#299, #381): the nearest-datum kernel of the renderer's shader set,
+    /// and its 3D projection for a 3D chart. The pick then creates them
+    /// from the device's compilation cache instead of compiling on the
+    /// page's thread; each is created and kept, as the pick would. A
+    /// compile the browser rejects is left to the pick, which creates the
+    /// pipeline synchronously and reports its error the way it always does.
+    /// `request` is not read: one pipeline serves every cursor.
     #[cfg(target_arch = "wasm32")]
     pub async fn compile_pick_pipelines_async(
         &mut self,
@@ -197,37 +199,47 @@ impl Renderer {
         id: ChartId,
         request: GpuPickRequest,
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
-        while let Some(key) = self.missing_exact_pick_key(id, request)? {
-            let bundle = self.picker.ready_bundle()?;
-            // A compile the chart's warm-up scheduled (#363) is waited for,
-            // issued first if it still waits. The pick then compiles as it
-            // always did: a cache hit when the warm-up compiled it, and a
-            // compile of its own when the browser no longer holds that
-            // result, so a pick is never slower than without the warm-up.
-            if let Some(queue) = self.compile_queue.clone() {
-                let _ = queue.wait_pick(bundle.set, &key.compile_label()).await;
+        let _ = request;
+        let view3d = self
+            .chart_states
+            .get(&id)
+            .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?
+            .config
+            .view_3d()
+            .is_some();
+        let set = self.picker.ready_bundle()?.set;
+        let (flat, flat_3d) = match &self.picker.nearest {
+            Some(pipelines) if pipelines.set() == set => {
+                (pipelines.has_flat(), pipelines.has_3d() || !view3d)
             }
-            let (constants, count) = key.constants(self.device());
+            _ => (false, !view3d),
+        };
+        let modules = [
+            (!flat).then_some(crate::gpu_pick::NEAREST_PICK_MODULE),
+            (!flat_3d).then_some(crate::gpu_pick::NEAREST_PICK_3D_MODULE),
+        ];
+        for (label, module) in modules.into_iter().flatten() {
             let compiled = crate::browser_compile::compute_with_constants(
                 self.device(),
-                "figgy GPU pick exact candidate pipeline",
-                key.source(bundle.set),
-                "pick_exact_candidates",
-                &constants[..count],
+                label,
+                module.of(set).source,
+                "pick_nearest_points",
+                &[],
             )
             .await;
             if compiled.is_err() {
-                // The pick creates it synchronously below and reports the
-                // same failure through the device's error scope.
+                // The pick creates it synchronously and reports the same
+                // failure through the device's error scope (see above).
             }
-            let picker = &mut self.picker;
-            let active = picker
-                .active
-                .as_ref()
-                .ok_or(crate::gpu_pick::GpuPickError::Internal(
-                    "successful chart preparation publishes an active picker registry",
-                ))?;
-            picker.exact.ensure(active.engine.bundle(), key)?;
+        }
+        let bundle = self.picker.ready_bundle()?;
+        let pipelines = match &mut self.picker.nearest {
+            Some(pipelines) if pipelines.set() == set => pipelines,
+            slot => slot.insert(crate::gpu_pick::NearestPickPipelines::new(set)),
+        };
+        pipelines.ensure(&bundle);
+        if view3d {
+            pipelines.ensure_3d(&bundle);
         }
         Ok(())
     }
@@ -445,39 +457,13 @@ impl Renderer {
         Ok(())
     }
 
-    /// The first exact pick variant a pick of chart `id` at `request`
-    /// needs that is not created yet: the chart prepared and the layer
-    /// routed as [`Self::pick_chart`] does.
-    #[cfg(target_arch = "wasm32")]
-    fn missing_exact_pick_key(
-        &mut self,
-        id: ChartId,
-        request: GpuPickRequest,
-    ) -> std::result::Result<Option<crate::gpu_pick::PickExactKey>, crate::gpu_pick::GpuPickError>
-    {
-        let Some(query) = self.exact_pick_query(id, request)? else {
-            return Ok(None);
-        };
-        let picker = &self.picker;
-        let active = picker
-            .active
-            .as_ref()
-            .ok_or(crate::gpu_pick::GpuPickError::Internal(
-                "successful chart preparation publishes an active picker registry",
-            ))?;
-        Ok(active
-            .engine
-            .exact_variants(&query)
-            .find(|key| picker.exact.get(*key).is_none()))
-    }
-
     /// The query a pick of chart `id` at `request` scans with, after the
     /// chart is prepared and the layer routed as [`Self::pick_chart`] does:
     /// its exact variants are the active registry's under it. `None` when
     /// the chart needs the full shaders and the picker's are basic (the
     /// pick reports this itself). Also the pick variant table's source
     /// (`picking/variant_table_tests.rs`, #363).
-    #[cfg(any(target_arch = "wasm32", test))]
+    #[cfg(test)]
     pub(super) fn exact_pick_query(
         &mut self,
         id: ChartId,
@@ -588,16 +574,29 @@ impl Renderer {
         Ok(())
     }
 
-    /// Submit one exact pick against renderer-owned chart state.
+    /// Submit one pick against renderer-owned chart state (#381): every
+    /// series' datum nearest to the cursor ([`Self::pick_chart_nearest`]),
+    /// and a hit when the chart's drawn data layer has ink within
+    /// `request.max_distance_px` canvas pixels of the cursor. The ink is
+    /// read from each panel's ink mask, which the chart's on-screen prepare
+    /// ([`Self::prepare_registered`]) draws: before the first one, or after
+    /// [`Self::release_unused_pool_memory`], the pick hits nothing until
+    /// the next. [`crate::gpu_pick::GpuPickTicket::resolve`] answers the
+    /// hit, [`crate::gpu_pick::GpuPickTicket::resolve_full`] the hit and
+    /// every series' nearest datum.
     pub fn pick_chart(
         &mut self,
         id: ChartId,
         request: GpuPickRequest,
     ) -> std::result::Result<crate::gpu_pick::GpuPickTicket, crate::gpu_pick::GpuPickError> {
-        let result = self.pick_chart_unreported(id, request);
+        let result = self.pick_chart_inked(id, request);
         self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
     }
 
+    /// The exact point query of a registered chart: the point part of the
+    /// typed data pick ([`Self::pick_chart_data`]) until it moves to the
+    /// nearest-datum rule (#381 phase 4). [`Self::pick_chart`] runs the
+    /// nearest-datum pick and its ink hit instead.
     pub(super) fn pick_chart_unreported(
         &mut self,
         id: ChartId,

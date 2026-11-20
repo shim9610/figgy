@@ -12,6 +12,7 @@ use test_gpu::BlockOn as _;
 mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::ShowForPick as _;
 use harness::{
     BLUE, RED, col as col_f64, data_y_to_px, export, is_blue_ink as is_blue,
     is_empty_ink as is_empty, is_red_ink as is_red, pixel_rounded as pixel,
@@ -326,7 +327,13 @@ fn pick_at(
         display_scale: 1.0,
         max_distance_px: 0.0,
     };
-    let picked = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let picked = test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap();
     r.remove_chart(id).unwrap();
     picked
 }
