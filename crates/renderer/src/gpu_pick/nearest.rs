@@ -58,6 +58,19 @@ pub(crate) const NEAREST_PICK_3D_MODULE: (&str, AssembledBySet) = (
     ),
 );
 
+/// The nearest-datum pipelines a browser renderer compiles ahead of a
+/// chart's first pick (#381): the flat and the 3D projection, each with
+/// the label its compile queue tracks it by (both pipelines carry the same
+/// pipeline label), its module's label and its module.
+#[cfg(target_arch = "wasm32")]
+pub(crate) const NEAREST_PICK_COMPILES: [(&str, (&str, AssembledBySet)); 2] = [
+    ("figgy GPU pick nearest-datum pipeline", NEAREST_PICK_MODULE),
+    (
+        "figgy GPU pick nearest-datum 3D pipeline",
+        NEAREST_PICK_3D_MODULE,
+    ),
+];
+
 /// Group 3 of the 3D kernel: the camera (`project_3d.wgsl`, binding 4).
 const VIEW3D_ENTRIES: [wgpu::BindGroupLayoutEntry; 1] = [wgpu::BindGroupLayoutEntry {
     binding: 4,

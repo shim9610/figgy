@@ -641,46 +641,15 @@ async fn an_export_compiles_its_pipelines_in_the_background() {
     assert_ne!(png.to_vec(), empty.to_vec());
 }
 
-/// Record every exact pick pipeline (`figgy GPU pick exact candidate
-/// pipeline`), told apart by its override constants: those compiled through
-/// `createComputePipelineAsync`, and those created synchronously before an
-/// async compile of the same constants resolved (created cold).
-fn hook_exact_picks() {
-    js_sys::eval(
-        r#"(() => {
-  const E = globalThis.__exact = { compiled: [], resolved: new Set(), created: [], cold: [] };
-  const P = GPUDevice.prototype;
-  if (!P.__figgyOriginalComputeAsync) P.__figgyOriginalComputeAsync = P.createComputePipelineAsync;
-  if (!P.__figgyOriginalCompute) P.__figgyOriginalCompute = P.createComputePipeline;
-  const label = 'figgy GPU pick exact candidate pipeline';
-  const key = (d) => JSON.stringify(Object.entries(d.compute?.constants ?? {}).sort());
-  P.createComputePipelineAsync = function (d) {
-    const p = P.__figgyOriginalComputeAsync.call(this, d);
-    if (d.label === label) {
-      E.compiled.push(key(d));
-      p.then(() => E.resolved.add(key(d)), () => {});
-    }
-    return p;
-  };
-  P.createComputePipeline = function (d) {
-    if (d.label === label) {
-      E.created.push(key(d));
-      if (!E.resolved.has(key(d))) E.cold.push(key(d));
-    }
-    return P.__figgyOriginalCompute.call(this, d);
-  };
-})()"#,
-    )
-    .unwrap();
-}
-
-/// The first pick compiles the exact pick pipelines it needs through the
-/// browser's async API before it submits, so none is created cold on the
-/// page's thread; the pick still answers.
+/// A drawn chart queues what its first pick needs (#363, #381): its frames
+/// schedule the picker's gate and reduce pipelines and the nearest-datum
+/// kernel on the compile queue, and the first pick waits for those compiles
+/// instead of starting its own. Each pick pipeline is compiled once through
+/// the browser's async API and none is created cold on the page's thread;
+/// the pick still answers, and a miss answers the nearest datum.
 #[wasm_bindgen_test(async)]
-async fn a_first_pick_compiles_its_exact_pipelines_in_the_background() {
+async fn a_drawn_charts_first_pick_compiles_each_pipeline_once() {
     hook(Some(4));
-    hook_exact_picks();
     let mut chart = FiggyChart::create(canvas()).await.unwrap();
     chart.register_column_f32("px", &[0.0, 1.0, 2.0]).unwrap();
     chart.register_column_f32("py", &[0.0, 1.0, 2.0]).unwrap();
@@ -694,21 +663,39 @@ async fn a_first_pick_compiles_its_exact_pipelines_in_the_background() {
     }
     chart.set_config(&config.to_string()).unwrap();
     complete_within(&mut chart, 120.0, "the line chart").await;
+    // The frames issued pick compiles before any pick: the warm-up, ahead
+    // of the draw compiles still waiting.
+    let before =
+        number("globalThis.__queue.labels.filter(l => l.startsWith('figgy GPU pick ')).length");
+    assert!(before >= 1, "the drawn chart queued its pick pipelines");
     let picked = chart.pick_point(160.0, 120.0, 400.0).await.unwrap();
-    let count = |list: &str| number(&format!("globalThis.__exact.{list}.length"));
-    assert!(
-        count("compiled") > 0,
-        "the pick compiled its exact pipelines in the background"
-    );
-    assert!(count("created") > 0, "the pick created its exact pipelines");
-    assert_eq!(
-        count("cold"),
-        0,
-        "no exact pick pipeline was created cold: {:?}",
-        js_sys::JSON::stringify(&js_sys::eval("globalThis.__exact").unwrap()).unwrap()
-    );
+    let report = || {
+        js_sys::JSON::stringify(&js_sys::eval("globalThis.__queue").unwrap())
+            .unwrap()
+            .as_string()
+            .unwrap_or_default()
+    };
+    for label in [
+        "figgy GPU pick X gate pipeline",
+        "figgy GPU pick Y gate pipeline",
+        "figgy GPU pick candidate reduction pipeline",
+        "figgy GPU pick nearest-datum pipeline",
+    ] {
+        let compiled = number(&format!(
+            "globalThis.__queue.labels.filter(l => l === '{label}').length"
+        ));
+        assert_eq!(compiled, 1, "{label} compiled once: {}", report());
+    }
+    let cold =
+        number("globalThis.__queue.cold.filter(k => k.startsWith('figgy GPU pick ')).length");
+    assert_eq!(cold, 0, "no pick pipeline was created cold: {}", report());
     let picked: serde_json::Value = serde_json::from_str(&picked.as_string().unwrap()).unwrap();
     assert_eq!(picked["series_id"], "line");
+    // Far from the ink, a miss still names the line's nearest datum.
+    let missed = chart.pick_point(2.0, 2.0, 1.0).await.unwrap();
+    let missed: serde_json::Value = serde_json::from_str(&missed.as_string().unwrap()).unwrap();
+    assert!(missed["series_id"].is_null(), "{missed}");
+    assert_eq!(missed["nearest"][0]["series_id"], "line", "{missed}");
 }
 
 /// A dashed line waits for the arc prefix scan, a compute module compiled

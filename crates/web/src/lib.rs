@@ -597,20 +597,21 @@ fn picked_point_json_string(picked: &renderer::PickedPoint) -> serde_json::Resul
     }))
 }
 
-/// A registered chart's point hit as `pick_point` reports it (#381): the
-/// point fields, and `nearest`, every pickable series' datum nearest to the
-/// cursor with its layer (in the form `active_layer` answers) and screen
-/// distance.
+/// A registered chart's pick as `pick_point` reports it (#381): the point
+/// fields of the hit, and `nearest`, every pickable series' datum nearest to
+/// the cursor with its layer (in the form `active_layer` answers) and screen
+/// distance. A miss (`picked` is `None`) has the same keys with the point
+/// fields `null` and still carries `nearest`.
 #[cfg(any(target_arch = "wasm32", test))]
 fn picked_point_with_nearest_json_string(
-    picked: &renderer::PickedPoint,
+    picked: Option<&renderer::PickedPoint>,
     nearest: &[renderer::NearestDatum],
 ) -> serde_json::Result<String> {
     serde_json::to_string(&serde_json::json!({
-        "source_id": picked.source_id.as_ref(),
-        "series_id": &picked.series_id,
-        "point_index": picked.point_index,
-        "distance_px": picked.distance_px,
+        "source_id": picked.and_then(|picked| picked.source_id.as_ref()),
+        "series_id": picked.map(|picked| &picked.series_id),
+        "point_index": picked.map(|picked| picked.point_index),
+        "distance_px": picked.map(|picked| picked.distance_px),
         "nearest": nearest
             .iter()
             .map(|datum| serde_json::json!({
@@ -2713,7 +2714,7 @@ mod tests {
             },
         ];
         let json: serde_json::Value = serde_json::from_str(
-            &picked_point_with_nearest_json_string(&picked, &nearest).unwrap(),
+            &picked_point_with_nearest_json_string(Some(&picked), &nearest).unwrap(),
         )
         .unwrap();
         assert_eq!(
@@ -2741,6 +2742,43 @@ mod tests {
                 ],
             })
         );
+    }
+
+    /// A miss keeps the hit's keys with null point fields and still
+    /// carries every series' nearest datum (#381).
+    #[test]
+    fn a_missed_pick_json_carries_the_nearest_data() {
+        let nearest = [renderer::NearestDatum {
+            layer: renderer::LayerRef::Base,
+            source_id: Some("src".into()),
+            series_id: "series-a".into(),
+            point_index: 3,
+            distance_px: 40.0,
+        }];
+        let json: serde_json::Value =
+            serde_json::from_str(&picked_point_with_nearest_json_string(None, &nearest).unwrap())
+                .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "source_id": null,
+                "series_id": null,
+                "point_index": null,
+                "distance_px": null,
+                "nearest": [{
+                    "layer": serde_json::to_value(renderer::LayerRef::Base).unwrap(),
+                    "source_id": "src",
+                    "series_id": "series-a",
+                    "point_index": 3,
+                    "distance_px": 40.0,
+                }],
+            })
+        );
+        let empty: serde_json::Value =
+            serde_json::from_str(&picked_point_with_nearest_json_string(None, &[]).unwrap())
+                .unwrap();
+        assert_eq!(empty["nearest"], serde_json::json!([]));
+        assert!(empty["series_id"].is_null());
     }
 
     #[test]
