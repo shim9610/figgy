@@ -325,7 +325,55 @@ needs was created by a frame, and the pick only prepares, dispatches and reads b
 The frame that drew every series came about 1.5–2.5 s after the first frame with and
 without gate and reduce scheduled ahead of the render compiles.
 
+## Data pick kernel compile times (#363)
+
+Each typed data pick kernel alone, in headless Chromium 157 with SwiftShader on a
+4-core Linux container (`BROWSER_ARGS` as in [ci/README.md](README.md)): the native
+capture's data pick pipelines (`FIGGY_SHADER_COMPILE_REPORT` as above, filtered to the
+`* data pick pipeline` labels) through `node ci/shader_compile.cjs`, first compile,
+one run each. "Before" is integration `bda9357`.
+
+| Kernel | Basic before | Basic after | Full before | Full after |
+| --- | ---: | ---: | ---: | ---: |
+| histogram | 0.44 s | 0.35 s | 2.72 s | 2.46 s |
+| field contour | 4.11 s | 4.04 s | 12.32 s | 12.86 s |
+| field cell | 1.38 s | 1.52 s | 9.14 s | 9.43 s |
+| vector grid | 0.20 s | 0.18 s | 0.87 s | 0.89 s |
+| category bar | 0.56 s | 0.50 s | 1.99 s | 0.78 s |
+| box plot | 1.08 s | 0.98 s | 5.57 s | 3.48 s |
+| range bar | 0.59 s | 0.50 s | 5.02 s | 1.67 s |
+| range link | 0.51 s | 0.39 s | 3.91 s | 1.33 s |
+| **violin** | 5.83 s | 0.51 s | **53.13 s** | 1.58 s |
+| parallel | 0.22 s | 0.20 s | 0.50 s | 0.43 s |
+| triangle mesh | 0.97 s | 1.10 s | 3.52 s | 3.36 s |
+| value label | 2.06 s | 2.03 s | 12.23 s | 3.95 s |
+
+The violin kernel inlined `data_to_ndc`, the full set's projection with its axis cuts,
+probability, log and polar paths, twelve times per curve half: twice in `box_slot` per
+orientation branch, twice in `box_along` and once per `violin_point` call site. As
+for the exact picker, each projecting helper now calls it once inside a short loop,
+with its arguments and result component chosen by `select`:
+
+- `box_slot` (the slot's two edges, either orientation) and `box_along`;
+- `category_bar` (the bar's two ends and the slot's two edges: eight copies to one);
+- the range bar's two ends;
+- the violin pick's two curve ends;
+- the value label's radar spoke ends and its member search (one call site);
+- the value label's box, which takes the narrowed place from its own `box_slot`
+  (`box_narrowed`) instead of a second one.
+
+Calls and arguments are the same, so values and pixels are the same. The bar, box,
+range bar, violin, value label, radar, released-document and pick/draw agreement tests
+pass unchanged. Differences under about 0.3 s are run-to-run noise. The field contour
+and cell kernels (up to 13 s on the full set) are not pathological in this sense and
+are unchanged.
+
 ## 한국어 요약
+
+데이터 픽 커널(#363) 중 violin·value label·category bar·range bar·box 커널은 투영 함수
+`data_to_ndc`를 분기와 끝점마다 따로 인라인하던 것을 짧은 반복문 안의 한 번 호출로 바꿨다.
+값과 픽셀은 같다. full 셰이더 세트의 SwiftShader 컴파일은 violin 커널이 53.1초에서 1.6초로,
+value label 커널이 12.2초에서 4.0초로 줄었다.
 
 등고선 위치 계산은 기존과 똑같이 네 번 보정한다. 다만 복잡한 필드 검색을 감싼 반복문을
 셰이더 밖으로 옮겨, 같은 보정 파이프라인을 네 번 실행한다. 중간값은 기존 후보 버퍼에
