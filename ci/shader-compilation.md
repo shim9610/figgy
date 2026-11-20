@@ -189,72 +189,16 @@ pipeline in both runs: it waited in the browser's compile queue, so its
 own size no longer decides the time. These are single local runs on a
 software adapter, not physical-GPU results.
 
-## Exact pick variant table (#363)
+## Exact pick variant table (#363, removed in #381)
 
-`crates/renderer/tests/support/pick_variants.csv` lists every exact pick pipeline a
-chart can reach, one row per key: the module, the shader set, the `PICK_VARIANT`
-bits by name, the marker shape (or `any`), the override constants the browser
-compiles, the series families that produce the key, the first producing case and the
-number of producing cases, and the measured SwiftShader compile time with its budget.
-
-- **Rows.** The renderer's `pick_variant_table_matches_the_picker` test
-  (`renderer/picking/variant_table_tests.rs`) builds every series family that
-  reaches the point picker (xy markers, lines, error bars, stems and fills, radar,
-  ternary markers, lines and regions, streamlines, point vectors and box plot points)
-  over every combination of the options that feed the exact variant (marker shapes
-  and style maps, line dashes, fills, cartesian and polar axes, every draw style).
-  It registers each chart, prepares its pick as `pick_chart` does and reads the keys
-  from the picker: `exact_variants`, and `stream_exact_variants` where every series
-  of the chart may stream. A chart that does not need the full shader set lists its
-  keys for both sets. Options that do not feed the variant (colours, sizes, step
-  interpolation, size and colour maps, axis scales and breaks, subplots, overlays and
-  line offsets) are held at one value. The test fails when the reachable keys differ
-  from the file, when a row has no time or budget, or when the module hashes below
-  are stale.
-- **Hashes.** For each exact module and shader set (`marker-line/full`, …), the
-  table's header records `module_hash`, the 64-bit FNV-1a hash of the module's
-  assembled source, and `module_fragments`, the WGSL files it is assembled from.
-  `ci/test_pick_variants.py`, which `python3 ci/verify.py static` runs, rehashes
-  each module from its fragments (joined with one newline, as the assembly joins
-  them) and checks every row's budget. A change to a fragment of an exact module
-  fails the static stage, naming the modules and how many rows each has; a WGSL
-  change outside the exact modules does not touch the table. The table test checks
-  the recorded hashes and fragment lists against the renderer's assembly.
-- **Runner.** `node ci/shader_compile.cjs --pick-variants <capture> <table>` finds
-  each row's assembled module in the native capture by its `module_hash`, and
-  compiles `pick_exact_candidates` with `createComputePipelineAsync`, the capture's
-  explicit layout and the row's constants, on a fresh device per row (a fresh
-  browser every 100 rows). It fails a row over its budget. `--update` writes the
-  measured times and budgets back; `--missing` measures only rows without a time.
-  `FIGGY_SHADER_COMPILE_TIMEOUT_MS` (default 90,000) bounds one row.
-- **Budget rule.** `budget_ms = max(3 x measured_ms, 2000)`, rounded up to the next
-  100 ms. Three times the measured time absorbs run-to-run and machine variance on a
-  software adapter; the floor keeps short compiles from failing on noise.
-
-When an exact module changed:
-
-```sh
-# 1. The capture the runner reads (see ci/README.md).
-FIGGY_SHADER_COMPILE_REPORT="$PWD/target/ci-results/shader-compilation-native.json" \
-  cargo test --locked -p figgy-renderer --lib \
-  all_shader_compilation_times_and_entry_coverage -- --test-threads=1
-# 2. The rows and hashes. A row keeps its time while its module's hash is
-#    unchanged; the changed modules' rows lose theirs.
-FIGGY_UPDATE_PICK_VARIANTS=1 cargo test -p figgy-renderer --lib \
-  pick_variant_table_matches_the_picker
-# 3. Measure the rows without a time: only the changed modules'. All 2,001 rows take
-#    about 1.5 hours on a 4-core Linux container.
-node ci/shader_compile.cjs --pick-variants \
-  target/ci-results/shader-compilation-native.json \
-  crates/renderer/tests/support/pick_variants.csv --update --missing
-```
-
-Steps 2 and 3 also apply when the table test reports new or removed variants: new
-rows have no time yet. Without `--update` the runner checks every row against its
-committed budget. Like the rest of this script it needs a WebGPU-capable Chromium
-and is not part of the three-OS matrix: no CI job runs it. Run it whenever the
-table or a module hash changes; the static check forces that whenever an exact
-module's WGSL changes.
+The table of every exact pick pipeline a chart could reach
+(`tests/support/pick_variants.csv`), its checker `ci/test_pick_variants.py`
+and the runner's `--pick-variants` mode were removed with the move of a
+registered chart's pick to the nearest-datum kernel and its ink hit (#381):
+one kernel per projection and shader set replaces the specialized variants a
+registered chart's pick compiled. The exact query remains for streamed
+displays and for the typed data pick's point part (until #381 phase 4); its
+modules are measured with every other module in the capture above.
 
 ## Exact pick warm-up (#363)
 
@@ -390,10 +334,10 @@ GPU 환경에서 얻은 결과다. 실제 GPU의 실행 속도나 macOS 정밀�
 변형은 230.9초에서 0.8초로 줄었다. 렌더 파이프라인 339개가 먼저 큐에 있으면 대기 시간이
 지배해 약 150초로 변하지 않는다.
 
-`crates/renderer/tests/support/pick_variants.csv`에는 차트가 도달할 수 있는 모든 exact pick
-파이프라인 키와 SwiftShader 컴파일 시간·예산이 있다(#363). 행은 실제 픽 경로에서 자동 생성되고,
-exact pick 모듈의 WGSL이 바뀌면 `verify.py static`이 바뀐 모듈과 행 수를 알려 주며 실패하므로,
-표를 다시 만들고 그 모듈의 행만 다시 측정한다(`--missing`). 다른 WGSL 변경은 표와 관계없다.
+차트가 도달할 수 있는 모든 exact pick 파이프라인 키를 담던 표(`pick_variants.csv`)와 그 검사기,
+측정 모드(`--pick-variants`)는 #381에서 없앴다. 등록 차트의 픽이 최근접 데이터 커널과 잉크 적중으로
+바뀌어, 투영과 셰이더 세트마다 커널 하나가 특수화된 변형들을 대신한다. exact 질의는 스트리밍
+화면과 typed 데이터 픽의 점 부분(#381 4단계 전까지)에만 남고, 그 모듈은 위의 캡처에서 함께 잰다.
 
 브라우저 렌더러는 화면에 그리는 차트의 exact pick 파이프라인을 첫 픽 전에 기존 컴파일 큐로
 미리 컴파일한다(#363). 차트 자신의 키만 컴파일하고, 픽 경로는 그 컴파일을 기다린 뒤 예전처럼

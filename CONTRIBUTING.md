@@ -138,18 +138,6 @@ struct or constant that mirrors a changed layout, and the contract in
 implements; follow that guide's steps and run
 `cargo test --locked -p figgy-renderer --test shader_consistency`.
 
-A change to a WGSL fragment of an exact pick module changes that module's hash in
-the exact pick variant table (`crates/renderer/tests/support/pick_variants.csv`,
-#363), and `python3 ci/verify.py static` fails, naming the modules and their row
-counts, until the table is refreshed. Regenerate it, which keeps every other row's
-measured time, and measure the rows left without one in headless Chromium with
-SwiftShader (`--missing`), as
-[the variant table section](ci/shader-compilation.md#exact-pick-variant-table-363)
-describes. Do the same whenever the lib test `pick_variant_table_matches_the_picker`
-reports new or removed variants. A WGSL change outside the exact modules does not
-touch the table. The measurement (`node ci/shader_compile.cjs --pick-variants …`) is
-a manual check; no CI job runs it.
-
 Public, non-draft PRs run the three-OS package/rendering matrix and CodeQL. There
 are no push or scheduled triggers for those workflows. Draft PRs wait until
 marked ready for review. CI adapters are software or virtualized; macOS/Metal

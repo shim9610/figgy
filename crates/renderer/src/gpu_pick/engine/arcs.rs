@@ -62,20 +62,6 @@ impl GpuPickEngine {
             .map(move |slot| series_exact_variant(&slot.gpu, query))
     }
 
-    /// The exact variant a streamed chunk of each registered series scans
-    /// with ([`stream_exact_variant`]), in registry order: the streamed rows
-    /// of the pick variant table (#363).
-    #[cfg(test)]
-    pub(crate) fn stream_exact_variants<'a>(
-        &'a self,
-        query: &'a GpuPickQuery,
-    ) -> impl Iterator<Item = PickExactKey> + 'a {
-        self.registry
-            .slots
-            .iter()
-            .map(move |slot| stream_exact_variant(&slot.gpu, query))
-    }
-
     /// The bundle the exact pipelines are created against.
     pub(crate) fn bundle(&self) -> &PickPipelineBundle {
         &self.bundle

@@ -106,9 +106,8 @@ pub(crate) fn exact_variant_for(
 /// `descriptor` (`prepare_series_buffer`), without building the slot: what
 /// the exact pass of a chart's pick will need, known as soon as the chart is
 /// registered, so its pipelines can compile before the first pick (#363).
-/// [`exact_variant_for`] adds a query's bits. The pick variant table's test
-/// checks it against the slots the picker builds for every chart it lists.
-#[cfg(any(target_arch = "wasm32", test))]
+/// [`exact_variant_for`] adds a query's bits.
+#[cfg(target_arch = "wasm32")]
 pub(crate) fn resident_exact_key(descriptor: &GpuPickSeriesDescriptor<'_>) -> (PickExactKey, u32) {
     let mut flags = 0u32;
     let mut base_shape_id = 0u32;
