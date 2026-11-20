@@ -16,10 +16,10 @@ pub struct LevelPlacement<'a> {
 
 /// The gap between a stroke's end and its label, logical pixels.
 pub(super) const LABEL_GAP: f32 = 4.0;
-/// The pad around a transition label's box that a knockout
+/// The pad around each glyph's ink that a knockout
 /// ([`TransitionArrowStyle::label_knockout`], #357) cuts from the shafts,
 /// logical pixels.
-pub(super) const KNOCKOUT_PAD: f32 = 2.0;
+pub(super) const KNOCKOUT_PAD: f32 = 1.5;
 /// The contrast a formatted transition label in its arrow's colour needs
 /// to stand without an outline (#357, WCAG AA for text).
 pub(super) const LABEL_CONTRAST: f32 = 4.5;
@@ -2242,33 +2242,35 @@ impl LevelPlacement<'_> {
             }
         }
         let arrow = &style.transition;
-        // The knockout boxes (#357): every drawn transition label's box
-        // plus a pad. Every shaft is broken where it crosses one.
-        let knockouts: Vec<crate::layout::RectF> = if arrow.label_knockout {
-            (0..records.transitions.len())
-                .filter_map(|index| {
-                    self.label(
-                        records,
-                        style,
-                        &layout,
-                        LabelPart::Transition,
-                        index,
-                        measure,
-                    )
-                })
-                .map(|text| {
-                    let r = text.rect();
-                    crate::layout::RectF {
+        // The knockout boxes (#357): the ink of every glyph of every drawn
+        // transition label, grown by a pad. A shaft is broken only where it
+        // passes under them, not across a label's empty corners.
+        let mut knockouts: Vec<crate::layout::RectF> = Vec::new();
+        if arrow.label_knockout {
+            for index in 0..records.transitions.len() {
+                let Some(text) = self.label(
+                    records,
+                    style,
+                    &layout,
+                    LabelPart::Transition,
+                    index,
+                    measure,
+                ) else {
+                    continue;
+                };
+                let Some((rich, _)) = text.text.rich() else {
+                    continue;
+                };
+                measure.ink_boxes(rich, text.origin, &mut |r| {
+                    knockouts.push(crate::layout::RectF {
                         x: r.x - KNOCKOUT_PAD,
                         y: r.y - KNOCKOUT_PAD,
                         width: r.width + 2.0 * KNOCKOUT_PAD,
                         height: r.height + 2.0 * KNOCKOUT_PAD,
-                    }
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+                    });
+                });
+            }
+        }
         let mut cuts: Vec<(f32, f32)> = Vec::new();
         for (index, transition) in records.transitions.iter().enumerate() {
             let Some((tail, tip)) = self.transition_arrow(&layout, index) else {

@@ -71,7 +71,11 @@ and radar documents' `text_sizes`) are additive.
     boxes do not include the outline. A Rust `PlacedText { .. }` literal
     adds `outline: None`.
   - New `TransitionArrowStyle.label_knockout: bool`: every shaft is broken
-    under each drawn transition label's box plus 2 px (a gap, not a halo).
+    where it passes under a drawn transition label's glyph ink, each
+    glyph's tight box grown by 1.5 px (a gap, not a halo); a shaft that
+    only crosses a label's empty corners or spaces stays whole. The boxes
+    come from the new `MeasureText::ink_boxes` (default: the block's
+    rectangle), which the renderer answers from the placement it draws.
     Arrowheads are not cut. The pick keeps the whole arrow, so both sides
     of a gap hit; the picked highlight, PNG, SVG and PDF draw the gap. A
     document that omits it reads `false`; `EnergyLevelSeries::default()`
@@ -80,7 +84,8 @@ and radar documents' `text_sizes`) are additive.
     byte for byte.
   - **Migration:** an exhaustive `Transition { .. }` literal adds
     `color: None`, and an exhaustive `TransitionArrowStyle { .. }` literal
-    adds `label_knockout: false, color_by_wavelength: None`.
+    adds `label_knockout: false, color_by_wavelength: None`. A
+    `MeasureText` implementor needs no change (`ink_boxes` has a default).
   - Tests: `transition_colours_follow_their_precedence_and_labels_knock_out_shafts`
     (`energy_levels_render.rs`), `wavelengths_map_to_spectral_colours`,
     `a_shaft_is_cut_where_it_crosses_each_box`,

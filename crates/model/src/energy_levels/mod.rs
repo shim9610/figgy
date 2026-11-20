@@ -545,9 +545,10 @@ pub struct TransitionArrowStyle {
     /// `Config.colorbar`; a transition without a value keeps `color`.
     #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
     pub color_by_value: bool,
-    /// Break every shaft under a drawn transition label's box plus a 2 px
-    /// pad (#357), so the label reads clean where it sits on an arrow: a
-    /// gap in the stroke, not a halo. The arrowheads are not cut. Off for
+    /// Break every shaft where it passes under a drawn transition label's
+    /// glyph ink, each glyph's tight box grown by 1.5 px (#357), so the
+    /// label reads clean where it sits on an arrow: a gap in the stroke,
+    /// not a halo. A shaft across the label's empty corners stays whole. The arrowheads are not cut. Off for
     /// a document that omits it; the Grotrian look turns it on.
     #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
     pub label_knockout: bool,

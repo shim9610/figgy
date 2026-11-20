@@ -2476,38 +2476,118 @@ fn transition_colours_follow_their_precedence_and_labels_knock_out_shafts() {
         .expect("pdf");
     assert!(pdf.len() > plain_pdf.len(), "the PDF strokes the glyphs");
 
-    // Knockout: the label dragged onto the middle of its arrow.
-    let (_, rect) = transition_label(&chart, &levels).unwrap();
-    let mid = [
-        (arrow.0[0] + arrow.1[0]) / 2.0,
-        (arrow.0[1] + arrow.1[1]) / 2.0,
-    ];
-    let centre = [rect.x + rect.width / 2.0, rect.y + rect.height / 2.0];
-    levels.transitions[0].label_offset = [mid[0] - centre[0], mid[1] - centre[1]];
-    let (_, on) = transition_label(&chart, &levels).unwrap();
+    // Knockout: a label dragged onto the middle of its arrow. The shaft is
+    // broken only under the glyphs' ink: under every glyph no shaft ink is
+    // left, while a spaced label's empty middle leaves the shaft whole.
+    use renderer::text::MeasureText as _;
+    let placed = |levels: &EnergyLevelSeries| {
+        let (space, measure) = layout_of(&chart, levels);
+        let placement = renderer::energy_levels::LevelPlacement {
+            space: &space,
+            categories: chart.config().bottom_x.categories.as_deref().unwrap_or(&[]),
+            view: LevelView::Main,
+            colorbar: None,
+            picked: None,
+        };
+        let layout = placement.layout(levels, &levels.style, &measure);
+        let text = placement
+            .label(
+                levels,
+                &levels.style,
+                &layout,
+                LabelPart::Transition,
+                0,
+                &measure,
+            )
+            .expect("the label");
+        let (rich, _) = text.text.rich().expect("a rich label");
+        let mut ink = Vec::new();
+        measure.ink_boxes(rich, text.origin, &mut |r| ink.push(r));
+        (text.rect(), ink)
+    };
+    // The label's place depends on its offset only through the drag, so a
+    // few corrections centre it on the arrow's middle.
+    let onto_middle = |levels: &mut EnergyLevelSeries| {
+        let mid = [
+            (arrow.0[0] + arrow.1[0]) / 2.0,
+            (arrow.0[1] + arrow.1[1]) / 2.0,
+        ];
+        for _ in 0..4 {
+            let (rect, _) = placed(levels);
+            let offset = &mut levels.transitions[0].label_offset;
+            offset[0] += mid[0] - (rect.x + rect.width / 2.0);
+            offset[1] += mid[1] - (rect.y + rect.height / 2.0);
+        }
+    };
+    // Points along the arrow's centre line: those inside a glyph's ink, and
+    // those inside the label's rectangle at least 3 px from every glyph.
+    let samples = |rect: renderer::layout::RectF, ink: &[renderer::layout::RectF]| {
+        let inside = |r: &renderer::layout::RectF, p: [f32; 2], m: f32| {
+            p[0] >= r.x - m
+                && p[0] <= r.x + r.width + m
+                && p[1] >= r.y - m
+                && p[1] <= r.y + r.height + m
+        };
+        let (mut under, mut clear) = (Vec::new(), Vec::new());
+        for k in 0..=400 {
+            let t = k as f32 / 400.0;
+            let p = [
+                arrow.0[0] + (arrow.1[0] - arrow.0[0]) * t,
+                arrow.0[1] + (arrow.1[1] - arrow.0[1]) * t,
+            ];
+            if ink.iter().any(|r| inside(r, p, -0.5)) {
+                under.push(p);
+            } else if inside(&rect, p, 0.0) && ink.iter().all(|r| !inside(r, p, 3.0)) {
+                clear.push(p);
+            }
+        }
+        (under, clear)
+    };
+    let green_at = |img: &RasterImage, p: [f32; 2], scale: f32| {
+        is_green(pixel(img, (p[0] * scale) as u32, (p[1] * scale) as u32))
+    };
     let mut knocked = levels.clone();
     knocked.style.transition.label_knockout = true;
-    let inner = renderer::layout::RectF {
-        x: on.x + 1.0,
-        y: on.y + 1.0,
-        width: on.width - 2.0,
-        height: on.height - 2.0,
-    };
+    onto_middle(&mut knocked);
+    let (on, ink) = placed(&knocked);
+    let (under, _) = samples(on, &ink);
+    assert!(!under.is_empty(), "the arrow passes under the glyphs");
+    // A label with an empty middle: two glyphs far apart.
+    let mut spaced = knocked.clone();
+    spaced.transitions[0].label = Some(renderer::text::RichText::plain(
+        "a                    a",
+        MAGENTA,
+        14.0,
+        "",
+    ));
+    onto_middle(&mut spaced);
+    let (spaced_rect, spaced_ink) = placed(&spaced);
+    let (_, clear) = samples(spaced_rect, &spaced_ink);
+    assert!(
+        !clear.is_empty(),
+        "the arrow crosses the label's empty middle"
+    );
+    let mut unknocked = knocked.clone();
+    unknocked.style.transition.label_knockout = false;
     for scale in [1.0f32, 2.0] {
-        let plain = export(&mut r, &chart, &[series("he", levels.clone())], scale);
+        let plain = export(&mut r, &chart, &[series("he", unknocked.clone())], scale);
         let cut = export(&mut r, &chart, &[series("he", knocked.clone())], scale);
         assert!(
-            ink_in(&plain, inner, scale, is_green) > 0,
-            "{scale}x the label sits on its arrow"
-        );
-        assert_eq!(
-            ink_in(&cut, inner, scale, is_green),
-            0,
-            "{scale}x the shaft is cut"
+            under.iter().any(|p| green_at(&plain, *p, scale)),
+            "{scale}x without the knockout the shaft runs under the glyphs"
         );
         assert!(
-            ink_in(&cut, inner, scale, is_magenta) > 0,
+            under.iter().all(|p| !green_at(&cut, *p, scale)),
+            "{scale}x the shaft is cut under the glyphs"
+        );
+        assert!(
+            ink_in(&cut, on, scale, is_magenta) > 0,
             "{scale}x the label draws"
+        );
+        let open = export(&mut r, &chart, &[series("he", spaced.clone())], scale);
+        assert!(
+            clear.iter().all(|p| green_at(&open, *p, scale)),
+            "{scale}x the shaft stays whole across the label's empty area"
         );
         // Both sides of the gap still pick the arrow.
         for t in [0.2f32, 0.8] {
@@ -2522,7 +2602,7 @@ fn transition_colours_follow_their_precedence_and_labels_knock_out_shafts() {
                 other => panic!("{scale}x {t}: {other:?}"),
             }
         }
-        // The picked highlight draws the gap too.
+        // The picked highlight draws the same gap.
         let mut picked = Chart::new(chart.config().clone());
         picked.config_mut().picked_data = Some(DataSelectionsConfig {
             refs: vec![PickedDataRef::Point {
@@ -2533,7 +2613,10 @@ fn transition_colours_follow_their_precedence_and_labels_knock_out_shafts() {
             ..DataSelectionsConfig::default()
         });
         let lit = export(&mut r, &picked, &[series("he", knocked.clone())], scale);
-        assert_eq!(ink_in(&lit, inner, scale, is_green), 0, "{scale}x picked");
+        assert!(
+            under.iter().all(|p| !green_at(&lit, *p, scale)),
+            "{scale}x picked"
+        );
         assert!(
             ink_in(
                 &lit,

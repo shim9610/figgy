@@ -1238,6 +1238,39 @@ impl GlyphSink for MeasureSink {
     fn rect(&mut self, _: RectF, _: &Color) {}
 }
 
+/// The sink of [`CpuTextMeasure::ink_boxes`] (#357): hands each glyph's
+/// tight ink box (its pen plus its outline's bounds) and each rule's
+/// rectangle; paints nothing.
+struct InkSink<'a>(&'a mut dyn FnMut(RectF));
+
+impl GlyphSink for InkSink<'_> {
+    fn paints(&self) -> bool {
+        false
+    }
+    fn glyph(
+        &mut self,
+        font: FontRef<'static>,
+        glyph: u16,
+        size: f32,
+        _: bool,
+        pen: (f32, f32),
+        _: &Color,
+    ) {
+        let g = glyph_extents_id(font, size, glyph);
+        if g.ink_right > g.ink_left && g.ink_bottom > g.ink_top {
+            (self.0)(RectF {
+                x: pen.0 + g.ink_left,
+                y: pen.1 + g.ink_top,
+                width: g.ink_right - g.ink_left,
+                height: g.ink_bottom - g.ink_top,
+            });
+        }
+    }
+    fn rect(&mut self, r: RectF, _: &Color) {
+        (self.0)(r);
+    }
+}
+
 /// The sink of [`draw_rich_text`]: paints onto the canvas. Its third field
 /// is the pixel scale the text's sizes carry (pixels per logical pixel),
 /// from which each glyph's hinting is decided ([`glyph_hinting`]). The first glyph that cannot be rasterized
@@ -1995,6 +2028,12 @@ impl CpuTextMeasure {
 impl crate::text::MeasureText for CpuTextMeasure {
     fn measure_rich(&self, rt: &RichText) -> crate::text::TextExtents {
         measure_rich_text(rt, self.policy)
+    }
+
+    /// Every glyph's ink box and every rule of `rt` at `origin`, from the
+    /// placement the raster and the vector export draw (#357).
+    fn ink_boxes(&self, rt: &RichText, origin: (f32, f32), each: &mut dyn FnMut(RectF)) {
+        place_rich_text(&mut InkSink(each), rt, origin, self.policy);
     }
 
     /// A tick label's extents as the raster draws plain text: per glyph,
