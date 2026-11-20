@@ -353,6 +353,10 @@ impl Renderer {
             } else {
                 self.ensure_registered_styles(item.chart_id)?;
             }
+            // A chart on screen compiles its first pick's pipelines ahead
+            // of that pick (#363, #381).
+            #[cfg(target_arch = "wasm32")]
+            self.warm_first_pick(item.chart_id);
         }
         // Whether each series of each item is drawn: resident sources only,
         // and in a browser only once its pipelines have compiled (#299).

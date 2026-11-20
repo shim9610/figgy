@@ -153,8 +153,9 @@ snapshot, readable while the chart is busy, and it reports `{ scope:
 `figgy-init-progress` event. It starts its picker prewarm once the render pipelines
 have compiled. Exports and picks always draw the whole chart; they compile what they
 need through the browser's asynchronous compiler first (an export its pipelines,
-`pick_point` and `pick_data` their exact pick variants), so neither compiles on the
-page's thread.
+`pick_point` and `pick_data` the picker's pipelines, the nearest-datum kernel and the
+typed data pick kernels, which a drawn chart has already queued), so neither compiles on
+the page's thread.
 The chart's waits borrow it until they settle. `chart.readiness()` returns a
 `FiggyReadiness` that does not ([#315](https://github.com/shim9610/figgy/issues/315)):
 its `series_ready()` and `pipelines_ready()` wait for the same compiles without
