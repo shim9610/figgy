@@ -875,6 +875,16 @@ fn every_wgsl_function_is_defined_once_outside_the_allowlist() {
 /// Part of the layered design (rule 9); these stay. Also the per-module
 /// bodies of one contract, where each module needs its own.
 const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
+    // The nearest-datum pick's placement per projection (#381): the flat
+    // and the 3D module of `gpu_pick/nearest.rs` each splice one before the
+    // shared kernel (`nearest_entry.wgsl`).
+    (
+        &[
+            "gpu_pick/nearest_project_2d.wgsl",
+            "gpu_pick/nearest_project_3d.wgsl",
+        ],
+        &["pick_nearest_offset"],
+    ),
     // The shader sets' interfaces (#299): each full fragment and its
     // basic twin, of which `assembled_by_set!` splices one into each
     // assembly of a module (`shader_assembly::SET_FRAGMENTS`).
