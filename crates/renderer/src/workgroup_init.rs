@@ -22,6 +22,7 @@ pub(super) const EXPLICIT_ZERO_ENTRIES: &[&str] = &[
     "pick_category_bar",
     "pick_box_plot",
     "pick_range_bar",
+    "pick_range_links",
     "pick_violin",
     "pick_value_labels",
     "pick_parallel",
