@@ -371,8 +371,9 @@ fn layout_changes(before: &Config, after: &Config) -> Vec<String> {
 //   right band, which grows to the overhang.
 // - `config-series` is the default with a right-hand colourbar: its band
 //   shrinks to its labels and the 9 px padding (no title).
-// - `config-edited` shows the top labels (the band grows to their reach and
-//   the padding), puts each axis title beside its labels in a band set to
+// - `config-edited` shows the top labels (the band grows to their reach,
+//   the tick row's shared descent below their baseline (#376), and the
+//   padding), puts each axis title beside its labels in a band set to
 //   labels, the 9 px gap, title and padding (10 px past the 20 px bottom
 //   title, 11 px past the 22 px left one; the bottom title moves 8 px
 //   outward, the left one 26 px), holds the last x label's overhang past
@@ -388,12 +389,15 @@ fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands
     let out = laid_out(&default);
     assert_eq!(laid_out(&out), out, "default: not idempotent");
     // The x bands hold the labels' unhinted ink (#357): a pixel more than
-    // the hinted ink took (10 and 25 px), the bands being whole pixels.
+    // the hinted ink took (10 and 25 px), the bands being whole pixels. The
+    // bottom labels sit on the tick row's shared baseline
+    // (`TICK_ROW_REFERENCE`, #376), below the digits' own ascent, so the
+    // bottom band holds one pixel more.
     assert_eq!(
         layout_changes(&default, &out),
         [
             "top_x.out_margin 8 -> 11",
-            "bottom_x.out_margin 80 -> 26",
+            "bottom_x.out_margin 80 -> 27",
             // The helpers' `Auto` labels (#357): `0.0` … `1.0`.
             "left_y.out_margin 110 -> 39",
             "right_y.out_margin 32 -> 17",
@@ -416,7 +420,7 @@ fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands
                 "default",
                 &[
                     "top_x.out_margin 8 -> 11",
-                    "bottom_x.out_margin 80 -> 26",
+                    "bottom_x.out_margin 80 -> 27",
                     "left_y.out_margin 110 -> 49",
                     "right_y.out_margin 8 -> 22",
                     "chart_title.top_margin 32 -> 0",
@@ -425,7 +429,7 @@ fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands
             (
                 "edited",
                 &[
-                    "top_x.out_margin 8 -> 17",
+                    "top_x.out_margin 8 -> 20",
                     "bottom_x.out_margin 80 -> 54",
                     "bottom_x.title_option.offset_y 0 -> 8",
                     "left_y.out_margin 120 -> 97",
@@ -439,7 +443,7 @@ fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands
                 "series",
                 &[
                     "top_x.out_margin 8 -> 11",
-                    "bottom_x.out_margin 80 -> 26",
+                    "bottom_x.out_margin 80 -> 27",
                     "left_y.out_margin 110 -> 49",
                     "right_y.out_margin 8 -> 22",
                     "colorbar.axis.out_margin 60 -> 55",
