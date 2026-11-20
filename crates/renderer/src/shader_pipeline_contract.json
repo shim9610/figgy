@@ -3575,6 +3575,20 @@
         "layout": 1
       },
       "kind": "compute",
+      "source": "298b602ae3f97a76"
+    },
+    {
+      "descriptor": {
+        "compute": {
+          "constants": {
+            "PICK_VARIANT": 1022.0
+          },
+          "entryPoint": "pick_exact_candidates"
+        },
+        "label": "figgy GPU pick exact candidate pipeline",
+        "layout": 1
+      },
+      "kind": "compute",
       "source": "2ceb0f9d9ae35205"
     },
     {
@@ -3603,21 +3617,7 @@
         "layout": 1
       },
       "kind": "compute",
-      "source": "8e1cbb5e9566c299"
-    },
-    {
-      "descriptor": {
-        "compute": {
-          "constants": {
-            "PICK_VARIANT": 1022.0
-          },
-          "entryPoint": "pick_exact_candidates"
-        },
-        "label": "figgy GPU pick exact candidate pipeline",
-        "layout": 1
-      },
-      "kind": "compute",
-      "source": "a85d1d5c19f85025"
+      "source": "9daf020ba2167d72"
     },
     {
       "descriptor": {
@@ -3953,7 +3953,7 @@
         "layout": 1
       },
       "kind": "compute",
-      "source": "73db251ba7133123"
+      "source": "d3c1600d0c5c2271"
     },
     {
       "descriptor": {
