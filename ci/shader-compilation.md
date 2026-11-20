@@ -197,77 +197,19 @@ and the runner's `--pick-variants` mode were removed with the move of a
 registered chart's pick to the nearest-datum kernel and its ink hit (#381):
 one kernel per projection and shader set replaces the specialized variants a
 registered chart's pick compiled. The exact query remains for streamed
-displays and for the typed data pick's point part (until #381 phase 4); its
+displays (rule 8; #381 phase 4 moved the typed data pick off it); its
 modules are measured with every other module in the capture above.
 
-## Exact pick warm-up (#363)
+## Exact pick warm-up (#363, removed in #381)
 
-A browser renderer that compiles its render pipelines in the background (the
-`FiggyChart` path, `for_window_with_shader_set_async_observed`) also compiles the
-pipelines of each chart's first pick before that pick, and creates them as their
-compiles resolve:
-
-- **When.** On each screen frame, for each chart it draws, when the chart's config
-  revision, series revision or shader set has moved since the chart was last warmed
-  (a generation stamp on the chart's state). So registration and every edit that can
-  change a series' pick key warm the chart again; an unchanged chart costs one
-  comparison.
-- **What.** Only the chart's own keys, never the variant table:
-  `Renderer::for_each_exact_pick_key` reads them from the stored config and series
-  (the pick plan of every layer a pick can reach, each series' key from its pick
-  descriptor with the layer's query bits), without a picker, slot or GPU object. The
-  variant-table test checks, for every chart it lists, that these are exactly the
-  keys the pick needs. While the picker is not enabled, a chart a pick can reach also
-  schedules the picker's gate and reduce pipelines (`pick_gate_x`, `pick_gate_y`,
-  `pick_reduce_candidates`, the labels the shader contract records).
-- **How.** On the renderer's existing `CompileQueue` (`createComputePipelineAsync`
-  with the checked layout and, for an exact key, its override constants), ahead of
-  the waiting render compiles: the exact keys first, then gate and reduce. The queue
-  tracks one compile per label and leaves them out of `pipeline_status`,
-  `series_ready`, `pipelines_ready` and `pipeline_failures`, which stay about
-  drawing. A native renderer compiles nothing early.
-- **Created when they resolve.** A later frame that sees the queue's settled count
-  move creates what has compiled since, in the caches the pick already uses: once
-  gate and reduce are ready it enables the picker (the bundle the pick's enable
-  creates), and it creates each exact key that is ready in the picker's exact cache.
-  The browser's compile result can be dropped before a later pick (it was after
-  20 s, with hundreds of render pipelines compiled since); the created wgpu pipeline
-  is kept. This needs a frame after the compile resolves. The warm-up compiles go
-  ahead of the screen's, so a `FiggyChart` that redraws while its own compiles run
-  has one; a host that draws nothing after the first frame leaves the pick to wait
-  or compile as before. No cache, pipeline kind or lock is added.
-- **The pick is unchanged.** `enable_gpu_picking_async` waits for scheduled gate and
-  reduce compiles, and `compile_pick_pipelines_at` for a scheduled exact compile
-  (each issued first if it still waits), then each creates as before: from the
-  browser's cache when the result is still there, a compile of its own when it is
-  not, nothing when a frame already created it. A failed warm-up compile changes
-  nothing: the pick compiles and reports as before.
-- **Shader-set switch.** When a chart admits the full shaders, a browser renderer
-  with a queue no longer re-creates a ready picker's gate and reduce pipelines
-  synchronously on the page's thread: the picker goes back to not enabled, the next
-  frame's warm-up schedules the full set's and enables it when they resolve, and an
-  enable before that waits for them. A wasm Rust host on such a renderer therefore
-  calls `enable_gpu_picking_async` before picking after a shader-set switch, as
-  `FiggyChart` does: a synchronous pick right after it reports `PickerDisabled`.
-  Native renderers re-create it as before.
-
-First pick of a radar chart (markers and a fill) in headless Chromium 157 with
-SwiftShader, 4-core Linux container, on a renderer whose background render compiles
-are running, from `crates/renderer/tests/pick_warmup_browser.rs` (`PICK_WARMUP`
-lines; the host draws every 500 ms while it waits; two runs each unless noted; the
-first pick includes enabling the picker):
-
-| Pick after the first frame | Before #373 | Exact keys only | Exact, gate and reduce, created on resolve |
-| --- | ---: | ---: | ---: |
-| at once | 10.2–12.6 s | 7.0–7.4 s | 6.5–7.1 s (4 runs) |
-| after 8 s | 14.8–15.3 s | 2.4–2.5 s | 18–40 ms (4 runs) |
-| after 20 s | 25.8 s | 24.5–24.9 s | 10–25 ms (4 runs) |
-
-A pick at once waits for the compiles the first frame scheduled (gate and reduce
-about 2.5 s, the exact key about 4.5 s). After 8 s and 20 s every pipeline the pick
-needs was created by a frame, and the pick only prepares, dispatches and reads back.
-The frame that drew every series came about 1.5–2.5 s after the first frame with and
-without gate and reduce scheduled ahead of the render compiles.
+A browser renderer used to compile each drawn chart's exact pick keys on its
+compile queue ahead of the first pick (`warm_exact_picks`, measured by the
+removed `tests/pick_warmup_browser.rs`). With a registered chart's pick and
+typed data pick on the nearest-datum kernel (#381), no registered chart picks
+through an exact variant any more, so the warm-up, its compile-queue pick
+entries and its test are removed. The nearest-datum kernel compiles through
+the browser's async API before a pick (`compile_pick_pipelines_async`), one
+pipeline per projection and shader set for every chart.
 
 ## Data pick kernel compile times (#363)
 
@@ -337,12 +279,9 @@ GPU 환경에서 얻은 결과다. 실제 GPU의 실행 속도나 macOS 정밀�
 차트가 도달할 수 있는 모든 exact pick 파이프라인 키를 담던 표(`pick_variants.csv`)와 그 검사기,
 측정 모드(`--pick-variants`)는 #381에서 없앴다. 등록 차트의 픽이 최근접 데이터 커널과 잉크 적중으로
 바뀌어, 투영과 셰이더 세트마다 커널 하나가 특수화된 변형들을 대신한다. exact 질의는 스트리밍
-화면과 typed 데이터 픽의 점 부분(#381 4단계 전까지)에만 남고, 그 모듈은 위의 캡처에서 함께 잰다.
+화면에만 남고(#381 4단계에서 typed 데이터 픽도 최근접 데이터 커널로 옮겼다), 그 모듈은 위의 캡처에서 함께 잰다.
 
-브라우저 렌더러는 화면에 그리는 차트의 exact pick 파이프라인을 첫 픽 전에 기존 컴파일 큐로
-미리 컴파일한다(#363). 차트 자신의 키만 컴파일하고, 픽 경로는 그 컴파일을 기다린 뒤 예전처럼
-컴파일을 요청한다. 첫 프레임 직후 레이더 차트의 첫 픽은 약 10~13초에서 약 7.4초로, 8초 뒤의
-첫 픽은 약 15초에서 약 2.4초로 줄었다. 이어서 피커의 gate·reduce 파이프라인도 같은 큐에 미리
-올리고, 컴파일이 끝나면 다음 프레임이 기존 캐시에 파이프라인을 만들어 둔다. 브라우저가 컴파일
-결과를 버려도 만든 파이프라인은 남으므로, 8초나 20초 뒤의 첫 픽은 약 10~40ms로 줄었다. 바로 하는
-첫 픽은 미리 올린 컴파일을 기다려 약 7초다.
+브라우저 렌더러가 화면에 그리는 차트의 exact pick 파이프라인을 첫 픽 전에 미리 컴파일하던
+워밍업(#363)과 그 측정 테스트는 #381에서 없앴다. 등록 차트의 픽과 typed 데이터 픽이 모두 최근접
+데이터 커널을 쓰므로 exact 변형으로 픽하는 등록 차트가 더 없다. 최근접 커널은 픽 전에 브라우저의
+비동기 API로 컴파일한다(`compile_pick_pipelines_async`).

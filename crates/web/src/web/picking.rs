@@ -413,7 +413,10 @@ impl FiggyChart {
             self.compile_data_pick_pipelines([x, y], max_distance_px)
                 .await?;
             let ticket = self.data_pick_ticket([x, y], max_distance_px)?;
-            match ticket.resolve().await.map_err(js_err)? {
+            // The typed hit itself, not the selected element: a label or a
+            // DataLess element under the cursor answers even where a point
+            // series is drawn (#381).
+            match ticket.resolve_full().await.map_err(js_err)?.data {
                 Some(renderer::PickedData::ValueLabel {
                     source_id,
                     series_id,

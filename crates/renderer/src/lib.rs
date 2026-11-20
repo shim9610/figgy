@@ -149,7 +149,7 @@ pub use data_render::{
 };
 pub use drag::Draggable;
 pub use error::{FiggyError, Result};
-pub use gpu_data_pick::GpuDataPickTicket;
+pub use gpu_data_pick::{DataPickResult, GpuDataPickTicket};
 pub use gpu_extent::{
     GpuErrorbarExtent, GpuErrorbarExtentTicket, GpuExtentError, GpuFieldExtentMode,
     GpuSeriesExtent, GpuSeriesExtentColumnIds, GpuSeriesExtentMode, GpuSeriesExtentTicket,

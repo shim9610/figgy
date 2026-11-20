@@ -582,7 +582,9 @@ fn violins_and_points_pick_and_highlight_what_they_paint() {
         along(&chart, direction, 65.0, 1.0),
     );
     assert!(is_blue(pixel(&img, at.0 as u32, at.1 as u32)));
-    let hit = pick(&mut r, &chart, &series, 1.0, (at.0 + 0.5, at.1 + 0.5));
+    // The body is the typed hit; the selection is the nearest raw point
+    // (#381 phase 4).
+    let hit = pick_full(&mut r, &chart, &series, (at.0 + 0.5, at.1 + 0.5)).data;
     assert!(
         matches!(
             &hit,
@@ -1371,4 +1373,145 @@ fn a_split_violin_picks_and_highlights_each_half() {
         ),
         "{hit:?}"
     );
+}
+
+/// The typed data pick of `series` at `at`, every answer (#381).
+fn pick_full(
+    r: &mut Renderer,
+    chart: &Chart,
+    series: &[SeriesConfig],
+    at: (f32, f32),
+) -> renderer::DataPickResult {
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(chart.config().clone(), series.to_vec())
+        .unwrap();
+    let request = renderer::GpuPickRequest {
+        canvas_position_px: [at.0, at.1],
+        display_panel_px: Rect {
+            x: 0,
+            y: 0,
+            width: WIDTH,
+            height: HEIGHT,
+        },
+        display_scale: 1.0,
+        max_distance_px: 0.0,
+    };
+    let result = r
+        .shown(id, &request)
+        .pick_chart_data(id, request)
+        .unwrap()
+        .resolve_full_blocking()
+        .unwrap();
+    r.remove_chart(id).unwrap();
+    result
+}
+
+/// The pick selects the logical datum, not the nearer of a point and a
+/// body (#381 phase 4): on a violin with raw points a click on a point
+/// selects that point, and a click on the body far from every point
+/// selects the nearest point, the body still answered as the typed hit; a
+/// violin without points selects its body.
+#[test]
+fn a_violin_click_selects_the_nearest_point_or_the_body_without_points() {
+    let mut r = renderer();
+    let direction = CategoryBarDirection::Vertical;
+    let chart = chart(direction);
+    let body = ViolinBody::Split {
+        low: None,
+        high: Some(half("hi", BLUE)),
+    };
+    let with = [with_points(
+        violin_series("v", body.clone(), 0.0),
+        -0.5,
+        0.4,
+    )];
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &with),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
+
+    // On a raw point of category c: that point.
+    let (centre, full) = member(&chart, direction, 2, 1.0);
+    let da = chart.config().data_area().unwrap();
+    let mut point_at = None;
+    'find: for y in da.y..da.y + da.height {
+        for x in (centre - full) as u32..centre as u32 {
+            if is_orange(pixel(&img, x, y))
+                && is_orange(pixel(&img, x + 1, y))
+                && is_orange(pixel(&img, x, y + 1))
+                && is_orange(pixel(&img, x + 1, y + 1))
+            {
+                point_at = Some((x as f32 + 1.0, y as f32 + 1.0));
+                break 'find;
+            }
+        }
+    }
+    let at = point_at.expect("a raw point of c");
+    let on_point = pick_full(&mut r, &chart, &with, at);
+    let Some(renderer::PickedData::Point {
+        series_id,
+        point_index,
+        distance_px,
+        ..
+    }) = &on_point.picked
+    else {
+        panic!("a point is selected: {on_point:?}");
+    };
+    assert_eq!(series_id, "v");
+    assert!(
+        (200..300).contains(point_index),
+        "a point of c: {point_index}"
+    );
+    // The 4 px marker covers the cursor: its centre is within its radius.
+    assert!(*distance_px <= 2.5, "{on_point:?}");
+
+    // On the body of category b, right of its centre at 65, off every raw
+    // point: the nearest point is selected; the body is the typed hit.
+    let (centre, full) = member(&chart, direction, 1, 1.0);
+    let at = xy(
+        direction,
+        centre + full * 0.5 + 0.5,
+        along(&chart, direction, 65.0, 1.0) + 0.5,
+    );
+    let on_body = pick_full(&mut r, &chart, &with, at);
+    assert!(
+        matches!(
+            &on_body.data,
+            Some(renderer::PickedData::HistogramBin {
+                bin_index: 1,
+                half: Some(ViolinSide::High),
+                ..
+            })
+        ),
+        "the body is the typed hit: {on_body:?}"
+    );
+    let nearest = on_body.point.hit.as_ref().expect("the body's ink hits");
+    assert!(
+        matches!(
+            &on_body.picked,
+            Some(renderer::PickedData::Point { series_id, point_index, .. })
+                if series_id == "v" && *point_index == nearest.point_index
+        ),
+        "the nearest point is selected: {on_body:?}"
+    );
+
+    // Without points: the body.
+    let without = [violin_series("v", body, 0.0)];
+    let alone = pick_full(&mut r, &chart, &without, at);
+    assert!(
+        matches!(
+            &alone.picked,
+            Some(renderer::PickedData::HistogramBin {
+                bin_index: 1,
+                half: Some(ViolinSide::High),
+                ..
+            })
+        ),
+        "a violin without points selects its body: {alone:?}"
+    );
+    assert!(alone.point.nearest.is_empty(), "{alone:?}");
 }

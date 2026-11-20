@@ -450,9 +450,13 @@ fn markers_and_lines_pick_where_they_paint() {
             ternary_px(&config, rows[1], scale),
         );
         let near_a = (a.0 + (b.0 - a.0) * 0.3, a.1 + (b.1 - a.1) * 0.3);
-        assert_eq!(
-            picked_point(pick(&mut r, &config, &path, scale, near_a, 1.0)),
-            Some(("path".into(), 0)),
+        // The chord's ink hits; the selection is the path's nearest datum
+        // (#381), whichever vertex that is.
+        assert!(
+            matches!(
+                picked_point(pick(&mut r, &config, &path, scale, near_a, 1.0)),
+                Some((ref id, _)) if id == "path"
+            ),
             "{scale}x chord"
         );
         // 20 px off the chord, across it.

@@ -120,44 +120,6 @@ type BoxExtraLayers<'a> = (
 );
 
 impl PrepareContext<'_> {
-    /// A region series' ring starts for the pick (#49): the scan its draw
-    /// runs, over the same rows. `None` for any other series, or when its
-    /// columns are not resident; a scan the draw would fail fails the pick
-    /// with the same error.
-    pub(in crate::renderer) fn region_ring_starts(
-        &mut self,
-        config: &Config,
-        series: &SeriesConfig,
-    ) -> Result<Option<wgpu::Buffer>> {
-        let (Some(_), Some(_), Some(c)) = (
-            series.render_type.ternary_region(),
-            config.ternary(),
-            series.render_type.ternary_c_column(),
-        ) else {
-            return Ok(None);
-        };
-        let (Some(x), Some(y), Some(c)) = (
-            self.pool.handle_for(&series.x_column),
-            self.pool.handle_for(&series.y_column),
-            self.pool.handle_for(c),
-        ) else {
-            return Ok(None);
-        };
-        let params = ternary_region_params(&series.series_id, [0.0; 4], x, y, c)?;
-        let scan = self.pipelines.ensure_ternary_region_scan(self.device);
-        let (buffer, _charge) = data_render::ternary_region::scan_ring_starts(
-            self.device,
-            self.queue,
-            self.gpu_ledger,
-            &scan,
-            self.pool.buffer(),
-            &params,
-            self.caps.max_compute_workgroups_per_dimension,
-        )?
-        .ok_or_else(|| ring_scan_too_large(&series.series_id))?;
-        Ok(Some(buffer))
-    }
-
     pub(in crate::renderer) fn build_series_layers<'a>(
         &'a self,
         view: &'a ChartView,

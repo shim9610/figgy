@@ -4,34 +4,6 @@
 
 use super::*;
 
-/// Whether the line `series` draws under `draw_style` walks its arc prefix:
-/// a dashed stroke takes its dash phase from it, a sketch stroke its wobble
-/// and a streamline series' arrowheads their slots. A Milkyway ribbon is
-/// never dashed and its stars are picked by their envelope, so it needs
-/// none.
-pub(super) fn line_pick_walks_arc(draw_style: &DrawStyle, series: &SeriesConfig) -> bool {
-    if !effective_series_primitives(draw_style, &series.render_type).line {
-        return false;
-    }
-    if series
-        .render_type
-        .streamlines()
-        .is_some_and(|streamlines| streamlines.arrows.is_some())
-    {
-        return true;
-    }
-    let Some(line) = extract_line(&series.render_type) else {
-        return false;
-    };
-    match draw_style {
-        DrawStyle::Milkyway(_) => false,
-        DrawStyle::Sketch(_) => true,
-        DrawStyle::Precise | DrawStyle::Constellation(_) => {
-            !matches!(line.line_style, LineStylePreset::Solid)
-        }
-    }
-}
-
 // Which primitives a render type draws.
 //
 // Derived from the extractors rather than listed again, following `has_errorbar`

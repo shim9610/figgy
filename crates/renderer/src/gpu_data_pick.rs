@@ -1555,7 +1555,6 @@ enum DataPickTicketState {
 
 pub(crate) struct RankedPickedData {
     pub(crate) picked: PickedData,
-    pub(crate) paint_order: u32,
 }
 
 pub(crate) struct DataPickTicket {
@@ -1723,23 +1722,13 @@ fn decode_candidate(
         },
         _ => return Err(crate::gpu_pick::GpuPickError::InvalidGpuResult),
     };
-    Ok(RankedPickedData {
-        picked,
-        paint_order: identity.paint_order,
-    })
+    Ok(RankedPickedData { picked })
 }
 
 impl fmt::Debug for DataPickTicket {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DataPickTicket").finish_non_exhaustive()
     }
-}
-
-#[derive(Clone)]
-pub(crate) struct PointPaintOrder {
-    pub(crate) source_id: Option<String>,
-    pub(crate) series_id: String,
-    pub(crate) paint_order: u32,
 }
 
 /// Owned async ticket for a typed data pick.
@@ -1756,10 +1745,6 @@ enum GpuDataPickTicketState {
     Resident {
         point: crate::gpu_pick::GpuPickTicket,
         data: DataPickTicket,
-        point_orders: Arc<[PointPaintOrder]>,
-        /// The paint order of the first line offset member; `point_orders`'
-        /// length when the layer has none.
-        first_member: usize,
         /// The best hit of the layer's DataLess energy-level series, picked
         /// on the CPU over their SSOT when the ticket was made (#203).
         cpu: Option<RankedPickedData>,
@@ -1859,26 +1844,15 @@ impl SurfacePickTicket {
 }
 
 impl GpuDataPickTicket {
-    /// The last `members` entries of `point_orders` are line offset members
-    /// (`Config::line_offsets`), drawn by panels above every other series of
-    /// the layer: a point hit on one of them inside its painted part
-    /// (distance 0) answers before any data hit under it.
+    /// A registered chart's typed data pick (#381): its nearest-datum
+    /// pick with the ink hit, and its typed hits.
     pub(crate) fn new(
         point: crate::gpu_pick::GpuPickTicket,
         data: DataPickTicket,
-        point_orders: Vec<PointPaintOrder>,
-        members: usize,
         cpu: Option<RankedPickedData>,
     ) -> Self {
-        let first_member = point_orders.len().saturating_sub(members);
         Self {
-            state: GpuDataPickTicketState::Resident {
-                point,
-                data,
-                point_orders: point_orders.into(),
-                first_member,
-                cpu,
-            },
+            state: GpuDataPickTicketState::Resident { point, data, cpu },
         }
     }
 
@@ -1890,8 +1864,36 @@ impl GpuDataPickTicket {
     }
 
     /// Wait for the pick: the bundle's poll thread completes the wait on
-    /// native (see [`crate::RendererDevice::new`]).
-    pub async fn resolve(mut self) -> Result<Option<PickedData>, crate::gpu_pick::GpuPickError> {
+    /// native (see [`crate::RendererDevice::new`]). The selected element
+    /// ([`DataPickResult::picked`]); see [`Self::resolve_full`] for every
+    /// answer.
+    pub async fn resolve(self) -> Result<Option<PickedData>, crate::gpu_pick::GpuPickError> {
+        Ok(self.resolve_full().await?.picked)
+    }
+
+    /// [`Self::resolve`], polling the device on this thread until the pick
+    /// completes. A streamed series' pick fails with
+    /// [`GpuPickError::Streamed`](crate::gpu_pick::GpuPickError::Streamed).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn resolve_blocking(self) -> Result<Option<PickedData>, crate::gpu_pick::GpuPickError> {
+        Ok(self.resolve_full_blocking()?.picked)
+    }
+
+    /// The pick if it has completed, or the ticket back, without blocking.
+    /// A streamed series' pick fails with
+    /// [`GpuPickError::Streamed`](crate::gpu_pick::GpuPickError::Streamed).
+    pub fn try_resolve(
+        self,
+    ) -> Result<crate::TryResolve<Option<PickedData>, Self>, crate::gpu_pick::GpuPickError> {
+        Ok(match self.try_resolve_full()? {
+            crate::TryResolve::Ready(result) => crate::TryResolve::Ready(result.picked),
+            crate::TryResolve::Pending(ticket) => crate::TryResolve::Pending(ticket),
+        })
+    }
+
+    /// Wait for the pick: the selected element, the nearest-datum pick and
+    /// the typed hit, each its own answer (#381).
+    pub async fn resolve_full(mut self) -> Result<DataPickResult, crate::gpu_pick::GpuPickError> {
         match &mut self.state {
             GpuDataPickTicketState::Resident { point, data, .. } => {
                 point.wait().await?;
@@ -1903,11 +1905,13 @@ impl GpuDataPickTicket {
         self.finish()
     }
 
-    /// [`Self::resolve`], polling the device on this thread until the pick
-    /// completes. A streamed series' pick fails with
+    /// [`Self::resolve_full`], polling the device on this thread until the
+    /// pick completes. A streamed series' pick fails with
     /// [`GpuPickError::Streamed`](crate::gpu_pick::GpuPickError::Streamed).
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn resolve_blocking(mut self) -> Result<Option<PickedData>, crate::gpu_pick::GpuPickError> {
+    pub fn resolve_full_blocking(
+        mut self,
+    ) -> Result<DataPickResult, crate::gpu_pick::GpuPickError> {
         match &mut self.state {
             GpuDataPickTicketState::Resident { point, data, .. } => {
                 point.wait_blocking()?;
@@ -1921,12 +1925,12 @@ impl GpuDataPickTicket {
         self.finish()
     }
 
-    /// The pick if it has completed, or the ticket back, without blocking.
-    /// A streamed series' pick fails with
+    /// [`Self::resolve_full`] if the pick has completed, or the ticket back,
+    /// without blocking. A streamed series' pick fails with
     /// [`GpuPickError::Streamed`](crate::gpu_pick::GpuPickError::Streamed).
-    pub fn try_resolve(
+    pub fn try_resolve_full(
         mut self,
-    ) -> Result<crate::TryResolve<Option<PickedData>, Self>, crate::gpu_pick::GpuPickError> {
+    ) -> Result<crate::TryResolve<DataPickResult, Self>, crate::gpu_pick::GpuPickError> {
         let ready = match &mut self.state {
             GpuDataPickTicketState::Resident { point, data, .. } => {
                 // Both, so the first call hands both waits to the poll thread.
@@ -1944,63 +1948,30 @@ impl GpuDataPickTicket {
         self.finish().map(crate::TryResolve::Ready)
     }
 
-    /// After a wait: decode the pick and, for a resident layer, choose
-    /// between its point and data hits.
-    fn finish(&mut self) -> Result<Option<PickedData>, crate::gpu_pick::GpuPickError> {
-        let (point, data, point_orders, first_member, cpu) = match &mut self.state {
-            GpuDataPickTicketState::Surface(ticket) => return ticket.finish(),
+    /// After a wait: decode the pick. A resident layer answers its
+    /// nearest-datum pick and its typed hit separately (#381): the selected
+    /// element is the nearest datum when the cursor hits drawn ink and the
+    /// chart has a series with point data, and the typed hit otherwise.
+    fn finish(&mut self) -> Result<DataPickResult, crate::gpu_pick::GpuPickError> {
+        let alone = |picked: Option<PickedData>| DataPickResult {
+            picked: picked.clone(),
+            point: crate::PickResult::default(),
+            data: picked,
+        };
+        let (point, data, cpu) = match &mut self.state {
+            GpuDataPickTicketState::Surface(ticket) => return ticket.finish().map(alone),
             GpuDataPickTicketState::Stream(ticket) => {
-                return ticket.finish().map(|result| result.map(|hit| hit.picked));
+                return ticket
+                    .finish()
+                    .map(|result| alone(result.map(|hit| hit.picked)));
             }
-            GpuDataPickTicketState::Resident {
-                point,
-                data,
-                point_orders,
-                first_member,
-                cpu,
-            } => (point, data, &*point_orders, *first_member, cpu.take()),
+            GpuDataPickTicketState::Resident { point, data, cpu } => (point, data, cpu.take()),
         };
-        let point = point.finish()?.map(crate::pick::PickedPoint::from);
-        let data = data.finish()?;
-        let point = point.map(|point| {
-            let paint_order = point_orders
-                .iter()
-                .rev()
-                .find(|identity| {
-                    identity.series_id == point.series_id && identity.source_id == point.source_id
-                })
-                .map_or(0, |identity| identity.paint_order);
-            RankedPickedData {
-                picked: point.into(),
-                paint_order,
-            }
-        });
-        // The nearer of two hits; on a tie, the one painted later.
-        let nearer = |a: RankedPickedData, b: RankedPickedData| {
-            let (da, db) = (a.picked.distance_px(), b.picked.distance_px());
-            if db < da || (db == da && b.paint_order > a.paint_order) {
-                b
-            } else {
-                a
-            }
-        };
-        let gpu = match (point, data) {
-            (None, None) => None,
-            (Some(point), None) => Some(point),
-            (None, Some(data)) => Some(data),
-            // A line offset member painted under the cursor covers every
-            // data hit, whose panels draw below the members'.
-            (Some(point), Some(_))
-                if point.paint_order as usize >= first_member
-                    && point.picked.distance_px() == 0.0 =>
-            {
-                Some(point)
-            }
-            (Some(point), Some(data)) => Some(nearer(point, data)),
-        };
+        let point = point.finish_full()?;
+        let gpu = data.finish()?;
         // An energy-level hit (#203) is composited over the panel's GPU
         // data, so it wins a tie with any of it.
-        Ok(match (gpu, cpu) {
+        let data = match (gpu, cpu) {
             (None, None) => None,
             (Some(hit), None) | (None, Some(hit)) => Some(hit.picked),
             (Some(gpu), Some(cpu)) => {
@@ -2010,8 +1981,35 @@ impl GpuDataPickTicket {
                     Some(gpu.picked)
                 }
             }
+        };
+        let picked = point
+            .hit
+            .clone()
+            .map(PickedData::from)
+            .or_else(|| data.clone());
+        Ok(DataPickResult {
+            picked,
+            point,
+            data,
         })
     }
+}
+
+/// A resolved typed data pick (#381): the selected element and the two
+/// answers it is chosen from, each complete on its own.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DataPickResult {
+    /// The element the pick selects: the nearest datum (as
+    /// [`PickedData::Point`]) when `point` hits, the typed hit `data`
+    /// otherwise.
+    pub picked: Option<PickedData>,
+    /// The nearest-datum pick ([`crate::Renderer::pick_chart`]): the hit
+    /// when drawn ink is within reach, and every series' nearest datum.
+    pub point: crate::PickResult,
+    /// The typed hit under the cursor: a bin, body, bar, cell, contour
+    /// level, value label or DataLess element, as the typed kernels and the
+    /// CPU pick of DataLess series answer it.
+    pub data: Option<PickedData>,
 }
 
 impl fmt::Debug for GpuDataPickTicket {

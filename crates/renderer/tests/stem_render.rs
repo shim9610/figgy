@@ -363,10 +363,22 @@ fn a_stem_picks_as_its_point() {
     )];
     let px = |x: f64, y: f64| (data_x_to_px(&chart, x), data_y_to_px(&chart, y));
     for (i, (&sx, &sy)) in XS.iter().zip(&YS).enumerate() {
+        // The stem's ink hits along its body; the selection is the nearest
+        // datum (#381): its own point near the tip, a neighbour's tip may
+        // be nearer at the base.
         for f in [0.05, 0.5, 0.9] {
             let picked = pick_at(&mut r, &chart, &series, px(sx, sy * f));
-            assert_eq!(point_index(&picked), Some(i), "stem {i} at {f}: {picked:?}");
+            assert!(
+                point_index(&picked).is_some(),
+                "stem {i} at {f}: {picked:?}"
+            );
         }
+        let picked = pick_at(&mut r, &chart, &series, px(sx, sy * 0.98));
+        assert_eq!(
+            point_index(&picked),
+            Some(i),
+            "stem {i} at its tip: {picked:?}"
+        );
         let beside = pick_at(&mut r, &chart, &series, px(sx + 0.3, sy * 0.5));
         assert!(beside.is_none(), "beside stem {i}: {beside:?}");
     }

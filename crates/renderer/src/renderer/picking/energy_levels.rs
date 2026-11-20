@@ -36,7 +36,7 @@ pub(in crate::renderer) fn pick_energy_levels(
         request.canvas_position_px[1] / scale,
     ];
     let mut best: Option<crate::gpu_data_pick::RankedPickedData> = None;
-    for (order, cfg) in series.iter().enumerate() {
+    for cfg in series {
         // A Feynman diagram picks its vertices, propagators and labels
         // through the placement its raster draws with (#234).
         if let Some(diagram) = cfg.render_type.feynman() {
@@ -73,10 +73,7 @@ pub(in crate::renderer) fn pick_energy_levels(
                     distance_px,
                 },
             };
-            let candidate = crate::gpu_data_pick::RankedPickedData {
-                picked,
-                paint_order: u32::try_from(order).unwrap_or(u32::MAX),
-            };
+            let candidate = crate::gpu_data_pick::RankedPickedData { picked };
             if best
                 .as_ref()
                 .is_none_or(|b| candidate.picked.distance_px() <= b.picked.distance_px())
@@ -132,10 +129,7 @@ pub(in crate::renderer) fn pick_energy_levels(
                 distance_px,
             },
         };
-        let candidate = crate::gpu_data_pick::RankedPickedData {
-            picked,
-            paint_order: u32::try_from(order).unwrap_or(u32::MAX),
-        };
+        let candidate = crate::gpu_data_pick::RankedPickedData { picked };
         if best
             .as_ref()
             .is_none_or(|b| candidate.picked.distance_px() <= b.picked.distance_px())

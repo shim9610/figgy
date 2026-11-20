@@ -19,11 +19,6 @@ impl GpuPickEngine {
     /// applied once by the query shader to scatter radii, line half-widths,
     /// and the matching conservative gate widths. Cursor coordinates,
     /// `max_distance_px`, and returned distances remain physical canvas pixels.
-    /// The registered series, in the order a pick addresses them.
-    pub(crate) fn series_identities(&self) -> GpuPickSeriesIdentities {
-        GpuPickSeriesIdentities(Arc::clone(&self.registry.identities))
-    }
-
     #[cfg(test)]
     pub(crate) fn pick_with_display_scale(
         &self,
@@ -52,6 +47,7 @@ impl GpuPickEngine {
     /// The exact module and variant each registered series needs under
     /// `query`, in registry order: create them
     /// ([`PickExactPipelines::ensure`]) before [`Self::pick_with_arcs`].
+    #[cfg(test)]
     pub(crate) fn exact_variants<'a>(
         &'a self,
         query: &'a GpuPickQuery,
@@ -63,6 +59,7 @@ impl GpuPickEngine {
     }
 
     /// The bundle the exact pipelines are created against.
+    #[cfg(test)]
     pub(crate) fn bundle(&self) -> &PickPipelineBundle {
         &self.bundle
     }
@@ -81,6 +78,7 @@ impl GpuPickEngine {
     /// painted under the cursor: the last member whose hit is at distance 0
     /// (inside its painted part) answers first; with none, the nearest hit
     /// within reach of any series does, as for every other chart.
+    #[cfg(test)]
     pub(crate) fn pick_with_arcs(
         &self,
         pool: &ColumnPool,

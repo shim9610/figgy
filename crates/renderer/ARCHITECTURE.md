@@ -587,6 +587,10 @@ A `TriMesh` series ([#210](https://github.com/shim9610/figgy/issues/210), [guide
 - Read: the pick copies the (2r+1)² texel window around the cursor of each mask in the searched layer group into one readback (`InkRead`) and tests the distance from the cursor to each inked texel's square. `GpuPickTicket::resolve` answers the hit, `resolve_full` the hit and every series' nearest datum (`PickResult`).
 - Memory: one byte per panel pixel per layer (a 480×360 panel: 172,800 bytes), charged as a panel texture; the transient data-layer targets live until their submission completes.
 
+### Typed data pick (#381 phase 4)
+
+`Renderer::pick_chart_data` runs the registered chart's pick (`pick_chart_inked`: the nearest datum and the ink hit) and the typed data kernels side by side, and never compares their distances. `DataPickResult::picked` is the nearest datum when the ink hits and the chart has a series with point data, the typed hit otherwise; `point` and `data` keep both answers. Streamed displays keep the exact query (rule 8); its resident dispatch (`GpuPickEngine::pick_with_arcs`) is test support for the shared exact kernels.
+
 ### Monotonic-x lines (M4 envelope)
 
 A `MonotonicLine` series ([#271](https://github.com/shim9610/figgy/issues/271),
@@ -1104,6 +1108,10 @@ annotation_selection_dirty = false;
 - 식별: 뷰가 아니라 `ChartId`와 패널 번호(발급 번호)로 찾는다. 한 차트를 여러 뷰에 띄우면 가장 최근 화면 prepare의 마스크를 쓴다. `remove_chart`와 `release_unused_pool_memory`에서 함께 지워지고, 다음 화면 prepare가 다시 그린다. 그 전까지 픽은 아무것도 적중하지 않는다.
 - 읽기: 픽은 찾는 레이어 묶음의 마스크마다 커서 둘레 (2r+1)² 텍셀 창을 읽기 버퍼 하나(`InkRead`)로 복사하고, 커서에서 잉크 텍셀 사각형까지의 거리를 본다. `GpuPickTicket::resolve`는 적중을, `resolve_full`은 적중과 시리즈별 최근접 데이터(`PickResult`)를 돌려준다.
 - 메모리: 레이어마다 패널 픽셀당 1바이트(480×360 패널이면 172,800바이트)이고 패널 텍스처로 장부에 잡힌다. 임시 데이터 레이어 타깃은 제출이 끝날 때까지만 산다.
+
+### typed 데이터 픽(#381 4단계)
+
+`Renderer::pick_chart_data`는 등록 차트의 픽(`pick_chart_inked`: 최근접 데이터와 잉크 적중)과 typed 데이터 커널을 나란히 돌리고, 두 거리를 비교하지 않는다. `DataPickResult::picked`는 잉크가 적중하고 차트에 점 데이터 시리즈가 있으면 최근접 데이터, 아니면 typed 적중이다. `point`와 `data`에는 두 답이 그대로 남는다. 스트리밍 화면은 exact 질의를 유지한다(규칙 8). 그 상주 디스패치(`GpuPickEngine::pick_with_arcs`)는 공유 exact 커널을 검증하는 테스트 지원 코드다.
 
 ### 단조 x 선(M4 엔벌로프)
 

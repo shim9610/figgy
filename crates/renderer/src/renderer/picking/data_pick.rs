@@ -312,6 +312,13 @@ impl Renderer {
     /// Submit one typed data pick across points/lines, histogram bins, heatmap
     /// cells, and contour levels.
     ///
+    /// The ticket answers the registered chart's pick (the nearest datum
+    /// and the ink hit, [`Self::pick_chart`]) and the typed hit separately
+    /// ([`crate::DataPickResult`], #381): the selected element is the
+    /// nearest datum when the ink hits and the chart has a series with
+    /// point data, the typed hit otherwise. A datum never competes with a
+    /// body, bar or cell by distance.
+    ///
     /// Source values stay in `ColumnPool`. The CPU supplies only current
     /// render metadata (lane bases, counts, styles and identity indices), while
     /// the bar/field render shaders themselves compute the exact hit geometry.
@@ -342,7 +349,7 @@ impl Renderer {
         {
             self.ensure_registered_styles(id)?;
         }
-        let (config, series, display_config, members, styles) = {
+        let (config, series, display_config, styles) = {
             let state = self
                 .chart_states
                 .get(&id)
@@ -370,7 +377,6 @@ impl Renderer {
             let inputs =
                 active_layer_pick_inputs(routed.as_ref().unwrap_or(&state.config), &state.series)?;
             let display_config = active_layer_pick_inputs(&displayed, &state.series)?.panel;
-            let members = inputs.member_count();
             // The prepared styles of the layer's series, for a 3D chart's
             // point picks (#132): a series not prepared yet has none.
             let styles: Vec<Option<super::surface_pick::PickStyle3d>> = inputs
@@ -397,7 +403,7 @@ impl Renderer {
                     .map(super::surface_pick::PickStyle3d::of)
                 })
                 .collect();
-            (inputs.panel, inputs.series, display_config, members, styles)
+            (inputs.panel, inputs.series, display_config, styles)
         };
         // `pick_chart` moves the cursor itself, so it gets the request as
         // given; everything else here reads it moved.
@@ -419,13 +425,11 @@ impl Renderer {
         if display_config.view_3d().is_some() {
             return self.pick_surface(&display_config, &series, &styles, &request);
         }
-        // Submit the established point/line query first. It stays point-only,
-        // so the compatibility API and its registry lifecycle are unchanged.
-        // It routes the same cursor to the same subplot, so the points it
-        // answers are the ones drawn on top there. The typed data pick keeps
-        // the exact point query, whose distances its hits compare with,
-        // until it moves to the nearest-datum rule itself (#381 phase 4).
-        let point_ticket = self.pick_chart_unreported(id, given)?;
+        // The registered chart's pick first (#381): every series' nearest
+        // datum and the ink hit, routed to the same subplot. Its datum and
+        // the typed hits below are separate answers; neither competes with
+        // the other by distance.
+        let point_ticket = self.pick_chart_inked(id, given)?;
         let data_bundle = self.picker.ready_data_bundle()?;
         if data_bundle.set == ShaderSet::Basic && config_needs_full_shaders(&display_config) {
             return Err(FiggyError::internal(
@@ -441,25 +445,12 @@ impl Renderer {
                 resource: "typed data pick series",
                 reason: error.to_string(),
             })?;
-        let mut point_orders = Vec::new();
-        point_orders
-            .try_reserve_exact(series.len())
-            .map_err(|error| FiggyError::StateAllocationFailed {
-                resource: "typed point pick paint order",
-                reason: error.to_string(),
-            })?;
-
         for (index, cfg) in series.iter().enumerate() {
             let paint_order =
                 u32::try_from(index).map_err(|_| FiggyError::InvalidSeriesConfig {
                     series_id: cfg.series_id.clone(),
                     kind: crate::RuleKind::SeriesPaintOrderOverflow,
                 })?;
-            point_orders.push(crate::gpu_data_pick::PointPaintOrder {
-                source_id: cfg.source_id.clone(),
-                series_id: cfg.series_id.clone(),
-                paint_order,
-            });
 
             let primitives = effective_series_primitives(&config.draw_style, &cfg.render_type);
             match DataPickRoute::of(primitives) {
@@ -620,8 +611,6 @@ impl Renderer {
         Ok(crate::gpu_data_pick::GpuDataPickTicket::new(
             point_ticket,
             data_ticket,
-            point_orders,
-            members,
             cpu,
         ))
     }
