@@ -416,9 +416,8 @@ fn a_pick_hits_what_each_piece_draws_and_nothing_in_a_gap() {
         let on_line = |y: f32| (x0 + (x1 - x0) * (y - y0) / (y1 - y0), y);
         let gap = gap_rows(&config, scale, 1.0);
         let below = on_line(gap.end as f32 + 4.0 * scale);
-        // The line's ink hits; the answer is the nearest datum (#381).
         assert!(
-            pick_at(&mut r, &config, &series, below, scale).is_some(),
+            matches!(pick_at(&mut r, &config, &series, below, scale), Some((ref id, _)) if id == "l"),
             "{scale}x the line below the gap"
         );
         let middle = on_line((gap.start + gap.end) as f32 / 2.0);
@@ -1687,11 +1686,10 @@ fn picks_answer_the_same_through_either_shader_set() {
     };
     let before = answers(&mut r, &plain);
     assert_eq!(r.shader_set(), ShaderSet::Basic);
-    // Both markers, the line's ink at its middle (answered by the nearest
-    // datum, #381), and nothing off the line.
+    // Both markers, the line at its middle, and nothing off the line.
     assert_eq!(before[0], Some(("m".into(), 0)));
     assert_eq!(before[1], Some(("m".into(), 1)));
-    assert!(before[2].is_some());
+    assert!(matches!(&before[2], Some((id, _)) if id == "l"));
     assert_eq!(before[3], None);
 
     let cut = answers(&mut r, &broken);
@@ -1742,8 +1740,7 @@ fn picks_answer_the_same_once_a_probability_or_polar_chart_was_picked() {
         assert_eq!(r.shader_set(), ShaderSet::Basic, "{feature:?}");
         assert_eq!(before[0], Some(("m".into(), 0)));
         assert_eq!(before[1], Some(("m".into(), 1)));
-        // The line's ink, answered by the nearest datum (#381).
-        assert!(before[2].is_some());
+        assert!(matches!(&before[2], Some((id, _)) if id == "l"));
         assert_eq!(before[3], None);
 
         pick_at(&mut r, &with, &series, (40.0, 40.0), 1.0);

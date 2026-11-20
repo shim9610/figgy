@@ -422,8 +422,10 @@ impl Renderer {
         // Submit the established point/line query first. It stays point-only,
         // so the compatibility API and its registry lifecycle are unchanged.
         // It routes the same cursor to the same subplot, so the points it
-        // answers are the ones drawn on top there.
-        let point_ticket = self.pick_chart(id, given)?;
+        // answers are the ones drawn on top there. The typed data pick keeps
+        // the exact point query, whose distances its hits compare with,
+        // until it moves to the nearest-datum rule itself (#381 phase 4).
+        let point_ticket = self.pick_chart_unreported(id, given)?;
         let data_bundle = self.picker.ready_data_bundle()?;
         if data_bundle.set == ShaderSet::Basic && config_needs_full_shaders(&display_config) {
             return Err(FiggyError::internal(

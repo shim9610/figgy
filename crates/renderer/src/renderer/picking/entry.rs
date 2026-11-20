@@ -590,10 +590,10 @@ impl Renderer {
         self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
     }
 
-    #[expect(
-        dead_code,
-        reason = "the exact pick of a registered chart, replaced by the nearest-datum pick; #381 phase 3 removes it"
-    )]
+    /// The exact point query of a registered chart: the point part of the
+    /// typed data pick ([`Self::pick_chart_data`]) until it moves to the
+    /// nearest-datum rule (#381 phase 4). [`Self::pick_chart`] runs the
+    /// nearest-datum pick and its ink hit instead.
     pub(super) fn pick_chart_unreported(
         &mut self,
         id: ChartId,

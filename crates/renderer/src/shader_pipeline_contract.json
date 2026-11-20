@@ -3575,20 +3575,6 @@
         "layout": 1
       },
       "kind": "compute",
-      "source": "298b602ae3f97a76"
-    },
-    {
-      "descriptor": {
-        "compute": {
-          "constants": {
-            "PICK_VARIANT": 1022.0
-          },
-          "entryPoint": "pick_exact_candidates"
-        },
-        "label": "figgy GPU pick exact candidate pipeline",
-        "layout": 1
-      },
-      "kind": "compute",
       "source": "2ceb0f9d9ae35205"
     },
     {
@@ -3617,7 +3603,21 @@
         "layout": 1
       },
       "kind": "compute",
-      "source": "9daf020ba2167d72"
+      "source": "8e1cbb5e9566c299"
+    },
+    {
+      "descriptor": {
+        "compute": {
+          "constants": {
+            "PICK_VARIANT": 1022.0
+          },
+          "entryPoint": "pick_exact_candidates"
+        },
+        "label": "figgy GPU pick exact candidate pipeline",
+        "layout": 1
+      },
+      "kind": "compute",
+      "source": "a85d1d5c19f85025"
     },
     {
       "descriptor": {
@@ -3953,7 +3953,7 @@
         "layout": 1
       },
       "kind": "compute",
-      "source": "9621f5d085011042"
+      "source": "73db251ba7133123"
     },
     {
       "descriptor": {
@@ -15650,6 +15650,40 @@
       },
       "kind": "render",
       "source": "77a4b7487a7bc1f3"
+    },
+    {
+      "descriptor": {
+        "fragment": {
+          "constants": {},
+          "entryPoint": "ink_mask_fs",
+          "targets": [
+            {
+              "format": "r8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy ink mask pipeline",
+        "layout": 44,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 1,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-list",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [],
+          "constants": {},
+          "entryPoint": "ink_mask_vs"
+        }
+      },
+      "kind": "render",
+      "source": "cfe9045a855c2d2d"
     },
     {
       "descriptor": {
