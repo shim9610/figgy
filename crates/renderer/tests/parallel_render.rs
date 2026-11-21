@@ -1158,3 +1158,92 @@ fn a_million_rows_over_eight_axes_draw_and_pick() {
     eprintln!("picked in {:?}", started.elapsed());
     assert!(picked.is_some(), "a row under the cursor");
 }
+
+/// A colour-mapped parallel series in a subplot reads the subplot's own
+/// colourbar (#401): beside a Cartesian root without one it registers,
+/// colours its rows through the subplot's ramp and picks them; a root
+/// colourbar alone does not satisfy it (the model's per-chart rule, #325,
+/// refuses it before the renderer's).
+#[test]
+fn a_colour_mapped_parallel_subplot_reads_its_own_colorbar() {
+    let mut r = renderer();
+    let columns = upload(&mut r, "rows", &ROWS);
+    if r.handle_for("rows_class").is_err() {
+        r.add_column("rows_class", &col(vec![0.0, 1.0, 2.0]))
+            .unwrap();
+    }
+    let mut bar = renderer::default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    bar.axis.min = 0.0;
+    bar.axis.max = 2.0;
+    bar.visible = false;
+    use renderer::config::ColorBarOptions;
+    let document = |root_bar: Option<ColorBarOptions>, cell_bar: Option<ColorBarOptions>| {
+        let mut root = renderer::default::default_config();
+        root.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: WIDTH,
+            height: HEIGHT / 2,
+        });
+        root.legend.visible = false;
+        root.colorbar = root_bar;
+        let mut cell = bare_config();
+        cell.chart_area = ChartArea(Rect {
+            x: 0,
+            y: HEIGHT / 2,
+            width: WIDTH,
+            height: HEIGHT / 2,
+        });
+        cell.colorbar = cell_bar;
+        root.subplots.push(renderer::Subplot {
+            config: cell.clone(),
+            series: vec!["rows".into()],
+            ..renderer::Subplot::default()
+        });
+        (root, cell)
+    };
+    let coloured = || vec![series("rows", &columns, RED, Some("rows_class"))];
+
+    let (root, cell) = document(None, Some(bar.clone()));
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(root, coloured())
+        .expect("the subplot's colourbar colours its rows");
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::Registered(id),
+            renderer::ExportOptions::document(1.0),
+        )
+        .block_on()
+        .unwrap();
+    let stops = ColorMap::Viridis.stops();
+    let (first, last) = (stops[0], stops[stops.len() - 1]);
+    let low = midpoint_px(&cell, &ROWS[0], 0, 1.0);
+    assert!(low.1 > f64::from(HEIGHT / 2), "in the lower cell");
+    assert_colour_at(&img, low, first, "the row at the colourbar's minimum");
+    assert_colour_at(
+        &img,
+        midpoint_px(&cell, &ROWS[2], 0, 1.0),
+        last,
+        "the row at the colourbar's maximum",
+    );
+    assert_eq!(
+        row_of(test_gpu::block_on(r.pick_chart_data(id, request(low)).unwrap().resolve()).unwrap()),
+        Some(("rows".to_owned(), 0))
+    );
+    r.remove_chart(id).unwrap();
+
+    let (root, _) = document(Some(bar), None);
+    let error = r.register_chart(root, coloured()).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            renderer::FiggyError::InvalidSeriesConfig {
+                kind: renderer::RuleKind::ParallelSeriesColorbar,
+                ..
+            }
+        ),
+        "{error}"
+    );
+}
