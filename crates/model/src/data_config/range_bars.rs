@@ -196,8 +196,21 @@ impl RangeLinkSeries {
     /// trunk moves as one; an exit within [`RANGE_LINK_EXIT_SNAP`] of the
     /// default snaps back to it (`None`), and one dragged before the bar's
     /// start stops half a pixel in from it, since an offset of 0 means the
-    /// default (the draw clamps an exit past the bar's end to the end).
-    pub fn drag_link_exit(&mut self, index: usize, along: f32) -> crate::layout::NudgeResult {
+    /// default.
+    ///
+    /// `limit` is the predecessor's drawn length in logical pixels, the
+    /// farthest an exit moves (the draw clamps the exit to the bar's end):
+    /// the stored offset stops there, so dragging back moves the exit at
+    /// once. The renderer holds no row values on the CPU, so the length
+    /// comes from the link's pick (`PickedData::HistogramBin::extent_px`,
+    /// in display pixels, divided by the display scale); with `None` the
+    /// offset is not clamped and only the draw stops the exit.
+    pub fn drag_link_exit(
+        &mut self,
+        index: usize,
+        along: f32,
+        limit: Option<f32>,
+    ) -> crate::layout::NudgeResult {
         use crate::layout::{NudgeReject, NudgeResult};
         let Some(&picked) = self.links.get(index) else {
             return NudgeResult::Rejected(NudgeReject::OutOfBounds);
@@ -207,7 +220,11 @@ impl RangeLinkSeries {
         }
         let inset = self.inset;
         let current = picked.exit_offset.unwrap_or(inset);
-        let moved = (current + along).max(0.5);
+        let limit = limit.filter(|l| l.is_finite()).map(|l| l.max(0.5));
+        // An offset stored past the bar moves from where the exit is drawn.
+        let from = limit.map_or(current, |l| current.min(l));
+        let moved = (from + along).max(0.5);
+        let moved = limit.map_or(moved, |l| moved.min(l));
         let offset = ((moved - inset).abs() > RANGE_LINK_EXIT_SNAP).then_some(moved);
         for link in &mut self.links {
             if link.from == picked.from && link.exit_offset.unwrap_or(inset) == current {

@@ -2008,7 +2008,7 @@ fn dragged_link_exits_move_the_trunk_and_snap_back() {
     let mut edited = series.to_vec();
     let links = edited[0].render_type.range_links_mut().unwrap();
     assert_eq!(
-        links.drag_link_exit(1, 30.0),
+        links.drag_link_exit(1, 30.0, None),
         renderer::layout::NudgeResult::Moved
     );
     assert_eq!(links.links[0].exit_offset, Some(40.0));
@@ -2063,7 +2063,7 @@ fn dragged_link_exits_move_the_trunk_and_snap_back() {
     }
     // Back to 2 px from the default: it snaps, and the image is the default.
     let links = edited[0].render_type.range_links_mut().unwrap();
-    links.drag_link_exit(0, -28.0);
+    links.drag_link_exit(0, -28.0, None);
     assert_eq!(links.links[0].exit_offset, None);
     assert_eq!(links.links[1].exit_offset, None);
     r.set_chart_series(id, edited).unwrap();
@@ -2071,6 +2071,207 @@ fn dragged_link_exits_move_the_trunk_and_snap_back() {
         assert_eq!(draw(&mut r, id, scale).rgba, before[k].rgba, "{scale}x");
     }
     r.remove_chart(id).unwrap();
+}
+
+/// A pick reports drawn lengths for the exit drag's clamp (#357, #381): a
+/// link hit carries its predecessor's drawn length and a bar hit its own,
+/// in display pixels at 1x and 2x, from the bars the GPU draws (the CPU holds
+/// no row values). A drag past the bar's end stops at that length, and
+/// dragging back moves the exit at once: the image changes on the first
+/// step back. The length is a display parameter; no value changes.
+#[test]
+fn link_picks_report_the_predecessors_drawn_length_and_the_drag_stops_there() {
+    // Row 0 runs 20..60 and row 1 starts at 90, past it: only the bar's
+    // end stops the exit, never the successor.
+    let mut r = renderer();
+    r.add_column("far.pos", &col(vec![0.0, 1.0])).unwrap();
+    r.add_column("far.start", &col(vec![20.0, 90.0])).unwrap();
+    r.add_column("far.end", &col(vec![60.0, 98.0])).unwrap();
+    let direction = CategoryBarDirection::Horizontal;
+    let chart = chart(direction);
+    let mut bars = ranges("bars", GREEN);
+    bars.x_column = "far.pos".into();
+    bars.y_column = "far.end".into();
+    if let DataRenderType::RangeBars(fields) = &mut bars.render_type {
+        fields.start = "far.start".into();
+    }
+    let mut links = SeriesConfig::range_links("links", "bars", [(0, 1)]);
+    if let DataRenderType::RangeLinks(l) = &mut links.render_type {
+        l.color = ORANGE;
+        l.width = 2.0;
+        l.head = 8.0;
+        l.inset = 10.0;
+    }
+    let series = [links, bars];
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(chart.config().clone(), series.to_vec())
+        .unwrap();
+    let draw = |r: &mut Renderer, scale: f32| {
+        r.export_rgba(
+            renderer::ExportSource::Registered(id),
+            renderer::ExportOptions::panel(scale),
+        )
+        .block_on()
+        .unwrap()
+    };
+    // Row 0's drawn length on the value axis.
+    let length =
+        |scale| value_px(&chart, direction, 60.0, scale) - value_px(&chart, direction, 20.0, scale);
+    let pick = |r: &mut Renderer, img: &renderer::RasterImage, scale, pred: fn(&[u8]) -> bool| {
+        let (w, h) = (img.width, img.height);
+        (0..h)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .filter(|&(x, y)| pred(pixel(img, x, y)))
+            .find_map(|(x, y)| {
+                let request = renderer::GpuPickRequest {
+                    canvas_position_px: [x as f32 + 0.5, y as f32 + 0.5],
+                    display_panel_px: Rect {
+                        x: 0,
+                        y: 0,
+                        width: w,
+                        height: h,
+                    },
+                    display_scale: scale,
+                    max_distance_px: 0.0,
+                };
+                match test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap()
+                {
+                    Some(renderer::PickedData::HistogramBin {
+                        series_id,
+                        bin_index,
+                        extent_px,
+                        ..
+                    }) => Some((series_id, bin_index, extent_px)),
+                    _ => None,
+                }
+            })
+    };
+    let mut limit = 0.0;
+    for scale in [1.0f32, 2.0] {
+        let img = draw(&mut r, scale);
+        let (series_id, link, extent) = pick(&mut r, &img, scale, is_orange).expect("a link pick");
+        assert_eq!(series_id, "links", "{scale}x");
+        assert_eq!(link, 0, "{scale}x");
+        let extent = extent.expect("a link hit carries its predecessor's length");
+        assert!(
+            (extent - length(scale)).abs() <= 1.0,
+            "{scale}x: {extent} against {}",
+            length(scale)
+        );
+        // A bar hit carries its own drawn length (row 0 or 1).
+        let (series_id, _, bar) = pick(&mut r, &img, scale, is_green).expect("a bar pick");
+        assert_eq!(series_id, "bars");
+        assert!(bar.is_some_and(|b| b > 0.0), "{scale}x: {bar:?}");
+        limit = extent / scale;
+    }
+    // Past the bar's end: the stored offset stops at the length.
+    let mut edited = series.to_vec();
+    let links = edited[0].render_type.range_links_mut().unwrap();
+    assert_eq!(
+        links.drag_link_exit(0, 1000.0, Some(limit)),
+        renderer::layout::NudgeResult::Moved
+    );
+    assert_eq!(links.links[0].exit_offset, Some(limit));
+    r.set_chart_series(id, edited.clone()).unwrap();
+    let at_end = draw(&mut r, 1.0);
+    // Further on draws the same; one step back moves the exit at once.
+    let links = edited[0].render_type.range_links_mut().unwrap();
+    links.drag_link_exit(0, 200.0, Some(limit));
+    assert_eq!(links.links[0].exit_offset, Some(limit));
+    r.set_chart_series(id, edited.clone()).unwrap();
+    assert_eq!(draw(&mut r, 1.0).rgba, at_end.rgba, "held at the end");
+    let links = edited[0].render_type.range_links_mut().unwrap();
+    links.drag_link_exit(0, -8.0, Some(limit));
+    assert_eq!(links.links[0].exit_offset, Some(limit - 8.0));
+    r.set_chart_series(id, edited).unwrap();
+    assert_ne!(draw(&mut r, 1.0).rgba, at_end.rgba, "back at once");
+    r.remove_chart(id).unwrap();
+}
+
+/// A tight link, whose successor starts soon after its predecessor, moves
+/// its exit back by logical lengths: the tip's gap, the last leg before the
+/// chevron and the same-row test all follow the export scale with the
+/// stroke, head and inset. The 2x image is the 1x image scaled: the link's
+/// ink box doubles within the antialiasing pixel, and the 2x image averaged
+/// down to 1x matches the 1x image over the link, pinned by its mean and
+/// 95th-percentile colour difference.
+#[test]
+fn a_tight_link_at_2x_is_the_1x_link_scaled() {
+    let mut r = renderer();
+    r.add_column("tight.pos", &col(vec![0.0, 1.0])).unwrap();
+    r.add_column("tight.start", &col(vec![20.0, 22.0])).unwrap();
+    r.add_column("tight.end", &col(vec![60.0, 50.0])).unwrap();
+    let direction = CategoryBarDirection::Horizontal;
+    let chart = chart(direction);
+    let mut bars = ranges("bars", GREEN);
+    bars.x_column = "tight.pos".into();
+    bars.y_column = "tight.end".into();
+    if let DataRenderType::RangeBars(fields) = &mut bars.render_type {
+        fields.start = "tight.start".into();
+    }
+    let mut links = SeriesConfig::range_links("links", "bars", [(0, 1)]);
+    if let DataRenderType::RangeLinks(l) = &mut links.render_type {
+        l.color = ORANGE;
+        l.width = 2.0;
+        l.head = 8.0;
+        l.inset = 10.0;
+    }
+    let series = [bars, links];
+    let [one, two] = [1.0f32, 2.0].map(|scale| {
+        r.export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(scale),
+        )
+        .block_on()
+        .unwrap()
+    });
+    let a = bbox(&one, (0, 0, one.width, one.height), is_orange).expect("the 1x link");
+    let b = bbox(&two, (0, 0, two.width, two.height), is_orange).expect("the 2x link");
+    // The exit moved back before the predecessor's start, and the tip sits
+    // before the successor's: both ends of the route are scaled lengths.
+    let x20 = value_px(&chart, direction, 20.0, 1.0);
+    assert!((a.0 as f32) < x20, "the exit moves back: {a:?}");
+    for (x1, x2) in [
+        (a.0, b.0),
+        (a.1, b.1),
+        (a.2 + 1, b.2 + 1),
+        (a.3 + 1, b.3 + 1),
+    ] {
+        assert!(
+            (x2 as i64 - 2 * x1 as i64).abs() <= 2,
+            "the 2x link is the 1x link doubled: {a:?} {b:?}"
+        );
+    }
+    // The 2x image averaged over 2x2 blocks against the 1x image, over the
+    // link's box and a margin of 3 px: the worst channel difference per
+    // pixel, its mean and 95th percentile. The route lies on the same
+    // pixels (the box above); what remains is antialiasing, which feathers
+    // the 2 px stroke over 3 pixels at 1x and 2 averaged pixels at 2x
+    // (measured: mean 12.5, p95 128 on lavapipe).
+    let (x0, y0) = (a.0.saturating_sub(3), a.1.saturating_sub(3));
+    let (x1, y1) = ((a.2 + 4).min(one.width), (a.3 + 4).min(one.height));
+    let mut diffs = Vec::new();
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let p = pixel(&one, x, y);
+            let worst = (0..4)
+                .map(|c| {
+                    let sum: u32 = [(0, 0), (1, 0), (0, 1), (1, 1)]
+                        .iter()
+                        .map(|&(dx, dy)| u32::from(pixel(&two, 2 * x + dx, 2 * y + dy)[c]))
+                        .sum();
+                    (i64::from(sum / 4) - i64::from(p[c])).unsigned_abs()
+                })
+                .max()
+                .unwrap();
+            diffs.push(worst);
+        }
+    }
+    diffs.sort_unstable();
+    let mean = diffs.iter().sum::<u64>() as f64 / diffs.len() as f64;
+    let p95 = diffs[diffs.len() * 95 / 100];
+    assert!(mean <= 15.0 && p95 <= 144, "mean {mean:.2}, p95 {p95}");
 }
 
 /// Rule 10: 3749 links over 3000 rows all route and draw, with no cap and

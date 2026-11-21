@@ -464,7 +464,9 @@ fn range_pick_row(row: u32) -> DataPickCandidate {
         data_pick_query.data.y,
         DATA_PICK_KIND_HISTOGRAM_BIN,
         row,
-        0u,
+        // The bar's drawn length along the value axis in render pixels
+        // (f32 bits): a display parameter, not data.
+        bitcast<u32>(abs(bar.end_px - bar.start_px)),
         0u,
         best,
         row,

@@ -1336,9 +1336,12 @@ a streamed source refuse links (`PolarRangeLinks`, `StreamedRangeLinks`).
 ```
 
 The picked link's `selection_details()` carries `index`, `from`, `to` and
-`exit_offset` (`null` when unset). `press_range_link(series_id, index)`
-starts a drag of the link's exit (`on_move` moves it, snapping to the
-default within 3 px, and `on_release` ends it), and
+`exit_offset` (`null` when unset). A `pick_data` hit on a range bar or a
+range link carries `extent_px`, the bar's (or the link's predecessor's)
+drawn length in canvas pixels. `press_range_link(series_id, index,
+extent_px)` starts a drag of the link's exit (`on_move` moves it, snapping
+to the default within 3 px and stopping at the predecessor's end when
+`extent_px` is given, and `on_release` ends it), and
 `set_link_exit_offset(series_id, index, offset)` sets it directly.
 
 <a id="surface-render_type"></a>

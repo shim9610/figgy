@@ -1271,6 +1271,7 @@ fn typed_gpu_pick_returns_histogram_bin_without_cpu_bar_bounds() {
             bin_index: 1,
             distance_px: 0.0,
             half: None,
+            extent_px: None,
         }
     );
 }

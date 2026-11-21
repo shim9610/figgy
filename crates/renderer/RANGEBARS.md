@@ -219,14 +219,21 @@ series. `selection_details()` reports `index`, `from`, `to` and
 export with them.
 
 A link's exit is draggable. `RangeLinkSeries::drag_link_exit(index,
-along)` moves it along the predecessor's edge: every link that leaves the
-same bar at the same exit moves with it, so a shared trunk moves as one,
-and an exit within 3 px of the default snaps back to it (`None`). The draw
-keeps a dragged exit on the bar. `set_link_exit_offset(index, offset)`
-sets one link's offset directly. In the browser, `press_range_link(series_id,
-index)` after a `pick_data` hit starts the drag, `on_move` moves the exit
-along the value axis and `on_release` ends it; `set_link_exit_offset` is the
-twin of the Rust helper.
+along, limit)` moves it along the predecessor's edge: every link that leaves
+the same bar at the same exit moves with it, so a shared trunk moves as one,
+and an exit within 3 px of the default snaps back to it (`None`). `limit` is
+the predecessor's drawn length in logical pixels: the stored offset stops
+there, so dragging back past the bar's end moves the exit at once. The CPU
+holds no row values, so the length comes from the link's pick: a range link
+hit (`PickedData::HistogramBin`) carries `extent_px`, its predecessor's
+drawn length in display pixels (a range bar hit carries its own), which the
+host divides by the display scale. With `None` only the draw keeps the exit
+on the bar. `set_link_exit_offset(index, offset)` sets one link's offset
+directly. In the browser, `press_range_link(series_id, index, extent_px)`
+after a `pick_data` hit (`hit.extent_px`) starts the drag, `on_move` moves
+the exit along the value axis as it runs on screen (an inverted axis
+included) and `on_release` ends it; `set_link_exit_offset` is the twin of
+the Rust helper.
 
 Value labels are picked, selected and dragged as a category bar's are
 (`labels.offsets`), one per row, wherever their placement puts them

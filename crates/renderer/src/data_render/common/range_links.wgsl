@@ -34,6 +34,14 @@ const RANGE_LINK_STRIDE: u32 = 3u;
 /// The corner radius of a route in logical pixels (`range_link_scale`
 /// turns it into render pixels).
 const RANGE_LINK_CORNER_PX: f32 = 4.0;
+/// The gap between the chevron's tip and the successor's start, in
+/// logical pixels.
+const RANGE_LINK_TIP_GAP_PX: f32 = 1.5;
+/// The least last leg between the exit and the chevron's base, in logical
+/// pixels: how far the exit moves back from a successor that starts soon.
+const RANGE_LINK_LEAD_PX: f32 = 4.0;
+/// How close two centre lines are, in logical pixels, to count as one row.
+const RANGE_LINK_SAME_ROW_PX: f32 = 0.5;
 /// The chevron's half opening, as a fraction of its length.
 const RANGE_LINK_CHEVRON_SPREAD: f32 = 0.7;
 /// Vertices per link: one quad over the whole route. Must match `bar.rs`'s
@@ -65,6 +73,10 @@ struct RangeLinkRoute {
     down: vec2<f32>,
     /// The corner's radius, fitted to both legs.
     radius: f32,
+    /// The predecessor's drawn length along the value axis: the largest
+    /// exit offset that moves the exit (`range_link_exit_px` is clamped to
+    /// it). The pick reports it (`RangeLinkPick`) so a drag can stop there.
+    span: f32,
 };
 
 fn range_link_count() -> u32 {
@@ -134,7 +146,11 @@ fn range_link_route(i: u32) -> RangeLinkRoute {
     let a_mid = 0.5 * (a_band.x + a_band.y);
     let b_mid = 0.5 * (b_band.x + b_band.y);
     let head = range_link_head_px();
-    let gap = 1.5;
+    // Every length below is in render pixels: the logical constants scale
+    // with the export, so a 2x image is the 1x image scaled.
+    let scale = range_link_scale();
+    let gap = RANGE_LINK_TIP_GAP_PX * scale;
+    let lead = RANGE_LINK_LEAD_PX * scale;
     let tip_u = b.start_px * s - gap;
     let a_first = min(a.start_px * s, a.end_px * s);
     let a_last = max(a.start_px * s, a.end_px * s);
@@ -142,19 +158,19 @@ fn range_link_route(i: u32) -> RangeLinkRoute {
     // the predecessor's first end, kept on the bar, and moved back when the
     // successor starts too soon for the last leg and its head.
     let along = min(a_first + range_link_exit_px(i), a_last);
-    var exit_u = min(along, tip_u - head - 4.0);
+    var exit_u = min(along, tip_u - head - lead);
     var down = 1.0;
     var exit_c = a_band.y;
     if (b_mid < a_mid) {
         down = -1.0;
         exit_c = a_band.x;
     }
-    if (abs(b_mid - a_mid) < 0.5) {
+    if (abs(b_mid - a_mid) < RANGE_LINK_SAME_ROW_PX * scale) {
         // Both bars share a centre line (tasks on one row): a straight
         // link out of the predecessor's last end, so no stroke runs inside
         // a bar whose unfinished part is translucent.
         exit_c = b_mid;
-        exit_u = min(a_last, tip_u - head - 4.0);
+        exit_u = min(a_last, tip_u - head - lead);
     }
     out.exit = range_link_px(exit_u * s, exit_c);
     out.corner = range_link_px(exit_u * s, b_mid);
@@ -163,7 +179,8 @@ fn range_link_route(i: u32) -> RangeLinkRoute {
     out.down = range_link_px(0.0, down);
     let first = abs(b_mid - exit_c);
     let last = tip_u - exit_u;
-    out.radius = max(min(RANGE_LINK_CORNER_PX * range_link_scale(), min(first, last)), 0.0);
+    out.radius = max(min(RANGE_LINK_CORNER_PX * scale, min(first, last)), 0.0);
+    out.span = a_last - a_first;
     out.valid = true;
     return out;
 }
@@ -316,7 +333,9 @@ fn fs_range_link_selection(in: RangeLinkVsOut) -> @location(0) vec4<f32> {
 //
 // The link under the cursor: the nearest route (legs, corner or chevron) within
 // half its stroke plus the pick distance, from the same route the draw
-// builds. A link answers as a histogram bin whose index is its row.
+// builds. A link answers as a histogram bin whose index is its row, with
+// its predecessor's drawn length in render pixels (f32 bits) in `index1`:
+// a display parameter the exit drag stops at, not data.
 
 fn range_link_pick(i: u32) -> DataPickCandidate {
     let r = range_link_route(i);
@@ -336,7 +355,7 @@ fn range_link_pick(i: u32) -> DataPickCandidate {
         data_pick_query.data.y,
         DATA_PICK_KIND_HISTOGRAM_BIN,
         i,
-        0u,
+        bitcast<u32>(max(r.span, 0.0)),
         0u,
         best,
         i,
