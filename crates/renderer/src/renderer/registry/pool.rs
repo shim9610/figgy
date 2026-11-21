@@ -210,7 +210,8 @@ impl Renderer {
     /// old slab and again before reporting retired bytes as reusable. It
     /// also drops the typed data pick kernels no registered chart can
     /// dispatch any more (#363); until then a removed chart's stay for
-    /// reuse.
+    /// reuse. It leaves the pick ink masks (#381) alone: a removed chart's
+    /// masks go with the chart, and a live chart keeps its own (#399).
     ///
     /// Call only at a host quiescence point: no unsubmitted command buffer may
     /// still reference the old pool. A failed candidate leaves live columns

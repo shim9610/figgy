@@ -71,7 +71,7 @@ impl Renderer {
 
     /// [`Self::enable_gpu_picking`] through the browser's async compile
     /// API. On a renderer that compiles in the background it waits for the
-    /// gate and reduce compiles a chart's pick warm-up scheduled (#363).
+    /// gate and reduce compiles a chart's pick warm-up scheduled (#395).
     /// Call it before each pick on such a renderer: after a switch to the
     /// full shaders the picker is not enabled until it runs, or until a
     /// frame enables it once the new set's pipelines have compiled.
@@ -104,8 +104,8 @@ impl Renderer {
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         self.pick_health()?;
-        // The gate and reduce compiles a chart's warm-up scheduled (#363,
-        // #381) are waited for, issued first if they still wait, so the
+        // The gate and reduce compiles a chart's warm-up scheduled (#395)
+        // are waited for, issued first if they still wait, so the
         // enable finds them compiled instead of starting its own.
         #[cfg(target_arch = "wasm32")]
         if let Some(queue) = self.compile_queue.clone()

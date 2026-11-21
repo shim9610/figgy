@@ -74,10 +74,13 @@ impl<'w> WindowedRenderer<'w> {
         )
     }
 
-    /// Compile, through the browser's async API, the exact pick pipelines
-    /// a pick of chart `id` at `canvas_position_px` needs, before
-    /// [`Self::pick_chart_at`] or [`Self::pick_chart_data_at`] submits it
-    /// (#299): see [`Renderer::compile_pick_pipelines_async`].
+    /// Compile, through the browser's async API, the pick pipelines a pick
+    /// of chart `id` needs (the nearest-datum kernel, and its 3D projection
+    /// on a 3D chart), before [`Self::pick_chart_at`] or
+    /// [`Self::pick_chart_data_at`] submits it (#299, #381): see
+    /// [`Renderer::compile_pick_pipelines_async`]. One pipeline serves
+    /// every cursor, so `canvas_position_px` and `max_distance_px` only
+    /// complete the request.
     #[cfg(target_arch = "wasm32")]
     pub async fn compile_pick_pipelines_at(
         &mut self,

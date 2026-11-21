@@ -36,7 +36,7 @@
 // read from the pool on every draw: per-label appearance (rule 1), never
 // stored.
 
-/// CPU twin: `data_render/value_label.rs::ValueLabelParamsGpu` (128 B).
+/// CPU twin: `data_render/value_label.rs::ValueLabelParamsGpu` (192 B).
 struct ValueLabelParams {
     atlas: LabelParams,
     /// x = `VALUE_LABEL_KIND_*`, y = labels (one per category, any

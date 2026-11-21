@@ -852,15 +852,16 @@ member panels it moves.
 
 **Picking and selection.** A member panel is not a layer: `active_layer`
 never names one, and `Config::panel_layers()` reports its owner's layer for
-it. A pick on the owner layer tests every member where its own panel draws
-it and answers with what is painted under the cursor: the last member in
-`line_offsets.series` order with a hit at distance 0 (inside its painted
-line, marker, error bar or fill) answers first, since the member panels
-composite in that order and a later member's fill covers an earlier
-member's line; with no member painted there, the nearest hit within
-`max_distance_px` of any series answers, as on every chart. A typed pick
-(`pick_chart_data`) lets a member's point hit painted under the cursor
-answer before the data under it. A pick names the source index;
+it. Each member panel has an ink mask of its own, read with the owner
+layer's masks (#381, see [Cartesian data pick](#데카르트-차트의-데이터-픽--cartesian-data-pick-381)):
+the pick answers with what is painted under the cursor. Of the inked texels
+nearest to the cursor within `max_distance_px`, an exact tie goes to the panel
+drawn later, so where members overlap the last member in `line_offsets.series`
+order painted there owns the ink, since the member panels composite in that
+order and a later member's fill covers an earlier member's line. The owner
+member's nearest datum is the hit, and a typed pick (`pick_chart_data`)
+selects that datum too; with no ink in reach `pick_chart` misses. A pick names
+the source index;
 `selection_details` in the WASM wrapper reports the column's own, unshifted
 values, and
 `step_selection` walks the source indices and the series order as without a

@@ -316,10 +316,13 @@ Compared with a chart that draws the same samples as an ordinary line:
 
 ## Interactions (M6)
 
-- **Picks** (`pick`, `pick_data`, hover and click selection) report the
-  sample index of the kept point at the nearer end of the drawn segment
-  under the pointer, as an ordinary line's pick does. A dense column's
-  drawn pixels come from exactly its kept points.
+- **Picks** (`pick`, `pick_data`, hover and click selection) hit when the
+  series' drawn ink lies within the pick reach of the pointer, read from the
+  chart's ink mask as on every registered chart (#381), and then report the
+  logical sample index of the kept point nearest to the pointer: the
+  nearest-datum kernel scans the kept points, and each row maps back to its
+  sample index through the shared envelope. Off the line nothing is picked.
+  A dense column's drawn pixels come from exactly its kept points.
 - **The picked highlight** rings the kept point with the selected sample
   index. A sample the envelope does not keep has no ring.
 - **`step_selection`** steps through the kept points.
@@ -688,9 +691,11 @@ x 축 스케일·끊기·방향이 여기에 속한다. 차트는 엔벌로프�
 
 ### 상호작용(M6)
 
-- **피킹**(`pick`, `pick_data`, 마우스 올림, 클릭 선택)은 일반 선과 마찬가지로 포인터 아래 그려진
-  선분에서 가까운 쪽 끝의 남긴 점을 골라 그 샘플 번호를 알려 준다. 조밀한 열의 픽셀은 정확히
-  그 열의 남긴 점으로 그린다.
+- **피킹**(`pick`, `pick_data`, 마우스 올림, 클릭 선택)은 다른 등록 차트처럼 차트의 잉크 마스크를
+  읽어, 포인터에서 픽 사거리 안에 시리즈가 그린 잉크가 있으면 적중한다(#381). 적중하면 포인터에
+  가장 가까운 남긴 점의 논리 샘플 번호를 알려 준다. 최근접 데이터 커널이 남긴 점을 훑고, 각 행은
+  공유 엔벌로프를 거쳐 샘플 번호로 돌아간다. 선에서 벗어나면 아무것도 고르지 않는다. 조밀한 열의
+  픽셀은 정확히 그 열의 남긴 점으로 그린다.
 - **선택 강조**는 선택한 샘플 번호의 남긴 점에 고리를 그린다. 엔벌로프가 남기지 않은 샘플에는
   고리가 없다.
 - **`step_selection`**은 남긴 점을 따라 이동한다.

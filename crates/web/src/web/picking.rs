@@ -266,12 +266,12 @@ impl FiggyChart {
         }
     }
 
-    /// Whether the shown chart draws from a stream: a monotonic chart
-    /// never does (#271).
-    /// Compile the exact pick pipelines a pick at `at` needs through the
-    /// browser's async API before the pick submits (#299), so the first
-    /// pick does not compile them on the page's thread. A monotonic chart
-    /// picks through its own query and needs none.
+    /// Compile the pick pipelines the shown chart's pick needs (the
+    /// nearest-datum kernel, and its 3D projection on a 3D chart) through
+    /// the browser's async API before the pick submits (#299, #381), so
+    /// the first pick does not compile them on the page's thread. One
+    /// pipeline serves every cursor. A monotonic chart picks through its
+    /// own query and needs none.
     async fn compile_pick_pipelines(
         &mut self,
         at: [f32; 2],
@@ -304,6 +304,8 @@ impl FiggyChart {
             .map_err(js_err)
     }
 
+    /// Whether the shown chart draws from a stream: a monotonic chart
+    /// never does (#271).
     fn shows_stream(&self) -> bool {
         self.monotonic.is_none() && self.renderer.is_streaming_chart(self.chart_id)
     }
@@ -353,7 +355,7 @@ impl FiggyChart {
         }
     }
 
-    /// Compile the exact GPU picker and prepare it for the current chart.
+    /// Compile the GPU picker and prepare it for the current chart.
     /// Repeated calls, including retries, reuse renderer-owned state.
     pub async fn prewarm_gpu_picking(&mut self) -> Result<(), JsValue> {
         self.prepare_gpu_picking().await
@@ -903,10 +905,15 @@ impl FiggyChart {
             .map_or(JsValue::UNDEFINED, |index| JsValue::from_f64(index as f64)))
     }
 
-    /// Pick the nearest visible data primitive at canvas pixel `(x, y)`;
-    /// equal-distance hits follow chart paint order.
-    /// Unlike `pick_point`, this includes histogram bins, canonical heatmap
-    /// cells and contour levels. The tagged result contains only stable
+    /// Pick at canvas pixel `(x, y)` (#381, #399): the series that owns
+    /// the drawn ink nearest to the cursor decides. A point-data owner
+    /// answers its datum nearest to the cursor, a body or fill owner its
+    /// typed hit; value labels and DataLess series, which draw no ink
+    /// mask, answer by their typed hit. Unlike `pick_point`, this includes
+    /// histogram bins, canonical heatmap cells and contour levels.
+    /// `distance_px` is the distance to the picked datum and can exceed
+    /// `max_distance_px`. Before the chart's first drawn frame nothing is
+    /// picked. The tagged result contains only stable
     /// source/series indices plus `distance_px`; values and geometry stay
     /// in the renderer's GPU-backed SSoT. Resolves to `undefined` on miss.
     ///

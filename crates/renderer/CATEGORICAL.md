@@ -375,7 +375,7 @@ dropped로 보고한다. 호버 상태, 배경색, 값 라벨 위치는 옮기�
 `bin_index`)으로 고르고, `Config.picked_data`의 `PickedDataRef::HistogramBin`으로 선택하면 그린
 모양 안쪽에 강조 테두리를 그린다. 제목·범례·축·눈금 라벨·축 제목의 선택과 이동, 그리기 영역
 이동·크기 조정, 주석 층, 오버레이와 서브플롯, PNG 내보내기는 직교 좌표 차트와 같다.
-브라우저에서는 `FiggyChart.set_categorical_document(json)`가 같은 일을 한다.
+브라우저에서는 `FiggyChart.set_categorical_document(json, options?)`가 같은 일을 하고 변환 보고서(`{ config, series, uploads, columns, notes }`)를 돌려준다. 차트 없이 이 보고서를 미리 보려면 `convert_categorical_document(json, {chart_area})`를 쓴다. `{ "refuse": [...] | "any" }` 옵션을 주면 손실이 있는 문서를 아무것도 바꾸기 전에 `code: "conversion_loss"`로 거부한다(#334, [WASM.md](WASM.md#model-api) 참고).
 
 ```bash
 cargo run -p figgy-renderer --example categorical_gallery -- target/categorical-gallery
