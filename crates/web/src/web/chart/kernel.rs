@@ -98,6 +98,7 @@ pub(in crate::web) async fn create_chart_kernel(
         annotation_selection_dirty: false,
         annotation_pointer: false,
         value_label_pointer: false,
+        link_exit_limit: None,
         display_held: false,
         feynman_pointer: None,
         plot_resize: None,

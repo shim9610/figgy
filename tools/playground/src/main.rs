@@ -318,7 +318,7 @@ impl App {
             window.request_redraw();
         }
 
-        // ---- figgy prepare: the Cartesian chart goes straight to the surface ----
+        // ---- figgy prepare: the Cartesian chart's registered draw ----
         let frame_start = Instant::now();
         let prepared = match &mut playground.active {
             Active::Cartesian(c) => c.prepare(&mut playground.cartesian),
@@ -361,6 +361,33 @@ impl App {
             .egui_ctx
             .tessellate(full_output.shapes, full_output.pixels_per_point);
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        // The chart is painted into its viewport texture, which egui draws.
+        if let (Some(prepared), Active::Cartesian(c)) = (&prepared, &playground.active)
+            && let Some((view, size)) = c.paint_target()
+        {
+            let mut pass = encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("playground chart"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                })
+                .forget_lifetime();
+            if let Err(e) = playground
+                .cartesian
+                .paint_prepared(&mut pass, size, prepared)
+            {
+                eprintln!("[paint] {e}");
+                window.request_redraw();
+            }
+        }
         let mut buffers = egui_renderer.update_buffers(
             &gpu.device,
             &gpu.queue,
@@ -384,16 +411,6 @@ impl App {
                     ..Default::default()
                 })
                 .forget_lifetime();
-            if let Some(prepared) = &prepared
-                && let Err(e) = playground.cartesian.paint_prepared(
-                    &mut pass,
-                    (gpu.config.width, gpu.config.height),
-                    prepared,
-                )
-            {
-                eprintln!("[paint] {e}");
-                window.request_redraw();
-            }
             egui_renderer.render(&mut pass, &primitives, &screen);
         }
         buffers.push(encoder.finish());

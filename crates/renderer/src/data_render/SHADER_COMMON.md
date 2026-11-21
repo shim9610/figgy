@@ -1915,7 +1915,9 @@ compute entry `pick_range_bar` answers, per bar, the nearest of its body
 (the rounded-rect distance), its whisker and its connector (their rect
 distances), each from the function its draw uses, within the pick
 distance, as a `DATA_PICK_KIND_HISTOGRAM_BIN` candidate whose index is the
-row; a connector is a candidate of the bar it leaves. A bar's value label
+row and whose `index1` is the bar's drawn length along the value axis in
+render pixels (f32 bits, `PickedData::HistogramBin::extent_px`, a display
+parameter); a connector is a candidate of the bar it leaves. A bar's value label
 (`VALUE_LABEL_KIND_RANGE`, §5.17) is placed at the body's end by the
 category bar rule, a range bar counting as grouped. Nothing per bar is
 stored anywhere; the CPU keeps the lane bases, the part colours of the
@@ -1976,7 +1978,12 @@ link's route in the selection colour, its stroke widened by the
 selection's width on each side. The compute entry `pick_range_links`
 answers the nearest point of the route (legs, corner or chevron) within half the stroke plus the pick
 distance, as a `DATA_PICK_KIND_HISTOGRAM_BIN` candidate whose index is the
-link's row. The route is appearance: it reads the values the bars are
+link's row and whose `index1` is its predecessor's drawn length in render
+pixels (f32 bits, the route's `span`): the farthest the exit moves, which
+the exit drag stops at (`extent_px`). The route's lengths (the tip gap,
+the last leg before the head, the same-row test, the corner) are logical
+pixels scaled by `range_link_scale()`, with the stroke, head and inset the
+CPU scales. The route is appearance: it reads the values the bars are
 drawn from, and the user reads no value computed from them.
 
 ### 5.19 Violins and raw points (group 3, bindings 8 to 10)

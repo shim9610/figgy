@@ -42,6 +42,50 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and `catego
 `text_generated`, the chart's `layout_state` and the categorical, box plot
 and radar documents' `text_sizes`) are additive.
 
+- **Range link fixes and playground picks**
+  ([#357](https://github.com/shim9610/figgy/issues/357),
+  [#381](https://github.com/shim9610/figgy/issues/381)). Appearance and
+  interaction only: no value or wire form changes. Two Rust signatures
+  gain a field or argument (the migration is below).
+  - A range link's route lengths follow the export scale: the gap before
+    the chevron's tip (1.5 px), the least last leg that moves a tight
+    link's exit back (4 px) and the same-row test (0.5 px) are logical
+    pixels, scaled like the stroke, head, inset and corner. A link whose
+    successor starts soon after its predecessor exported at 2x is now the
+    1x link scaled; at 1x nothing moves. Test:
+    `a_tight_link_at_2x_is_the_1x_link_scaled`.
+  - Browser product: dragging a link's exit follows the pointer on an
+    inverted value axis (`bottom_x.inverted` for horizontal bars,
+    `left_y.inverted` for vertical ones, or the overlay's or subplot's own
+    axis). Test: `range_link_drags_follow_the_value_axis_on_screen`.
+  - A link exit drag stops at the predecessor's drawn end, so dragging back
+    responds at once (before, the stored offset grew past the bar unseen).
+    The CPU holds no row values, so the length comes from the pick: a
+    range bar hit carries its drawn length and a range link hit its
+    predecessor's, in display pixels, in the new
+    `PickedData::HistogramBin::extent_px: Option<f32>` (`None` for every
+    other bin). It is read in the existing typed pick kernels
+    (`pick_range_bar`, `pick_range_links`) and returned in their existing
+    result, so there is no new readback. It is a display parameter, not data.
+    `RangeLinkSeries::drag_link_exit(index, along, limit)` takes the length
+    in logical pixels (`extent_px` divided by the display scale) and clamps
+    the stored offset to it; `None` keeps the previous unclamped drag.
+    Browser product: `pick_data`'s `histogram_bin` hit carries
+    `extent_px`, and `press_range_link(series_id, index, extent_px)` takes
+    it as the drag's limit (left out, only the draw stops the exit). Tests:
+    `link_exit_drags_stop_at_the_predecessors_drawn_length`,
+    `link_picks_report_the_predecessors_drawn_length_and_the_drag_stops_there`.
+    **Migration:** a `PickedData::HistogramBin { .. }` literal adds
+    `extent_px: None`, and a pattern that names every field adds
+    `extent_px` or `..`; `drag_link_exit(index, along)` becomes
+    `drag_link_exit(index, along, None)`, or passes the hit's length to
+    clamp. JavaScript callers of `press_range_link(series_id, index)` keep
+    working; pass `hit.extent_px` as the third argument to clamp.
+  - Playground: a Cartesian scene draws its registered chart through
+    `prepare_registered` / `prepare_monotonic` into a viewport texture at
+    the chart's display placement, so the ink masks a pick reads are
+    recorded and point picks hit again (they always missed since #381).
+    The selftest picks a point on a general and a monotonic scene.
 - **Grotrian transition colours and label knockout**
   ([#357](https://github.com/shim9610/figgy/issues/357)). Appearance only:
   no value is rewritten.

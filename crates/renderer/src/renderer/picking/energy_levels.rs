@@ -113,6 +113,7 @@ pub(in crate::renderer) fn pick_energy_levels(
                 series_id,
                 bin_index,
                 half: None,
+                extent_px: None,
                 distance_px,
             },
             LevelHit::Transition(point_index) => PickedData::Point {
