@@ -813,6 +813,8 @@ impl Config {
                 // A mode; the factor is a ratio of two chart areas, both
                 // scaled here.
                 text_scale: _,
+                // Fractions of the parent's plot: a ratio.
+                anchor: _,
             } = subplot;
             config.scale_in_place(s);
             if let Some(marker) = marker.as_mut() {

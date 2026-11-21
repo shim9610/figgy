@@ -1003,6 +1003,7 @@ fn overlays_and_subplots_draw_their_own_range_groups() {
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     });
     // The overlay and the subplot colour their bars by row (#357), each
     // over a series colour of its own that must not show.
@@ -1646,6 +1647,7 @@ fn the_timeline_look_bands_every_other_row_under_the_bars() {
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     });
     let both = [
         SeriesConfig::timeline_bars("one", "pos", "start", "end"),
@@ -1898,6 +1900,7 @@ fn range_links_draw_on_overlays_and_subplots() {
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     });
     let links = links_series();
     let named = |id: &str, bars: &str| {

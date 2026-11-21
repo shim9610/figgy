@@ -1358,6 +1358,7 @@ fn overlay_and_subplot_bar_series_draw_their_labels_in_their_panels() {
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     });
     let mut sub_bars = bars(
         "sub",

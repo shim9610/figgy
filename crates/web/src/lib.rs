@@ -2093,6 +2093,7 @@ mod tests {
             link_y: None,
             marker: None,
             text_scale: Default::default(),
+            anchor: None,
         });
         assert_eq!(along(&config, "deps", 5.0, 3.0), -5.0);
         assert_eq!(along(&config, "other", 5.0, 3.0), -3.0);

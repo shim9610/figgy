@@ -503,6 +503,10 @@ const AUTO_LAYOUT_PASSES: usize = 8;
 ///   fit, and a widening that would leave a cell no data area is not made.
 /// - **State.** [`Config::layout_state`] is kept: the fit is the same in
 ///   either state (#357).
+/// - **Insets.** An inset keeps its place in the plot it is nested in
+///   ([`Config::follow_parent_areas`], #392). A fit that moves an inset fits
+///   the result once more, so the inset's text is sized for its new frame
+///   and the fit stays a fixed point.
 ///
 /// Not covered: overlay axes drawn over each other or over the parent's
 /// right or top axis (only `line_offset` separates them; a polar chart's radius
@@ -510,6 +514,24 @@ const AUTO_LAYOUT_PASSES: usize = 8;
 /// overlay axis' title against a legend right of the plot, and labels that
 /// collide with each other along an axis or at a corner.
 pub fn auto_layout(cfg: &Config, measure: &dyn MeasureText) -> Config {
+    let out = fit_once(cfg, measure);
+    let moved = |a: &Config, b: &Config| {
+        a.subplots
+            .iter()
+            .zip(&b.subplots)
+            .any(|(a, b)| a.config.chart_area != b.config.chart_area)
+    };
+    if moved(&out, cfg) {
+        // The subplots' text factors were read from the frames the insets
+        // left (#292): fit at the frames they have now.
+        fit_once(&out, measure)
+    } else {
+        out
+    }
+}
+
+/// One fit of [`auto_layout`], its text factors read from `cfg`'s frames.
+fn fit_once(cfg: &Config, measure: &dyn MeasureText) -> Config {
     let mut out = cfg.clone();
     // Every pass below reads a subplot's text at the sizes it is drawn
     // with (#292): they are written into the working copy, which then
@@ -536,6 +558,9 @@ pub fn auto_layout(cfg: &Config, measure: &dyn MeasureText) -> Config {
             adopt_chart_layout(&mut out.subplots[index].config, &chart);
         }
         align_cells(&mut out, measure);
+        // An inset keeps its place in its parent's plot (#392), mapped
+        // from the input each round so the rounding never compounds.
+        out.follow_parent_areas(cfg, None);
         if out == before {
             break;
         }

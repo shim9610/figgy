@@ -1250,6 +1250,7 @@ fn vector_series_draw_inside_their_subplot() {
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     });
     let series = [points("arrows", pixels(1.0))];
     let img = renderer
@@ -1920,6 +1921,7 @@ fn streamlines_draw_inside_their_subplot() {
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     });
     let series = [thin_streamlines(Some(ARROWS))];
     let img = renderer

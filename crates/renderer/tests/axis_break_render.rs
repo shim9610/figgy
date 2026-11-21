@@ -881,6 +881,7 @@ fn overlays_subplots_and_line_offsets_draw_their_pieces() {
             link_y: None,
             marker: None,
             text_scale: Default::default(),
+            anchor: None,
         });
         document.line_offsets = Some(renderer::data_config::LineOffsets {
             series: vec!["lo0".into(), "lo1".into()],
@@ -1403,6 +1404,7 @@ fn layered_document_with(layer: &str, feature: Feature) -> (renderer::Config, Ve
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     });
     let series = vec![
         markers("base", "ax", "ay", RED),
