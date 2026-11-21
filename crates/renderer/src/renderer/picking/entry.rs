@@ -549,14 +549,16 @@ impl Renderer {
 
     /// Submit one pick against renderer-owned chart state (#381): every
     /// series' datum nearest to the cursor ([`Self::pick_chart_nearest`]),
-    /// and a hit when the chart's drawn data layer has ink within
-    /// `request.max_distance_px` canvas pixels of the cursor. The ink is
-    /// read from each panel's ink mask, which the chart's on-screen prepare
-    /// ([`Self::prepare_registered`]) draws: before the first one, or after
-    /// [`Self::release_unused_pool_memory`], the pick hits nothing until
-    /// the next. [`crate::gpu_pick::GpuPickTicket::resolve`] answers the
-    /// hit, [`crate::gpu_pick::GpuPickTicket::resolve_full`] the hit and
-    /// every series' nearest datum.
+    /// and the series that owns the drawn ink nearest to the cursor within
+    /// `request.max_distance_px` canvas pixels ([`crate::PickResult::owner`]).
+    /// The hit is that series' nearest datum when it has point data; a body
+    /// or fill owner answers no hit here (its typed hit is
+    /// [`Self::pick_chart_data`]'s). The ink is read from each panel's ink
+    /// mask, which the chart's on-screen prepare
+    /// ([`Self::prepare_registered`]) draws: before the first one the pick
+    /// hits nothing. [`crate::gpu_pick::GpuPickTicket::resolve`] answers the
+    /// hit, [`crate::gpu_pick::GpuPickTicket::resolve_full`] the hit, the
+    /// owner and every series' nearest datum.
     pub fn pick_chart(
         &mut self,
         id: ChartId,

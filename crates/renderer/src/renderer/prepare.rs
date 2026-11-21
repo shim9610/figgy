@@ -374,10 +374,12 @@ impl PrepareContext<'_> {
                             color: msaa.as_ref().unwrap_or(&target),
                             resolve: msaa.as_ref().map(|_| &target),
                             depth: depth.as_ref(),
+                            depth_carried: None,
                         },
                         (w, h),
                         &pieces,
                         super::composite::PieceSeries::of(&series_list, &own),
+                        CompositeSteps::All,
                     );
                     i
                 }
@@ -397,8 +399,10 @@ impl PrepareContext<'_> {
 
     /// Draw the ink mask of every panel of each registered chart in
     /// `source` ([`Self::ink_charts`]) whose data layer changed since its
-    /// mask was drawn: the panel's data layer into a transient transparent
-    /// target, then the mask from it (#381). `inputs` and `prepared` are
+    /// mask was drawn (#381): each series of the panel on its own into a
+    /// transient transparent target, as the resident display draws it, and
+    /// after each the resolve pass that writes its slot where it inked, so
+    /// the topmost owner is left. `inputs` and `prepared` are
     /// the expanded panels, `group_sizes` how many each source item drew as
     /// (empty when none is layered). A panel that draws no data layer has
     /// no mask. All masks drawn here go out in one submission.
@@ -445,11 +449,21 @@ impl PrepareContext<'_> {
                     let texture = &self.ink_masks[slot].texture;
                     texture.width() == w && texture.height() == h
                 });
+                // The series each slot names, in drawing order.
+                let owners: Arc<[crate::gpu_pick::InkSeries]> = input
+                    .series
+                    .iter()
+                    .map(|series| crate::gpu_pick::InkSeries {
+                        source_id: series.config.source_id.clone(),
+                        series_id: series.config.series_id.clone(),
+                    })
+                    .collect();
                 let mask = match reusable {
                     Some(slot) => {
                         let mask = &mut self.ink_masks[slot];
                         mask.key = key;
                         mask.panel_rect = panel_rect;
+                        mask.owners = owners;
                         slot
                     }
                     None => {
@@ -458,6 +472,7 @@ impl PrepareContext<'_> {
                             panel,
                             key,
                             panel_rect,
+                            owners,
                             texture: self.panel_texture(
                                 "panel ink mask",
                                 (w, h),
@@ -520,28 +535,51 @@ impl PrepareContext<'_> {
                 });
                 let series_list: Vec<_> = item.series.iter().map(PreparedSeries::layers).collect();
                 let own = item.own_piece_layers();
-                draw_panel_composite(
-                    encoder,
-                    PanelCompositeTargets {
-                        color: msaa_view.as_ref().unwrap_or(&layer_view),
-                        resolve: msaa_view.as_ref().map(|_| &layer_view),
-                        depth: depth_view.as_ref(),
-                    },
-                    (w, h),
-                    &pieces,
-                    super::composite::PieceSeries::of(&series_list, &own),
-                );
+                let all = super::composite::PieceSeries::of(&series_list, &own);
                 let pipeline = self
                     .ink_mask_pipeline
                     .get_or_insert_with(|| InkMaskPipeline::new(self.device));
-                pipeline.record(
-                    self.device,
-                    encoder,
-                    &layer_view,
-                    &self.ink_masks[mask]
-                        .texture
-                        .create_view(&Default::default()),
-                );
+                let source = pipeline.source(self.device, &layer_view);
+                let mask_view = self.ink_masks[mask]
+                    .texture
+                    .create_view(&Default::default());
+                // A panel without series is cleared to no ink.
+                if series_list.is_empty() {
+                    pipeline.record(encoder, &source, &mask_view, 0, true);
+                }
+                // Each series alone, in the frame's order: every series'
+                // fills, then every series' bodies. Its slot overwrites what
+                // was recorded before wherever it inks, so a marker over a
+                // later series' fill stays the owner. A 3D panel keeps its
+                // depth from pass to pass. A series with no fill skips the
+                // fill step.
+                let mut first = true;
+                for steps in [CompositeSteps::Fills, CompositeSteps::Bodies] {
+                    for (index, slot) in (0..series_list.len()).zip(1u32..) {
+                        let layers = &series_list[index];
+                        if steps == CompositeSteps::Fills
+                            && layers.area.is_none()
+                            && layers.region.is_none()
+                        {
+                            continue;
+                        }
+                        draw_panel_composite(
+                            encoder,
+                            PanelCompositeTargets {
+                                color: msaa_view.as_ref().unwrap_or(&layer_view),
+                                resolve: msaa_view.as_ref().map(|_| &layer_view),
+                                depth: depth_view.as_ref(),
+                                depth_carried: Some(!first),
+                            },
+                            (w, h),
+                            &pieces,
+                            all.series(index),
+                            steps,
+                        );
+                        pipeline.record(encoder, &source, &mask_view, slot, first);
+                        first = false;
+                    }
+                }
             }
         }
         if let Some(encoder) = encoder {
@@ -995,12 +1033,30 @@ pub(super) fn create_composite_depth(
     )
 }
 
+/// Which steps of a panel's data a composite pass draws: every step, or
+/// one of the two the frame draws in order, the fills (with the ternary
+/// region fills under them) and then the bodies (with a 3D panel's
+/// surfaces). The ink mask records each step series by series, so a
+/// marker over a later series' fill stays the owner (#381).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CompositeSteps {
+    All,
+    Fills,
+    Bodies,
+}
+
 /// The attachments of a panel composite pass.
 pub(super) struct PanelCompositeTargets<'t> {
     pub(super) color: &'t wgpu::TextureView,
     pub(super) resolve: Option<&'t wgpu::TextureView>,
     /// A 3D panel's depth-stencil attachment.
     pub(super) depth: Option<&'t wgpu::TextureView>,
+    /// The ink mask's series passes (#381): `Some(carried)` keeps a 3D
+    /// panel's depth for the next series, and `carried` loads it from the
+    /// series before instead of clearing it. `None` (the resident display
+    /// and the export) clears it and discards it after the pass. A flat
+    /// panel's stencil is always cleared and discarded.
+    pub(super) depth_carried: Option<bool>,
 }
 
 /// Draw one panel's bodies into its composite: cleared, scissored to the
@@ -1013,7 +1069,16 @@ pub(super) fn draw_panel_composite(
     (w, h): (u32, u32),
     data: &super::composite::DataPieces,
     series: super::composite::PieceSeries<'_, '_>,
+    steps: CompositeSteps,
 ) {
+    let fills = steps != CompositeSteps::Bodies;
+    let bodies = steps != CompositeSteps::Fills;
+    let issue_bodies =
+        |pass: &mut wgpu::RenderPass<'_>, list: &[data_render::SeriesLayers<'_>]| match steps {
+            CompositeSteps::All => data_render::issue_series_bodies(pass, list),
+            CompositeSteps::Fills => data_render::issue_series_fills(pass, list),
+            CompositeSteps::Bodies => data_render::issue_series_bodies_without_fills(pass, list),
+        };
     let three_d = series.piece(0).iter().any(|s| {
         s.surface.is_some()
             || s.floor.is_some()
@@ -1068,11 +1133,22 @@ pub(super) fn draw_panel_composite(
                 },
             })],
             depth_stencil_attachment: targets.depth.map(|view| {
+                // A 3D panel's ink mask draws one series per pass and keeps
+                // the depth between them (#381).
+                let carried = targets.depth_carried.filter(|_| three_d);
                 wgpu::RenderPassDepthStencilAttachment {
                     view,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Discard,
+                        load: if carried == Some(true) {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(1.0)
+                        },
+                        store: if carried.is_some() {
+                            wgpu::StoreOp::Store
+                        } else {
+                            wgpu::StoreOp::Discard
+                        },
                     }),
                     stencil_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(0),
@@ -1087,13 +1163,15 @@ pub(super) fn draw_panel_composite(
         // its bodies (in the second pass when the stencil is attached).
         for (piece, series_list) in pieces() {
             scissor(&mut pass, piece);
-            if targets.depth.is_some() {
+            if targets.depth.is_some() && fills {
                 data_render::issue_series_regions(&mut pass, series_list);
             }
             if three_d {
-                data_render::issue_series_surfaces(&mut pass, series_list);
+                if bodies {
+                    data_render::issue_series_surfaces(&mut pass, series_list);
+                }
             } else if !two_passes {
-                data_render::issue_series_bodies(&mut pass, series_list);
+                issue_bodies(&mut pass, series_list);
             }
         }
     }
@@ -1113,7 +1191,7 @@ pub(super) fn draw_panel_composite(
         });
         for (piece, series_list) in pieces() {
             scissor(&mut pass, piece);
-            data_render::issue_series_bodies(&mut pass, series_list);
+            issue_bodies(&mut pass, series_list);
         }
     }
 }

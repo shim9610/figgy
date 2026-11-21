@@ -1,11 +1,12 @@
 //! The hit rule of a registered chart's pick (#381, `Renderer::pick_chart`):
 //! the cursor hits when the drawn data layer has ink within
 //! `max_distance_px` of it, read from the panel's ink mask, and the hit is
-//! then the nearest datum. `resolve_full` answers every series' nearest
+//! then the nearest datum of the series that owns that ink
+//! (`tests/pick_owner.rs` covers the owners). `resolve_full` answers every series' nearest
 //! datum whether or not the cursor hits. At 1x and 2x, for a 1 px line, a
 //! styled panel, an overlay layer, a mask that follows a data edit, and the
-//! mask's lifetime (none before the first on-screen prepare, none after its
-//! chart is removed or the unused memory is released).
+//! mask's lifetime (none before the first on-screen prepare, kept across a
+//! release of the unused memory, none after its chart is removed).
 //!
 //! Grid, legend, title and axis lines are off, so the only ink is the data.
 
@@ -234,7 +235,7 @@ fn a_thin_line_hits_within_the_reach() {
 /// mask goes with its chart and with a release of unused memory, and the
 /// next on-screen prepare draws it again.
 #[test]
-fn the_mask_lives_from_the_first_prepare_to_its_chart_or_a_release() {
+fn the_mask_lives_from_the_first_prepare_to_its_chart() {
     let mut r = renderer();
     upload(&mut r, "bx", vec![2.0, 8.0]);
     upload(&mut r, "by", vec![20.0, 80.0]);
@@ -249,19 +250,23 @@ fn the_mask_lives_from_the_first_prepare_to_its_chart_or_a_release() {
     let empty = r.gpu_memory_usage().live_bytes();
     draw(&mut r, id);
     assert_eq!(hit_series(&pick(&mut r, id, at, 2.0)), Some(("dots", 0)));
-    // The mask is one byte per panel pixel (`R8Unorm`).
+    // The mask is four bytes per panel pixel (`R32Uint`, a series slot).
     let (_, panel, _) = r.chart_display_config(id).unwrap();
-    let mask = u64::from(panel.width) * u64::from(panel.height);
+    let mask = 4 * u64::from(panel.width) * u64::from(panel.height);
     let drawn = r.gpu_memory_usage().live_bytes();
     assert!(
         drawn >= empty + mask,
         "the mask is charged: {empty} -> {drawn}, mask {mask}"
     );
 
+    // A live chart's mask is in use: releasing the unused memory keeps it,
+    // and the next pick hits with no prepare in between.
     r.release_unused_pool_memory_blocking(0).unwrap();
-    assert_eq!(pick(&mut r, id, at, 2.0).hit, None, "released");
-    draw(&mut r, id);
-    assert_eq!(hit_series(&pick(&mut r, id, at, 2.0)), Some(("dots", 0)));
+    assert_eq!(
+        hit_series(&pick(&mut r, id, at, 2.0)),
+        Some(("dots", 0)),
+        "kept across the release"
+    );
 
     // A new chart in the removed one's place has no ink until it is drawn.
     r.remove_chart(id).unwrap();

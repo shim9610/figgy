@@ -386,6 +386,37 @@ impl NearestPickTicket {
     }
 }
 
+/// A series an ink mask slot names (#381): the identity of the series that
+/// inked the texel, as its panel draws it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InkSeries {
+    pub(crate) source_id: Option<String>,
+    pub(crate) series_id: String,
+}
+
+/// The series that owns the drawn ink nearest to a pick's cursor (#381):
+/// the topmost series drawn at that texel, with the layer it is drawn on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InkOwner {
+    pub layer: crate::LayerRef,
+    pub source_id: Option<String>,
+    pub series_id: String,
+}
+
+/// One ink mask a pick reads (#381).
+pub(crate) struct InkMaskRead<'a> {
+    pub(crate) texture: &'a wgpu::Texture,
+    /// The canvas pixel of the mask's texel 0.
+    pub(crate) origin: [i64; 2],
+    /// The layer the mask's panel draws.
+    pub(crate) layer: crate::LayerRef,
+    /// Which of two masks wins an exact distance tie: the higher (the
+    /// active layer first, then the panel drawn later).
+    pub(crate) rank: u64,
+    /// The series its slots name ([`crate::renderer`]'s `InkMask::owners`).
+    pub(crate) owners: &'a Arc<[InkSeries]>,
+}
+
 /// One mask's part of an ink read: the texels of the window that fall on
 /// the panel, copied at `offset` of the readback, `bytes_per_row` apart.
 pub(crate) struct InkWindow {
@@ -394,13 +425,19 @@ pub(crate) struct InkWindow {
     pub(crate) size: [u32; 2],
     pub(crate) offset: u64,
     pub(crate) bytes_per_row: u32,
+    pub(crate) layer: crate::LayerRef,
+    pub(crate) rank: u64,
+    pub(crate) owners: Arc<[InkSeries]>,
 }
+
+/// The bytes of one ink mask texel (`R32Uint`).
+const INK_TEXEL_BYTES: u32 = 4;
 
 /// The ink around the cursor (#381): every pickable panel's ink mask
 /// texels within the pick's reach, read back. The cursor hits when any
 /// texel with ink lies within `reach` canvas pixels of it (the distance
 /// from the cursor to the texel's square; a reach of 0 is the texel under
-/// the cursor).
+/// the cursor), and the owner of the nearest such texel decides the hit.
 pub(crate) struct InkRead {
     readback: GpuReadback,
     windows: Vec<InkWindow>,
@@ -423,11 +460,11 @@ impl InkRead {
         ]
     }
 
-    /// Copy each `(mask, canvas origin of its texel 0)` texel window that
-    /// meets the pick's bounds, and request the read.
+    /// Copy each mask's texel window that meets the pick's bounds, and
+    /// request the read.
     pub(crate) fn submit(
         bundle: &PickEngineHandles<'_>,
-        masks: &[(&wgpu::Texture, [i64; 2])],
+        masks: &[InkMaskRead<'_>],
         cursor: [f32; 2],
         reach: f32,
     ) -> Result<Option<Self>, GpuPickError> {
@@ -445,23 +482,28 @@ impl InkRead {
             .map_err(|_| GpuPickError::AllocationFailed {
                 resource: "ink read windows",
             })?;
-        for (index, (texture, origin)) in masks.iter().enumerate() {
+        for (index, mask) in masks.iter().enumerate() {
+            let origin = mask.origin;
             let x0 = bx0.max(origin[0]);
             let y0 = by0.max(origin[1]);
-            let x1 = bx1.min(origin[0] + i64::from(texture.width()));
-            let y1 = by1.min(origin[1] + i64::from(texture.height()));
+            let x1 = bx1.min(origin[0] + i64::from(mask.texture.width()));
+            let y1 = by1.min(origin[1] + i64::from(mask.texture.height()));
             if x0 >= x1 || y0 >= y1 {
                 continue;
             }
             let width = (x1 - x0) as u32;
             let height = (y1 - y0) as u32;
-            let bytes_per_row = width.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            let bytes_per_row = (width * INK_TEXEL_BYTES)
+                .div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
                 * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
             windows.push(InkWindow {
                 origin: [x0, y0],
                 size: [width, height],
                 offset: size,
                 bytes_per_row,
+                layer: mask.layer,
+                rank: mask.rank,
+                owners: Arc::clone(mask.owners),
             });
             copies.push(index);
             size += u64::from(bytes_per_row) * u64::from(height);
@@ -487,14 +529,14 @@ impl InkRead {
                 label: Some("figgy GPU pick ink read"),
             });
         for (window, &index) in windows.iter().zip(&copies) {
-            let (texture, origin) = masks[index];
+            let mask = &masks[index];
             encoder.copy_texture_to_buffer(
                 wgpu::TexelCopyTextureInfo {
-                    texture,
+                    texture: mask.texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d {
-                        x: (window.origin[0] - origin[0]) as u32,
-                        y: (window.origin[1] - origin[1]) as u32,
+                        x: (window.origin[0] - mask.origin[0]) as u32,
+                        y: (window.origin[1] - mask.origin[1]) as u32,
                         z: 0,
                     },
                     aspect: wgpu::TextureAspect::All,
@@ -537,27 +579,58 @@ impl InkRead {
         Ok(self.readback.poll_ready()?)
     }
 
-    /// After a wait: whether any texel with ink lies within the reach.
-    pub(crate) fn hit(&mut self) -> Result<bool, GpuPickError> {
+    /// After a wait: the owner of the inked texel nearest to the cursor
+    /// within the reach, or `None` when no texel in reach has ink. An exact
+    /// distance tie goes to the mask of higher rank (the active layer, then
+    /// the panel drawn later), then to the higher slot (the series drawn
+    /// later).
+    pub(crate) fn owner(&mut self) -> Result<Option<InkOwner>, GpuPickError> {
         let windows = &self.windows;
         let [cx, cy] = self.cursor;
-        let reach = self.reach;
-        Ok(self.readback.finish_checked(|mapped| {
-            windows.iter().any(|window| {
-                (0..window.size[1]).any(|row| {
+        let reach2 = self.reach * self.reach;
+        let best = self.readback.finish_checked(|mapped| {
+            // (distance², rank, slot, window)
+            let mut best: Option<(f32, u64, u32, usize)> = None;
+            for (at, window) in windows.iter().enumerate() {
+                for row in 0..window.size[1] {
                     let start =
                         window.offset as usize + row as usize * window.bytes_per_row as usize;
-                    let texels = &mapped[start..start + window.size[0] as usize];
+                    let texels =
+                        &mapped[start..start + window.size[0] as usize * INK_TEXEL_BYTES as usize];
                     let y = (window.origin[1] + i64::from(row)) as f32;
-                    texels.iter().enumerate().any(|(column, &ink)| {
+                    for (column, texel) in texels.chunks_exact(INK_TEXEL_BYTES as usize).enumerate()
+                    {
+                        let slot = u32::from_le_bytes([texel[0], texel[1], texel[2], texel[3]]);
+                        if slot == 0 {
+                            continue;
+                        }
                         let x = (window.origin[0] + column as i64) as f32;
                         let dx = (x - cx).max(cx - (x + 1.0)).max(0.0);
                         let dy = (y - cy).max(cy - (y + 1.0)).max(0.0);
-                        ink != 0 && dx * dx + dy * dy <= reach * reach
-                    })
-                })
+                        let d2 = dx * dx + dy * dy;
+                        if d2 > reach2 {
+                            continue;
+                        }
+                        let better = best.is_none_or(|(bd2, brank, bslot, _)| {
+                            d2 < bd2 || (d2 == bd2 && (window.rank, slot) > (brank, bslot))
+                        });
+                        if better {
+                            best = Some((d2, window.rank, slot, at));
+                        }
+                    }
+                }
+            }
+            best
+        })?;
+        Ok(best.and_then(|(_, _, slot, at)| {
+            let window = &windows[at];
+            let series = window.owners.get(slot as usize - 1)?;
+            Some(InkOwner {
+                layer: window.layer,
+                source_id: series.source_id.clone(),
+                series_id: series.series_id.clone(),
             })
-        })?)
+        }))
     }
 }
 

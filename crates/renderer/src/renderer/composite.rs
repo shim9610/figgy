@@ -202,6 +202,16 @@ impl<'s, 'a> PieceSeries<'s, 'a> {
     pub(crate) fn piece(&self, k: usize) -> &'s [SeriesLayers<'a>] {
         self.lists.get(k).copied().unwrap_or(&[])
     }
+
+    /// Series `index` alone, in every piece: the ink mask draws one series
+    /// at a time (#381). Every piece's list has the same series.
+    pub(crate) fn series(&self, index: usize) -> Self {
+        Self {
+            lists: self
+                .lists
+                .map(|list| list.get(index..=index).unwrap_or(&[])),
+        }
+    }
 }
 
 /// The order a frame draws its panels' slots in: every panel's

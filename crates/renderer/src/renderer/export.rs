@@ -1189,6 +1189,7 @@ impl Renderer {
                     color: msaa_view.as_ref().unwrap_or(&view),
                     resolve: msaa_view.as_ref().map(|_| &view),
                     depth: Some(&depth_view),
+                    depth_carried: None,
                 },
                 (w, h),
                 &item
@@ -1203,6 +1204,7 @@ impl Renderer {
                         })
                     }),
                 super::composite::PieceSeries::of(&series_list, &own),
+                super::prepare::CompositeSteps::All,
             );
             let bind_group = data_render::create_texture_bind_group(
                 &self.device,
