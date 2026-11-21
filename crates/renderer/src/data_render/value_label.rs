@@ -92,7 +92,7 @@ impl RadarLabelGroup {
 /// count, and a radar series' label group and what its labels keep clear
 /// of.
 ///
-/// GPU twin: `value_label.wgsl::ValueLabelParams`, 128 B.
+/// GPU twin: `value_label.wgsl::ValueLabelParams`, 192 B.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ValueLabelParamsGpu {

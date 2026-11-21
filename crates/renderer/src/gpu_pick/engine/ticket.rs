@@ -58,6 +58,22 @@ impl From<GpuIndexedPick> for PickedPoint {
     }
 }
 
+/// The hit of a registered chart's pick (#381): the nearest datum of the
+/// series that owns the drawn ink nearest to the cursor, on its layer, when
+/// that series has point data (the nearest-datum pick places its data). A
+/// body or fill series (bars, cells, bins, boxes) answers none: its typed
+/// hit is the data pick's.
+fn owned_datum(
+    owner: Option<&crate::gpu_pick::InkOwner>,
+    per_series: &[NearestDatum],
+) -> Option<NearestDatum> {
+    let owner = owner?;
+    per_series
+        .iter()
+        .find(|datum| datum.layer == owner.layer && datum.series_id == owner.series_id)
+        .cloned()
+}
+
 impl GpuPickTicket {
     /// A registered chart's pick (#381): its nearest-datum pick and the
     /// ink read that decides the hit.
@@ -128,18 +144,20 @@ impl GpuPickTicket {
     pub(crate) fn finish_full(&mut self) -> Result<PickResult, GpuPickError> {
         if let GpuPickTicketState::Nearest { nearest, ink } = &mut self.state {
             let picked = nearest.decode()?;
-            let hit = match ink {
-                Some(ink) => ink.hit()?,
-                None => false,
+            let owner = match ink {
+                Some(ink) => ink.owner()?,
+                None => None,
             };
             return Ok(PickResult {
-                hit: picked.nearest.filter(|_| hit).map(PickedPoint::from),
+                hit: owned_datum(owner.as_ref(), &picked.per_series).map(PickedPoint::from),
                 nearest: picked.per_series,
+                owner,
             });
         }
         Ok(PickResult {
             hit: self.finish()?.map(PickedPoint::from),
             nearest: Vec::new(),
+            owner: None,
         })
     }
 
@@ -200,11 +218,12 @@ impl GpuPickTicket {
     pub(crate) fn finish(&mut self) -> Result<Option<GpuIndexedPick>, GpuPickError> {
         if let GpuPickTicketState::Nearest { nearest, ink } = &mut self.state {
             let picked = nearest.decode()?;
-            let hit = match ink {
-                Some(ink) => ink.hit()?,
-                None => false,
+            let owner = match ink {
+                Some(ink) => ink.owner()?,
+                None => None,
             };
-            return Ok(picked.nearest.filter(|_| hit).map(|datum| GpuIndexedPick {
+            let datum = owned_datum(owner.as_ref(), &picked.per_series);
+            return Ok(datum.map(|datum| GpuIndexedPick {
                 series_order: nearest.series_order(&datum),
                 point_index: u32::try_from(datum.point_index).unwrap_or(u32::MAX),
                 logical_index: Some(datum.point_index),

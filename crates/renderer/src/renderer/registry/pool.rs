@@ -210,7 +210,8 @@ impl Renderer {
     /// old slab and again before reporting retired bytes as reusable. It
     /// also drops the typed data pick kernels no registered chart can
     /// dispatch any more (#363); until then a removed chart's stay for
-    /// reuse.
+    /// reuse. It leaves the pick ink masks (#381) alone: a removed chart's
+    /// masks go with the chart, and a live chart keeps its own (#399).
     ///
     /// Call only at a host quiescence point: no unsubmitted command buffer may
     /// still reference the old pool. A failed candidate leaves live columns
@@ -235,7 +236,6 @@ impl Renderer {
             waited?;
         }
         self.release_unused_data_pick_kernels();
-        self.release_ink_masks();
         Ok(())
     }
 
@@ -253,16 +253,9 @@ impl Renderer {
                 waited?;
             }
             self.release_unused_data_pick_kernels();
-            self.release_ink_masks();
             Ok(())
         })();
         self.reported(result)
-    }
-
-    /// Drop every ink mask (#381); the next on-screen prepare of each chart
-    /// draws its masks again, and until then its picks hit nothing.
-    pub(super) fn release_ink_masks(&mut self) {
-        self.ink_masks = Vec::new();
     }
 
     /// The release's first step, once the queued work is done: drop the

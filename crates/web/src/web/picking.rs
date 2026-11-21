@@ -266,12 +266,12 @@ impl FiggyChart {
         }
     }
 
-    /// Whether the shown chart draws from a stream: a monotonic chart
-    /// never does (#271).
-    /// Compile the exact pick pipelines a pick at `at` needs through the
-    /// browser's async API before the pick submits (#299), so the first
-    /// pick does not compile them on the page's thread. A monotonic chart
-    /// picks through its own query and needs none.
+    /// Compile the pick pipelines the shown chart's pick needs (the
+    /// nearest-datum kernel, and its 3D projection on a 3D chart) through
+    /// the browser's async API before the pick submits (#299, #381), so
+    /// the first pick does not compile them on the page's thread. One
+    /// pipeline serves every cursor. A monotonic chart picks through its
+    /// own query and needs none.
     async fn compile_pick_pipelines(
         &mut self,
         at: [f32; 2],
@@ -304,6 +304,8 @@ impl FiggyChart {
             .map_err(js_err)
     }
 
+    /// Whether the shown chart draws from a stream: a monotonic chart
+    /// never does (#271).
     fn shows_stream(&self) -> bool {
         self.monotonic.is_none() && self.renderer.is_streaming_chart(self.chart_id)
     }
@@ -353,20 +355,25 @@ impl FiggyChart {
         }
     }
 
-    /// Compile the exact GPU picker and prepare it for the current chart.
+    /// Compile the GPU picker and prepare it for the current chart.
     /// Repeated calls, including retries, reuse renderer-owned state.
     pub async fn prewarm_gpu_picking(&mut self) -> Result<(), JsValue> {
         self.prepare_gpu_picking().await
     }
 
-    /// Pick the nearest visible data primitive to canvas pixel `(x, y)`.
-    /// Scatter hits use the visible marker size, including per-point style
-    /// mapping; error-bar stems and caps name their point; line strokes and
-    /// the inside of a line's fill snap to the nearest endpoint data point on
-    /// the hit segment.
+    /// Pick at canvas pixel `(x, y)` (#381): a hit when the chart's drawn
+    /// data has ink within `max_distance_px` of it and the topmost series
+    /// that drew the nearest inked pixel has point data, naming that
+    /// series' datum nearest to the cursor. Ink of a body series (bars,
+    /// bins, cells) answers no point hit; `pick_data` answers its typed hit.
     /// Resolves to a JSON string
-    /// `{ source_id, series_id, point_index, distance_px }`, or
-    /// `undefined` when no visible primitive is within `max_distance_px`.
+    /// `{ source_id, series_id, point_index, distance_px, nearest }`:
+    /// `nearest` lists every pickable series' datum nearest to the cursor
+    /// (`{ layer, source_id, series_id, point_index, distance_px }`), and
+    /// when no drawn ink is within `max_distance_px` the point fields are
+    /// `null` and `nearest` is still filled (#381). A streamed display's
+    /// pick resolves to `{ source_id, series_id, point_index, distance_px }`
+    /// or `undefined` on a miss, as before.
     /// On a chart that draws value labels a label under the pointer wins
     /// (it is drawn over the data): the hit then names the label's series,
     /// its category as `point_index`, and its `label_id`
@@ -458,11 +465,10 @@ impl FiggyChart {
         };
         // The hit, with every series' nearest datum (#381).
         let result = ticket.resolve_full().await.map_err(js_err)?;
-        let Some(picked) = &result.hit else {
-            return Ok(JsValue::UNDEFINED);
-        };
-        let json = crate::picked_point_with_nearest_json_string(picked, &result.nearest)
-            .map_err(js_err)?;
+        // A miss still answers every series' nearest datum (#381).
+        let json =
+            crate::picked_point_with_nearest_json_string(result.hit.as_ref(), &result.nearest)
+                .map_err(js_err)?;
         Ok(JsValue::from_str(&json))
     }
 
@@ -520,11 +526,19 @@ impl FiggyChart {
     /// that series). The link becomes the data selection and the drag
     /// starts: `on_move` moves its exit along the predecessor's edge
     /// (`drag_link_exit`, moving a shared trunk as one and snapping to the
-    /// default within 3 px) and `on_release` ends it. Returns `false` and
-    /// changes nothing for an id or index that names no link.
+    /// default within 3 px) and `on_release` ends it. `extent_px` is the
+    /// hit's `extent_px`, the link's predecessor's drawn length in canvas
+    /// pixels: the exit stops at the bar's end, so dragging back moves it
+    /// at once; without it only the draw stops the exit. Returns `false`
+    /// and changes nothing for an id or index that names no link.
     /// JS: `const hit = JSON.parse(await chart.pick_data(x, y, 6));`
-    /// `if (hit?.kind === "HistogramBin") chart.press_range_link(hit.series_id, hit.index);`
-    pub fn press_range_link(&mut self, series_id: &str, index: usize) -> Result<bool, JsValue> {
+    /// `if (hit?.kind === "histogram_bin") chart.press_range_link(hit.series_id, hit.bin_index, hit.extent_px);`
+    pub fn press_range_link(
+        &mut self,
+        series_id: &str,
+        index: usize,
+        extent_px: Option<f32>,
+    ) -> Result<bool, JsValue> {
         let Some(series) = self
             .chart_series()?
             .iter()
@@ -554,6 +568,10 @@ impl FiggyChart {
         picked.refs = vec![reference];
         config.picked_data = Some(picked);
         self.replace_chart_config(config)?;
+        self.link_exit_limit = match extent_px.filter(|e| e.is_finite() && *e >= 0.0) {
+            Some(extent) => Some(self.display_delta_to_document(extent, 0.0)?.0),
+            None => None,
+        };
         self.annotation_pointer = false;
         self.resizing = None;
         self.dragging = true;
@@ -794,7 +812,7 @@ impl FiggyChart {
             return Ok(());
         }
         // A dependency link moves its exit along its predecessor (#357):
-        // along the value axis, x for horizontal bars and y (up) otherwise.
+        // along the value axis as it runs on screen (`range_link_drag_along`).
         if let Some(renderer::config::PickedDataRef::HistogramBin {
             series_id,
             bin_index,
@@ -812,17 +830,14 @@ impl FiggyChart {
         {
             let (dx, dy) = self.display_delta_to_document(dx, dy)?;
             let config = self.chart_config()?.clone();
-            let horizontal = config
-                .bar_groups_of(config.layer_of_series(&series_id))
-                .direction
-                == renderer::data_config::CategoryBarDirection::Horizontal;
-            let along = if horizontal { dx } else { -dy };
+            let along = crate::range_link_drag_along(&config, &series_id, dx, dy);
             let mut series = self.chart_series()?.to_vec();
             if let Some(links) = series
                 .iter_mut()
                 .find(|s| s.series_id == series_id)
                 .and_then(|s| s.render_type.range_links_mut())
-                && links.drag_link_exit(bin_index, along) == NudgeResult::Moved
+                && links.drag_link_exit(bin_index, along, self.link_exit_limit)
+                    == NudgeResult::Moved
             {
                 self.replace_chart_state(config, series)?;
             }
@@ -890,10 +905,15 @@ impl FiggyChart {
             .map_or(JsValue::UNDEFINED, |index| JsValue::from_f64(index as f64)))
     }
 
-    /// Pick the nearest visible data primitive at canvas pixel `(x, y)`;
-    /// equal-distance hits follow chart paint order.
-    /// Unlike `pick_point`, this includes histogram bins, canonical heatmap
-    /// cells and contour levels. The tagged result contains only stable
+    /// Pick at canvas pixel `(x, y)` (#381, #399): the series that owns
+    /// the drawn ink nearest to the cursor decides. A point-data owner
+    /// answers its datum nearest to the cursor, a body or fill owner its
+    /// typed hit; value labels and DataLess series, which draw no ink
+    /// mask, answer by their typed hit. Unlike `pick_point`, this includes
+    /// histogram bins, canonical heatmap cells and contour levels.
+    /// `distance_px` is the distance to the picked datum and can exceed
+    /// `max_distance_px`. Before the chart's first drawn frame nothing is
+    /// picked. The tagged result contains only stable
     /// source/series indices plus `distance_px`; values and geometry stay
     /// in the renderer's GPU-backed SSoT. Resolves to `undefined` on miss.
     ///

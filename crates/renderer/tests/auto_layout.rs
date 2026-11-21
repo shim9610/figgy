@@ -378,8 +378,8 @@ fn layout_changes(before: &Config, after: &Config) -> Vec<String> {
 // - `config-series` is the default with a right-hand colourbar: its band
 //   shrinks to its labels and the 9 px padding (no title).
 // - `config-edited` shows the top labels (the band grows to their reach,
-//   which sits on the row's shared descent, that of `TICK_ROW_REFERENCE`
-//   (#357), and the padding), puts each axis title beside its labels in a band set to
+//   the tick row's shared descent below their baseline (#376), and the
+//   padding), puts each axis title beside its labels in a band set to
 //   labels, the 9 px gap, title and padding (10 px past the 20 px bottom
 //   title, 11 px past the 22 px left one; the bottom title moves 8 px
 //   outward, the left one 26 px), holds the last x label's overhang past
@@ -395,9 +395,10 @@ fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands
     let out = laid_out(&default);
     assert_eq!(laid_out(&out), out, "default: not idempotent");
     // The x bands hold the labels' unhinted ink (#357): a pixel more than
-    // the hinted ink took (10 and 25 px), the bands being whole pixels. A
-    // bottom label hangs from its row's shared ascent, that of
-    // `TICK_ROW_REFERENCE` (#357), a pixel below its digits' own: 27.
+    // the hinted ink took (10 and 25 px), the bands being whole pixels. The
+    // bottom labels sit on the tick row's shared baseline
+    // (`TICK_ROW_REFERENCE`, #376), below the digits' own ascent, so the
+    // bottom band holds one pixel more.
     assert_eq!(
         layout_changes(&default, &out),
         [

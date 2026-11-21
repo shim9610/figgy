@@ -153,8 +153,9 @@ snapshot, readable while the chart is busy, and it reports `{ scope:
 `figgy-init-progress` event. It starts its picker prewarm once the render pipelines
 have compiled. Exports and picks always draw the whole chart; they compile what they
 need through the browser's asynchronous compiler first (an export its pipelines,
-`pick_point` and `pick_data` their exact pick variants), so neither compiles on the
-page's thread.
+`pick_point` and `pick_data` the picker's pipelines, the nearest-datum kernel and the
+typed data pick kernels, which a drawn chart has already queued), so neither compiles on
+the page's thread.
 The chart's waits borrow it until they settle. `chart.readiness()` returns a
 `FiggyReadiness` that does not ([#315](https://github.com/shim9610/figgy/issues/315)):
 its `series_ready()` and `pipelines_ready()` wait for the same compiles without
@@ -316,7 +317,7 @@ crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝�
 `normalize_config(configJson)`은 표준 형태로 다시 쓴 설정을 돌려준다.
 `convert_categorical_document`, `convert_boxplot_document`, `convert_radar_document`는 레거시 문서를
 변환한 설정과 시리즈, 값을 뺀 업로드 목록, 컬럼별 시리즈, 그리고 문서에 있었지만 옮기지 못한
-필드의 목록(`notes`)을 돌려준다. 자세한 내용은 [편집기용 모델 API](../renderer/WASM.md#model-api)를 참고한다.
+필드의 목록(`notes`)을 돌려준다. 두 번째 인자로 `{"chart_area": [x, y, w, h]}`(차트의 차트 영역)를 주면 그 차트에서 설정 메서드가 설치하는 것과 같은 변환을 하므로 미리 보기와 열린 차트가 일치한다(#334). `set_*_document(json, options?)`는 설치한 변환의 같은 보고서 JSON을 돌려주고, `{"refuse": ["path", ...] | "any"}`를 주면 변환이 나열한 경로(또는 어떤 필드든)를 버리거나 바꿀 때 아무것도 바꾸기 전에 거부된 notes와 함께 `code: "conversion_loss"`를 던진다. 자세한 내용은 [편집기용 모델 API](../renderer/WASM.md#model-api)를 참고한다.
 
 원시 `FiggyChart` 위의 편집기는 문서·선택·래스터를 바꾸지 않고 렌더러에 물어볼 수 있다
 ([#312](https://github.com/shim9610/figgy/issues/312)). `annotation_preview(json)`는 아직 넣지 않은
@@ -334,7 +335,7 @@ crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝�
 검사·업로드·축 맞춤·반영 중 어느 단계에서 실패하든 `stage`로 그 단계를 알려 주는 `Error`를 던지고
 차트는 그대로 둔다. `clear_selection()`은 장식·주석 선택과 진행 중인 끌기를 끝내고,
 `begin_column_upload(...)`는 컬럼 하나를 조각으로 나눠 GPU 스테이징 버퍼에 쓴 뒤 `commit(chart)`에서
-설치한다. `inspect_streaming_capabilities(config, series)`는 차트를 바꾸지 않고 후보 문서의 스트리밍
+설치한다. `begin_columns_transaction(...)`은 조각으로 나눈 컬럼 여러 개와 다음 Config·Series를 준비해 두었다가 함께 설치하거나 하나도 설치하지 않는다(#334). `inspect_streaming_capabilities(config, series)`는 차트를 바꾸지 않고 후보 문서의 스트리밍
 가능 여부를 검사한다([edit safety](../renderer/WASM.md#edit-safety)).
 
 차트는 기본 셰이더 세트로 시작하고, 끊긴 축·확률 축·극좌표가 설정에 처음 들어오면 전체 세트로

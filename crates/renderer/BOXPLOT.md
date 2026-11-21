@@ -293,7 +293,11 @@ half (`PickedDataRef::HistogramBin { half: Some(..), .. }`) outlines that
 half alone. Inside the box, which is painted over the violin, the pick
 answers the box (`half: None`). A
 raw point answers `PickedData::Point` with its row where it is drawn, and its
-highlight rings it; `step_selection` walks the points
+highlight rings it. A series with raw points has point data, so what a click
+selects follows the series that owns the ink under the cursor (#381): its
+nearest raw point, also on its violin or box, which stays the typed hit
+(`DataPickResult::data`); a series without points selects its box or violin.
+`step_selection` walks the points
 (`dx`) and the box plot series with points (`dy`), and `selection_details()`
 reports a point's `position`, `value` and category.
 
@@ -438,6 +442,12 @@ document in `FiggyChart`.
 `labels.text`에 두며, 렌더러는 상자 꼭대기(높은 수염·평균·노치·이상치 중 가장 높은 곳)에서 10px 위에
 그린다. 데이터 영역 가장자리를 넘으면 꼭대기 아래에 그린다. 라벨은 `PickedData::ValueLabel`로 고르고 드래그하면
 `labels.offsets`에 기록된다.
+바이올린도 상자처럼 칠한 면 안이나 외곽선에서 자기 범주를 `PickedData::HistogramBin`으로 답하고,
+분할 바이올린은 커서 아래 반쪽(`half`)도 알려 준다. 바이올린 위에 그린 상자 안에서는 상자를 답한다(`half: None`).
+원시 점은 그려진 자리에서 자기 행을 `PickedData::Point`로 답하고, 강조는 그 점에 고리를 그린다. 원시 점이 있는
+시리즈는 점 데이터를 가지므로 클릭이 고르는 대상은 커서 아래 잉크를 가진 시리즈를 따른다(#381). 바이올린이나
+상자를 눌러도 가장 가까운 원시 점을 고르고, 바이올린·상자는 typed 적중(`DataPickResult::data`)으로 남는다. 점이
+없는 시리즈는 상자나 바이올린을 고른다.
 시리즈·범주·상자·이상치 수에는 상한이 없다.
 
 ## 제목·축·라벨·범례 선택과 이동
@@ -445,7 +455,7 @@ document in `FiggyChart`.
 제목·범례·축·눈금 라벨·축 제목의 선택과 이동, 그리기 영역 이동·크기 조정, 오버레이와 서브플롯,
 PNG 내보내기는 직교 좌표 차트와 같다. 좌표 단위, 요소별 이동 규칙, 캐시·저장 복원 및 웹 연결은
 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)를 참고한다.
-브라우저에서는 `FiggyChart.set_boxplot_document(json)`로 문서를 연다.
+브라우저에서는 `FiggyChart.set_boxplot_document(json, options?)`로 문서를 열고 변환 보고서(`{ config, series, uploads, columns, notes }`)를 받는다. 차트 없이 이 보고서를 미리 보려면 `convert_boxplot_document(json, {chart_area})`를 쓴다. `{ "refuse": [...] | "any" }` 옵션을 주면 손실이 있는 문서를 아무것도 바꾸기 전에 `code: "conversion_loss"`로 거부한다(#334, [WASM.md](WASM.md#model-api) 참고).
 
 ### 주석 층
 

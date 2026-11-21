@@ -42,10 +42,13 @@ pub(crate) use engine::milkyway_line_half_extent;
 use engine::query_params;
 use engine::{GPU_PICK_DIRECT_SCAN_POINTS, GPU_PICK_WORKGROUP_SIZE, GpuPickTicketState};
 use engine::{ReduceResources, create_buffer_checked, gate_dispatch_layout, lane_base};
+#[cfg(target_arch = "wasm32")]
+pub(crate) use nearest::NEAREST_PICK_COMPILES;
 pub(crate) use nearest::{
-    InkRead, NEAREST_PICK_3D_MODULE, NEAREST_PICK_MODULE, NearestPickPipelines, NearestSlot,
+    InkMaskRead, InkRead, InkSeries, NEAREST_PICK_3D_MODULE, NEAREST_PICK_MODULE,
+    NearestPickPipelines, NearestSlot,
 };
-pub use nearest::{NearestDatum, NearestPick, NearestPickTicket};
+pub use nearest::{InkOwner, NearestDatum, NearestPick, NearestPickTicket};
 #[cfg(test)]
 use registry::GpuPickSeriesId;
 pub(crate) use registry::{GpuPickRegistrySlot, PreparedPickRegistryTransition};
@@ -53,6 +56,8 @@ use registry::{PickIdentity, PickRegistry, PickSeriesSlot};
 #[cfg(test)]
 use registry::{series_arc, series_exact_variant, series_ring};
 use registry::{series_exact_key, stream_exact_variant};
+#[cfg(target_arch = "wasm32")]
+pub(crate) use shader::GATE_PIPELINE_LABELS;
 pub(crate) use shader::exact_variant;
 #[cfg(test)]
 use shader::{

@@ -47,17 +47,22 @@ impl Renderer {
     ) -> std::result::Result<crate::gpu_pick::NearestPickTicket, crate::gpu_pick::GpuPickError>
     {
         self.pick_chart_nearest_grouped(id, request)
-            .map(|(ticket, _)| ticket)
+            .map(|(ticket, _, _)| ticket)
     }
 
     /// [`Self::pick_chart_nearest`], with the subplot whose layer group it
-    /// searched (`None`: the base layer and its overlays).
+    /// searched (`None`: the base layer and its overlays) and the layer an
+    /// exact tie goes to.
     fn pick_chart_nearest_grouped(
         &mut self,
         id: ChartId,
         request: GpuPickRequest,
     ) -> std::result::Result<
-        (crate::gpu_pick::NearestPickTicket, Option<usize>),
+        (
+            crate::gpu_pick::NearestPickTicket,
+            Option<usize>,
+            crate::LayerRef,
+        ),
         crate::gpu_pick::GpuPickError,
     > {
         self.pick_health()?;
@@ -116,12 +121,28 @@ impl Renderer {
             }
         })?;
         let mut needs_full = false;
+        // The layers drawn as panels of their own: a document squeezed
+        // below its margins draws its base panel alone, with every series
+        // on it (`expand_for_render`), and a layer it does not draw is not
+        // planned again, so each series is planned once.
+        let panel_count =
+            render_panel_count(&displayed).map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
+        let panel_layers = displayed.panel_layers();
         for k in 0..=overlays {
             let layer = match (k, subplot) {
                 (0, _) => first,
                 (k, Some(index)) => crate::LayerRef::SubplotOverlay(index, k - 1),
                 (k, None) => crate::LayerRef::Overlay(k - 1),
             };
+            let drawn_as = panel_layers
+                .get(panel_index(&displayed, panel_count, layer))
+                .copied();
+            if k > 0 && drawn_as != Some(layer) {
+                continue;
+            }
+            // The group's first layer is planned as the panel draws it: the
+            // base panel when the document fell back to it.
+            let layer = drawn_as.unwrap_or(layer);
             let mut shown = displayed.clone();
             shown.active_layer = layer;
             let inputs = active_layer_pick_inputs(&shown, &series)?;
@@ -212,20 +233,22 @@ impl Renderer {
             active,
         )?;
         ticket.monotonic = monotonic_rows;
-        Ok((ticket, subplot))
+        Ok((ticket, subplot, active))
     }
 
     /// The pick of a registered chart (#381), [`Self::pick_chart`]: the
     /// nearest-datum pick of [`Self::pick_chart_nearest`], and a read of
     /// the ink masks of the same layer group around the cursor. The cursor
     /// hits when ink lies within `request.max_distance_px` canvas pixels
-    /// of it; the hit is then the nearest datum.
+    /// of it; the series that owns the nearest inked texel decides the hit
+    /// (an exact tie goes to the active layer, then to the panel and the
+    /// series drawn later).
     pub(super) fn pick_chart_inked(
         &mut self,
         id: ChartId,
         request: GpuPickRequest,
     ) -> std::result::Result<crate::gpu_pick::GpuPickTicket, crate::gpu_pick::GpuPickError> {
-        let (nearest, subplot) = self.pick_chart_nearest_grouped(id, request)?;
+        let (nearest, subplot, active_layer) = self.pick_chart_nearest_grouped(id, request)?;
         let reach = request.max_distance_px;
         let cursor = request.canvas_position_px;
         if !reach.is_finite() || reach < 0.0 || !cursor.iter().all(|c| c.is_finite()) {
@@ -250,25 +273,25 @@ impl Renderer {
                 resource: "ink read masks",
             }
         })?;
-        masks.extend(
-            self.ink_masks
-                .iter()
-                .filter(|mask| {
-                    mask.chart == id
-                        && in_group(
-                            layers
-                                .get(mask.panel)
-                                .copied()
-                                .unwrap_or(crate::LayerRef::Base),
-                        )
-                })
-                .map(|mask| {
-                    (
-                        &*mask.texture,
-                        [i64::from(mask.panel_rect.x), i64::from(mask.panel_rect.y)],
-                    )
-                }),
-        );
+        for mask in self.ink_masks.iter().filter(|mask| mask.chart == id) {
+            let layer = layers
+                .get(mask.panel)
+                .copied()
+                .unwrap_or(crate::LayerRef::Base);
+            if !in_group(layer) {
+                continue;
+            }
+            // The active layer's panels first, then the panel drawn later.
+            let rank = (u64::from(layer == active_layer) << 32)
+                | u64::try_from(mask.panel).unwrap_or(u64::from(u32::MAX));
+            masks.push(crate::gpu_pick::InkMaskRead {
+                texture: &mask.texture,
+                origin: [i64::from(mask.panel_rect.x), i64::from(mask.panel_rect.y)],
+                layer,
+                rank,
+                owners: &mask.owners,
+            });
+        }
         let active = self
             .picker
             .active
