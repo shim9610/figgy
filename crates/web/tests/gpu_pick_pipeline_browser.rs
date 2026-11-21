@@ -138,6 +138,25 @@ async fn raw_figgy_prewarm_is_idempotent_and_pick_reuses_it() {
         serde_json::from_str(&picked).expect("raw pick payload was not JSON");
     assert_eq!(picked["series_id"], "raw-series");
     assert_eq!(picked["point_index"], 1);
+
+    // Releasing the unused GPU memory keeps the drawn chart's ink masks:
+    // after it, a frame (which has nothing to redraw) and the same pick
+    // still hit the datum (#381).
+    chart
+        .release_unused_gpu_memory()
+        .await
+        .expect("unused memory release failed");
+    chart.frame().expect("frame after the release failed");
+    let picked = chart
+        .pick_point(x, y, 2.0)
+        .await
+        .expect("pick after the release failed")
+        .as_string()
+        .expect("a pick after the release resolves to JSON");
+    let picked: serde_json::Value =
+        serde_json::from_str(&picked).expect("pick payload after the release was not JSON");
+    assert_eq!(picked["series_id"], "raw-series", "{picked}");
+    assert_eq!(picked["point_index"], 1, "{picked}");
 }
 
 /// A streamline series goes through the wrapper whole: `set_series` /
