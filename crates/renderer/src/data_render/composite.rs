@@ -553,9 +553,27 @@ pub(crate) fn issue_series_bodies(
     pass: &mut wgpu::RenderPass<'_>,
     series_list: &[SeriesLayers<'_>],
 ) {
+    issue_series_fills(pass, series_list);
+    issue_series_bodies_without_fills(pass, series_list);
+}
+
+/// The first step of [`issue_series_bodies`]: every series' fill, under
+/// every series' body.
+pub(crate) fn issue_series_fills(
+    pass: &mut wgpu::RenderPass<'_>,
+    series_list: &[SeriesLayers<'_>],
+) {
     for s in series_list {
         issue_series_fill(pass, s);
     }
+}
+
+/// The second step of [`issue_series_bodies`]: every series' body over the
+/// fills.
+pub(crate) fn issue_series_bodies_without_fills(
+    pass: &mut wgpu::RenderPass<'_>,
+    series_list: &[SeriesLayers<'_>],
+) {
     for s in series_list {
         issue_series_data(pass, s);
     }

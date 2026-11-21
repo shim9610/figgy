@@ -4079,9 +4079,10 @@ fn area_fills_pick_where_they_paint() {
 }
 
 /// G10 tie-break: a marker over a fill picks the marker, though its series
-/// comes first (every fill is drawn before every series body); inside the
-/// fill away from the marker `pick_chart` hits the fill's ink and answers
-/// the nearest datum (#381).
+/// comes first (every fill is drawn before every series body, and the ink
+/// mask records them in that order); inside the fill away from the marker
+/// `pick_chart` hits the fill's ink, owned by its line, and answers that
+/// line's nearest datum (#381).
 #[test]
 fn a_marker_over_a_fill_picks_the_marker() {
     use renderer::data_config::{LineFill, LineInterpolation};
@@ -4111,17 +4112,17 @@ fn a_marker_over_a_fill_picks_the_marker() {
             .pick(&mut renderer, mx as u32, my as u32, 0.0)
             .expect("marker hit");
         assert_eq!((hit.series_id.as_str(), hit.point_index), ("dot", 0));
-        for x in [3.0, 7.0] {
+        for (x, index) in [(3.0, 0), (7.0, 1)] {
             let (px, py) = data_to_px(&chart, x, 3.0, scale);
-            // `pick_chart` (#381): the fill's ink hits, and the hit is the
-            // nearest datum of all, the marker's or the fill's.
+            // `pick_chart` (#381): the fill's ink hits and is owned by the
+            // line it fills, so the hit is that line's nearest datum, though
+            // the marker at (4, 4) is nearer than either endpoint at y 8.
             let hit = probe
                 .pick(&mut renderer, px as u32, py as u32, 0.0)
                 .expect("the fill's ink hits");
-            // The marker at (4, 4) is nearer than either endpoint at y 8.
             assert_eq!(
                 (hit.series_id.as_str(), hit.point_index),
-                ("dot", 0),
+                ("area", index),
                 "{scale}x at x {x}"
             );
         }

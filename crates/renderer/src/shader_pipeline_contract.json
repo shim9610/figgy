@@ -15658,7 +15658,7 @@
           "entryPoint": "ink_mask_fs",
           "targets": [
             {
-              "format": "r8unorm",
+              "format": "r32uint",
               "writeMask": 15
             }
           ]
@@ -15683,7 +15683,7 @@
         }
       },
       "kind": "render",
-      "source": "cfe9045a855c2d2d"
+      "source": "831701172ecd7431"
     },
     {
       "descriptor": {
