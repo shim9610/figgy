@@ -18,6 +18,7 @@ pub(super) const EXPLICIT_ZERO_ENTRIES: &[&str] = &[
     "reduce_states",
     "pick_exact_candidates",
     "pick_reduce_candidates",
+    "pick_nearest_points",
     "pick_histogram_bin",
     "pick_category_bar",
     "pick_box_plot",
