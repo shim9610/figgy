@@ -1973,3 +1973,171 @@ fn three_hundred_vector_series_in_one_frame_all_draw() {
         );
     }
 }
+
+/// A colour-mapped vector in a subplot reads the subplot's own colourbar
+/// (#401): beside a root without one it registers and colours its arrow
+/// through the subplot's ramp; a root colourbar alone does not satisfy it.
+#[test]
+fn colour_mapped_vectors_in_a_subplot_read_its_own_colorbar() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    point_fixture(&mut renderer, &[(2.0, 2.0)], &[(0.0, 40.0)]);
+    renderer.add_column("c", &col_f64(vec![10.0])).unwrap();
+    let bar = two_stop_colorbar(AxisScale::Linear, 0.0, 10.0);
+    let document = |root_bar: Option<ColorBarOptions>, sub_bar: Option<ColorBarOptions>| {
+        let mut chart = bare_chart();
+        chart.config_mut().colorbar = root_bar;
+        let mut sub = bare_chart();
+        sub.config_mut().chart_area = ChartArea(Rect {
+            x: WIDTH,
+            y: 0,
+            width: WIDTH,
+            height: HEIGHT,
+        });
+        sub.config_mut().colorbar = sub_bar;
+        chart.config_mut().subplots.push(Subplot {
+            config: sub.config().clone(),
+            series: vec!["arrows".into()],
+            ..Subplot::default()
+        });
+        chart.config().clone()
+    };
+    let mut style = pixels(1.0);
+    style.width_px = 6.0;
+    style.color_map = Some(VectorColorMap::Column("c".into()));
+    let series = vec![points("arrows", style)];
+    let id = renderer
+        .register_chart(document(None, Some(bar.clone())), series.clone())
+        .expect("the subplot's colourbar colours its arrows");
+    let sub = Chart::new(
+        renderer.chart_config(id).unwrap().subplots[0]
+            .config
+            .clone(),
+    );
+    let img = renderer
+        .export_rgba(
+            renderer::ExportSource::Registered(id),
+            renderer::ExportOptions::document(1.0),
+        )
+        .block_on()
+        .unwrap();
+    let a = data_to_px(&sub, 2.0, 2.0);
+    assert!(a.0 >= WIDTH as f64, "the anchor lies in the subplot");
+    assert_colour_at(&img, (a.0, a.1 - 15.0), bar.color_for_z(10.0), "z = max");
+    renderer.remove_chart(id).unwrap();
+    let error = renderer
+        .register_chart(document(Some(bar), None), series)
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            FiggyError::InvalidSeriesConfig {
+                kind: renderer::RuleKind::VectorColorMapNeedsColorbar,
+                ..
+            }
+        ),
+        "{error}"
+    );
+}
+
+/// Colour-mapped streamlines and a heatmap in a subplot read the subplot's
+/// own colourbar (#401): beside a root without one each registers and draws
+/// in the subplot's colours; a root colourbar alone does not satisfy them.
+#[test]
+fn streamlines_and_fields_in_a_subplot_read_its_own_colorbar() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    streamline_fixture(&mut renderer, &[(0.5, 1.0), (3.5, 1.0)]);
+    renderer
+        .add_column("speed", &col_f64(vec![10.0, 10.0]))
+        .unwrap();
+    grid_fixture(&mut renderer, &GridLayout::Edges);
+    let tens = col_f64(vec![10.0, 10.0]);
+    renderer
+        .add_columns(&[
+            ("zf0", &tens as &dyn renderer::ColumnSource),
+            ("zf1", &tens as &dyn renderer::ColumnSource),
+            ("zf2", &tens as &dyn renderer::ColumnSource),
+        ])
+        .unwrap();
+    let heatmap = SeriesConfig {
+        series_id: "field".into(),
+        source_id: None,
+        label: None,
+        x_column: "gx".into(),
+        y_column: "gy".into(),
+        z_column: None,
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
+            matrix: matrix(
+                &["zf0", "zf1", "zf2"],
+                &MatrixOrientation::ColumnsAreX,
+                &GridLayout::Edges,
+            ),
+            fill: Some(FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Flat,
+                opacity: 1.0,
+            }),
+            contour: None,
+            surface: None,
+        }),
+    };
+    let bar = two_stop_colorbar(AxisScale::Linear, 0.0, 10.0);
+    let document =
+        |id: &str, root_bar: Option<ColorBarOptions>, sub_bar: Option<ColorBarOptions>| {
+            let mut chart = bare_chart();
+            chart.config_mut().colorbar = root_bar;
+            let mut sub = bare_chart();
+            sub.config_mut().chart_area = ChartArea(Rect {
+                x: WIDTH,
+                y: 0,
+                width: WIDTH,
+                height: HEIGHT,
+            });
+            sub.config_mut().colorbar = sub_bar;
+            chart.config_mut().subplots.push(Subplot {
+                config: sub.config().clone(),
+                series: vec![id.into()],
+                ..Subplot::default()
+            });
+            chart.config().clone()
+        };
+    for (series, at, kind) in [
+        (
+            streamlines(None, Some("speed")),
+            (2.0, 1.0),
+            renderer::RuleKind::StreamlineColorMapNeedsColorbar,
+        ),
+        (heatmap, (1.5, 1.0), renderer::RuleKind::FieldNeedsColorbar),
+    ] {
+        let id = series.series_id.clone();
+        let chart = renderer
+            .register_chart(document(&id, None, Some(bar.clone())), vec![series.clone()])
+            .unwrap_or_else(|error| panic!("{id}: {error}"));
+        let sub = Chart::new(
+            renderer.chart_config(chart).unwrap().subplots[0]
+                .config
+                .clone(),
+        );
+        let img = renderer
+            .export_rgba(
+                renderer::ExportSource::Registered(chart),
+                renderer::ExportOptions::document(1.0),
+            )
+            .block_on()
+            .unwrap();
+        let px = data_to_px(&sub, at.0, at.1);
+        assert!(px.0 >= WIDTH as f64, "{id}: drawn in the subplot");
+        assert_colour_at(&img, px, bar.color_for_z(10.0), &id);
+        renderer.remove_chart(chart).unwrap();
+        let error = renderer
+            .register_chart(document(&id, Some(bar.clone()), None), vec![series])
+            .unwrap_err();
+        assert!(
+            matches!(&error, FiggyError::InvalidSeriesConfig { kind: got, .. } if *got == kind),
+            "{id}: {error}"
+        );
+    }
+}

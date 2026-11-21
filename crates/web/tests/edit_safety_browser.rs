@@ -1355,3 +1355,109 @@ async fn a_previewed_loss_is_the_applied_loss_and_a_refused_one_changes_nothing(
         assert_eq!(set(&mut chart, &lossy, None).unwrap(), preview, "{family}");
     }
 }
+
+/// #401: the issue's transaction. A chart drawing a plain Cartesian line
+/// with no colourbar takes, through `set_state` + `commit`, a document whose
+/// subplot draws a colour-mapped ternary scatter through the subplot's own
+/// colourbar; it draws at 1x and 2x. The converse state — a root colourbar
+/// and a subplot without one — is refused with the scatter's rule and
+/// changes nothing.
+#[wasm_bindgen_test(async)]
+async fn a_transaction_installs_a_colour_mapped_ternary_subplot_with_its_own_colorbar() {
+    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    for (id, values) in [
+        ("a", [70.0, 10.0, 20.0]),
+        ("b", [10.0, 70.0, 20.0]),
+        ("c", [20.0, 20.0, 60.0]),
+        ("v", [0.0, 0.5, 1.0]),
+    ] {
+        chart.register_column_f64(id, &values).unwrap();
+    }
+    let root_line = SeriesConfig::line("root", "a", "b");
+    chart
+        .set_series(&serde_json::to_string(&[root_line.clone()]).unwrap())
+        .unwrap();
+    chart.fit_ranges().unwrap();
+    chart.frame().unwrap();
+    let mut root = config(&chart);
+    root.colorbar = None;
+    root.chart_area = renderer::layout::ChartArea(renderer::layout::Rect {
+        x: 0,
+        y: 0,
+        width: 480,
+        height: 160,
+    });
+    let mut cell = renderer::default::default_config();
+    cell.chart_area = renderer::layout::ChartArea(renderer::layout::Rect {
+        x: 0,
+        y: 160,
+        width: 480,
+        height: 160,
+    });
+    cell.set_ternary(Some(renderer::TernaryOptions {}));
+    let mut bar = renderer::default::default_colorbar_options();
+    bar.axis.min = 0.0;
+    bar.axis.max = 1.0;
+    cell.colorbar = Some(bar.clone());
+    root.subplots.push(renderer::Subplot {
+        config: cell,
+        series: vec!["p".into()],
+        ..renderer::Subplot::default()
+    });
+    let mut style = renderer::DataScatterStyleConfig::default();
+    style.point_color_map = Some(renderer::data_config::PointColorMap { column: "v".into() });
+    let ternary = SeriesConfig {
+        series_id: "p".into(),
+        source_id: None,
+        label: None,
+        x_column: "a".into(),
+        y_column: "b".into(),
+        z_column: None,
+        render_type: renderer::DataRenderType::Ternary(renderer::TernarySeries {
+            c_column: "c".into(),
+            scatter: Some(style),
+            line: None,
+            region: None,
+        }),
+    };
+    let series_json = serde_json::to_string(&[root_line, ternary]).unwrap();
+
+    // The converse first: a root colourbar alone is refused.
+    let before = snapshot(&mut chart).await;
+    let mut converse = root.clone();
+    converse.colorbar = Some(bar);
+    converse.subplots[0].config.colorbar = None;
+    let mut tx = chart.begin_columns_transaction(64.0).unwrap();
+    tx.set_state(
+        &serde_json::to_string(&converse).unwrap(),
+        Some(series_json.clone()),
+    )
+    .unwrap();
+    let error = tx.commit(&mut chart).unwrap_err();
+    assert_eq!(error_field(&error, "stage").as_deref(), Some("state"));
+    assert!(
+        error_message(&error).contains("colour-mapped scatter"),
+        "{}",
+        error_message(&error)
+    );
+    assert_unchanged(
+        &mut chart,
+        &before,
+        "a subplot scatter without its colourbar",
+    )
+    .await;
+
+    // The issue's document installs and draws.
+    let mut tx = chart.begin_columns_transaction(64.0).unwrap();
+    tx.set_state(&serde_json::to_string(&root).unwrap(), Some(series_json))
+        .unwrap();
+    tx.commit(&mut chart)
+        .unwrap_or_else(|error| panic!("{}", error_message(&error)));
+    let installed = config(&chart);
+    assert!(installed.colorbar.is_none());
+    assert!(installed.subplots[0].config.colorbar.is_some());
+    assert_eq!(series(&chart).len(), 2);
+    chart.frame().unwrap();
+    assert_ne!(chart.export_png(1.0).await.unwrap().to_vec(), before.png);
+    assert!(chart.export_png(2.0).await.unwrap().length() > 0);
+}
