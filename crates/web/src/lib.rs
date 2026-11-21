@@ -98,6 +98,35 @@ fn normalize_config_json(json: &str) -> Result<String, String> {
     serde_json::to_string(&config).map_err(|e| e.to_string())
 }
 
+/// How far a pointer drag of `(dx, dy)` document pixels moves an exit of
+/// the range link series `series_id` along its predecessor (#357), in
+/// logical pixels toward the bar's end (`RangeLinkSeries::drag_link_exit`):
+/// the drag along the value axis of the series' layer (x for horizontal
+/// bars, y otherwise), signed by the way that axis runs on screen, so the
+/// exit follows the pointer on an inverted axis too. This is the `u` axis
+/// of `range_links.wgsl` for a successor drawn from its start to a larger
+/// end; the CPU holds no per-row values (rule 2), so a successor whose end
+/// is below its start, which reverses `u` there, still moves by the axis.
+#[cfg(any(target_arch = "wasm32", test))]
+fn range_link_drag_along(config: &renderer::Config, series_id: &str, dx: f32, dy: f32) -> f32 {
+    let layer = config.layer_of_series(series_id);
+    let overlay = match layer {
+        renderer::LayerRef::Overlay(index) | renderer::LayerRef::SubplotOverlay(_, index) => {
+            Some(index)
+        }
+        renderer::LayerRef::Base
+        | renderer::LayerRef::Subplot(_)
+        | renderer::LayerRef::Annotations => None,
+    };
+    let (x, y) = config.series_chart(series_id).scaling_axes(overlay);
+    let horizontal = config.bar_groups_of(layer).direction
+        == renderer::data_config::CategoryBarDirection::Horizontal;
+    // A value axis that is not inverted grows rightward (x) and upward (y,
+    // against the screen's y).
+    let (along, axis) = if horizontal { (dx, x) } else { (-dy, y) };
+    if axis.inverted { -along } else { along }
+}
+
 /// A scoped fit's scope as `FiggyChart.fit_config_scoped` reads it (#334):
 /// [`renderer::FitScope`] with the kept axes it borrows.
 #[cfg(any(target_arch = "wasm32", test))]
@@ -2019,6 +2048,48 @@ mod tests {
             negative.to_string().contains("RangeLinkStyle"),
             "{negative}"
         );
+    }
+
+    /// A link exit drag follows the pointer (#357): along the value axis,
+    /// x for horizontal bars and y (up) for vertical ones, reversed when
+    /// that axis is inverted, on the base layer and on a subplot.
+    #[test]
+    fn range_link_drags_follow_the_value_axis_on_screen() {
+        use renderer::data_config::{BarGroups, CategoryBarDirection};
+        let along = super::range_link_drag_along;
+        let groups = |direction| {
+            Some(BarGroups {
+                direction,
+                ..renderer::default::default_config().effective_bar_groups()
+            })
+        };
+        let mut config = renderer::default::default_config();
+        config.bar_groups = groups(CategoryBarDirection::Horizontal);
+        assert_eq!(along(&config, "deps", 5.0, 3.0), 5.0);
+        config.bottom_x.inverted = true;
+        assert_eq!(along(&config, "deps", 5.0, 3.0), -5.0);
+        // An inverted y axis does not move a horizontal bar's exit.
+        config.bottom_x.inverted = false;
+        config.left_y.inverted = true;
+        assert_eq!(along(&config, "deps", 5.0, 3.0), 5.0);
+        config.bar_groups = groups(CategoryBarDirection::Vertical);
+        assert_eq!(along(&config, "deps", 5.0, 3.0), 3.0);
+        config.left_y.inverted = false;
+        assert_eq!(along(&config, "deps", 5.0, 3.0), -3.0);
+        // A subplot's links read the subplot's own direction and axes.
+        let mut sub = renderer::default::default_config();
+        sub.bar_groups = groups(CategoryBarDirection::Horizontal);
+        sub.bottom_x.inverted = true;
+        config.subplots.push(renderer::Subplot {
+            config: sub,
+            series: vec!["deps".into()],
+            link_x: None,
+            link_y: None,
+            marker: None,
+            text_scale: Default::default(),
+        });
+        assert_eq!(along(&config, "deps", 5.0, 3.0), -5.0);
+        assert_eq!(along(&config, "other", 5.0, 3.0), -3.0);
     }
 
     #[test]

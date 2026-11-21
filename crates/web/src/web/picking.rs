@@ -796,7 +796,7 @@ impl FiggyChart {
             return Ok(());
         }
         // A dependency link moves its exit along its predecessor (#357):
-        // along the value axis, x for horizontal bars and y (up) otherwise.
+        // along the value axis as it runs on screen (`range_link_drag_along`).
         if let Some(renderer::config::PickedDataRef::HistogramBin {
             series_id,
             bin_index,
@@ -814,11 +814,7 @@ impl FiggyChart {
         {
             let (dx, dy) = self.display_delta_to_document(dx, dy)?;
             let config = self.chart_config()?.clone();
-            let horizontal = config
-                .bar_groups_of(config.layer_of_series(&series_id))
-                .direction
-                == renderer::data_config::CategoryBarDirection::Horizontal;
-            let along = if horizontal { dx } else { -dy };
+            let along = crate::range_link_drag_along(&config, &series_id, dx, dy);
             let mut series = self.chart_series()?.to_vec();
             if let Some(links) = series
                 .iter_mut()

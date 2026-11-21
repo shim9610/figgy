@@ -42,6 +42,26 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and `catego
 `text_generated`, the chart's `layout_state` and the categorical, box plot
 and radar documents' `text_sizes`) are additive.
 
+- **Range link fixes and playground picks**
+  ([#357](https://github.com/shim9610/figgy/issues/357),
+  [#381](https://github.com/shim9610/figgy/issues/381)). Appearance and
+  interaction only: no value, wire form or API changes.
+  - A range link's route lengths follow the export scale: the gap before
+    the chevron's tip (1.5 px), the least last leg that moves a tight
+    link's exit back (4 px) and the same-row test (0.5 px) are logical
+    pixels, scaled like the stroke, head, inset and corner. A link whose
+    successor starts soon after its predecessor exported at 2x is now the
+    1x link scaled; at 1x nothing moves. Test:
+    `a_tight_link_at_2x_is_the_1x_link_scaled`.
+  - Browser product: dragging a link's exit follows the pointer on an
+    inverted value axis (`bottom_x.inverted` for horizontal bars,
+    `left_y.inverted` for vertical ones, or the overlay's or subplot's own
+    axis). Test: `range_link_drags_follow_the_value_axis_on_screen`.
+  - Playground: a Cartesian scene draws its registered chart through
+    `prepare_registered` / `prepare_monotonic` into a viewport texture at
+    the chart's display placement, so the ink masks a pick reads are
+    recorded and point picks hit again (they always missed since #381).
+    The selftest picks a point on a general and a monotonic scene.
 - **Grotrian transition colours and label knockout**
   ([#357](https://github.com/shim9610/figgy/issues/357)). Appearance only:
   no value is rewritten.

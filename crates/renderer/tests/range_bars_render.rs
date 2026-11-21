@@ -2073,6 +2073,88 @@ fn dragged_link_exits_move_the_trunk_and_snap_back() {
     r.remove_chart(id).unwrap();
 }
 
+/// A tight link, whose successor starts soon after its predecessor, moves
+/// its exit back by logical lengths: the tip's gap, the last leg before the
+/// chevron and the same-row test all follow the export scale with the
+/// stroke, head and inset. The 2x image is the 1x image scaled: the link's
+/// ink box doubles within the antialiasing pixel, and the 2x image averaged
+/// down to 1x matches the 1x image over the link, pinned by its mean and
+/// 95th-percentile colour difference.
+#[test]
+fn a_tight_link_at_2x_is_the_1x_link_scaled() {
+    let mut r = renderer();
+    r.add_column("tight.pos", &col(vec![0.0, 1.0])).unwrap();
+    r.add_column("tight.start", &col(vec![20.0, 22.0])).unwrap();
+    r.add_column("tight.end", &col(vec![60.0, 50.0])).unwrap();
+    let direction = CategoryBarDirection::Horizontal;
+    let chart = chart(direction);
+    let mut bars = ranges("bars", GREEN);
+    bars.x_column = "tight.pos".into();
+    bars.y_column = "tight.end".into();
+    if let DataRenderType::RangeBars(fields) = &mut bars.render_type {
+        fields.start = "tight.start".into();
+    }
+    let mut links = SeriesConfig::range_links("links", "bars", [(0, 1)]);
+    if let DataRenderType::RangeLinks(l) = &mut links.render_type {
+        l.color = ORANGE;
+        l.width = 2.0;
+        l.head = 8.0;
+        l.inset = 10.0;
+    }
+    let series = [bars, links];
+    let [one, two] = [1.0f32, 2.0].map(|scale| {
+        r.export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(scale),
+        )
+        .block_on()
+        .unwrap()
+    });
+    let a = bbox(&one, (0, 0, one.width, one.height), is_orange).expect("the 1x link");
+    let b = bbox(&two, (0, 0, two.width, two.height), is_orange).expect("the 2x link");
+    // The exit moved back before the predecessor's start, and the tip sits
+    // before the successor's: both ends of the route are scaled lengths.
+    let x20 = value_px(&chart, direction, 20.0, 1.0);
+    assert!((a.0 as f32) < x20, "the exit moves back: {a:?}");
+    for (x1, x2) in [
+        (a.0, b.0),
+        (a.1, b.1),
+        (a.2 + 1, b.2 + 1),
+        (a.3 + 1, b.3 + 1),
+    ] {
+        assert!(
+            (x2 as i64 - 2 * x1 as i64).abs() <= 2,
+            "the 2x link is the 1x link doubled: {a:?} {b:?}"
+        );
+    }
+    // The 2x image averaged over 2x2 blocks against the 1x image, over the
+    // link's box and a margin of 3 px.
+    let (x0, y0) = (a.0.saturating_sub(3), a.1.saturating_sub(3));
+    let (x1, y1) = ((a.2 + 4).min(one.width), (a.3 + 4).min(one.height));
+    let mut diffs = Vec::new();
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let p = pixel(&one, x, y);
+            let worst = (0..4)
+                .map(|c| {
+                    let sum: u32 = [(0, 0), (1, 0), (0, 1), (1, 1)]
+                        .iter()
+                        .map(|&(dx, dy)| u32::from(pixel(&two, 2 * x + dx, 2 * y + dy)[c]))
+                        .sum();
+                    (i64::from(sum / 4) - i64::from(p[c])).unsigned_abs()
+                })
+                .max()
+                .unwrap();
+            diffs.push(worst);
+        }
+    }
+    diffs.sort_unstable();
+    let mean = diffs.iter().sum::<u64>() as f64 / diffs.len() as f64;
+    let p95 = diffs[diffs.len() * 95 / 100];
+    eprintln!("tight link 1x vs 2x: mean {mean:.2}, p95 {p95}");
+    assert!(mean < 12.0 && p95 < 96, "mean {mean:.2}, p95 {p95}");
+}
+
 /// Rule 10: 3749 links over 3000 rows all route and draw, with no cap and
 /// none truncated. The cost is one 6-vertex instance and one pick candidate
 /// per link, and 12 bytes of lane table rebuilt when the series is prepared.
