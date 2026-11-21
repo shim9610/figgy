@@ -197,8 +197,8 @@ and the runner's `--pick-variants` mode were removed with the move of a
 registered chart's pick to the nearest-datum kernel and its ink hit (#381):
 one kernel per projection and shader set replaces the specialized variants a
 registered chart's pick compiled. The exact query remains for streamed
-displays (rule 8; #381 phase 4 moved the typed data pick off it); its
-modules are measured with every other module in the capture above.
+displays (rule 8; #381 phase 4 took the typed data pick off the exact point
+query); its modules are measured with every other module in the capture above.
 
 ## Exact pick warm-up (#363, removed in #381)
 
@@ -206,10 +206,25 @@ A browser renderer used to compile each drawn chart's exact pick keys on its
 compile queue ahead of the first pick (`warm_exact_picks`, measured by the
 removed `tests/pick_warmup_browser.rs`). With a registered chart's pick and
 typed data pick on the nearest-datum kernel (#381), no registered chart picks
-through an exact variant any more, so the warm-up, its compile-queue pick
-entries and its test are removed. The nearest-datum kernel compiles through
-the browser's async API before a pick (`compile_pick_pipelines_async`), one
-pipeline per projection and shader set for every chart.
+through an exact variant any more, so that warm-up and its test are removed.
+
+Its replacement (#381 follow-up, #395) warms the pipelines the nearest-datum
+pick needs instead (`warm_first_pick`). For each chart a screen frame draws,
+once per config and series revision and shader set, it queues on the same
+compile queue, ahead of the waiting draw compiles, what the picker has not
+created: the gate and reduce pipelines while picking is off, the nearest-datum
+kernel of the chart's projection (flat, or 3D for a 3D chart) and the typed
+data pick kernels of its series' families. Later frames create each pipeline
+in the picker's cache as its compile resolves. A pick that comes first, and
+`enable_gpu_picking_async`, `compile_pick_pipelines_async` and
+`compile_data_pick_pipelines_async`, wait for a scheduled compile instead of
+starting their own. No exact variant is warmed, and a monotonic chart or a
+chart with a streamed series is not warmed (rule 8). These compiles stay out
+of the screen's counts, waits and failures. Tests:
+`a_drawn_charts_first_pick_compiles_each_pipeline_once`
+(`crates/web/tests/compile_queue_browser.rs`) and
+`a_pick_compile_goes_first_and_stays_out_of_the_screen_counts`
+(`crates/renderer/src/compile_schedule.rs`).
 
 ## Data pick kernel compile times (#363)
 
@@ -279,9 +294,20 @@ GPU 환경에서 얻은 결과다. 실제 GPU의 실행 속도나 macOS 정밀�
 차트가 도달할 수 있는 모든 exact pick 파이프라인 키를 담던 표(`pick_variants.csv`)와 그 검사기,
 측정 모드(`--pick-variants`)는 #381에서 없앴다. 등록 차트의 픽이 최근접 데이터 커널과 잉크 적중으로
 바뀌어, 투영과 셰이더 세트마다 커널 하나가 특수화된 변형들을 대신한다. exact 질의는 스트리밍
-화면에만 남고(#381 4단계에서 typed 데이터 픽도 최근접 데이터 커널로 옮겼다), 그 모듈은 위의 캡처에서 함께 잰다.
+화면에만 남고(#381 4단계에서 typed 데이터 픽도 exact 점 질의를 더 쓰지 않는다), 그 모듈은 위의 캡처에서 함께 잰다.
 
 브라우저 렌더러가 화면에 그리는 차트의 exact pick 파이프라인을 첫 픽 전에 미리 컴파일하던
 워밍업(#363)과 그 측정 테스트는 #381에서 없앴다. 등록 차트의 픽과 typed 데이터 픽이 모두 최근접
-데이터 커널을 쓰므로 exact 변형으로 픽하는 등록 차트가 더 없다. 최근접 커널은 픽 전에 브라우저의
-비동기 API로 컴파일한다(`compile_pick_pipelines_async`).
+데이터 커널을 쓰므로 exact 변형으로 픽하는 등록 차트가 더 없다.
+
+그 자리는 최근접 데이터 픽에 필요한 파이프라인을 미리 컴파일하는 워밍업(`warm_first_pick`, #381
+후속, #395)이 대신한다. 화면 프레임이 그리는 차트마다 설정·시리즈 리비전과 셰이더 세트가 바뀔 때
+한 번, 피커가 아직 만들지 않은 파이프라인을 같은 컴파일 큐에서 대기 중인 그리기 컴파일보다 앞에
+올린다. 피킹이 꺼져 있으면 gate·reduce 파이프라인을, 차트 투영에 맞는 최근접 데이터 커널(평면,
+3D 차트면 3D)을, 시리즈 계열에 맞는 typed 데이터 픽 커널을 올린다. 이후 프레임은 컴파일이 끝나는
+대로 각 파이프라인을 피커 캐시에 만든다. 그보다 먼저 온 픽과 `enable_gpu_picking_async`,
+`compile_pick_pipelines_async`, `compile_data_pick_pipelines_async`는 따로 컴파일하지 않고 예약된
+컴파일을 기다린다. exact 변형은 미리 컴파일하지 않으며 단조 차트와 스트리밍 시리즈가 있는 차트도
+제외한다(규칙 8). 이 컴파일은 화면의 집계·대기·실패에 넣지 않는다. 테스트는
+`a_drawn_charts_first_pick_compiles_each_pipeline_once`(`crates/web/tests/compile_queue_browser.rs`)와
+`a_pick_compile_goes_first_and_stays_out_of_the_screen_counts`(`crates/renderer/src/compile_schedule.rs`)다.

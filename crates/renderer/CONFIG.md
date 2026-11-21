@@ -1634,7 +1634,8 @@ pub struct Config {
 축을 따라 겹치는 숫자 라벨은 일정 간격으로 일부만 표시하며, 눈금과 격자 설정은 바꾸지 않는다. 범주형 축은 라벨을 숨기는 대신 여러 줄로 엇갈려 그려 모든 범주의 이름을 남긴다(#205). 정밀도를 바꿔도 `out_margin`이나 제목 위치를 자동으로 바꾸지는 않으므로 긴 라벨에는 여백을 직접 늘리거나 `layout::auto_layout`을 호출한다. 이 함수는 각 축 띠를 라벨과 제목이 차지하는 폭에 바깥 끝 여유(그 끝에 놓인 글꼴 크기의 절반, 최소 8px)를 더한 크기로 맞추고(원래보다 좁아질 수도 있다), 라벨과 겹치는 제목에는 라벨 글꼴 크기의 절반만큼 라벨 옆에 놓는 오프셋을 주고, 너무 긴 소수 라벨을 `Power` 형식으로 바꾼 설정을 반환한다. 색상 막대의 눈금 라벨도 같은 형식 규칙을 사용한다.
 
 `LabelFormat::Timestamp`는 숫자 좌표를 시간으로 표시한다. 기본값은 UTC 기준 Unix 초와 `AutoCalendar` 눈금 배치다. JavaScript 타임스탬프에는 `unit: TimestampUnit::Milliseconds`를, 한국 표준시(UTC+9)처럼 고정 시차를 적용하려면 `timezone: TimestampZone::FixedOffsetMinutes(540)`을 사용한다(타입은 `renderer::format`에 있다).
-`AutoCalendar`는 라벨 너비를 측정해 달력상의 눈금 간격을 조절한다. 큰 Unix 시간 값에서도 작은 시간 차이를 보존하려면 네이티브에서는 `Renderer::add_hilo_column`, 웹에서는 `Float64Array`를 받는 `register_column_f64` / `update_register_column_f64`를 사용한다. GPU에는 `(hi: f32, lo: f32)` 쌍으로 저장된다.
+`AutoCalendar`는 라벨 너비를 측정해 달력상의 눈금 간격을 조절한다. `step: Some(CalendarStep::…)`(#357: `Day`, `Week { start: Weekday::Monday }`, `Month`, `Quarter`, `Year`)으로 단위를 정하면 그 단위의 경계마다 현지 자정에 눈금을 둔다. `period_labels: true`이면 라벨을 기간의 가운데에 놓고(월 머리글), 범위 안에 든 기간의 몫보다 넓은 라벨은 그리지 않는다. 라벨 방식 `TimestampLabelMode::Relative { origin, prefix }`("Week 0", "Week 1", …. `origin`이 든 기간부터 단위 수를 센다. `origin`은 형식의 `unit`으로 적은 정수 타임스탬프다)와 `Custom { origin, labels }`(기간 `n`에 호스트가 준 문자열. 목록을 넘어선 기간은 라벨을 그리지 않는다)에는 `step`이 있어야 한다. `%b`는 월의 영어 세 글자 이름을 쓴다. `default::default_calendar_timeline_config()`는 타임라인의 월요일 주 눈금 위에 월 머리글을 얹은 설정이다.
+큰 Unix 시간 값에서도 작은 시간 차이를 보존하려면 네이티브에서는 `Renderer::add_hilo_column`, 웹에서는 `Float64Array`를 받는 `register_column_f64` / `update_register_column_f64`를 사용한다. GPU에는 `(hi: f32, lo: f32)` 쌍으로 저장된다.
 [시간축 데모](https://github.com/shim9610/figgy/blob/master/crates/web/timestamp-demo.html)에서 시간 범위, 차트 너비와 출력 배율을 바꾸며 결과를 확인할 수 있다.
 
 ### `AxisTitleOptions` / `ChartTitleOptions`
@@ -1725,6 +1726,26 @@ pub struct Config {
 반직선 방향(바깥이 양수), `label_offset_y`는 수직 방향(라벨이 놓인 쪽, 반직선에서 반시계 방향이 양수)이라
 반직선이 돌아도 같은 자리를 지킨다. 상단·우측 축은 그리지 않으며 제목을 포함해 아무것도 등록하지
 않는다. 차트 제목, 하단·좌측 축 제목, 범례, 데이터 영역, 주석은 직교 차트의 규칙을 그대로 따른다.
+
+### `ParallelOptions` (`Config::parallel`)
+
+`parallel: None`(기본값, JSON에서 키 생략)은 직교 차트다. `Some(ParallelOptions { axes })`(JSON `{ "parallel": { "axes": [..] } }`, [#141](https://github.com/shim9610/figgy/issues/141))는 평행 좌표 차트를 그린다. `bottom_x`의 범주마다 세로축 하나를 범주 순서대로 그 자리에 세우고, 축마다 자기 범위 `ParallelAxis { min, max, inverted, scale, label_offset }`를 가진다(`inverted`·`scale`·`label_offset`의 기본값은 `false`, `Linear`, `[0, 0]`). [`Parallel`](#평행-좌표) 시리즈는 행마다 축을 가로지르는 꺾은선 하나를 그리며, 값은 자기 축의 `(v − min) / (max − min)`(로그 축은 `log10`, `inverted`면 뒤집음)에 놓인다. 범주형 `bottom_x`가 축 이름을 맡고(라벨·끌기·제목은 다른 범주형 축과 같다), `left_y`는 정규화 띠를 나타낼 뿐 그리지 않는다.
+
+축마다 `left_y`의 스타일로 자기 범위의 축선, 주·보조 눈금, 눈금 라벨을 그린다. 눈금 라벨은 축마다 별도 요소(`Element::ParallelAxisLabel(i)`, 히트 id `parallel_axis_labels_{i}`)이며 끌면 그 축의 `label_offset`에 기록된다.
+
+모양 필드 둘([#357](https://github.com/shim9610/figgy/issues/357))은 기본값일 때 JSON에서 생략한다.
+- `names_on_top`(기본값 `false`)은 축 이름, 즉 `bottom_x`의 라벨(히트 id `tick_labels_bottom`)을 플롯 위에 놓는다. `bottom_x`의 축선·눈금·제목은 아래에 남고, 레이아웃 맞춤이 위쪽 띠를 이름에 맞춘다.
+- `label_backdrop`(기본값 `None`)은 평행 눈금 라벨마다 뒤에 그 색의 상자를 칠한다. 상자는 라벨을 글꼴 크기의 0.15배(`parallel::LABEL_BACKDROP_PAD`)만큼 넓힌 크기이며 축의 라벨 요소에 속하므로 라벨과 함께 맞고, 선택되고, 끌린다.
+
+`default::default_parallel_config()`는 새 차트용 기본 설정이다.
+- 이름은 위에, 배경 상자는 불투명도 0.8의 흰색이다.
+- `left_y`는 `0..1`이고 제목을 숨기며, 회색 축선과 바깥쪽 주눈금만 두고(보조 눈금 없음) 눈금 라벨은 14 px다.
+- `bottom_x`는 축선과 눈금이 없다.
+- 격자와 테두리가 없다.
+
+호스트는 그다음 `parallel_mut().axes`와 `bottom_x.categories`를 채운다. 이 설정은 `LayoutState::Fitted`이므로 이것으로 만든 차트는 위쪽 띠가 이름에 맞춰진 채 생성되고, 편집한 뒤에도 맞춤을 유지한다. `SeriesConfig::parallel`의 행은 시리즈 색 그대로 불투명하게 그리므로 색 순환은 여전히 지정되지 않은 것으로 본다. 행을 옅게 하려면 테마의 `ParallelTheme::line_opacity`(계열 멤버에서는 0.5)나 호스트가 정한 알파를 쓴다.
+
+검증 규칙과 축 맞춤은 [평행 좌표](#평행-좌표)에 정리했다. 주석은 비율과 `bottom_x`의 데이터 기준점으로 놓이고, 서브플롯은 각자 `parallel`을 가진다.
 
 ### `LayerRef` / `AnnotationLayer`
 
@@ -2167,7 +2188,7 @@ pub struct Config {
 - `color_column`이 있으면 행마다 그 컬럼 값을 `Config.colorbar`의 색으로 입힌다(색상 막대가 없으면 거부). 없으면 모든 행이 `line.line_color`다.
 - 축마다 자기 범위의 선·눈금·라벨을 `left_y`의 스타일로 그린다. 라벨은 축마다 별도 요소(`Element::ParallelAxisLabel(i)`, 히트 id `parallel_axis_labels_{i}`)이며 끌면 그 축의 `label_offset`에 기록된다. 범주형 `bottom_x`가 축 이름·끌기·제목을 맡고 `left_y`는 정규화 띠(`0..1`)로 읽기만 하고 그리지 않는다.
 
-규칙(`Config::validate_parallel`, 그릴 때 `InvalidConfig { field: "parallel" }`): 축 둘 이상, 축마다 유한하고 `min < max`인 범위(로그면 양수), `bottom_x`는 축 수만큼의 범주, `left_y`는 선형 `0..1`에 뒤집지 않음, 극좌표·삼각·3D가 아님, `overlays`·`line_offsets` 없음, `Precise` 스타일, 서브플롯 축 링크 없음. `Config::validate_parallel_series`(등록 시 `InvalidSeriesConfig`): 평행 좌표 차트는 `Parallel` 시리즈만 그리고 `Parallel` 시리즈는 평행 좌표 차트가 필요하며 축마다 컬럼 하나를 댄다. 스트리밍 소스는 거부한다. 축 맞춤은 `Chart::auto_fit_parallel_axes`(평행 좌표 차트의 `auto_fit_layer_union`)가 컬럼 통계로 축마다 범위를 쓰며, 차트 자체의 축은 건드리지 않는다.
+규칙(`Config::validate_parallel`, 그릴 때 `InvalidConfig { field: "parallel" }`): 축 둘 이상, 축마다 유한하고 `min < max`인 범위(로그면 양수)와 유한한 `label_offset`, `bottom_x`는 축 수만큼의 범주, `left_y`는 범주형이 아닌 선형 `0..1`에 뒤집지 않음, 극좌표·삼각·3D가 아님, `overlays`·`line_offsets` 없음, `Precise` 스타일, 서브플롯 축 링크 없음. `Config::validate_parallel_series`(등록 시 `InvalidSeriesConfig`): 평행 좌표 차트는 `Parallel` 시리즈만 그리고 `Parallel` 시리즈는 평행 좌표 차트가 필요하며 축마다 컬럼 하나를 댄다(`x_column`·`y_column`은 그 첫 둘). 선은 실선·직선이고 채움이 없으며, `color_column`에는 `Config.colorbar`가 필요하다. 스트리밍 소스는 거부한다. 축 맞춤은 `Chart::auto_fit_parallel_axes`(평행 좌표 차트의 `auto_fit_layer_union`)가 컬럼 통계로 축마다 범위를 쓰며, 차트 자체의 축은 건드리지 않는다.
 
 피킹은 가장 가까운 세그먼트의 행을 `PickedData::Point { point_index }`로 답하고, 선택한 행은 선택 색과 굵기로 모든 행 위에 다시 그린다. `step_selection`은 행을 옮기고, 선택한 행의 `selection_details()`는 축마다의 `values`와 매핑된 `color_value`를 보고한다. 축 수와 행 수에는 상한이 없다.
 

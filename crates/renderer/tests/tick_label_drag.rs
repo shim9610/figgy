@@ -765,3 +765,162 @@ fn labels_in_another_unit_are_drawn_bounded_hit_and_dragged() {
         }
     }
 }
+
+// The tick row's shared baseline (#376) is an appearance change. Every
+// label of a top or bottom row sits on the baseline of
+// `TICK_ROW_REFERENCE` in the label face instead of its own letters' ascent
+// or descent: the default digit labels move outward, the bottom row by
+// under a pixel and the top row by the reference's descenders. Against the
+// earlier placement, rebuilt here by offsetting each row back by that
+// difference, nothing the user reads as data moves: the labels' text and
+// their places along the axis are the same, each label moves only across
+// the axis and by exactly that difference, and the ticks, axis lines and
+// grid are the same bytes. Each label looks as it did, moved: its pixels
+// against the earlier raster moved by the whole-pixel part of the shift
+// may differ only by resampling the fraction, pinned by the mean and the
+// 99th percentile of the worst channel difference at 1x and 2x (measured:
+// mean 0, p99 0, the chrome raster drawing each label as the earlier one
+// moved by whole pixels).
+#[test]
+fn the_tick_row_baseline_moves_labels_by_appearance_only() {
+    use renderer::MeasureText as _;
+    let base = {
+        let mut cfg = renderer::default::default_config();
+        cfg.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: WIDTH,
+            height: HEIGHT,
+        });
+        cfg.chart_title.visible = false;
+        cfg.top_x.label_style.visible = true;
+        cfg.top_x.label_style.label_visible = true;
+        cfg
+    };
+    let map = HitMap::standard_chart();
+    for scale in [1.0f32, 2.0] {
+        // The display config of a 2x export, rastered at its scale.
+        let raster = |cfg: &Config| {
+            try_raster_chart_layer_to_rgba_with_selection_at(cfg, AxisLayerKind::All, &[], scale)
+                .unwrap()
+        };
+        let after = base.scaled(scale);
+        let measure = CpuTextMeasure::for_style(&after.draw_style);
+        // The earlier placement: each label's own ascent (bottom) or descent
+        // (top) set the baseline. The digit labels of a row share those
+        // extents, so one offset per row restores it.
+        let mut before = after.clone();
+        let mut rows = Vec::new();
+        for side in [Side::Bottom, Side::Top] {
+            let axis = match side {
+                Side::Top => &after.top_x,
+                _ => &after.bottom_x,
+            };
+            let ls = &axis.label_style;
+            let row = measure.measure_plain(
+                renderer::layout::TICK_ROW_REFERENCE,
+                &ls.label_font,
+                ls.font_size,
+            );
+            let name = AxisLabelElement { side: side.clone() }.element_id();
+            let drawn = drawn_labels(&after, &map, &name);
+            assert!(drawn.len() >= 3, "{side:?} at {scale}x: {drawn:?}");
+            // The earlier labels sit this far from the current ones, across
+            // the axis and towards the plot.
+            let shifts: Vec<f32> = drawn
+                .iter()
+                .map(|(text, _)| {
+                    let own = measure.measure_plain(text, &ls.label_font, ls.font_size);
+                    match side {
+                        Side::Top => (row.descent - own.descent).max(0.0),
+                        _ => -(row.ascent - own.ascent).max(0.0),
+                    }
+                })
+                .collect();
+            let shift = shifts[0];
+            assert!(
+                shifts.iter().all(|s| (s - shift).abs() < 1e-3),
+                "{side:?} at {scale}x: the row's labels differ in extent: {shifts:?}"
+            );
+            assert!(shift != 0.0, "{side:?} at {scale}x: the row did not move");
+            let ls = match side {
+                Side::Top => &mut before.top_x.label_style,
+                _ => &mut before.bottom_x.label_style,
+            };
+            ls.label_offset_y += shift;
+
+            // The same labels at the same places along the axis, moved only
+            // across it, by the shift.
+            let earlier = drawn_labels(&before, &map, &name);
+            assert_eq!(texts(&earlier), texts(&drawn), "{side:?} at {scale}x");
+            for ((text, now), (_, then)) in drawn.iter().zip(&earlier) {
+                assert_eq!(now.x, then.x, "{side:?} {text} at {scale}x");
+                assert_eq!((now.width, now.height), (then.width, then.height));
+                assert!(
+                    (then.y - now.y - shift).abs() < 1e-3,
+                    "{side:?} {text} at {scale}x: {then:?} -> {now:?}"
+                );
+            }
+            rows.push((side, shift, drawn));
+        }
+
+        // Ticks, axis lines and grid are untouched: with every label drawn
+        // transparent, the two rasters are the same bytes.
+        let without_labels = |cfg: &Config| {
+            let mut cfg = cfg.clone();
+            for axis in [
+                &mut cfg.top_x,
+                &mut cfg.bottom_x,
+                &mut cfg.left_y,
+                &mut cfg.right_y,
+            ] {
+                axis.label_style.color.a = 0.0;
+            }
+            raster(&cfg)
+        };
+        assert!(
+            without_labels(&before) == without_labels(&after),
+            "the ticks moved at {scale}x"
+        );
+
+        // Each label against the earlier raster moved by the whole-pixel
+        // part of its shift, over its box and a 2 px margin.
+        let (then, now) = (raster(&before), raster(&after));
+        let bare = without_labels(&after);
+        let width = after.chart_area.0.width as i64;
+        let height = after.chart_area.0.height as i64;
+        let at = |img: &[u8], x: i64, y: i64| {
+            let i = ((y * width + x) * 4) as usize;
+            [img[i], img[i + 1], img[i + 2], img[i + 3]]
+        };
+        for (side, shift, drawn) in rows {
+            let k = shift.round() as i64;
+            let mut diffs = Vec::new();
+            let mut inked = 0usize;
+            for (_, r) in &drawn {
+                let y0 = (r.y.floor() as i64 - 2).max(0);
+                let y1 = ((r.y + r.height).ceil() as i64 + 2).min(height);
+                let x0 = (r.x.floor() as i64 - 2).max(0);
+                let x1 = ((r.x + r.width).ceil() as i64 + 2).min(width);
+                for y in y0..y1 {
+                    if !(0..height).contains(&(y + k)) {
+                        continue;
+                    }
+                    for x in x0..x1 {
+                        let (a, b) = (at(&now, x, y), at(&then, x, y + k));
+                        inked += usize::from(a != at(&bare, x, y));
+                        diffs.push((0..4).map(|c| a[c].abs_diff(b[c])).max().unwrap());
+                    }
+                }
+            }
+            assert!(inked > 0, "{side:?} at {scale}x: no label ink");
+            diffs.sort_unstable();
+            let mean = diffs.iter().map(|&d| f64::from(d)).sum::<f64>() / diffs.len() as f64;
+            let p99 = diffs[diffs.len() * 99 / 100];
+            assert!(
+                mean <= 1.0 && p99 <= 8,
+                "{side:?} at {scale}x: mean {mean:.2}, p99 {p99}"
+            );
+        }
+    }
+}
