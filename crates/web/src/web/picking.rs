@@ -522,11 +522,19 @@ impl FiggyChart {
     /// that series). The link becomes the data selection and the drag
     /// starts: `on_move` moves its exit along the predecessor's edge
     /// (`drag_link_exit`, moving a shared trunk as one and snapping to the
-    /// default within 3 px) and `on_release` ends it. Returns `false` and
-    /// changes nothing for an id or index that names no link.
+    /// default within 3 px) and `on_release` ends it. `extent_px` is the
+    /// hit's `extent_px`, the link's predecessor's drawn length in canvas
+    /// pixels: the exit stops at the bar's end, so dragging back moves it
+    /// at once; without it only the draw stops the exit. Returns `false`
+    /// and changes nothing for an id or index that names no link.
     /// JS: `const hit = JSON.parse(await chart.pick_data(x, y, 6));`
-    /// `if (hit?.kind === "HistogramBin") chart.press_range_link(hit.series_id, hit.index);`
-    pub fn press_range_link(&mut self, series_id: &str, index: usize) -> Result<bool, JsValue> {
+    /// `if (hit?.kind === "histogram_bin") chart.press_range_link(hit.series_id, hit.bin_index, hit.extent_px);`
+    pub fn press_range_link(
+        &mut self,
+        series_id: &str,
+        index: usize,
+        extent_px: Option<f32>,
+    ) -> Result<bool, JsValue> {
         let Some(series) = self
             .chart_series()?
             .iter()
@@ -556,6 +564,10 @@ impl FiggyChart {
         picked.refs = vec![reference];
         config.picked_data = Some(picked);
         self.replace_chart_config(config)?;
+        self.link_exit_limit = match extent_px.filter(|e| e.is_finite() && *e >= 0.0) {
+            Some(extent) => Some(self.display_delta_to_document(extent, 0.0)?.0),
+            None => None,
+        };
         self.annotation_pointer = false;
         self.resizing = None;
         self.dragging = true;
@@ -820,7 +832,8 @@ impl FiggyChart {
                 .iter_mut()
                 .find(|s| s.series_id == series_id)
                 .and_then(|s| s.render_type.range_links_mut())
-                && links.drag_link_exit(bin_index, along) == NudgeResult::Moved
+                && links.drag_link_exit(bin_index, along, self.link_exit_limit)
+                    == NudgeResult::Moved
             {
                 self.replace_chart_state(config, series)?;
             }

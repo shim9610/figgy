@@ -693,6 +693,7 @@ fn picked_data_json_string(picked: &renderer::PickedData) -> serde_json::Result<
             series_id,
             bin_index,
             half,
+            extent_px,
             distance_px,
         } => {
             let mut json = serde_json::json!({
@@ -705,6 +706,11 @@ fn picked_data_json_string(picked: &renderer::PickedData) -> serde_json::Result<
             // A split violin's half, as `PickedDataRef` serializes it.
             if let Some(half) = half {
                 json["half"] = serde_json::json!(half);
+            }
+            // A range bar's or range link's drawn length in canvas pixels:
+            // `press_range_link` takes a link's as its drag limit.
+            if let Some(extent) = extent_px {
+                json["extent_px"] = serde_json::json!(extent);
             }
             json
         }

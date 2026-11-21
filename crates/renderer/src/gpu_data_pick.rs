@@ -81,6 +81,10 @@ struct DataPickIdentity {
     /// A violin's candidates name the half they hit in `index1`
     /// (`VIOLIN_SIDE_*`, 0 for a symmetric body).
     violin: bool,
+    /// A range bar's or range link's candidates carry a drawn length in
+    /// render pixels in `index1` (f32 bits): the bar's, or the link's
+    /// predecessor's (`PickedData::HistogramBin::extent_px`).
+    extent: bool,
 }
 
 pub(crate) enum GpuDataPickGeometry {
@@ -280,6 +284,7 @@ impl DataPickPipelineBundle {
                     series_id,
                     paint_order: index as u32,
                     violin: false,
+                    extent: false,
                 })
                 .collect(),
             candidate,
@@ -1164,6 +1169,10 @@ impl DataPickPipelineBundle {
             // query in group 1.
             let mut label_params = None;
             let violin = matches!(item.geometry, GpuDataPickGeometry::Violin { .. });
+            let extent = matches!(
+                item.geometry,
+                GpuDataPickGeometry::RangeBars { .. } | GpuDataPickGeometry::RangeLinks { .. }
+            );
             let (params, kind) = match item.geometry {
                 GpuDataPickGeometry::Histogram {
                     edges,
@@ -1413,6 +1422,7 @@ impl DataPickPipelineBundle {
                 series_id: item.series_id,
                 paint_order: item.paint_order,
                 violin,
+                extent,
             });
             let kernel = match &kind {
                 PreparedKind::Histogram(_) => DataPickKernel::Histogram,
@@ -1690,6 +1700,10 @@ fn decode_candidate(
                 }
                 _ => None,
             },
+            extent_px: identity
+                .extent
+                .then(|| f32::from_bits(candidate.index1))
+                .filter(|length| length.is_finite() && *length >= 0.0),
         },
         DATA_PICK_KIND_MATRIX_CELL => PickedData::MatrixCell {
             source_id,

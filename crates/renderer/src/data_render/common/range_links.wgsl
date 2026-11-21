@@ -73,6 +73,10 @@ struct RangeLinkRoute {
     down: vec2<f32>,
     /// The corner's radius, fitted to both legs.
     radius: f32,
+    /// The predecessor's drawn length along the value axis: the largest
+    /// exit offset that moves the exit (`range_link_exit_px` is clamped to
+    /// it). The pick reports it (`RangeLinkPick`) so a drag can stop there.
+    span: f32,
 };
 
 fn range_link_count() -> u32 {
@@ -176,6 +180,7 @@ fn range_link_route(i: u32) -> RangeLinkRoute {
     let first = abs(b_mid - exit_c);
     let last = tip_u - exit_u;
     out.radius = max(min(RANGE_LINK_CORNER_PX * scale, min(first, last)), 0.0);
+    out.span = a_last - a_first;
     out.valid = true;
     return out;
 }
@@ -328,7 +333,9 @@ fn fs_range_link_selection(in: RangeLinkVsOut) -> @location(0) vec4<f32> {
 //
 // The link under the cursor: the nearest route (legs, corner or chevron) within
 // half its stroke plus the pick distance, from the same route the draw
-// builds. A link answers as a histogram bin whose index is its row.
+// builds. A link answers as a histogram bin whose index is its row, with
+// its predecessor's drawn length in render pixels (f32 bits) in `index1`:
+// a display parameter the exit drag stops at, not data.
 
 fn range_link_pick(i: u32) -> DataPickCandidate {
     let r = range_link_route(i);
@@ -348,7 +355,7 @@ fn range_link_pick(i: u32) -> DataPickCandidate {
         data_pick_query.data.y,
         DATA_PICK_KIND_HISTOGRAM_BIN,
         i,
-        0u,
+        bitcast<u32>(max(r.span, 0.0)),
         0u,
         best,
         i,

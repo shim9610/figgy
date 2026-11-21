@@ -2008,7 +2008,7 @@ fn dragged_link_exits_move_the_trunk_and_snap_back() {
     let mut edited = series.to_vec();
     let links = edited[0].render_type.range_links_mut().unwrap();
     assert_eq!(
-        links.drag_link_exit(1, 30.0),
+        links.drag_link_exit(1, 30.0, None),
         renderer::layout::NudgeResult::Moved
     );
     assert_eq!(links.links[0].exit_offset, Some(40.0));
@@ -2063,13 +2063,129 @@ fn dragged_link_exits_move_the_trunk_and_snap_back() {
     }
     // Back to 2 px from the default: it snaps, and the image is the default.
     let links = edited[0].render_type.range_links_mut().unwrap();
-    links.drag_link_exit(0, -28.0);
+    links.drag_link_exit(0, -28.0, None);
     assert_eq!(links.links[0].exit_offset, None);
     assert_eq!(links.links[1].exit_offset, None);
     r.set_chart_series(id, edited).unwrap();
     for (k, scale) in [1.0f32, 2.0].into_iter().enumerate() {
         assert_eq!(draw(&mut r, id, scale).rgba, before[k].rgba, "{scale}x");
     }
+    r.remove_chart(id).unwrap();
+}
+
+/// A pick reports drawn lengths for the exit drag's clamp (#357, #381): a
+/// link hit carries its predecessor's drawn length and a bar hit its own,
+/// in display pixels at 1x and 2x, from the bars the GPU draws (the CPU holds
+/// no row values). A drag past the bar's end stops at that length, and
+/// dragging back moves the exit at once: the image changes on the first
+/// step back. The length is a display parameter; no value changes.
+#[test]
+fn link_picks_report_the_predecessors_drawn_length_and_the_drag_stops_there() {
+    // Row 0 runs 20..60 and row 1 starts at 90, past it: only the bar's
+    // end stops the exit, never the successor.
+    let mut r = renderer();
+    r.add_column("far.pos", &col(vec![0.0, 1.0])).unwrap();
+    r.add_column("far.start", &col(vec![20.0, 90.0])).unwrap();
+    r.add_column("far.end", &col(vec![60.0, 98.0])).unwrap();
+    let direction = CategoryBarDirection::Horizontal;
+    let chart = chart(direction);
+    let mut bars = ranges("bars", GREEN);
+    bars.x_column = "far.pos".into();
+    bars.y_column = "far.end".into();
+    if let DataRenderType::RangeBars(fields) = &mut bars.render_type {
+        fields.start = "far.start".into();
+    }
+    let mut links = SeriesConfig::range_links("links", "bars", [(0, 1)]);
+    if let DataRenderType::RangeLinks(l) = &mut links.render_type {
+        l.color = ORANGE;
+        l.width = 2.0;
+        l.head = 8.0;
+        l.inset = 10.0;
+    }
+    let series = [links, bars];
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(chart.config().clone(), series.to_vec())
+        .unwrap();
+    let draw = |r: &mut Renderer, scale: f32| {
+        r.export_rgba(
+            renderer::ExportSource::Registered(id),
+            renderer::ExportOptions::panel(scale),
+        )
+        .block_on()
+        .unwrap()
+    };
+    // Row 0's drawn length on the value axis.
+    let length =
+        |scale| value_px(&chart, direction, 60.0, scale) - value_px(&chart, direction, 20.0, scale);
+    let pick = |r: &mut Renderer, img: &renderer::RasterImage, scale, pred: fn(&[u8]) -> bool| {
+        let (w, h) = (img.width, img.height);
+        (0..h)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .filter(|&(x, y)| pred(pixel(img, x, y)))
+            .find_map(|(x, y)| {
+                let request = renderer::GpuPickRequest {
+                    canvas_position_px: [x as f32 + 0.5, y as f32 + 0.5],
+                    display_panel_px: Rect {
+                        x: 0,
+                        y: 0,
+                        width: w,
+                        height: h,
+                    },
+                    display_scale: scale,
+                    max_distance_px: 0.0,
+                };
+                match test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap()
+                {
+                    Some(renderer::PickedData::HistogramBin {
+                        series_id,
+                        bin_index,
+                        extent_px,
+                        ..
+                    }) => Some((series_id, bin_index, extent_px)),
+                    _ => None,
+                }
+            })
+    };
+    let mut limit = 0.0;
+    for scale in [1.0f32, 2.0] {
+        let img = draw(&mut r, scale);
+        let (series_id, link, extent) = pick(&mut r, &img, scale, is_orange).expect("a link pick");
+        assert_eq!(series_id, "links", "{scale}x");
+        assert_eq!(link, 0, "{scale}x");
+        let extent = extent.expect("a link hit carries its predecessor's length");
+        assert!(
+            (extent - length(scale)).abs() <= 1.0,
+            "{scale}x: {extent} against {}",
+            length(scale)
+        );
+        // A bar hit carries its own drawn length (row 0 or 1).
+        let (series_id, _, bar) = pick(&mut r, &img, scale, is_green).expect("a bar pick");
+        assert_eq!(series_id, "bars");
+        assert!(bar.is_some_and(|b| b > 0.0), "{scale}x: {bar:?}");
+        limit = extent / scale;
+    }
+    // Past the bar's end: the stored offset stops at the length.
+    let mut edited = series.to_vec();
+    let links = edited[0].render_type.range_links_mut().unwrap();
+    assert_eq!(
+        links.drag_link_exit(0, 1000.0, Some(limit)),
+        renderer::layout::NudgeResult::Moved
+    );
+    assert_eq!(links.links[0].exit_offset, Some(limit));
+    r.set_chart_series(id, edited.clone()).unwrap();
+    let at_end = draw(&mut r, 1.0);
+    // Further on draws the same; one step back moves the exit at once.
+    let links = edited[0].render_type.range_links_mut().unwrap();
+    links.drag_link_exit(0, 200.0, Some(limit));
+    assert_eq!(links.links[0].exit_offset, Some(limit));
+    r.set_chart_series(id, edited.clone()).unwrap();
+    assert_eq!(draw(&mut r, 1.0).rgba, at_end.rgba, "held at the end");
+    let links = edited[0].render_type.range_links_mut().unwrap();
+    links.drag_link_exit(0, -8.0, Some(limit));
+    assert_eq!(links.links[0].exit_offset, Some(limit - 8.0));
+    r.set_chart_series(id, edited).unwrap();
+    assert_ne!(draw(&mut r, 1.0).rgba, at_end.rgba, "back at once");
     r.remove_chart(id).unwrap();
 }
 
