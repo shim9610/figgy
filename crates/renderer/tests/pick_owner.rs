@@ -345,8 +345,10 @@ fn the_topmost_of_a_line_and_a_scatter_owns_the_ink() {
 
 /// A panel with more series than an 8 bit slot could name: every series
 /// draws a marker at the same place, and the last one drawn owns the ink
-/// there. The first prepare's time (the mask recording with it) and the
-/// mask's memory are printed; neither is capped (rule 10). Slots past the
+/// there. Every series is drawn once without a mask first (an export), then
+/// by the first on-screen prepare, which records the mask in batches of
+/// command buffers. Both times and the mask's memory are printed; none is
+/// capped (rule 10). Slots past the
 /// 16 bit range are written by the resolve pass in the crate's
 /// `the_resolve_pass_writes_any_slot_where_the_series_inked`: registering
 /// that many series here crashes lavapipe's descriptor allocator in the
@@ -376,6 +378,17 @@ fn the_last_of_many_series_owns_the_ink() {
             axis.title_option.visible = false;
         }
         let id = register(&mut r, &config, &series, 1.0);
+        // The same series drawn without any mask first: an export draws the
+        // panel once and records no mask, so it is the plain draw's cost.
+        let start = std::time::Instant::now();
+        let image = r
+            .export_png_blocking(
+                renderer::ExportSource::Registered(id),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .expect("the plain draw of every series");
+        assert!(!image.is_empty());
+        let plain = start.elapsed();
         let before = r.gpu_memory_usage().live_bytes();
         let start = std::time::Instant::now();
         draw(&mut r, id);
@@ -390,9 +403,10 @@ fn the_last_of_many_series_owns_the_ink() {
         let mask = 4 * u64::from(panel.width) * u64::from(panel.height);
         assert!(after >= before + mask, "the mask is charged");
         eprintln!(
-            "INK_MASK_COST series={count} panel={}x{} mask_bytes={mask} first_prepare_ms={}",
+            "INK_MASK_COST series={count} panel={}x{} mask_bytes={mask} plain_export_ms={} first_prepare_ms={}",
             panel.width,
             panel.height,
+            plain.as_millis(),
             recorded.as_millis()
         );
     }

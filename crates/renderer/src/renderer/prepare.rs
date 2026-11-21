@@ -418,6 +418,8 @@ impl PrepareContext<'_> {
         }
         let max = self.caps.max_texture_dimension_2d;
         let mut encoder: Option<wgpu::CommandEncoder> = None;
+        // Series passes recorded into the current command buffer.
+        let mut batched = 0usize;
         let mut first = 0;
         for (index, chart) in self.ink_charts.iter().enumerate() {
             let count = group_sizes.get(index).copied().unwrap_or(1);
@@ -578,6 +580,25 @@ impl PrepareContext<'_> {
                         );
                         pipeline.record(encoder, &source, &mask_view, slot, first);
                         first = false;
+                        // The passes go out in batches, so no command buffer
+                        // grows with the series count: a long one can trip
+                        // a driver's per-command-buffer time limit (Metal's
+                        // watchdog lost the device at 5,000 series in one).
+                        // The batch size is not a cap; every series is
+                        // recorded.
+                        batched += 1;
+                        if batched == INK_MASK_PASSES_PER_SUBMIT {
+                            let full = std::mem::replace(
+                                encoder,
+                                self.device.create_command_encoder(
+                                    &wgpu::CommandEncoderDescriptor {
+                                        label: Some("panel ink masks"),
+                                    },
+                                ),
+                            );
+                            self.queue.submit([full.finish()]);
+                            batched = 0;
+                        }
                     }
                 }
             }
@@ -1032,6 +1053,12 @@ pub(super) fn create_composite_depth(
         }),
     )
 }
+
+/// How many series passes of the ink masks (#381) one command buffer holds
+/// before it is submitted and the next one begins: a batching parameter of
+/// the recording, so a mask's work does not grow one command buffer with
+/// the series count. Every series is recorded whatever the count (rule 10).
+const INK_MASK_PASSES_PER_SUBMIT: usize = 64;
 
 /// Which steps of a panel's data a composite pass draws: every step, or
 /// one of the two the frame draws in order, the fills (with the ternary
