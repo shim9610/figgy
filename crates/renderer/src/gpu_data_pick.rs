@@ -961,22 +961,26 @@ impl DataPickPipelineBundle {
         }))
     }
 
-    /// Submit one typed data pick. Each series' kernel is created from
-    /// `kernels` when it is the first pick that dispatches it (#327).
-    pub(crate) fn submit(
+    /// Encode one typed data pick: its commands and buffers, which run
+    /// only when [`EncodedDataPick::submit`] submits them and are released
+    /// unrun when it is dropped (#381: a layer other than the picked one
+    /// runs its typed pick only when its series owns the ink at the
+    /// cursor). Each series' kernel is created from `kernels` when it is
+    /// the first pick that dispatches it (#327).
+    pub(crate) fn encode(
         &self,
         kernels: &mut DataPickKernels,
         pool: &ColumnPool,
         query: GpuDataPickQuery,
         series: Vec<GpuDataPickSeries>,
-    ) -> Result<DataPickTicket, crate::gpu_pick::GpuPickError> {
+    ) -> Result<EncodedDataPick, crate::gpu_pick::GpuPickError> {
         let [cursor_x, cursor_y] = query.canvas_position_px;
         if !cursor_x.is_finite()
             || !cursor_y.is_finite()
             || !query.max_distance_px.is_finite()
             || query.max_distance_px < 0.0
         {
-            return Ok(DataPickTicket::ready_none());
+            return Ok(EncodedDataPick::none());
         }
         let [chart_x, chart_y, chart_width, chart_height] = query.chart_rect_px;
         if !chart_x.is_finite()
@@ -986,7 +990,7 @@ impl DataPickPipelineBundle {
             || chart_width <= 0.0
             || chart_height <= 0.0
         {
-            return Ok(DataPickTicket::ready_none());
+            return Ok(EncodedDataPick::none());
         }
         if let Some([x, y, width, height]) = query.data_area_px {
             let x1 = x + width;
@@ -1000,11 +1004,11 @@ impl DataPickPipelineBundle {
                 || cursor_y < y
                 || cursor_y > y1
             {
-                return Ok(DataPickTicket::ready_none());
+                return Ok(EncodedDataPick::none());
             }
         }
         if series.is_empty() {
-            return Ok(DataPickTicket::ready_none());
+            return Ok(EncodedDataPick::none());
         }
 
         let candidate_count = u64::try_from(series.len()).map_err(|_| {
@@ -1096,7 +1100,7 @@ impl DataPickPipelineBundle {
             &scratch_tally,
         )?;
 
-        self.encode_data_pick(
+        let commands = self.encode_data_pick(
             transform_bg,
             prepared,
             &candidates,
@@ -1105,26 +1109,25 @@ impl DataPickPipelineBundle {
             candidate_stride,
         );
 
-        Ok(DataPickTicket {
-            state: DataPickTicketState::Pending {
-                readback: GpuReadback::map(
-                    &self.device,
-                    &self.health,
-                    &readback,
-                    Some(candidate_bytes),
-                ),
-                identities: identities.into(),
-                gpu_reduced: false,
-                _field_charges: field_charges,
-                _scratch_charge: scratch_tally
+        Ok(EncodedDataPick {
+            encoded: Some(EncodedState {
+                commands,
+                readback,
+                candidate_bytes,
+                identities,
+                field_charges,
+                scratch_charge: scratch_tally
                     .into_charge(&self.ledger, GpuResourceKind::PickScratch),
-                _readback_charge: readback_tally
+                readback_charge: readback_tally
                     .into_charge(&self.ledger, GpuResourceKind::Readback),
-            },
+                device: self.device.clone(),
+                queue: self.queue.clone(),
+                health: self.health.clone(),
+            }),
         })
     }
 
-    /// [`Self::submit`]'s per-series preparation: each series' query, bind
+    /// [`Self::encode`]'s per-series preparation: each series' query, bind
     /// groups, identity and kernel, in series order.
     #[allow(clippy::too_many_arguments)]
     fn prepare_data_pick_series(
@@ -1437,7 +1440,7 @@ impl DataPickPipelineBundle {
         Ok((prepared, identities, field_charges))
     }
 
-    /// [`Self::submit`]'s dispatches and the copies into the readback.
+    /// [`Self::encode`]'s dispatches and the copies into the readback.
     fn encode_data_pick(
         &self,
         transform_bg: wgpu::BindGroup,
@@ -1446,7 +1449,7 @@ impl DataPickPipelineBundle {
         readback: &wgpu::Buffer,
         candidate_count: u64,
         candidate_stride: u64,
-    ) {
+    ) -> wgpu::CommandBuffer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1505,7 +1508,57 @@ impl DataPickPipelineBundle {
                 DATA_PICK_CANDIDATE_BYTES,
             );
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
+        encoder.finish()
+    }
+}
+
+/// A typed data pick encoded and not submitted (#381): its commands and
+/// buffers. [`Self::submit`] runs it; dropped, it never runs.
+pub(crate) struct EncodedDataPick {
+    /// `None`: nothing to pick (no series, or a cursor or chart the pick
+    /// cannot place).
+    encoded: Option<EncodedState>,
+}
+
+struct EncodedState {
+    commands: wgpu::CommandBuffer,
+    readback: wgpu::Buffer,
+    candidate_bytes: u64,
+    identities: Vec<DataPickIdentity>,
+    field_charges: Vec<FieldPickHold>,
+    scratch_charge: GpuByteCharge,
+    readback_charge: GpuByteCharge,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    health: crate::renderer::DeviceHealth,
+}
+
+impl EncodedDataPick {
+    fn none() -> Self {
+        Self { encoded: None }
+    }
+
+    /// Submit the pick and request its readback.
+    pub(crate) fn submit(self) -> DataPickTicket {
+        let Some(encoded) = self.encoded else {
+            return DataPickTicket::ready_none();
+        };
+        encoded.queue.submit(std::iter::once(encoded.commands));
+        DataPickTicket {
+            state: DataPickTicketState::Pending {
+                readback: GpuReadback::map(
+                    &encoded.device,
+                    &encoded.health,
+                    &encoded.readback,
+                    Some(encoded.candidate_bytes),
+                ),
+                identities: encoded.identities.into(),
+                gpu_reduced: false,
+                _field_charges: encoded.field_charges,
+                _scratch_charge: encoded.scratch_charge,
+                _readback_charge: encoded.readback_charge,
+            },
+        }
     }
 }
 
@@ -1748,6 +1801,17 @@ enum GpuDataPickTicketState {
         /// The best hit of the layer's DataLess energy-level series, picked
         /// on the CPU over their SSOT when the ticket was made (#203).
         cpu: Option<RankedPickedData>,
+        /// The layer `data` picks (the active layer, or the subplot at the
+        /// cursor).
+        layer: crate::LayerRef,
+        /// The typed picks of the group's other layers with body or fill
+        /// series, encoded and not run (#381): the one whose layer has the
+        /// ink owner runs when the owner is a body series there.
+        deferred: Vec<(crate::LayerRef, EncodedDataPick)>,
+        /// The point pick's answer once it has been read.
+        point_result: Option<crate::PickResult>,
+        /// The owner layer's typed pick, once it runs.
+        follow: Option<DataPickTicket>,
     },
     Stream(DataPickTicket),
     /// A 3D chart's 1×1 ID render (`Renderer::pick_surface`).
@@ -1850,10 +1914,56 @@ impl GpuDataPickTicket {
         point: crate::gpu_pick::GpuPickTicket,
         data: DataPickTicket,
         cpu: Option<RankedPickedData>,
+        layer: crate::LayerRef,
+        deferred: Vec<(crate::LayerRef, EncodedDataPick)>,
     ) -> Self {
         Self {
-            state: GpuDataPickTicketState::Resident { point, data, cpu },
+            state: GpuDataPickTicketState::Resident {
+                point,
+                data,
+                cpu,
+                layer,
+                deferred,
+                point_result: None,
+                follow: None,
+            },
         }
+    }
+
+    /// Once the point pick and the typed pick are read: run the typed pick
+    /// of the ink owner's layer when the owner is a body or fill series on
+    /// a layer other than the one `data` picked (#381). Only that layer's
+    /// kernels run; the other encoded picks are dropped unrun.
+    fn follow_owner(&mut self) -> Result<(), crate::gpu_pick::GpuPickError> {
+        let GpuDataPickTicketState::Resident {
+            point,
+            layer,
+            deferred,
+            point_result,
+            follow,
+            ..
+        } = &mut self.state
+        else {
+            return Ok(());
+        };
+        if point_result.is_some() {
+            return Ok(());
+        }
+        let result = point.finish_full()?;
+        let owner_layer = result
+            .owner
+            .as_ref()
+            .filter(|owner| result.hit.is_none() && owner.layer != *layer)
+            .map(|owner| owner.layer);
+        if let Some(owner_layer) = owner_layer
+            && let Some(at) = deferred.iter().position(|(at, _)| *at == owner_layer)
+        {
+            let (_, encoded) = deferred.swap_remove(at);
+            *follow = Some(encoded.submit());
+        }
+        deferred.clear();
+        *point_result = Some(result);
+        Ok(())
     }
 
     /// A ticket for a 3D chart's ID pick.
@@ -1898,6 +2008,14 @@ impl GpuDataPickTicket {
             GpuDataPickTicketState::Resident { point, data, .. } => {
                 point.wait().await?;
                 data.wait().await?;
+                self.follow_owner()?;
+                if let GpuDataPickTicketState::Resident {
+                    follow: Some(follow),
+                    ..
+                } = &mut self.state
+                {
+                    follow.wait().await?;
+                }
             }
             GpuDataPickTicketState::Stream(ticket) => ticket.wait().await?,
             GpuDataPickTicketState::Surface(ticket) => ticket.readback.wait().await?,
@@ -1916,6 +2034,14 @@ impl GpuDataPickTicket {
             GpuDataPickTicketState::Resident { point, data, .. } => {
                 point.wait_blocking()?;
                 data.wait_blocking()?;
+                self.follow_owner()?;
+                if let GpuDataPickTicketState::Resident {
+                    follow: Some(follow),
+                    ..
+                } = &mut self.state
+                {
+                    follow.wait_blocking()?;
+                }
             }
             GpuDataPickTicketState::Stream(_) => {
                 return Err(crate::gpu_pick::GpuPickError::Streamed);
@@ -1932,10 +2058,27 @@ impl GpuDataPickTicket {
         mut self,
     ) -> Result<crate::TryResolve<DataPickResult, Self>, crate::gpu_pick::GpuPickError> {
         let ready = match &mut self.state {
-            GpuDataPickTicketState::Resident { point, data, .. } => {
+            GpuDataPickTicketState::Resident {
+                point,
+                data,
+                point_result,
+                ..
+            } => {
                 // Both, so the first call hands both waits to the poll thread.
-                let point_ready = point.poll_ready()?;
-                data.poll_ready()? && point_ready
+                let point_ready = point_result.is_some() || point.poll_ready()?;
+                let ready = data.poll_ready()? && point_ready;
+                if ready {
+                    self.follow_owner()?;
+                    match &mut self.state {
+                        GpuDataPickTicketState::Resident {
+                            follow: Some(follow),
+                            ..
+                        } => follow.poll_ready()?,
+                        _ => true,
+                    }
+                } else {
+                    false
+                }
             }
             GpuDataPickTicketState::Stream(_) => {
                 return Err(crate::gpu_pick::GpuPickError::Streamed);
@@ -1959,16 +2102,29 @@ impl GpuDataPickTicket {
             point: crate::PickResult::default(),
             data: picked,
         };
-        let (point, data, cpu) = match &mut self.state {
+        if matches!(self.state, GpuDataPickTicketState::Resident { .. }) {
+            self.follow_owner()?;
+        }
+        let (point, data, cpu, follow) = match &mut self.state {
             GpuDataPickTicketState::Surface(ticket) => return ticket.finish().map(alone),
             GpuDataPickTicketState::Stream(ticket) => {
                 return ticket
                     .finish()
                     .map(|result| alone(result.map(|hit| hit.picked)));
             }
-            GpuDataPickTicketState::Resident { point, data, cpu } => (point, data, cpu.take()),
+            GpuDataPickTicketState::Resident {
+                point_result,
+                data,
+                cpu,
+                follow,
+                ..
+            } => (
+                point_result.take().unwrap_or_default(),
+                data,
+                cpu.take(),
+                follow.take(),
+            ),
         };
-        let point = point.finish_full()?;
         let gpu = data.finish()?;
         // An energy-level hit (#203) is composited over the panel's GPU
         // data, so it wins a tie with any of it.
@@ -1987,11 +2143,20 @@ impl GpuDataPickTicket {
         // point-datum owner selects its nearest datum, a body or fill owner
         // its typed hit. Without an owner the typed hit answers as before:
         // value labels and DataLess series are not in the ink masks.
+        // A body owner on another layer than `data`'s selects the typed
+        // hit of its own layer, picked for it alone.
+        let owned = match follow {
+            Some(mut follow) => follow.finish()?.map(|hit| hit.picked),
+            None => None,
+        };
         let picked = match (&point.hit, &point.owner) {
             (Some(hit), _) => Some(PickedData::from(hit.clone())),
-            (None, Some(owner)) => data
-                .clone()
-                .filter(|data| data.series_id() == owner.series_id)
+            (None, Some(owner)) => owned
+                .filter(|hit| hit.series_id() == owner.series_id)
+                .or_else(|| {
+                    data.clone()
+                        .filter(|data| data.series_id() == owner.series_id)
+                })
                 .or_else(|| data.clone()),
             (None, None) => data.clone(),
         };

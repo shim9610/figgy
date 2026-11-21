@@ -2,7 +2,7 @@
 //! the topmost series drawn there, and the owner of the inked texel nearest
 //! to the cursor decides the pick. A point-datum owner (a line, a scatter)
 //! selects its nearest datum; a body owner (a histogram's bars) selects its
-//! typed hit. At 1x and 2x, for bars under a line on the same layer and on
+//! typed hit, on its own layer when another one is active. At 1x and 2x, for bars under a line on the same layer and on
 //! an overlay layer, for a line and a scatter in either order, and for a
 //! panel with more series than an 8 or 16 bit slot could name.
 //!
@@ -282,9 +282,11 @@ fn a_bar_under_a_line_picks_the_bar_and_the_line_picks_its_point() {
             assert_eq!(owner(&result), None, "{what}");
             assert_eq!(result.picked, None, "{what}");
 
-            // With the overlay active the bars still own their ink, but the
-            // typed kernels read the active layer only: the bar has no typed
-            // hit to select, and the line's points still pick.
+            // With the overlay active the bars on the base layer still own
+            // their ink, and the pick runs the base layer's typed kernel for
+            // them: the bar is selected. The line's points still pick, and
+            // where the line crosses a bar the tie now goes to the line's
+            // active layer.
             if overlay {
                 let mut active = r.chart_config(id).unwrap().clone();
                 active.set_active_layer(LayerRef::Overlay(0));
@@ -292,9 +294,13 @@ fn a_bar_under_a_line_picks_the_bar_and_the_line_picks_its_point() {
                 draw(&mut r, id);
                 let result = pick(&mut r, id, (5.0, 10.0), 2.0 * scale);
                 assert_eq!(owner(&result), Some("hist"), "{what}");
-                assert_eq!(result.picked, None, "{what}");
+                assert_eq!(bin(&result), Some(("hist", 2)), "{what}");
+                assert_eq!(result.data, None, "the active layer has no bar: {what}");
                 let result = pick(&mut r, id, (5.0, 90.0), 2.0 * scale);
                 assert_eq!(point(&result), Some(("line", 2)), "{what}");
+                let result = pick(&mut r, id, (3.0, 50.0), 0.0);
+                assert_eq!(owner(&result), Some("line"), "{what}");
+                assert_eq!(point(&result), Some(("line", 1)), "{what}");
             }
         }
     }

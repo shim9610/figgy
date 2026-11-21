@@ -76,7 +76,8 @@ recomputes hit regions or label positions.
   선을 겹친 차트에서 막대를 누르면 막대가, 선의 점 근처를 누르면 그 점이 선택된다. 선의 채움은
   선의 일부라 그 선의 최근접 데이터를 고른다.
 - 사거리 안에 잉크가 없으면 빗나감이다. 값 라벨과 DataLess 시리즈는 마스크에 없으므로 typed 적중이
-  그대로 답한다. typed 커널은 활성 레이어만 읽으므로, 다른 레이어의 몸체 소유자는 고를 typed 적중이 없다.
+  그대로 답한다. 몸체 소유자가 활성 레이어가 아닌 레이어에 있으면, 그 레이어의 typed 커널만 돌려
+  그 typed 적중을 고른다. 오버레이가 활성이어도 기본 레이어의 막대를 누르면 막대가 선택된다.
 - Registered charts' `pick_chart` and `pick_chart_data` (`pick_point` and `pick_data` in the WASM
   wrapper) decide by drawn ink. The cursor hits when ink lies within `max_distance_px` of it, and the
   topmost series drawn at the nearest inked texel (the owner, `PickResult::owner`) decides what is
@@ -86,8 +87,9 @@ recomputes hit regions or label positions.
   chart with a line over it, a click on a bar selects the bar, and a click near a line point selects
   the point. A line's fill is part of the line and selects the line's nearest datum.
 - No ink in reach is a miss. Value labels and DataLess series are not in the ink masks, so their
-  typed hits answer as before. The typed kernels read the active layer only, so a body owner on
-  another layer has no typed hit to select.
+  typed hits answer as before. A body owner on a layer other than the active one runs that layer's
+  typed kernel alone and selects its typed hit: with an overlay active, a click on a base-layer bar
+  selects the bar.
 
 장식 요소 선택은 `chart.decorations.selected`에, 데이터 선택과 호버는 원형의
 `interaction.selected`·`interaction.hovered`에 저장한다.

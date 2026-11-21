@@ -589,7 +589,7 @@ A `TriMesh` series ([#210](https://github.com/shim9610/figgy/issues/210), [guide
 
 ### Typed data pick (#381 phase 4)
 
-`Renderer::pick_chart_data` runs the registered chart's pick (`pick_chart_inked`: the nearest datum and the ink owner) and the typed data kernels side by side, and never compares their distances. `DataPickResult::picked` follows the ink owner: its nearest datum for a series with point data (line, scatter, vector, ternary region, box plot points), its typed hit for a body or fill series (bars, bins, cells, boxes); with no ink in reach, the typed hit alone (value labels and DataLess series are not in the masks). The typed kernels read the active layer only, so a body owner on another layer has no typed hit to select. `point` and `data` keep both answers. Streamed displays keep the exact query (rule 8); its resident dispatch (`GpuPickEngine::pick_with_arcs`) is test support for the shared exact kernels.
+`Renderer::pick_chart_data` runs the registered chart's pick (`pick_chart_inked`: the nearest datum and the ink owner) and the typed data kernels side by side, and never compares their distances. `DataPickResult::picked` follows the ink owner: its nearest datum for a series with point data (line, scatter, vector, ternary region, box plot points), its typed hit for a body or fill series (bars, bins, cells, boxes); with no ink in reach, the typed hit alone (value labels and DataLess series are not in the masks). The typed kernels run for the active layer (or the subplot at the cursor). The group's other layers with a body or fill series are encoded at submission and not run (`EncodedDataPick`); when the ink owner is a body series on one of them, the ticket submits that layer's encoded pick alone while it resolves, and `picked` is its typed hit (approved in [#381](https://github.com/shim9610/figgy/issues/381#issuecomment-7062589668)). No other layer's kernels run, and no shader is added. `point` and `data` (the picked layer's typed hit) keep both answers. Streamed displays keep the exact query (rule 8); its resident dispatch (`GpuPickEngine::pick_with_arcs`) is test support for the shared exact kernels.
 
 ### Monotonic-x lines (M4 envelope)
 
@@ -1111,7 +1111,7 @@ annotation_selection_dirty = false;
 
 ### typed 데이터 픽(#381 4단계)
 
-`Renderer::pick_chart_data`는 등록 차트의 픽(`pick_chart_inked`: 최근접 데이터와 잉크 소유자)과 typed 데이터 커널을 나란히 돌리고, 두 거리를 비교하지 않는다. `DataPickResult::picked`는 잉크 소유자를 따른다. 점 데이터 시리즈(선, 산점, 벡터, 삼각 영역, 박스플롯 점)면 그 최근접 데이터, 몸체나 채움 시리즈(막대, 구간, 셀, 박스)면 그 typed 적중이다. 사거리 안에 잉크가 없으면 typed 적중만 답한다(값 라벨과 DataLess 시리즈는 마스크에 없다). typed 커널은 활성 레이어만 읽으므로, 다른 레이어의 몸체 소유자에는 고를 typed 적중이 없다. `point`와 `data`에는 두 답이 그대로 남는다. 스트리밍 화면은 exact 질의를 유지한다(규칙 8). 그 상주 디스패치(`GpuPickEngine::pick_with_arcs`)는 공유 exact 커널을 검증하는 테스트 지원 코드다.
+`Renderer::pick_chart_data`는 등록 차트의 픽(`pick_chart_inked`: 최근접 데이터와 잉크 소유자)과 typed 데이터 커널을 나란히 돌리고, 두 거리를 비교하지 않는다. `DataPickResult::picked`는 잉크 소유자를 따른다. 점 데이터 시리즈(선, 산점, 벡터, 삼각 영역, 박스플롯 점)면 그 최근접 데이터, 몸체나 채움 시리즈(막대, 구간, 셀, 박스)면 그 typed 적중이다. 사거리 안에 잉크가 없으면 typed 적중만 답한다(값 라벨과 DataLess 시리즈는 마스크에 없다). typed 커널은 활성 레이어(또는 커서 아래 서브플롯)에 돈다. 같은 묶음의 다른 레이어 중 몸체나 채움 시리즈가 있는 레이어는 제출할 때 인코딩만 하고 돌리지 않는다(`EncodedDataPick`). 잉크 소유자가 그중 한 레이어의 몸체 시리즈면, 티켓이 해석하는 동안 그 레이어의 인코딩만 제출하고 `picked`는 그 typed 적중이 된다([#381](https://github.com/shim9610/figgy/issues/381#issuecomment-7062589668)에서 승인). 다른 레이어의 커널은 돌지 않고 셰이더도 늘지 않는다. `point`와 `data`에는 두 답이 그대로 남는다. 스트리밍 화면은 exact 질의를 유지한다(규칙 8). 그 상주 디스패치(`GpuPickEngine::pick_with_arcs`)는 공유 exact 커널을 검증하는 테스트 지원 코드다.
 
 ### 단조 x 선(M4 엔벌로프)
 
