@@ -175,14 +175,14 @@ give the reproduction commands.
 | Ternary plots | Three component columns per `Ternary` series and `Config.ternary`; region fills of the polygons a series outlines | [Ternary](crates/renderer/TERNARY.md) |
 | Triangle meshes (tripcolor, tricontour, trisurf) | Vertex coordinate and value columns and a triangle index column (`TriMesh`, `Renderer::upsert_triangles`): the host's triangulation, a colour field and contour lines over it; with `Config.view_3d` and a `z_column` a surface in the box | [Triangle meshes](crates/renderer/TRIMESH.md) |
 | 3D surfaces | A heatmap's grid or a triangle mesh drawn as a surface in a box with `Config.view_3d`, with points and trajectories from a `z_column`, and vector fields as arrows along `(u, v, w)` | [Surface](crates/renderer/SURFACE.md) |
-| Categorical bars | A categorical axis, category positions and one value column per bar series (`CategoryBars`); legacy `CategoricalChart` documents open through `Config::from_categorical`; on a polar chart the bars are a rose | [Bars (in Korean)](crates/renderer/CATEGORICAL.md) · [Roses](crates/renderer/POLAR.md#roses-polar-bars) |
+| Categorical bars | A categorical axis, category positions and one value column per bar series (`CategoryBars`); legacy `CategoricalChart` documents open through `Config::from_categorical`; on a polar chart the bars are a rose | [Bars](crates/renderer/CATEGORICAL.md) · [Roses](crates/renderer/POLAR.md#roses-polar-bars) |
 | Box plots, violins, rainclouds | A categorical axis, category positions, one record of supplied box statistics and one ragged outlier column per box series (`BoxPlot`), with the host's density curves as ragged columns for violins and two point columns for raw points; legacy `BoxPlotChart` documents open through `Config::from_boxplot` | [Boxes](crates/renderer/BOXPLOT.md) |
 | Waterfalls, candlesticks, Gantt charts | A position column and start and end columns per range bar series (`RangeBars`), with optional low/high, total-flag or state and progress columns | [Range bars](crates/renderer/RANGEBARS.md) |
 | Radar charts | A categorical angle axis on a polar chart, category positions and one value column per radar series (`Radar`); legacy `RadarChart` documents open through `Config::from_radar` | [Radar](crates/renderer/RADAR.md) |
 | Energy-level (Grotrian) diagrams | `EnergyLevels` records in the document: levels in term columns of a categorical axis and the transitions the host lists, parsed by the host from NIST Atomic Spectra Database exports; labels are placed automatically, and an inset can magnify the fine structure | [Energy levels](crates/renderer/CONFIG.md#energy-levels-datarendertypeenergylevels) · [nist_grotrian.rs](crates/renderer/examples/nist_grotrian.rs) |
 | Feynman diagrams | `Feynman` records in the document: vertices and the propagators joining them, each stroke naming its particle (fermion, photon, gluon, scalar and more); a vertex without a position is laid out automatically | [Feynman diagrams](crates/renderer/FEYNMAN.md) |
-| Pies and donuts | `RadialChart` values | [Radial (in Korean)](crates/renderer/RADIAL.md) |
-| Sunbursts | `RadialChart` slices with `children`: nested rings over their parents' spans | [Radial (in Korean)](crates/renderer/RADIAL.md#선버스트중첩-고리) |
+| Pies and donuts | `RadialChart` values | [Radial](crates/renderer/RADIAL.md) |
+| Sunbursts | `RadialChart` slices with `children`: nested rings over their parents' spans | [Radial](crates/renderer/RADIAL.md#sunbursts-nested-rings) |
 
 Every row above pies and donuts is drawn by `Renderer`. Their per-point data
 enters through `ColumnSource`, except that monotonic-x lines lend their samples
@@ -230,7 +230,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     renderer.add_column("x", &x)?;
     renderer.add_column("y", &y)?;
 
-    let series = [SeriesConfig::line("sine", "x", "y")
+    let mut series = [SeriesConfig::line("sine", "x", "y")
         .color(Color::from_rgb8(34, 104, 198))
         .width(2.5)];
     let mut chart = Chart::sized(960, 600)
@@ -239,7 +239,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // A `$…$` span in a title is TeX.
         .with_y_title(r"$\sin(2\pi f t)$");
     // A chart starts at a 0..1 placeholder range: fit the axes to the data.
-    renderer.fit_ranges(&mut chart, &series)?;
+    renderer.fit_ranges(&mut chart, &mut series)?;
     chart.fit_layout();
 
     let output = std::env::args_os()
@@ -391,7 +391,7 @@ part of the `figgy-renderer` crate or the browser product.
 |---|---|
 | Native setup, data adapters, embedding and export | [Usage](crates/renderer/USAGE.md) |
 | Axes, labels, legends, series and color maps | [Configuration reference](crates/renderer/CONFIG.md) |
-| Pies/donuts · categorical bars · box plots · range bars · radar · polar · histograms | [Radial (in Korean)](crates/renderer/RADIAL.md) · [Bars (in Korean)](crates/renderer/CATEGORICAL.md) · [Boxes](crates/renderer/BOXPLOT.md) · [Range bars](crates/renderer/RANGEBARS.md) · [Radar](crates/renderer/RADAR.md) · [Polar](crates/renderer/POLAR.md) · [Histograms](crates/renderer/HISTOGRAM.md) 
+| Pies/donuts · categorical bars · box plots · range bars · radar · polar · histograms | [Radial](crates/renderer/RADIAL.md) · [Bars](crates/renderer/CATEGORICAL.md) · [Boxes](crates/renderer/BOXPLOT.md) · [Range bars](crates/renderer/RANGEBARS.md) · [Radar](crates/renderer/RADAR.md) · [Polar](crates/renderer/POLAR.md) · [Histograms](crates/renderer/HISTOGRAM.md) 
 | Ternary plots · 3D surfaces · triangle meshes · Feynman diagrams · monotonic-x lines | [Ternary](crates/renderer/TERNARY.md) · [Surface](crates/renderer/SURFACE.md) · [Triangle meshes](crates/renderer/TRIMESH.md) · [Feynman](crates/renderer/FEYNMAN.md) · [Monotonic-x lines](crates/model/MONOTONIC.md) |
 | Ownership, prepared frames and API compatibility | [API contracts](crates/renderer/API.md) |
 | Memory flow, caching, streaming and shader details | [Architecture](crates/renderer/ARCHITECTURE.md) |
@@ -414,3 +414,8 @@ Bundled fonts retain their OFL and GUST notices: [Liberation Sans](crates/render
 and [Comic Neue](crates/renderer/fonts/LICENSE-ComicNeue.txt) (SIL OFL 1.1), and
 [New Computer Modern Math](crates/renderer/fonts/LICENSE-NewCMMath.txt) (GUST Font License),
 the face used for formulas in rich text.
+The palette presets ([`ColorCycle`](crates/renderer/USAGE.md#palette-presets)) keep their
+sources' terms: ColorBrewer Set2 and Dark2 (Apache-2.0; this product includes color
+specifications and designs developed by Cynthia Brewer, http://colorbrewer.org/),
+D3 category10 and Tableau 10 from d3-scale-chromatic (ISC), Plotly and Dark24 from
+plotly.py (MIT), and the Okabe–Ito palette.

@@ -5,9 +5,6 @@
 //! source in `crate::defaults`. The model and the renderer build without the
 //! `helpers` feature, so their own code cannot reach for `Default`.
 
-// The deprecated document readers keep their `Default` until they go.
-#![allow(deprecated)]
-
 impl Default for crate::annotation::AnnotationLineStyle {
     fn default() -> Self {
         crate::defaults::annotation_line_style()
@@ -302,15 +299,19 @@ impl Default for crate::decoration::DecorationLayout {
     }
 }
 
+/// The Grotrian look a host-built series starts with (#357); a document
+/// that omits the value reads `crate::defaults::energy_level_series`.
 impl Default for crate::energy_levels::EnergyLevelSeries {
     fn default() -> Self {
-        crate::defaults::energy_level_series()
+        crate::defaults::grotrian_level_series()
     }
 }
 
+/// The Grotrian look a host-built series starts with (#357); a document
+/// that omits the value reads `crate::defaults::energy_level_style`.
 impl Default for crate::energy_levels::EnergyLevelStyle {
     fn default() -> Self {
-        crate::defaults::energy_level_style()
+        crate::defaults::grotrian_level_style()
     }
 }
 
@@ -332,9 +333,11 @@ impl Default for crate::energy_levels::LevelRole {
     }
 }
 
+/// The Grotrian look a host-built series starts with (#357); a document
+/// that omits the value reads `crate::defaults::level_stroke_style`.
 impl Default for crate::energy_levels::LevelStrokeStyle {
     fn default() -> Self {
-        crate::defaults::level_stroke_style()
+        crate::defaults::grotrian_level_stroke_style()
     }
 }
 
@@ -344,9 +347,24 @@ impl Default for crate::energy_levels::LevelView {
     }
 }
 
+/// The Grotrian look a host-built series starts with (#357); a document
+/// that omits the value reads `crate::defaults::transition_arrow_style`.
+/// Wavelengths in nanometres, a violet-grey for the ultraviolet and a warm
+/// grey for the infrared (#357): muted, so a line outside the visible band
+/// does not read as the deep violet or red at its edges.
+impl Default for crate::energy_levels::SpectralColors {
+    fn default() -> Self {
+        Self {
+            unit: crate::energy_levels::WavelengthUnit::Nm,
+            ultraviolet: crate::Color::from_rgb8(118, 104, 164),
+            infrared: crate::Color::from_rgb8(140, 96, 84),
+        }
+    }
+}
+
 impl Default for crate::energy_levels::TransitionArrowStyle {
     fn default() -> Self {
-        crate::defaults::transition_arrow_style()
+        crate::defaults::grotrian_transition_arrow_style()
     }
 }
 
@@ -419,6 +437,12 @@ impl Default for crate::format::FractionalSecondDigits {
 impl Default for crate::format::PlainNumberFormat {
     fn default() -> Self {
         crate::defaults::plain_number_format()
+    }
+}
+
+impl Default for crate::format::AutoNumberFormat {
+    fn default() -> Self {
+        crate::defaults::auto_number_format()
     }
 }
 
@@ -542,9 +566,55 @@ impl Default for crate::radar::RadarStyle {
     }
 }
 
+/// The documented chart in the host default style ([`RadialStyle::default`],
+/// #357): white separators between segments and rings. A document that
+/// omits a field still reads the serde default.
+///
+/// [`RadialStyle::default`]: crate::radial::RadialStyle
 impl Default for crate::radial::RadialChart {
     fn default() -> Self {
-        crate::defaults::radial_chart()
+        let crate::radial::RadialChart {
+            decorations,
+            chart_title,
+            active_layer,
+            annotations,
+            slices,
+            kind,
+            start_angle_degrees,
+            split,
+            style: _,
+            labels,
+            label_format,
+            label_decimals,
+            value_suffix,
+            interaction,
+            font_family,
+            font_size,
+            label_color,
+            background,
+            inner_label_fallback,
+        } = crate::defaults::radial_chart();
+        Self {
+            decorations,
+            chart_title,
+            active_layer,
+            annotations,
+            slices,
+            kind,
+            start_angle_degrees,
+            split,
+            style: crate::radial::RadialStyle::default(),
+            labels,
+            label_format,
+            label_decimals,
+            value_suffix,
+            interaction,
+            font_family,
+            font_size,
+            label_color,
+            background,
+            inner_label_fallback,
+        }
     }
 }
 
@@ -566,9 +636,13 @@ impl Default for crate::radial::RadialOutline {
     }
 }
 
+/// The host default style (#357): [`crate::radial::RadialStyle::sunburst`],
+/// the flat documented look with white separators between segments and
+/// rings. The serde default (`crate::defaults::radial_style`, no outline)
+/// is unchanged, so a document that omits it draws as before.
 impl Default for crate::radial::RadialStyle {
     fn default() -> Self {
-        crate::defaults::radial_style()
+        crate::radial::RadialStyle::sunburst()
     }
 }
 
@@ -620,7 +694,7 @@ impl Default for crate::view3d::View3d {
 
 impl Default for crate::config::Config {
     fn default() -> Self {
-        crate::defaults::config()
+        crate::default::default_config()
     }
 }
 
@@ -644,7 +718,7 @@ impl Default for crate::config::GridOptions {
 
 impl Default for crate::config::ColorBarOptions {
     fn default() -> Self {
-        crate::defaults::color_bar_options()
+        crate::default::default_colorbar_options()
     }
 }
 
@@ -736,6 +810,9 @@ impl Default for crate::data_config::VectorStyle {
             head_width_px: 8.0,
             min_length_px: 0.0,
             color_map: None,
+            // A fit sizes the arrows to their spacing (#357): `|v|` pixels
+            // draws a unit field as specks.
+            auto_scale: true,
         }
     }
 }
@@ -760,7 +837,7 @@ impl Default for crate::data_config::ContourLabelConfig {
             significant_digits: 2,
             spacing_px: 120.0,
             anchors: Vec::new(),
-            bg_color: None,
+            bg_color: crate::defaults::contour_label_background(),
             bg_padding_px: 2.0,
         }
     }
@@ -789,8 +866,8 @@ mod tests {
     use crate::data_config::{
         ContourConfig, ContourLabelConfig, DataBarStyleConfig, DataErrorBarStyleConfig,
         DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorBars, ErrorRef,
-        FieldFillConfig, FieldSeries, GridLayout, MatrixOrientation, MatrixRef, SeriesConfig, Stem,
-        VectorStyle, XySeries,
+        FieldFillConfig, FieldSeries, GridLayout, HistogramSeries, MatrixOrientation, MatrixRef,
+        SeriesConfig, Stem, VectorStyle, XySeries,
     };
 
     fn series(render_type: DataRenderType) -> SeriesConfig {
@@ -822,9 +899,9 @@ mod tests {
             }),
             stem: Some(Stem::default()),
         }));
-        let histogram = series(DataRenderType::Histogram {
+        let histogram = series(DataRenderType::Histogram(HistogramSeries {
             bar: DataBarStyleConfig::default(),
-        });
+        }));
         let field = series(DataRenderType::Field(FieldSeries {
             matrix: MatrixRef {
                 columns: vec!["z0".into(), "z1".into()],
@@ -850,5 +927,31 @@ mod tests {
         VectorStyle::default().validate().unwrap();
         let wireframe = crate::view3d::SurfaceWireframe::default();
         assert!(wireframe.width > 0.0 && wireframe.width.is_finite());
+    }
+
+    // The field defaults of #357: arrows that a fit sizes to their spacing,
+    // and black contour labels on a translucent white plate. A document
+    // that omits them still reads the earlier values, so stored documents
+    // draw unchanged.
+    #[test]
+    fn field_defaults_are_readable() {
+        let vectors = VectorStyle::default();
+        assert!(vectors.auto_scale);
+        assert_eq!(vectors.scale, crate::defaults::vector_scale());
+        let labels = ContourLabelConfig::default();
+        assert_eq!(labels.color, crate::color::Color::BLACK);
+        let plate = labels.bg_color.expect("a label plate");
+        assert_eq!((plate.r, plate.g, plate.b), (1.0, 1.0, 1.0));
+        assert!(plate.a > 0.5 && plate.a < 1.0, "translucent: {plate:?}");
+        #[cfg(feature = "serde")]
+        {
+            let mut json = serde_json::to_value(&labels).unwrap();
+            json.as_object_mut().unwrap().remove("bg_color");
+            let back: ContourLabelConfig = serde_json::from_value(json).unwrap();
+            assert_eq!(back.bg_color, None);
+            let back: ContourLabelConfig =
+                serde_json::from_str(&serde_json::to_string(&labels).unwrap()).unwrap();
+            assert_eq!(back, labels);
+        }
     }
 }

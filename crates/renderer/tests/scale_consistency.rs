@@ -4,7 +4,7 @@
 //! same tick labels, and the image box-filtered back to 1x matches the 1x
 //! image up to anti-aliasing and glyph hinting.
 
-use renderer::axis_render::try_raster_chart_to_rgba;
+use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at};
 use renderer::layout::{ChartArea, DrawnPart, Element, Rect, RectF, Side};
 use renderer::sink::Parts;
 use renderer::{Config, CpuTextMeasure, HitMap, SelectionGeometry};
@@ -139,7 +139,8 @@ fn adaptive_log_labels_keep_their_layout_at_every_scale() {
 
 fn keeps_its_layout_at_every_scale(base: &Config, compare_pixels: bool) {
     let base = base.clone();
-    let one = try_raster_chart_to_rgba(&base).unwrap();
+    let one = try_raster_chart_layer_to_rgba_with_selection_at(&base, AxisLayerKind::All, &[], 1.0)
+        .unwrap();
     for scale in [2u32, 3] {
         let s = scale as f32;
         let cfg = base.scaled(s);
@@ -182,7 +183,9 @@ fn keeps_its_layout_at_every_scale(base: &Config, compare_pixels: bool) {
         if !compare_pixels {
             continue;
         }
-        let big = try_raster_chart_to_rgba(&cfg).unwrap();
+        let big =
+            try_raster_chart_layer_to_rgba_with_selection_at(&cfg, AxisLayerKind::All, &[], 1.0)
+                .unwrap();
         let (w, h) = (WIDTH as usize, HEIGHT as usize);
         let mut differing = 0usize;
         let mut worst = 0u32;

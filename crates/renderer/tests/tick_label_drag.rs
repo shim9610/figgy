@@ -3,7 +3,7 @@
 //! selection box around them, and a drag along or across the axis moves the
 //! drawn labels, the box and the hit-map answer together.
 
-use renderer::axis_render::try_raster_chart_to_rgba;
+use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at};
 use renderer::config::TickVisibility;
 use renderer::layout::{ChartArea, NudgeResult, Rect, RectF, Side};
 use renderer::sink::Parts;
@@ -103,10 +103,13 @@ impl Labels {
 /// Bounding box of the pixels `labels` adds to the raster of `cfg`: the
 /// raster with the set shown against the raster with it hidden.
 fn label_ink(cfg: &Config, labels: &Labels) -> RectF {
-    let shown = try_raster_chart_to_rgba(cfg).unwrap();
+    let shown = try_raster_chart_layer_to_rgba_with_selection_at(cfg, AxisLayerKind::All, &[], 1.0)
+        .unwrap();
     let mut without = cfg.clone();
     labels.hide(&mut without);
-    let hidden = try_raster_chart_to_rgba(&without).unwrap();
+    let hidden =
+        try_raster_chart_layer_to_rgba_with_selection_at(&without, AxisLayerKind::All, &[], 1.0)
+            .unwrap();
     let (width, height) = (cfg.chart_area.0.width, cfg.chart_area.0.height);
     let mut found: Option<(u32, u32, u32, u32)> = None;
     for y in 0..height {
@@ -298,6 +301,9 @@ fn wide_label_config(colorbar: bool) -> Config {
     if let Some(bar) = cfg.colorbar.as_mut() {
         bar.axis.min = -0.000_25;
         bar.axis.max = 1_250_000.0;
+        // Wide plain labels: the helpers' `Auto` format (#357) would write
+        // this range as powers of ten.
+        bar.axis.label_style.format = renderer::format::LabelFormat::Decimal;
     }
     cfg
 }
@@ -461,7 +467,8 @@ impl renderer::sink::Sink for LabelLog {
     fn text(&mut self, _: renderer::sink::Slot, text: &renderer::sink::PlacedText<'_>) {
         let written = match text.text {
             renderer::sink::TextRef::Plain { text, .. } => text.to_owned(),
-            renderer::sink::TextRef::Rich(rich) => {
+            renderer::sink::TextRef::Rich(rich)
+            | renderer::sink::TextRef::ScaledRich { text: rich, .. } => {
                 let mut out = String::new();
                 let mut exponent = false;
                 for segment in rich.segments.iter().filter(|s| s.math_node.is_none()) {

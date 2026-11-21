@@ -48,6 +48,7 @@ pub fn visible_numeric_labels(
                 axis.major_tick_length,
                 (ls.label_offset_x, ls.label_offset_y),
                 metrics,
+                tick_row_extents(axis, measure),
             ),
             metrics,
         )
@@ -251,6 +252,7 @@ pub fn each_category_tick_label(
         Some(rich) => TickText::Power(rich),
         None => TickText::Plain(categories[index].label.as_str()),
     };
+    let row = tick_row_extents(axis, measure);
     let placed = |index: usize| {
         let text = text_of(index);
         let position = position(index as f64);
@@ -264,6 +266,7 @@ pub fn each_category_tick_label(
             axis.major_tick_length,
             (ls.label_offset_x, ls.label_offset_y),
             metrics,
+            row,
         );
         let empty = match &text {
             TickText::Plain(plain) => plain.is_empty(),
@@ -333,8 +336,12 @@ pub fn visible_timestamp_labels(
     };
     let labels: Vec<PlainTickLabel> =
         if let Some(plan) = timestamp_tick_plan(axis, side.clone(), plot, measure) {
-            plan.majors
+            // Each label at the value it is drawn at (a period's centre
+            // with `period_labels`, #357); a period with no string draws
+            // nothing.
+            plan.labels
                 .into_iter()
+                .filter(|tick| !tick.label.is_empty())
                 .map(|tick| PlainTickLabel {
                     value: tick.value,
                     text: tick.label,
@@ -404,11 +411,24 @@ pub fn plain_tick_label_interval(
         axis.major_tick_length,
         (ls.label_offset_x, ls.label_offset_y),
         m,
+        tick_row_extents(axis, measure),
     );
     match side {
         Side::Top | Side::Bottom => (origin_x, origin_x + m.width),
         Side::Left | Side::Right => (origin_y - m.ascent, origin_y + m.descent),
     }
+}
+
+/// How far `axis`' tick labels reach above and below their shared
+/// baseline (#357): the extents of [`crate::layout::TICK_ROW_REFERENCE`] in
+/// the label face.
+pub fn tick_row_extents(axis: &AxisOptions, measure: &dyn MeasureText) -> crate::text::TextExtents {
+    let ls = &axis.label_style;
+    measure.measure_plain(
+        crate::layout::TICK_ROW_REFERENCE,
+        &ls.label_font,
+        ls.font_size,
+    )
 }
 
 pub fn plain_seg(c: char) -> RichSegment {
@@ -443,6 +463,7 @@ pub fn tick_label_placement(
         axis.major_tick_length,
         (ls.label_offset_x, ls.label_offset_y),
         m,
+        tick_row_extents(axis, measure),
     );
     (origin, m)
 }
@@ -473,6 +494,7 @@ pub fn place_tick_text(
         origin: (origin.0 + offset.0, origin.1 + offset.1),
         extents,
         rotation: None,
+        outline: None,
     };
     sink.text(Slot::Above, &placed);
 }
@@ -700,6 +722,7 @@ pub fn emit_category_groups(
                 origin: ((x0 + x1) / 2.0 - extents.width / 2.0, baseline),
                 extents,
                 rotation: None,
+                outline: None,
             },
         );
     }

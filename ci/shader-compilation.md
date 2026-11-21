@@ -133,7 +133,133 @@ matrix. The dispatch split does not change Metal precision. Renderer 0.14.0 fixe
 coordinate-rounding boundaries and midpoint picking in shared WGSL; see
 [backend results and fixes](STATUS.md).
 
+## Exact point picker compilation (#363)
+
+The exact pick pipeline (`pick_exact_candidates`, label `figgy GPU pick exact
+candidate pipeline`) is created on a series' first pick (#299, #332). On
+Chromium's SwiftShader its compile time tracked two things, found by stubbing
+one helper at a time in the assembled WGSL:
+
+- **The number of inlined copies of the projection and validity helpers.**
+  Time grew about linearly with them; neither the 32-point loop nor its trip
+  count was a multiplier (a one-iteration loop or a dynamic bound measured
+  the same). The area fill alone projected up to ten `data_to_ndc` copies
+  per piece (four corners, `axis_baseline_ndc` holding one per axis) and
+  called `sample_valid` four times; the error bar, stem, category jitter and
+  path arrows held their own copies. The `PICK_VARIANT` override does not
+  remove a disabled path's code in SwiftShader: a radar compiles the error
+  bar path it never runs.
+- **Long short-circuit `&&` / `||` chains.** Each becomes nested branches.
+  One variant (line module, basic set, dash + styled line + fill) took
+  230.9 s, of which 230 s went away when `sample_valid` used `&` / `|`.
+
+The fix keeps every helper call and argument and therefore every value:
+the helpers that were inlined several times are called once inside a short
+loop over the corners, ends, quads or axes (`area_corner_ndc`,
+`area_segment_drawn`, `axis_baseline_ndc`, `stem_end_ndc`, the stroke's
+ends, the error bar's quads, the category slot and the arrowhead
+Jacobian), and the validity tests (`sample_valid`, `pick_is_finite`,
+`pick_coordinate_is_valid`) use the non-short-circuit `&` / `|` on pure
+operands. The shared fragments change for the draw entries as well, with
+the same values. No pipeline, module, cache or variant is added, and the
+exact pipelines stay lazy.
+
+Measured on 2026-11-19 with Playwright 1.63.0's headless Chromium
+157.0.8103.78 (`--enable-unsafe-webgpu`, SwiftShader adapter) on a 4-core
+Linux container. Each row is one `createComputePipelineAsync` in a fresh
+browser, with the descriptor and explicit layout from the native capture:
+
+| Exact variant (module, set, `PICK_VARIANT`, shape) | Before | After |
+| --- | ---: | ---: |
+| Marker, basic, 0, fixed | 612 ms | 550 ms |
+| Marker, full, all paths, any | 4,770 ms | 2,652 ms |
+| Marker-line, basic, 0, fixed | 1,341 ms | 850 ms |
+| **Marker-line, full, area + polar, fixed (radar)** | **9,807 ms** | **2,685 ms** |
+| Marker-line, full, all paths, any | 13,294 ms | 5,424 ms |
+| Line, basic, 0 | 784 ms | 582 ms |
+| Line, full, area + polar (radar without markers) | 7,210 ms | 2,008 ms |
+| Line, basic, dash + styled line + area | 230,923 ms | 799 ms |
+| Line, full, all paths | 8,481 ms | 3,045 ms |
+| Vector, full, all paths | 1,185 ms | 1,098 ms |
+| Radar, 40 render pipelines compiling first | 16,331 ms | 8,129 ms |
+| Radar, all 339 captured render pipelines compiling first | 148,136 ms | 149,577 ms |
+
+In the last row the exact pipeline finished after every background render
+pipeline in both runs: it waited in the browser's compile queue, so its
+own size no longer decides the time. These are single local runs on a
+software adapter, not physical-GPU results.
+
+## Exact pick variant table (#363, removed in #381)
+
+The table of every exact pick pipeline a chart could reach
+(`tests/support/pick_variants.csv`), its checker `ci/test_pick_variants.py`
+and the runner's `--pick-variants` mode were removed with the move of a
+registered chart's pick to the nearest-datum kernel and its ink hit (#381):
+one kernel per projection and shader set replaces the specialized variants a
+registered chart's pick compiled. The exact query remains for streamed
+displays (rule 8; #381 phase 4 moved the typed data pick off it); its
+modules are measured with every other module in the capture above.
+
+## Exact pick warm-up (#363, removed in #381)
+
+A browser renderer used to compile each drawn chart's exact pick keys on its
+compile queue ahead of the first pick (`warm_exact_picks`, measured by the
+removed `tests/pick_warmup_browser.rs`). With a registered chart's pick and
+typed data pick on the nearest-datum kernel (#381), no registered chart picks
+through an exact variant any more, so the warm-up, its compile-queue pick
+entries and its test are removed. The nearest-datum kernel compiles through
+the browser's async API before a pick (`compile_pick_pipelines_async`), one
+pipeline per projection and shader set for every chart.
+
+## Data pick kernel compile times (#363)
+
+Each typed data pick kernel alone, in headless Chromium 157 with SwiftShader on a
+4-core Linux container (`BROWSER_ARGS` as in [ci/README.md](README.md)): the native
+capture's data pick pipelines (`FIGGY_SHADER_COMPILE_REPORT` as above, filtered to the
+`* data pick pipeline` labels) through `node ci/shader_compile.cjs`, first compile,
+one run each. "Before" is integration `bda9357`.
+
+| Kernel | Basic before | Basic after | Full before | Full after |
+| --- | ---: | ---: | ---: | ---: |
+| histogram | 0.44 s | 0.35 s | 2.72 s | 2.46 s |
+| field contour | 4.11 s | 4.04 s | 12.32 s | 12.86 s |
+| field cell | 1.38 s | 1.52 s | 9.14 s | 9.43 s |
+| vector grid | 0.20 s | 0.18 s | 0.87 s | 0.89 s |
+| category bar | 0.56 s | 0.50 s | 1.99 s | 0.78 s |
+| box plot | 1.08 s | 0.98 s | 5.57 s | 3.48 s |
+| range bar | 0.59 s | 0.50 s | 5.02 s | 1.67 s |
+| range link | 0.51 s | 0.39 s | 3.91 s | 1.33 s |
+| **violin** | 5.83 s | 0.51 s | **53.13 s** | 1.58 s |
+| parallel | 0.22 s | 0.20 s | 0.50 s | 0.43 s |
+| triangle mesh | 0.97 s | 1.10 s | 3.52 s | 3.36 s |
+| value label | 2.06 s | 2.03 s | 12.23 s | 3.95 s |
+
+The violin kernel inlined `data_to_ndc`, the full set's projection with its axis cuts,
+probability, log and polar paths, twelve times per curve half: twice in `box_slot` per
+orientation branch, twice in `box_along` and once per `violin_point` call site. As
+for the exact picker, each projecting helper now calls it once inside a short loop,
+with its arguments and result component chosen by `select`:
+
+- `box_slot` (the slot's two edges, either orientation) and `box_along`;
+- `category_bar` (the bar's two ends and the slot's two edges: eight copies to one);
+- the range bar's two ends;
+- the violin pick's two curve ends;
+- the value label's radar spoke ends and its member search (one call site);
+- the value label's box, which takes the narrowed place from its own `box_slot`
+  (`box_narrowed`) instead of a second one.
+
+Calls and arguments are the same, so values and pixels are the same. The bar, box,
+range bar, violin, value label, radar, released-document and pick/draw agreement tests
+pass unchanged. Differences under about 0.3 s are run-to-run noise. The field contour
+and cell kernels (up to 13 s on the full set) are not pathological in this sense and
+are unchanged.
+
 ## 한국어 요약
+
+데이터 픽 커널(#363) 중 violin·value label·category bar·range bar·box 커널은 투영 함수
+`data_to_ndc`를 분기와 끝점마다 따로 인라인하던 것을 짧은 반복문 안의 한 번 호출로 바꿨다.
+값과 픽셀은 같다. full 셰이더 세트의 SwiftShader 컴파일은 violin 커널이 53.1초에서 1.6초로,
+value label 커널이 12.2초에서 4.0초로 줄었다.
 
 등고선 위치 계산은 기존과 똑같이 네 번 보정한다. 다만 복잡한 필드 검색을 감싼 반복문을
 셰이더 밖으로 옮겨, 같은 보정 파이프라인을 네 번 실행한다. 중간값은 기존 후보 버퍼에
@@ -143,3 +269,19 @@ coordinate-rounding boundaries and midpoint picking in shared WGSL; see
 생성 함수가 관계없는 셰이더까지 읽던 부분도 제거했다. 컴파일 전용 검사는 모든 셰이더와
 진입점을 확인하며, 기존 렌더링·픽셀 검사는 별도로 유지한다. 위 수치는 이 Linux 소프트웨어
 GPU 환경에서 얻은 결과다. 실제 GPU의 실행 속도나 macOS 정밀도 개선을 보장하는 수치는 아니다.
+
+정확 점 선택(exact pick) 파이프라인은 같은 투영·유효성 함수를 여러 번 인라인하던 자리에서 짧은
+반복문 안의 한 번 호출로 바꾸고, 긴 `&&` 체인을 `&`로 바꿨다(#363). 호출 함수와 인자가
+같으므로 결과값은 그대로다. SwiftShader에서 레이더 변형은 9.8초에서 2.7초로, 가장 느리던
+변형은 230.9초에서 0.8초로 줄었다. 렌더 파이프라인 339개가 먼저 큐에 있으면 대기 시간이
+지배해 약 150초로 변하지 않는다.
+
+차트가 도달할 수 있는 모든 exact pick 파이프라인 키를 담던 표(`pick_variants.csv`)와 그 검사기,
+측정 모드(`--pick-variants`)는 #381에서 없앴다. 등록 차트의 픽이 최근접 데이터 커널과 잉크 적중으로
+바뀌어, 투영과 셰이더 세트마다 커널 하나가 특수화된 변형들을 대신한다. exact 질의는 스트리밍
+화면에만 남고(#381 4단계에서 typed 데이터 픽도 최근접 데이터 커널로 옮겼다), 그 모듈은 위의 캡처에서 함께 잰다.
+
+브라우저 렌더러가 화면에 그리는 차트의 exact pick 파이프라인을 첫 픽 전에 미리 컴파일하던
+워밍업(#363)과 그 측정 테스트는 #381에서 없앴다. 등록 차트의 픽과 typed 데이터 픽이 모두 최근접
+데이터 커널을 쓰므로 exact 변형으로 픽하는 등록 차트가 더 없다. 최근접 커널은 픽 전에 브라우저의
+비동기 API로 컴파일한다(`compile_pick_pipelines_async`).

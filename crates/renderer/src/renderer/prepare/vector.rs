@@ -39,10 +39,13 @@ pub(in crate::renderer) struct VectorScratch {
 impl PrepareContext<'_> {
     /// Prepare every vector series' group-2 state, returning the column
     /// receipts for the token the way `ensure_field_scratches` does.
+    /// `scale` is the export's scale; `None` (the screen) builds each series
+    /// at the display scale its style was built at, as its pick does
+    /// (#381: the screen's 2x arrows were drawn at 1x pixel sizes).
     pub(in crate::renderer) fn ensure_vector_scratches(
         &mut self,
         items: &[PanelDraw<'_>],
-        scale: f32,
+        scale: Option<f32>,
     ) -> Result<Vec<Arc<GridSources>>> {
         self.frame_batch(|ctx| ctx.ensure_vector_scratches_in_frame(items, scale))
     }
@@ -50,7 +53,7 @@ impl PrepareContext<'_> {
     fn ensure_vector_scratches_in_frame(
         &mut self,
         items: &[PanelDraw<'_>],
-        scale: f32,
+        scale: Option<f32>,
     ) -> Result<Vec<Arc<GridSources>>> {
         retain_frame_series(&mut self.vector_cache, items, VECTOR_SCRATCH_CACHE_LIMIT);
         let mut receipts = Vec::new();
@@ -68,6 +71,7 @@ impl PrepareContext<'_> {
                 if !primitives.vector && !heads {
                     continue;
                 }
+                let scale = scale.unwrap_or(series.style.display_scale);
                 let Some(sources) = self.ensure_vector_scratch(item.chart_config, cfg, scale)?
                 else {
                     continue;
@@ -224,7 +228,9 @@ impl PrepareContext<'_> {
                 epochs
                     .try_reserve_exact(1)
                     .map_err(alloc("vector source epochs"))?;
-                if let Some(map) = streamline.and_then(|(streamlines, _)| streamlines.color_map) {
+                if let Some(map) =
+                    streamline.and_then(|(streamlines, _)| streamlines.color_map.as_ref())
+                {
                     let c_h = handle(&map.column)?;
                     params.c_base = lane(&c_h)?;
                     params.c_len = len32(&c_h);
@@ -515,7 +521,7 @@ impl Renderer {
     pub(in crate::renderer) fn ensure_vector_scratches(
         &mut self,
         items: &[PanelDraw<'_>],
-        scale: f32,
+        scale: Option<f32>,
     ) -> Result<Vec<Arc<GridSources>>> {
         self.preparation_parts()
             .1

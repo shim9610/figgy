@@ -157,17 +157,11 @@ impl PrepareContext<'_> {
                 match (uses_mapped_pick, ternary_c.is_some()) {
                     (true, true) => ternary(TernaryPipeline::RingMapped)?,
                     (false, true) => ternary(TernaryPipeline::Ring)?,
-                    (true, false) => {
-                        pipelines
-                            .pick_ring_mapped
-                            .as_ref()
-                            .ok_or(FiggyError::internal(
-                                "prepare ensured mapped pick ring pipeline",
-                            ))?
-                    }
+                    (true, false) => pipelines.precise(PrecisePipeline::PickRingMapped).ok_or(
+                        FiggyError::internal("prepare ensured mapped pick ring pipeline"),
+                    )?,
                     (false, false) => pipelines
-                        .pick_ring
-                        .as_ref()
+                        .precise(PrecisePipeline::PickRing)
                         .ok_or(FiggyError::internal("prepare ensured pick ring pipeline"))?,
                 },
             ),

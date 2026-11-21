@@ -376,26 +376,25 @@ fn probe_identity(@builtin(global_invocation_id) gid: vec3<u32>) {
         ]);
         let constellation = transform([[0.8, 0.4, 0.0, 0.0], [0.0; 4], [0.0; 4]]);
         for samples in [1, 4] {
-            let scatter = create_scatter_columnar_pipeline_with_entries(
+            let scatter = create_scatter_pipeline(
                 &device,
                 &shaders.scatter,
-                &transform_bgl,
-                &style_bgl,
+                [&transform_bgl, &style_bgl],
                 wgpu::TextureFormat::Rgba8Unorm,
                 samples,
-                "vs_sketch",
-                "fs_sketch",
-                "stream sketch scatter",
+                ("vs_sketch", "fs_sketch", "stream sketch scatter"),
+                None,
+                false,
+                None,
             );
-            let errorbar = create_errorbar_columnar_pipeline_with_entries(
+            let errorbar = create_errorbar_pipeline(
                 &device,
                 &shaders.errorbar,
-                &transform_bgl,
-                &style_bgl,
+                [&transform_bgl, &style_bgl],
                 wgpu::TextureFormat::Rgba8Unorm,
                 samples,
-                "vs_sketch",
-                "stream sketch errorbar",
+                ("vs_sketch", "fs_main", "stream sketch errorbar"),
+                wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
             );
             let milky = create_milkyway_set(
                 &device,

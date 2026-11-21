@@ -6,12 +6,15 @@
 //! are checked to stay as they were.
 #![cfg(target_arch = "wasm32")]
 
-use figgy::FiggyChart;
+use figgy::{FiggyChart, inspect_config_layout};
 use renderer::config::AxisScale;
 use renderer::layout::{ChartArea, Rect};
 use renderer::{Anchor, Annotation, AnnotationAxis, AnnotationKind, Color, LayerRef};
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
+
+mod support;
+use support::{code, json, rect};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -42,21 +45,6 @@ fn set_config(chart: &mut FiggyChart, config: &renderer::Config) {
         .unwrap();
 }
 
-fn json(text: &str) -> serde_json::Value {
-    serde_json::from_str(text).unwrap()
-}
-
-fn code(error: &JsValue) -> Option<String> {
-    js_sys::Reflect::get(error, &JsValue::from_str("code"))
-        .ok()
-        .and_then(|code| code.as_string())
-}
-
-fn rect(value: &serde_json::Value) -> [f64; 4] {
-    let n = |i: usize| value[i].as_f64().unwrap();
-    [n(0), n(1), n(2), n(3)]
-}
-
 fn close(a: [f64; 4], b: [f64; 4], tolerance: f64) -> bool {
     a.iter().zip(b).all(|(a, b)| (a - b).abs() <= tolerance)
 }
@@ -64,7 +52,12 @@ fn close(a: [f64; 4], b: [f64; 4], tolerance: f64) -> bool {
 /// A chart whose document is `DOC` with axes 0..10 and 0..1, shown at
 /// `scale` canvas pixels per document pixel.
 async fn chart_at(scale: u32) -> FiggyChart {
-    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    chart_on(canvas(), scale).await
+}
+
+/// `chart_at` on a given canvas.
+async fn chart_on(canvas: web_sys::HtmlCanvasElement, scale: u32) -> FiggyChart {
+    let mut chart = FiggyChart::create(canvas).await.unwrap();
     let mut config = config_of(&chart);
     config.chart_area = ChartArea(Rect {
         x: 0,
@@ -277,7 +270,7 @@ async fn document_layout_panels_and_data_area() {
         set_config(&mut chart, &config);
         chart.frame().unwrap();
         let before = chart.get_config().unwrap();
-        let layout = json(&chart.inspect_document_layout(None).unwrap());
+        let layout = json(&chart.inspect_document_layout(None, None, None).unwrap());
         assert!((layout["scale"].as_f64().unwrap() - scale as f64).abs() < 1e-6);
         assert_eq!(
             rect(&layout["document_area"]["document"]),
@@ -358,7 +351,11 @@ async fn document_layout_panels_and_data_area() {
         });
         let candidate_layout = json(
             &chart
-                .inspect_document_layout(Some(serde_json::to_string(&candidate).unwrap()))
+                .inspect_document_layout(
+                    Some(serde_json::to_string(&candidate).unwrap()),
+                    None,
+                    None,
+                )
                 .unwrap(),
         );
         assert_eq!(chart.get_config().unwrap(), before);
@@ -373,13 +370,132 @@ async fn document_layout_panels_and_data_area() {
         let fitted =
             renderer::fit_display_panel((320, DOC.1 + 160), (DOC.0 * scale, DOC.1 * scale)).0;
         assert!((candidate_layout["scale"].as_f64().unwrap() - fitted as f64).abs() < 1e-6);
-        let error = chart.inspect_document_layout(Some("{".into())).unwrap_err();
+        let error = chart
+            .inspect_document_layout(Some("{".into()), None, None)
+            .unwrap_err();
         assert_eq!(code(&error).as_deref(), Some("config_json"));
         let mut infeasible = candidate.clone();
         infeasible.overlays[0].series = vec!["a".into()];
         infeasible.overlays.push(infeasible.overlays[0].clone());
         let error = chart
-            .inspect_document_layout(Some(serde_json::to_string(&infeasible).unwrap()))
+            .inspect_document_layout(
+                Some(serde_json::to_string(&infeasible).unwrap()),
+                None,
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(code(&error).as_deref(), Some("layout"));
+        assert_eq!(chart.get_config().unwrap(), before);
+    }
+}
+
+/// A layout at explicit surface dimensions, on the chart or without one,
+/// is the layout the chart reports once its canvas has that surface; the
+/// query itself resizes nothing (#334).
+#[wasm_bindgen_test(async)]
+async fn layout_at_a_surface_size_is_the_resized_canvas_layout() {
+    for scale in [1u32, 2] {
+        let canvas = canvas();
+        let mut chart = chart_on(canvas.clone(), scale).await;
+        let config = layered(&chart);
+        set_config(&mut chart, &config);
+        chart.frame().unwrap();
+        let before = chart.get_config().unwrap();
+        let size = (canvas.width(), canvas.height());
+        let surface = (DOC.0 * scale, DOC.1 * scale);
+
+        // The live canvas, the candidate on it and the chart-less call agree.
+        let live = json(&chart.inspect_document_layout(None, None, None).unwrap());
+        assert_eq!(live["surface"], serde_json::json!([surface.0, surface.1]));
+        let free = json(
+            &inspect_config_layout(&before, f64::from(surface.0), f64::from(surface.1)).unwrap(),
+        );
+        assert_eq!(free, live);
+        let candidate = json(
+            &chart
+                .inspect_document_layout(Some(before.clone()), None, None)
+                .unwrap(),
+        );
+        assert_eq!(candidate, live);
+        let at_own = json(
+            &chart
+                .inspect_document_layout(
+                    None,
+                    Some(f64::from(surface.0)),
+                    Some(f64::from(surface.1)),
+                )
+                .unwrap(),
+        );
+        assert_eq!(at_own, live);
+
+        // Another surface: asked for, then resized to.
+        let other = (surface.0 + 160, surface.1 * 2);
+        let (w2, h2) = (f64::from(other.0), f64::from(other.1));
+        let at_other = json(
+            &chart
+                .inspect_document_layout(None, Some(w2), Some(h2))
+                .unwrap(),
+        );
+        let candidate_at_other = json(
+            &chart
+                .inspect_document_layout(Some(before.clone()), Some(w2), Some(h2))
+                .unwrap(),
+        );
+        let free_at_other = json(&inspect_config_layout(&before, w2, h2).unwrap());
+        assert_eq!(candidate_at_other, at_other);
+        assert_eq!(free_at_other, at_other);
+        assert_eq!(at_other["surface"], serde_json::json!([other.0, other.1]));
+        assert_ne!(at_other, live);
+        // Nothing was resized by asking.
+        assert_eq!((canvas.width(), canvas.height()), size);
+        assert_eq!(
+            json(&chart.inspect_document_layout(None, None, None).unwrap()),
+            live
+        );
+        assert_eq!(chart.get_config().unwrap(), before);
+        chart.resize(other.0, other.1).unwrap();
+        chart.frame().unwrap();
+        assert_eq!(
+            json(&chart.inspect_document_layout(None, None, None).unwrap()),
+            at_other
+        );
+
+        // Refusals.
+        let sizes: [(Option<f64>, Option<f64>); 6] = [
+            (Some(640.0), None),
+            (None, Some(480.0)),
+            (Some(0.0), Some(480.0)),
+            (Some(640.5), Some(480.0)),
+            (Some(640.0), Some(f64::NAN)),
+            (Some(-640.0), Some(f64::INFINITY)),
+        ];
+        for (w, h) in sizes {
+            let error = chart.inspect_document_layout(None, w, h).unwrap_err();
+            assert_eq!(code(&error).as_deref(), Some("invalid_size"), "{w:?} {h:?}");
+            let error = chart
+                .inspect_document_layout(Some(before.clone()), w, h)
+                .unwrap_err();
+            assert_eq!(code(&error).as_deref(), Some("invalid_size"));
+        }
+        for (w, h) in [
+            (0.0, 480.0),
+            (640.0, 1.25),
+            (f64::NAN, 480.0),
+            (640.0, f64::INFINITY),
+        ] {
+            let error = inspect_config_layout(&before, w, h).unwrap_err();
+            assert_eq!(code(&error).as_deref(), Some("invalid_size"), "{w} {h}");
+        }
+        let error = inspect_config_layout("{", 640.0, 480.0).unwrap_err();
+        assert_eq!(code(&error).as_deref(), Some("config_json"));
+        let mut infeasible = config_of(&chart);
+        infeasible.overlays[0].series = vec!["a".into()];
+        infeasible.overlays.push(infeasible.overlays[0].clone());
+        let infeasible = serde_json::to_string(&infeasible).unwrap();
+        let error = inspect_config_layout(&infeasible, 640.0, 480.0).unwrap_err();
+        assert_eq!(code(&error).as_deref(), Some("layout"));
+        let error = chart
+            .inspect_document_layout(Some(infeasible), Some(640.0), Some(480.0))
             .unwrap_err();
         assert_eq!(code(&error).as_deref(), Some("layout"));
         assert_eq!(chart.get_config().unwrap(), before);

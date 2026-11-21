@@ -306,6 +306,7 @@ pub(in crate::renderer) struct PreparedBarSelectionLayer {
     pub(in crate::renderer) instance: u32,
     pub(in crate::renderer) instances: u32,
     pub(in crate::renderer) category: Option<data_render::CategoryBarData>,
+    pub(in crate::renderer) vertices: u32,
 }
 
 pub(in crate::renderer) struct PreparedFieldSelectionLayer {

@@ -117,7 +117,9 @@ fn export_background(value: &str) -> Result<RadialExportBackground, JsValue> {
 /// queue instead (#313): its own surface on its own canvas, the same
 /// device-loss record, and the same GPU ledger and memory budget. Disposing
 /// either chart (`free()`) drops only its own handles: the device lives while
-/// the other holds it, and is never destroyed by a dispose.
+/// the other holds it, and a dispose never destroys a device another chart
+/// still draws on. Disposing the last chart on the device destroys it, since
+/// figgy requested it, once the work submitted on it completes (#322).
 #[wasm_bindgen(js_name = FiggyBoundedChart)]
 pub struct FiggyRadialChart {
     surface: wgpu::Surface<'static>,
@@ -162,10 +164,11 @@ impl FiggyRadialChart {
         let adapter = renderer::gpu::request_adapter_for_surface_async(&instance, &surface)
             .await
             .map_err(js_err)?;
-        let (device, queue) = renderer::gpu::request_device_async(&adapter)
+        // figgy requests this device, so it is destroyed once the last
+        // chart drawing on it is disposed (#322).
+        let gpu = RendererDevice::request_async(&adapter)
             .await
             .map_err(js_err)?;
-        let gpu = RendererDevice::new(device, queue).map_err(js_err)?;
         Self::create_with(
             canvas,
             surface,
@@ -185,7 +188,7 @@ impl FiggyRadialChart {
     /// Lifetime: the chart holds clones of the parent's handles. Disposing
     /// it (`free()`) never destroys the parent's device, and disposing the
     /// parent leaves this chart drawing; the device lives while either
-    /// holds it. Both share one device-loss record, so a lost device fails
+    /// holds it, and disposing the last of them destroys it (#322). Both share one device-loss record, so a lost device fails
     /// the next frame, export or pick of each with the loss, and one GPU
     /// ledger and memory budget: the parent's `gpu_memory_status` counts
     /// this chart's allocations, and the one budget bounds both charts.
@@ -579,6 +582,23 @@ impl FiggyRadialChart {
             .map_err(crate::web::convert::theme_error)?;
         self.adopt(next)
     }
+    /// [`Self::apply_theme`] with the palette preset `cycle` on the
+    /// top-level slices instead of the family's colours (#357). Refused,
+    /// changing nothing, as [`Self::apply_theme`] refuses the name.
+    pub fn apply_theme_with_palette(
+        &mut self,
+        name: &str,
+        cycle: crate::web::convert::ColorCycle,
+    ) -> Result<(), JsValue> {
+        let family =
+            renderer::theme::ThemeFamily::parse(name).map_err(crate::web::convert::theme_error)?;
+        let mut next = self.chart.clone();
+        family
+            .radial()
+            .with_palette(renderer::ColorCycle::from(cycle))
+            .apply(&mut next);
+        self.adopt(next)
+    }
     /// The theme names (#291, #295), as an array of strings: the four
     /// families.
     ///
@@ -861,6 +881,37 @@ impl FiggyRadialChart {
     #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn annotation_warnings(&self) -> Result<String, JsValue> {
         crate::annotation_warnings_json(self.annotations.render_warnings())
+    }
+    /// Where an annotation that is not part of the document yet would be
+    /// drawn (#334), with the contract of `FiggyChart.annotation_preview`:
+    /// placed by the annotation layer's own placement code in the current
+    /// frame's anchor space, its text measured at the scale the canvas
+    /// shows the chart at. The document, the selection and the raster stay
+    /// as they are. `json` is an `Annotation`, the shape `add_annotation`
+    /// takes, checked like `FiggyChart.annotation_preview` checks it
+    /// (codes `annotation_json`, `annotation_invalid`).
+    ///
+    /// Returns JSON `{ kind, visible, drawn, canvas, document }`. `canvas`
+    /// is the shape in physical canvas pixels and `document` in document
+    /// logical pixels (the units of `annotations` and `hit_annotation`),
+    /// each `{ shape, points | rect, bounds }`: `shape` is `"text"` (`rect`
+    /// `[x, y, w, h]`), `"arrow"` (`points`, its two ends) or `"polygon"`
+    /// (a shape's outline), and `bounds` is everything the raster paints for
+    /// it, labels included. The radial chart has no value axes, so a
+    /// reference line, a span and a data anchor are never drawn. An item the
+    /// raster would skip has `drawn: false` and the `reason`
+    /// `annotation_warnings` would give (`NonFinite`, `NoValueAxis`,
+    /// `OutOfRange`, `EmptyText`). `visible: false` (a hidden item) is
+    /// placed as it is drawn once shown.
+    /// JS: `const p = JSON.parse(chart.annotation_preview(itemJson));`
+    pub fn annotation_preview(&self, json: &str) -> Result<String, JsValue> {
+        let item = crate::web::FiggyChart::parse_annotation(json)?;
+        let placed = crate::radial_annotation_preview(
+            &item,
+            *self.annotations.annotations().space(),
+            self.surface_scale(),
+        );
+        serde_json::to_string(&crate::annotation_preview_value(&item, placed)).map_err(js_err)
     }
     /// Select the data under a point (or toggle it off) and resolve to the
     /// selection as JSON. Asynchronous: the radial chart picks on the GPU,

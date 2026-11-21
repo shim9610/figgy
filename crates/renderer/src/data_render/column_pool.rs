@@ -281,6 +281,14 @@ pub struct TriangleSource<'a> {
 pub enum BatchSource<'a> {
     /// A plain column, as `Renderer::add_columns` registers one.
     Column(&'a dyn ColumnSource),
+    /// A plain column a chunked upload (`Renderer::begin_column_upload`)
+    /// wrote into its staging buffer (#334). The batch copies that staging
+    /// into the pool; nothing is written again. Its id is the upload's, and
+    /// `Renderer::begin_replace_chart_sources` checks the upload as
+    /// `Renderer::commit_column_upload` does: the renderer that began it,
+    /// every value written and the column's revision. Once a batch that
+    /// holds it is returned, the staging is unmapped and takes no chunk.
+    Staged(&'a crate::ColumnUpload),
     /// A record, checked as [`ColumnPool::upsert_record`] checks one.
     Record(RecordSource<'a>),
     /// A ragged column, checked as [`ColumnPool::upsert_ragged`] checks one.

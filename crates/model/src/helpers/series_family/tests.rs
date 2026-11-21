@@ -2,8 +2,8 @@ use super::*;
 use crate::Config;
 use crate::config::Category;
 use crate::data_config::{
-    BoxPlotTarget, DataLineStyleConfig, MatrixRef, PointColorMap, Shading, SizeScale,
-    VectorColorMap, ViolinBody, ViolinHalf, XySeries,
+    BoxPlotOverride, BoxPlotTarget, BoxPoints, DataLineStyleConfig, MatrixRef, PointColorMap,
+    RangeProgress, Shading, SizeScale, VectorColorMap, ViolinBody, ViolinHalf, XySeries,
 };
 use crate::tri_mesh::{MeshValueLocation, MeshValues};
 
@@ -57,12 +57,12 @@ fn marker_and_region_modifiers() {
         .with_line(2.0)
         .no_markers()
         .region(fill, 0.75);
-    let DataRenderType::Ternary {
+    let DataRenderType::Ternary(TernarySeries {
         scatter,
         line,
         region: style,
         ..
-    } = &region.render_type
+    }) = &region.render_type
     else {
         panic!("a ternary series");
     };
@@ -113,13 +113,13 @@ fn range_bar_modifiers() {
         .connector(grey, 1.5)
         .bar_labels(CategoryBarLabels::Outside, text.clone())
         .style_range_bars(|parts| {
-            *parts.progress = Some(RangeProgress {
+            parts.progress = Some(RangeProgress {
                 column: "done".into(),
                 remaining_opacity: 0.35,
             });
             parts.style.corner_radius = 2.0;
         });
-    let DataRenderType::RangeBars {
+    let DataRenderType::RangeBars(RangeBarSeries {
         style,
         whiskers,
         color_by,
@@ -128,7 +128,7 @@ fn range_bar_modifiers() {
         slot_width,
         labels,
         ..
-    } = &bars.render_type
+    }) = &bars.render_type
     else {
         panic!("range bars");
     };
@@ -163,8 +163,8 @@ fn range_bar_modifiers() {
     // A numeric position axis takes a slot width.
     let candles = SeriesConfig::range_bars("c", "t", "open", "close")
         .color(up)
-        .style_range_bars(|parts| *parts.slot_width = Some(86_400.0));
-    let DataRenderType::RangeBars { slot_width, .. } = &candles.render_type else {
+        .style_range_bars(|parts| parts.slot_width = Some(86_400.0));
+    let DataRenderType::RangeBars(RangeBarSeries { slot_width, .. }) = &candles.render_type else {
         panic!("range bars");
     };
     assert_eq!(*slot_width, Some(86_400.0));
@@ -173,7 +173,8 @@ fn range_bar_modifiers() {
     let category = SeriesConfig::category_bars("b", "i", "v")
         .color(up)
         .bar_labels(CategoryBarLabels::Inside, text.clone());
-    let DataRenderType::CategoryBars { labels, .. } = &category.render_type else {
+    let DataRenderType::CategoryBars(CategoryBarSeries { labels, .. }) = &category.render_type
+    else {
         panic!("category bars");
     };
     assert_eq!(
@@ -189,7 +190,7 @@ fn range_bar_modifiers() {
         .whiskers("low", "high", 1.5)
         .connector(grey, 1.5)
         .bar_labels(CategoryBarLabels::Outside, text)
-        .style_range_bars(|parts| *parts.slot_width = Some(1.0));
+        .style_range_bars(|parts| parts.slot_width = Some(1.0));
     assert_eq!(same, boxes);
 }
 
@@ -220,18 +221,18 @@ fn box_plot_modifiers() {
         .violin(violin.clone())
         .outliers("out")
         .style_box_plot(|parts| {
-            *parts.points = Some(points.clone());
-            *parts.overrides = Some(overrides);
+            parts.points = Some(points.clone());
+            parts.overrides = Some(overrides);
             parts.style.notched = true;
         });
-    let DataRenderType::BoxPlot {
+    let DataRenderType::BoxPlot(BoxSeries {
         style,
         outliers,
         overrides,
         violin: v,
         points: p,
         ..
-    } = &boxes.render_type
+    }) = &boxes.render_type
     else {
         panic!("a box plot");
     };
@@ -250,8 +251,8 @@ fn box_plot_modifiers() {
         .violin(violin)
         .outliers("out")
         .style_box_plot(|parts| {
-            *parts.points = Some(points);
-            *parts.overrides = Some(Vec::new());
+            parts.points = Some(points);
+            parts.overrides = Some(Vec::new());
         });
     assert_eq!(same, bars);
 }
@@ -335,7 +336,7 @@ fn vector_modifiers() {
         .vector_scale(VectorScale::Data { factor: 0.35 })
         .style_vectors(|style| style.min_length_px = 2.0)
         .color_by("speed");
-    let DataRenderType::Vector { style, .. } = &arrows.render_type else {
+    let DataRenderType::Vector(VectorSeries { style, .. }) = &arrows.render_type else {
         panic!("a vector series");
     };
     assert_eq!(
@@ -376,4 +377,105 @@ fn a_horizontal_histogram_takes_swapped_columns() {
         ("counts", "edges")
     );
     valid(&Config::default(), &bars);
+}
+
+/// The timeline helper (#357): `range_bars` with one muted colour per row,
+/// the first as the series colour, flat bars with 4 px corners, and labels
+/// inside or beside their bar in contrast ink; every choice is a series
+/// field. `with_progress` adds the host's progress column with the light
+/// remaining tint. `range_bars` keeps its look.
+#[test]
+fn timeline_bars_colour_each_row_and_draw_flat() {
+    use crate::data_config::{CategoryBarLabels, RangeProgress};
+    use crate::default::{TIMELINE_COLORS, TIMELINE_LABEL_INK, TIMELINE_REMAINING_OPACITY};
+    let bars = SeriesConfig::timeline_bars("t", "i", "start", "end").with_progress("done");
+    let plain = SeriesConfig::range_bars("t", "i", "start", "end");
+    let (DataRenderType::RangeBars(timeline), DataRenderType::RangeBars(range)) =
+        (&bars.render_type, &plain.render_type)
+    else {
+        panic!("range bars");
+    };
+    assert_eq!(timeline.color, TIMELINE_COLORS[0]);
+    assert_eq!(
+        timeline.color_by,
+        RangeColor::ByRow {
+            colors: TIMELINE_COLORS.to_vec()
+        }
+    );
+    assert_eq!(timeline.style.corner_radius, 4.0);
+    assert_eq!(timeline.style.texture_strength, 0.0);
+    assert_eq!(timeline.style.gloss, 0.0);
+    assert_eq!(timeline.labels.placement, CategoryBarLabels::InsideOrBeside);
+    assert_eq!(timeline.labels.contrast_ink, Some(TIMELINE_LABEL_INK));
+    assert_eq!(
+        timeline.progress,
+        Some(RangeProgress {
+            column: "done".into(),
+            remaining_opacity: TIMELINE_REMAINING_OPACITY,
+        })
+    );
+    assert_eq!(
+        (bars.x_column.as_str(), bars.y_column.as_str()),
+        ("i", "end")
+    );
+    assert_eq!(timeline.start, "start");
+    assert_eq!(range.color_by, RangeColor::Single);
+    assert_eq!(range.style, crate::defaults::category_bar_style());
+    assert_eq!(range.labels, crate::defaults::category_bar_series_labels());
+    assert_eq!(range.progress, None);
+    let mut config = crate::default::default_timeline_config();
+    config.left_y.categories = Some(vec![Category::new("a", "A"), Category::new("b", "B")]);
+    valid(&config, &bars);
+}
+
+/// The timeline chart (#357): horizontal bars over 0.6 of a row's band,
+/// the first row at the top, a faint band behind every other row, no row
+/// axis line, time gridlines only, no tick marks and a light top rule;
+/// every choice is a stored field, and a saved timeline reads back the
+/// same. The documented default is unchanged.
+#[test]
+fn the_timeline_config_puts_the_first_row_on_top_with_a_light_frame() {
+    use crate::config::{CategoryBandEvery, CategoryBands, TickVisibility};
+    use crate::data_config::{BarGroups, CategoryBarDirection};
+    let config = crate::default::default_timeline_config();
+    let plain = crate::default::default_config();
+    assert_eq!(
+        config.bar_groups,
+        Some(BarGroups {
+            direction: CategoryBarDirection::Horizontal,
+            group_width: 0.6,
+            ..crate::defaults::bar_groups()
+        })
+    );
+    assert!(config.left_y.inverted && !plain.left_y.inverted);
+    assert_eq!(
+        config.left_y.category_bands,
+        Some(CategoryBands {
+            fill: crate::Color::from_rgb8(247, 248, 250),
+            every: CategoryBandEvery::Alternate,
+        })
+    );
+    assert_eq!(plain.left_y.category_bands, None);
+    // The row labels are the host's: the chart made from it fits them.
+    assert_eq!(config.layout_state, crate::config::LayoutState::Fitted);
+    assert!(config.grid.show_major_x && !config.grid.show_major_y);
+    assert!(!config.grid.show_minor_x && !config.grid.show_minor_y);
+    assert!(config.top_x.line_visible && !config.right_y.line_visible);
+    assert!(!config.left_y.line_visible && !config.bottom_x.line_visible);
+    for axis in [&config.bottom_x, &config.left_y] {
+        assert_eq!(axis.tick, TickVisibility::None);
+        assert_ne!(axis.label_style.color, plain.bottom_x.label_style.color);
+    }
+    assert_ne!(config.top_x.line_color, plain.top_x.line_color);
+    // The helpers' default differs from the documented one by its tick
+    // label format alone (#357).
+    assert_eq!(
+        plain,
+        crate::default::config_with_default_label_format(crate::defaults::config())
+    );
+    #[cfg(feature = "serde")]
+    {
+        let json = serde_json::to_string(&config).unwrap();
+        assert_eq!(serde_json::from_str::<Config>(&json).unwrap(), config);
+    }
 }

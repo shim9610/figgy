@@ -236,7 +236,8 @@ pub(super) fn build_fit_token_from_state(
             })?;
         // A DataLess series reads no column (#203, #234): it fits from its
         // SSOT at commit, so it stamps none.
-        if !item.is_dataless() {
+        // Range links read no column either (#357).
+        if !item.is_dataless() && item.render_type.range_links().is_none() {
             push_fit_column_stamp(
                 pool,
                 streaming_sources,
@@ -299,16 +300,16 @@ pub(super) fn build_fit_token_from_state(
             push_fit_column_stamp(pool, streaming_sources, &mut columns, FIT_ROLE_VECTOR_V, v)?;
         }
         let params = match &item.render_type {
-            DataRenderType::Vector {
+            DataRenderType::Vector(VectorSeries {
                 components: crate::data_config::VectorComponents::Points { .. },
                 style,
-            } => match style.scale {
+            }) => match style.scale {
                 crate::data_config::VectorScale::Data { factor } => FitExtentParams::VectorTips {
                     factor_bits: factor.to_bits(),
                 },
                 crate::data_config::VectorScale::Pixels { .. } => FitExtentParams::Columns,
             },
-            DataRenderType::Histogram { bar } => FitExtentParams::Histogram {
+            DataRenderType::Histogram(HistogramSeries { bar }) => FitExtentParams::Histogram {
                 baseline_bits: bar.baseline.to_bits(),
                 orientation: match bar.orientation {
                     crate::data_config::BarOrientation::Vertical => 0,
@@ -819,6 +820,9 @@ impl Renderer {
         crate::chart::apply_auto_fit_all(&mut state.config, x_extent, y_extent, padding);
         // Subplots linked to the parent's axes follow the fitted range.
         state.config.sync_subplot_links(None);
+        // New ranges are new tick labels: a layout the chart keeps fitted is
+        // fitted to them as part of the fit (#357).
+        state.config = super::registry::kept_layout(state.config.clone());
         state.revisions.desired = desired;
         state.revisions.config = config;
         state.revisions.view = view;
@@ -1253,7 +1257,7 @@ impl Renderer {
             .get(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
         let padding = resolved.padding;
-        let mut chart = crate::chart::Chart::new(state.config.clone());
+        let mut chart = crate::chart::Chart::stored(state.config.clone());
         match resolved.kind {
             AutoFitAllKind::Skip => return Ok(()),
             AutoFitAllKind::Parallel => {
@@ -1288,7 +1292,8 @@ impl Renderer {
                     }
                 }
                 for item in &state.series {
-                    let DataRenderType::Histogram { bar } = &item.render_type else {
+                    let DataRenderType::Histogram(HistogramSeries { bar }) = &item.render_type
+                    else {
                         continue;
                     };
                     let (x, y) = state.config.series_fit_roles(layer, &item.series_id);
@@ -1368,7 +1373,23 @@ impl Renderer {
                 .into_iter()
                 .map(|(stamp, _, _, extent)| (stamp, extent)),
         );
+        // Auto-scaled arrows fit their spacing in the fitted chart (#357):
+        // the series are cloned only when a scale moves.
+        let rescaled = if state
+            .series
+            .iter()
+            .any(|item| auto_scaled_components(item).is_some())
+        {
+            let mut series = state.series.clone();
+            self.fit_vector_scales_unreported(chart.config(), &mut series)?
+                .then_some(series)
+        } else {
+            None
+        };
         self.set_chart_config(id, chart.config().clone())?;
+        if let Some(series) = rescaled {
+            self.set_chart_series_unreported(id, series)?;
+        }
         let state = self
             .chart_states
             .get_mut(&id)
@@ -1387,7 +1408,15 @@ impl Renderer {
     /// call (#297): the x and y axes of the base chart, of each overlay
     /// layer and of each subplot and its overlays, and the z axis of a 3D
     /// chart. A chart starts at a `0..1` placeholder range; this is the
-    /// call that replaces it for a first plot.
+    /// call that replaces it for a first plot. Then, from the fitted data
+    /// area, the scale of every auto-scaled vector series
+    /// ([`Self::fit_vector_scales`], #357), which consumes its
+    /// `VectorStyle::auto_scale`: the series are written, so the SSOT says
+    /// how long the arrows draw. Then the stroke share of every
+    /// energy-level series' column slots (`LevelStrokeStyle::slot_fraction`,
+    /// #357): narrowed, never widened, to the share whose level labels fit
+    /// their own lane best, and kept on a second fit.
+    /// [`Self::register_chart`] runs this fit once on a new chart.
     ///
     /// Each layer is fitted with
     /// [`Chart::auto_fit_layer_union`](crate::chart::Chart::auto_fit_layer_union)
@@ -1404,26 +1433,36 @@ impl Renderer {
     ///
     /// A layer without series, and an axis whose columns have no finite
     /// span, keep their ranges; a chart nothing moves is not marked
-    /// changed. On an error the chart is left as it was: a column that is
-    /// not registered is `UnknownColumn`, a streamed source is refused with
-    /// `ColumnNotResident` (rule 8), and a monotonic series with
-    /// `MonotonicMappingEdit`, since its x range is set by `set_monotonic`.
+    /// changed. On an error the chart and the series are left as they
+    /// were: a column that is not registered is `UnknownColumn`, a streamed
+    /// source is refused with `ColumnNotResident` (rule 8), and a monotonic
+    /// series with `MonotonicMappingEdit`, since its x range is set by
+    /// `set_monotonic`.
     pub fn fit_ranges(
         &self,
         chart: &mut crate::chart::Chart,
-        series: &[SeriesConfig],
+        series: &mut [SeriesConfig],
     ) -> Result<()> {
         let result = self.fit_ranges_unreported(chart, series);
         self.reported(result)
     }
 
-    fn fit_ranges_unreported(
+    pub(in crate::renderer) fn fit_ranges_unreported(
         &self,
         chart: &mut crate::chart::Chart,
-        series: &[SeriesConfig],
+        series: &mut [SeriesConfig],
     ) -> Result<()> {
         self.require_fit_series(series)?;
-        chart.auto_fit_every_layer(&self.pool, series, FIT_RANGES_PADDING)
+        // Every refusal comes before the first write.
+        for item in series.iter() {
+            if let Some(components) = auto_scaled_components(item) {
+                self.vector_arrow_count(components)?;
+            }
+        }
+        chart.auto_fit_every_layer(&self.pool, series, FIT_RANGES_PADDING)?;
+        self.fit_vector_scales_unreported(chart.config(), series)?;
+        fit_level_slots(chart.config(), series);
+        Ok(())
     }
 
     /// The series rules every whole-chart fit holds to: each series reads
@@ -1494,12 +1533,137 @@ impl Renderer {
         self.reported(result)
     }
 
+    /// [`Self::fit_config`] for one layer's chosen axes (#334): a copy of
+    /// `config` in which only the axes `scope` selects move, fitted from
+    /// the registered columns' cached statistics with `padding`. No chart,
+    /// view or column changes, and `config` is not changed.
+    ///
+    /// The target is `scope.layer`'s `x`, `y` and `z` axes as
+    /// `scope.axes` selects them: `x` and `y` are the axes the layer's
+    /// series are drawn against (an overlay's own, or with its link on its
+    /// chart's), `z` is the z axis of a 3D chart (the cell's `right_y`),
+    /// and on a parallel chart the parallel axes are `y`. Every other axis
+    /// of every layer comes back exactly as given. A moved axis that is
+    /// linked moves its whole link group, as in [`Self::fit_config`].
+    ///
+    /// `scope.linked` chooses the series read: [`LinkedFitData::Group`]
+    /// reads every series drawn against the axis' link group, as
+    /// [`Self::fit_config`] does; [`LinkedFitData::Target`] reads only the
+    /// series drawn in the target's panel (the parent chart, or the
+    /// target's subplot cell, its overlays included), and the link group
+    /// still shares the resulting range. `scope.keep` names axes that hold
+    /// their range: a target axis linked to a kept axis (the same axis
+    /// after following overlay and subplot links) is not moved either,
+    /// since a link group has one range.
+    ///
+    /// Statistics only: error bar ends, heatmap cell half-widths and
+    /// arrow tips are not in the column statistics and are not included;
+    /// [`Self::begin_series_fit_extent`] measures drawn extents. An axis
+    /// whose series have no finite span keeps its range.
+    ///
+    /// The refusals are those of [`Self::fit_config`] (padding, layer
+    /// series, overlay and subplot rules, line offsets, unregistered or
+    /// streamed columns, monotonic series), and a `scope.layer` or a
+    /// `scope.keep` entry naming an overlay or subplot the candidate does
+    /// not have (`InvalidConfig { field: "fit_scope", kind: FitScopeLayer
+    /// }`).
+    ///
+    /// [`LinkedFitData::Group`]: crate::LinkedFitData::Group
+    /// [`LinkedFitData::Target`]: crate::LinkedFitData::Target
+    pub fn fit_config_scoped(
+        &self,
+        config: &crate::Config,
+        series: &[SeriesConfig],
+        padding: f64,
+        scope: &crate::FitScope<'_>,
+    ) -> Result<crate::Config> {
+        let result = self.fit_config_scoped_unreported(config, series, padding, scope);
+        self.reported(result)
+    }
+
+    fn fit_config_scoped_unreported(
+        &self,
+        config: &crate::Config,
+        series: &[SeriesConfig],
+        padding: f64,
+        scope: &crate::FitScope<'_>,
+    ) -> Result<crate::Config> {
+        self.require_fit_candidate(config, series, padding)?;
+        if !fit_layer_exists(config, scope.layer)
+            || scope
+                .keep
+                .iter()
+                .any(|kept| !fit_layer_exists(config, kept.layer))
+        {
+            return Err(FiggyError::InvalidConfig {
+                field: "fit_scope",
+                kind: crate::RuleKind::FitScopeLayer,
+            });
+        }
+        // A selected axis moves unless it is one of the kept axes' link
+        // groups.
+        let moved = |selected: bool, axis: crate::FitAxis| {
+            let identity = fit_axis_identity(config, scope.layer, axis);
+            (selected
+                && !scope
+                    .keep
+                    .iter()
+                    .any(|kept| fit_axis_identity(config, kept.layer, kept.axis) == identity))
+            .then_some(identity)
+        };
+        let moved = [
+            moved(scope.axes.x, crate::FitAxis::X),
+            moved(scope.axes.y, crate::FitAxis::Y),
+            moved(scope.axes.z, crate::FitAxis::Z),
+        ];
+        let axes = crate::FitAxes {
+            x: moved[0].is_some(),
+            y: moved[1].is_some(),
+            z: moved[2].is_some(),
+        };
+        let panel = fit_cell(scope.layer);
+        let include = |item: &SeriesConfig| match scope.linked {
+            crate::LinkedFitData::Group => true,
+            crate::LinkedFitData::Target => {
+                fit_cell(config.layer_of_series(&item.series_id)) == panel
+            }
+        };
+        let mut fitted = crate::chart::Chart::fitted_layer_where(
+            config,
+            &self.pool,
+            scope.layer,
+            series,
+            include,
+            axes,
+            padding,
+        )?;
+        // A fit also keeps link groups in step and gives a 3D chart's z axis
+        // the y range before fitting it; put back every axis outside the
+        // moved link groups, so only the scope moves.
+        keep_unmoved_axes(&mut fitted, config, |identity| {
+            moved.contains(&Some(identity))
+        });
+        Ok(fitted)
+    }
+
     fn fit_config_unreported(
         &self,
         config: &crate::Config,
         series: &[SeriesConfig],
         padding: f64,
     ) -> Result<crate::Config> {
+        self.require_fit_candidate(config, series, padding)?;
+        crate::chart::Chart::fitted_every_layer(config, &self.pool, series, padding)
+    }
+
+    /// The rules every candidate fit holds `config`, `series` and
+    /// `padding` to ([`Self::fit_config`], [`Self::fit_config_scoped`]).
+    fn require_fit_candidate(
+        &self,
+        config: &crate::Config,
+        series: &[SeriesConfig],
+        padding: f64,
+    ) -> Result<()> {
         if !padding.is_finite() || padding < 0.0 {
             return Err(FiggyError::InvalidConfig {
                 field: "padding",
@@ -1525,8 +1689,7 @@ impl Renderer {
                 field: "line_offsets",
                 kind,
             })?;
-        self.require_fit_series(series)?;
-        crate::chart::Chart::fitted_every_layer(config, &self.pool, series, padding)
+        self.require_fit_series(series)
     }
 
     /// Fit `series`' point size map domain to its size column's native
@@ -1602,7 +1765,7 @@ impl Renderer {
             kind,
         };
         let three_d = config.drawn_z_column(series).is_some();
-        let DataRenderType::Vector { components, style } = &series.render_type else {
+        let DataRenderType::Vector(VectorSeries { components, style }) = &series.render_type else {
             return Err(refuse(series, crate::RuleKind::VectorFitNotVector));
         };
         if !target.is_finite() || target <= 0.0 {
@@ -1635,10 +1798,107 @@ impl Renderer {
         if !fits {
             return Err(refuse(series, crate::RuleKind::VectorFitExtent));
         }
-        if let DataRenderType::Vector { style, .. } = &mut series.render_type {
+        if let DataRenderType::Vector(VectorSeries { style, .. }) = &mut series.render_type {
             *style = fitted;
         }
         Ok(())
+    }
+
+    /// Fit every auto-scaled vector series in `series` to the spacing of
+    /// its arrows (#357): each vector series with
+    /// `VectorStyle::auto_scale` on and a `VectorScale::Pixels` scale gets
+    /// the scale [`Self::fit_vector_scale`] writes for the target
+    /// `VectorStyle::auto_scale_target_px` chooses from its arrow count
+    /// (its `u` columns' registered length) and `config`'s data area, and
+    /// turns `auto_scale` off: the flag asks for one fit, and the first fit
+    /// consumes it, so the stored scale stays through later fits. Only
+    /// those values change; the arrows draw at the written scale, so the
+    /// SSOT always says how long they are. A `Data` scale is an explicit
+    /// unit choice and stays, as does a series whose components are all
+    /// zero (it keeps the flag: it had nothing to fit) or a config whose
+    /// layout is infeasible. [`Self::register_chart`],
+    /// [`Self::fit_ranges`] and [`Self::commit_auto_fit_all`] run it.
+    ///
+    /// Refused, leaving every series unchanged: a component column that is
+    /// not registered (`UnknownColumn`) or streamed (`ColumnNotResident`,
+    /// rule 8).
+    pub fn fit_vector_scales(
+        &self,
+        config: &crate::Config,
+        series: &mut [SeriesConfig],
+    ) -> Result<()> {
+        let result = self
+            .fit_vector_scales_unreported(config, series)
+            .map(|_| ());
+        self.reported(result)
+    }
+
+    /// [`Self::fit_vector_scales`], reporting whether a scale changed.
+    fn fit_vector_scales_unreported(
+        &self,
+        config: &crate::Config,
+        series: &mut [SeriesConfig],
+    ) -> Result<bool> {
+        // Every refusal comes before the first write.
+        for item in series.iter() {
+            if let Some(components) = auto_scaled_components(item) {
+                self.vector_arrow_count(components)?;
+            }
+        }
+        let Ok(area) = config.data_area() else {
+            return Ok(false);
+        };
+        let (width, height) = (f64::from(area.0.width), f64::from(area.0.height));
+        let mut changed = false;
+        for item in series.iter_mut() {
+            let Some(components) = auto_scaled_components(item) else {
+                continue;
+            };
+            let arrows = self.vector_arrow_count(components)?;
+            let DataRenderType::Vector(VectorSeries { style, .. }) = &item.render_type else {
+                continue;
+            };
+            let Some(target) = style.auto_scale_target_px(arrows, width, height) else {
+                continue;
+            };
+            match self.fit_vector_scale_unreported(config, item, target) {
+                Ok(()) => {}
+                // A field of zero vectors has no scale to fit.
+                Err(FiggyError::InvalidSeriesConfig {
+                    kind: crate::RuleKind::VectorFitExtent,
+                    ..
+                }) => continue,
+                Err(error) => return Err(error),
+            }
+            // The fit wrote the scale and turned `auto_scale` off: the
+            // flag is consumed (#357).
+            changed = true;
+        }
+        Ok(changed)
+    }
+
+    /// The number of arrows `components` draw: the registered length of
+    /// the `u` column, or of every column of a `u` grid.
+    fn vector_arrow_count(
+        &self,
+        components: &crate::data_config::VectorComponents,
+    ) -> Result<usize> {
+        let len = |id: &str| {
+            if self.streaming_sources.contains_key(id) {
+                return Err(FiggyError::ColumnNotResident { id: id.to_owned() });
+            }
+            self.pool
+                .slot(id)
+                .map(|slot| slot.len_values)
+                .ok_or_else(|| FiggyError::UnknownColumn { id: id.to_owned() })
+        };
+        match components {
+            crate::data_config::VectorComponents::Points { u, .. } => len(u),
+            crate::data_config::VectorComponents::Grid { u, .. } => u
+                .columns
+                .iter()
+                .try_fold(0usize, |sum, id| Ok(sum + len(id)?)),
+        }
     }
 
     /// A resident column's cached statistics as a fit extent: a streamed
@@ -1652,6 +1912,68 @@ impl Renderer {
     }
 }
 
+/// Narrows each energy-level series' stroke share of its column slots so
+/// its level labels fit before the next column's strokes (#357), over the
+/// panel `config` draws the series in: a display parameter chosen once by
+/// the fit and written to the SSOT (`style.level.slot_fraction`). A second
+/// fit over the same document keeps the value. A series whose records or
+/// panel cannot be placed keeps its own.
+fn fit_level_slots(config: &crate::Config, series: &mut [SeriesConfig]) {
+    if !series
+        .iter()
+        .any(|item| item.render_type.energy_levels().is_some())
+    {
+        return;
+    }
+    let Ok(expansion) = config.expand() else {
+        return;
+    };
+    for index in 0..series.len() {
+        let fitted = {
+            let item = &series[index];
+            let Some(levels) = item.render_type.energy_levels() else {
+                continue;
+            };
+            let Some(records) = crate::renderer::energy_level_records(levels, series) else {
+                continue;
+            };
+            let layer = config.layer_of_series(&item.series_id);
+            let Some(panel) = expansion.panels.iter().find(|panel| panel.layer == layer) else {
+                continue;
+            };
+            let panel = &panel.config;
+            let space = crate::annotation::pixel_space_for_config(panel);
+            let placement = crate::energy_levels::LevelPlacement {
+                space: &space,
+                categories: panel.bottom_x.categories.as_deref().unwrap_or(&[]),
+                view: levels.show,
+                colorbar: panel.colorbar.as_ref(),
+                picked: None,
+            };
+            let policy = crate::text_render::FontPolicy::for_style(&panel.draw_style);
+            let measure = crate::text_render::CpuTextMeasure::with_policy(policy);
+            placement.fitted_slot_fraction(records, &levels.style, &measure)
+        };
+        if let DataRenderType::EnergyLevels(levels) = &mut series[index].render_type {
+            levels.style.level.slot_fraction = fitted;
+        }
+    }
+}
+
+/// The components of an auto-scaled vector series with a pixel scale, the
+/// series [`Renderer::fit_vector_scales`] fits (#357).
+fn auto_scaled_components(series: &SeriesConfig) -> Option<&crate::data_config::VectorComponents> {
+    match &series.render_type {
+        DataRenderType::Vector(VectorSeries { components, style })
+            if style.auto_scale
+                && matches!(style.scale, crate::data_config::VectorScale::Pixels { .. }) =>
+        {
+            Some(components)
+        }
+        _ => None,
+    }
+}
+
 /// The point size map a series' markers draw with: an XY or ternary
 /// scatter's `point_size_map`.
 fn point_size_map_mut(series: &mut SeriesConfig) -> Option<&mut crate::data_config::PointSizeMap> {
@@ -1660,10 +1982,10 @@ fn point_size_map_mut(series: &mut SeriesConfig) -> Option<&mut crate::data_conf
             scatter: Some(scatter),
             ..
         })
-        | DataRenderType::Ternary {
+        | DataRenderType::Ternary(TernarySeries {
             scatter: Some(scatter),
             ..
-        } => scatter.point_size_map.as_mut(),
+        }) => scatter.point_size_map.as_mut(),
         _ => None,
     }
 }
@@ -1705,5 +2027,155 @@ fn keep_x_axes(fitted: &mut crate::Config, original: &crate::Config) {
     }
     for (subplot, kept) in fitted.subplots.iter_mut().zip(&original.subplots) {
         keep_x_axes(&mut subplot.config, &kept.config);
+    }
+}
+
+/// One axis as a link group: every axis a scoped fit (#334) cannot move
+/// without the others. A chart's X or Y is the root of its subplot link
+/// chain (`Config::subplot_link_root`); an overlay's own axis is its own;
+/// an overlay's linked axis is its chart's; the z axis (`right_y` of a 3D
+/// chart) is its cell's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FitAxisIdentity {
+    ChartX(crate::CellRef),
+    ChartY(crate::CellRef),
+    Z(crate::CellRef),
+    OverlayX(crate::LayerRef),
+    OverlayY(crate::LayerRef),
+}
+
+/// The panel `layer` draws in: the parent chart, or a subplot cell (its
+/// overlays included), as `Config::series_fit_roles` groups them.
+fn fit_cell(layer: crate::LayerRef) -> crate::CellRef {
+    match layer {
+        crate::LayerRef::Subplot(index) | crate::LayerRef::SubplotOverlay(index, _) => {
+            crate::CellRef::Subplot(index)
+        }
+        crate::LayerRef::Base | crate::LayerRef::Overlay(_) | crate::LayerRef::Annotations => {
+            crate::CellRef::Parent
+        }
+    }
+}
+
+/// The link group of `axis` of `layer` in `config` ([`FitAxisIdentity`]).
+fn fit_axis_identity(
+    config: &crate::Config,
+    layer: crate::LayerRef,
+    axis: crate::FitAxis,
+) -> FitAxisIdentity {
+    let cell = fit_cell(layer);
+    let root = |x: bool| match cell {
+        crate::CellRef::Parent => crate::CellRef::Parent,
+        crate::CellRef::Subplot(index) => config.subplot_link_root(index, x),
+    };
+    let overlay = config.overlay_of_layer(layer);
+    match axis {
+        crate::FitAxis::X if overlay.is_some_and(|overlay| !overlay.link_x) => {
+            FitAxisIdentity::OverlayX(layer)
+        }
+        crate::FitAxis::X => FitAxisIdentity::ChartX(root(true)),
+        crate::FitAxis::Y if overlay.is_some_and(|overlay| !overlay.link_y) => {
+            FitAxisIdentity::OverlayY(layer)
+        }
+        crate::FitAxis::Y => FitAxisIdentity::ChartY(root(false)),
+        crate::FitAxis::Z => FitAxisIdentity::Z(cell),
+    }
+}
+
+/// Whether `config` has `layer`: the base and annotation layers always,
+/// an overlay or subplot only inside its list.
+fn fit_layer_exists(config: &crate::Config, layer: crate::LayerRef) -> bool {
+    match layer {
+        crate::LayerRef::Base | crate::LayerRef::Annotations => true,
+        crate::LayerRef::Overlay(index) => index < config.overlays.len(),
+        crate::LayerRef::Subplot(index) => index < config.subplots.len(),
+        crate::LayerRef::SubplotOverlay(index, overlay) => config
+            .subplots
+            .get(index)
+            .is_some_and(|subplot| overlay < subplot.config.overlays.len()),
+    }
+}
+
+/// Put every axis of `original` whose link group `moved` does not accept
+/// back into `fitted`: the parent's, each overlay's and each subplot's and
+/// its overlays'. Both configurations have the same layers, since a fit
+/// changes ranges only.
+fn keep_unmoved_axes(
+    fitted: &mut crate::Config,
+    original: &crate::Config,
+    moved: impl Fn(FitAxisIdentity) -> bool,
+) {
+    let parent = crate::CellRef::Parent;
+    keep_unmoved_chart_axes(
+        fitted,
+        original,
+        [
+            FitAxisIdentity::ChartX(parent),
+            FitAxisIdentity::ChartY(parent),
+            FitAxisIdentity::Z(parent),
+        ],
+        crate::LayerRef::Overlay,
+        &moved,
+    );
+    for (index, (subplot, kept)) in fitted
+        .subplots
+        .iter_mut()
+        .zip(&original.subplots)
+        .enumerate()
+    {
+        keep_unmoved_chart_axes(
+            &mut subplot.config,
+            &kept.config,
+            [
+                FitAxisIdentity::ChartX(original.subplot_link_root(index, true)),
+                FitAxisIdentity::ChartY(original.subplot_link_root(index, false)),
+                FitAxisIdentity::Z(crate::CellRef::Subplot(index)),
+            ],
+            |overlay| crate::LayerRef::SubplotOverlay(index, overlay),
+            &moved,
+        );
+    }
+}
+
+/// [`keep_unmoved_axes`] for one chart, whose X, Y and z axes are
+/// `[x, y, z]` and whose overlay `n` is `overlay(n)`. `right_y` is the z
+/// axis on a 3D chart and the Y axis' partner otherwise; the parallel axes
+/// are Y.
+fn keep_unmoved_chart_axes(
+    fitted: &mut crate::Config,
+    original: &crate::Config,
+    [x, y, z]: [FitAxisIdentity; 3],
+    overlay: impl Fn(usize) -> crate::LayerRef,
+    moved: &impl Fn(FitAxisIdentity) -> bool,
+) {
+    if !moved(x) {
+        fitted.bottom_x = original.bottom_x.clone();
+        fitted.top_x = original.top_x.clone();
+    }
+    if !moved(y) {
+        fitted.left_y = original.left_y.clone();
+        if let (Some(parallel), Some(kept)) = (fitted.parallel_mut(), original.parallel()) {
+            for (axis, kept) in parallel.axes.iter_mut().zip(&kept.axes) {
+                axis.min = kept.min;
+                axis.max = kept.max;
+            }
+        }
+    }
+    let right = if original.view_3d().is_some() { z } else { y };
+    if !moved(right) {
+        fitted.right_y = original.right_y.clone();
+    }
+    for (index, (layer, kept)) in fitted
+        .overlays
+        .iter_mut()
+        .zip(&original.overlays)
+        .enumerate()
+    {
+        if !moved(FitAxisIdentity::OverlayX(overlay(index))) {
+            layer.x_axis = kept.x_axis.clone();
+        }
+        if !moved(FitAxisIdentity::OverlayY(overlay(index))) {
+            layer.y_axis = kept.y_axis.clone();
+        }
     }
 }

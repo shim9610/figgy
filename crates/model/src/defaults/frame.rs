@@ -1,10 +1,8 @@
 //! Chart frame: the document, its axes, title, legend, grid and colour bar.
 
-#![allow(unused_imports)]
 // Some sources are read only by `Default` (`crate::helpers`).
 #![cfg_attr(not(feature = "helpers"), allow(dead_code))]
 
-use super::*;
 use crate::config::*;
 use crate::format::*;
 use crate::layout::*;
@@ -64,6 +62,7 @@ pub(crate) fn axis_options_colorbar() -> AxisOptions {
         log_ticks: LogTickPolicy::Decades,
         breaks: None,
         unit: None,
+        category_bands: None,
     }
 }
 
@@ -95,6 +94,7 @@ pub(crate) fn axis_options_x() -> AxisOptions {
         log_ticks: LogTickPolicy::Decades,
         breaks: None,
         unit: None,
+        category_bands: None,
     }
 }
 
@@ -126,6 +126,7 @@ pub(crate) fn axis_options_y() -> AxisOptions {
         log_ticks: LogTickPolicy::Decades,
         breaks: None,
         unit: None,
+        category_bands: None,
     }
 }
 
@@ -252,6 +253,8 @@ pub(crate) fn config() -> Config {
         line_offsets: None,
         plot_background: None,
         background: None,
+        // Drawn as stored: a chart made by `Chart::sized` asks for its fit.
+        layout_state: LayoutState::Fixed,
     }
 }
 

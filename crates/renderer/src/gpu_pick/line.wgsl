@@ -146,17 +146,23 @@ fn pick_stroke_candidate(
     // two points; a ternary line is linear, so the segment is its chord.
     let ternary = pick_ternary();
     let next_index = pick_next_point(segment_index);
-    if ternary {
-        if !pick_ternary_valid(segment_index, ax, ay) || !pick_ternary_valid(next_index, bx, by) {
-            return pick_invalid_candidate(series_order);
+    // Both ends valid: one call of each test in a loop over the two ends,
+    // since a software GPU compiler pays for every inlined copy of a
+    // projection (#363). The tests are pure, so this is their conjunction.
+    var ends_valid = true;
+    for (var end = 0u; end < 2u; end = end + 1u) {
+        let at_b = end == 1u;
+        let x = select(ax, bx, at_b);
+        let y = select(ay, by, at_b);
+        if ternary {
+            ends_valid = ends_valid & pick_ternary_valid(select(segment_index, next_index, at_b), x, y);
+        } else {
+            ends_valid = ends_valid & pick_coordinate_is_valid(x, 0u) & pick_coordinate_is_valid(y, 1u)
+                & polar_sample_valid(t, x, y);
         }
-    } else {
-        if !pick_coordinate_is_valid(ax, 0u) || !pick_coordinate_is_valid(ay, 1u) || !pick_coordinate_is_valid(bx, 0u) || !pick_coordinate_is_valid(by, 1u) {
-            return pick_invalid_candidate(series_order);
-        }
-        if !polar_sample_valid(t, ax, ay) || !polar_sample_valid(t, bx, by) {
-            return pick_invalid_candidate(series_order);
-        }
+    }
+    if !ends_valid {
+        return pick_invalid_candidate(series_order);
     }
     // A step mode tests every axis-aligned piece of the segment and keeps the
     // nearest (lowest piece index on a tie); a linear segment is its single
@@ -186,13 +192,22 @@ fn pick_stroke_candidate(
     var best_length = 0.0;
     for (var k = 0u; k < pieces; k = k + 1u) {
         let piece = step_piece(ax, ay, bx, by, mode, k);
-        var a_px = pick_data_px(piece.x0, piece.y0);
-        var b_px = step_piece_end(t, piece, a_px, pick_data_px(piece.x1, piece.y1));
-        if ternary {
-            a_px = pick_ternary_px(segment_index, ax, ay);
-            b_px = pick_ternary_px(next_index, bx, by);
+        // The piece's two ends, from one projection call in a loop (#363).
+        var ends = array<vec2<f32>, 2>();
+        for (var end = 0u; end < 2u; end = end + 1u) {
+            let at_b = end == 1u;
+            if ternary {
+                ends[end] = pick_ternary_px(select(segment_index, next_index, at_b), select(ax, bx, at_b), select(ay, by, at_b));
+            } else {
+                ends[end] = pick_data_px(select(piece.x0, piece.x1, at_b), select(piece.y0, piece.y1, at_b));
+            }
         }
-        if !pick_is_finite(a_px.x) || !pick_is_finite(a_px.y) || !pick_is_finite(b_px.x) || !pick_is_finite(b_px.y) {
+        var a_px = ends[0];
+        var b_px = ends[1];
+        if !ternary {
+            b_px = step_piece_end(t, piece, a_px, b_px);
+        }
+        if !(pick_is_finite(a_px.x) & pick_is_finite(a_px.y) & pick_is_finite(b_px.x) & pick_is_finite(b_px.y)) {
             return pick_invalid_candidate(series_order);
         }
         coordinate_scale = max(coordinate_scale, max(max(abs(a_px.x), abs(a_px.y)), max(abs(b_px.x), abs(b_px.y))));
@@ -294,8 +309,6 @@ fn pick_path_arrow_candidate(
     let cursor_arc = arc_add(arc_a, arc_from_px(position * arc_len));
     let px = pick_query_params.vector_px;
     let tr = pick_query_params.transform;
-    let range_x = fma(1.0, tr.data_max.x - tr.data_min.x, tr.data_max_lo.x - tr.data_min_lo.x);
-    let range_y = fma(1.0, tr.data_max.y - tr.data_min.y, tr.data_max_lo.y - tr.data_min_lo.y);
     let nearest = arc_cell(cursor_arc, spacing).index;
     var best = PICK_F32_MAX;
     for (var k = 0u; k < 3u; k = k + 1u) {
@@ -311,10 +324,16 @@ fn pick_path_arrow_candidate(
         // `project_arrow`'s pixel mode at the head's point, in this
         // shader's y-up frame.
         let tail = pick_data_px(head.x, head.y);
-        let direction = vec2<f32>(
-            axis_px_per_unit_at(range_x, tr.data_to_panel_scale.x * cut_scale_at(cuts_of(tr.breaks, tr.break_info, 0u), axis_data_t(head.x, tr.data_min.x, tr.data_max.x, tr.data_min_lo.x, tr.data_max_lo.x, tr.scale_log.x, tr.scale_prob.x)), tr.scale_log.x, tr.scale_prob.x, tr.pixel_to_ndc.x, head.x) * head.tangent.x,
-            axis_px_per_unit_at(range_y, tr.data_to_panel_scale.y * cut_scale_at(cuts_of(tr.breaks, tr.break_info, 1u), axis_data_t(head.y, tr.data_min.y, tr.data_max.y, tr.data_min_lo.y, tr.data_max_lo.y, tr.scale_log.y, tr.scale_prob.y)), tr.scale_log.y, tr.scale_prob.y, tr.pixel_to_ndc.y, head.y) * head.tangent.y,
-        );
+        // Both axes from one call of each helper in a loop: a software GPU
+        // compiler pays for every inlined copy (#363).
+        var direction = vec2<f32>(0.0);
+        for (var axis = 0u; axis < 2u; axis = axis + 1u) {
+            let v = select(head.x, head.y, axis == 1u);
+            let range = fma(1.0, tr.data_max[axis] - tr.data_min[axis], tr.data_max_lo[axis] - tr.data_min_lo[axis]);
+            let data_t = axis_data_t(v, tr.data_min[axis], tr.data_max[axis], tr.data_min_lo[axis], tr.data_max_lo[axis], tr.scale_log[axis], tr.scale_prob[axis]);
+            let panel_scale = tr.data_to_panel_scale[axis] * cut_scale_at(cuts_of(tr.breaks, tr.break_info, axis), data_t);
+            direction[axis] = axis_px_per_unit_at(range, panel_scale, tr.scale_log[axis], tr.scale_prob[axis], tr.pixel_to_ndc[axis], v) * head.tangent[axis];
+        }
         let direction_len = length(direction);
         let len_px = px.x * length(head.tangent);
         if !pick_is_finite(tail.x) || !pick_is_finite(tail.y) || !pick_is_finite(direction_len) || !(direction_len > 0.0) || !pick_is_finite(len_px) {

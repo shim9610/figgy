@@ -7,7 +7,7 @@
 use std::time::Instant;
 
 use renderer::Chart;
-use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba};
+use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at};
 use renderer::color::Color;
 use renderer::config::{DrawStyle, MilkywayOptions};
 
@@ -31,11 +31,12 @@ fn build_chart(w: u32, h: u32, style: DrawStyle) -> Chart {
 
 fn time_layer(config: &renderer::config::Config, layer: AxisLayerKind) -> f64 {
     // Warm-up (font db init etc.), then median of 5.
-    let _ = try_raster_chart_layer_to_rgba(config, layer).unwrap();
+    let _ = try_raster_chart_layer_to_rgba_with_selection_at(config, layer, &[], 1.0).unwrap();
     let mut samples: Vec<f64> = (0..5)
         .map(|_| {
             let t = Instant::now();
-            let _ = try_raster_chart_layer_to_rgba(config, layer).unwrap();
+            let _ =
+                try_raster_chart_layer_to_rgba_with_selection_at(config, layer, &[], 1.0).unwrap();
             t.elapsed().as_secs_f64() * 1000.0
         })
         .collect();

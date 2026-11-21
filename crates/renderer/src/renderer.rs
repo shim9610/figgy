@@ -85,8 +85,9 @@ use crate::data::{ColumnSource, HiLoColumnSource};
 use crate::data_config::{
     DataBarBinStyleConfig, DataBarStyleConfig, DataErrorBarPointStyleConfig,
     DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterPointStyleConfig,
-    DataScatterStyleConfig, ErrorRef, LineFill, LineInterpolation, ScatterShape, SeriesConfig,
-    SizeScale,
+    DataScatterStyleConfig, ErrorRef, HistogramSeries, LineFill, LineInterpolation, ParallelSeries,
+    RgbImageSeries, ScatterShape, SeriesConfig, SizeScale, StreamlineSeries, TernarySeries,
+    VectorSeries,
 };
 use crate::data_render::{
     self, AxisLayer, BatchSource, ColumnBarSelectionLayer, ColumnErrorBarDraw,
@@ -441,6 +442,12 @@ pub struct Renderer {
     resident_displays: Vec<ResidentDisplay>,
     /// Serial of the last composite drawn into any [`ResidentDisplay`].
     resident_display_serial: u64,
+    /// One ink mask per panel of each chart drawn on screen (#381); see
+    /// [`InkMask`].
+    ink_masks: Vec<InkMask>,
+    /// The pass that writes an [`InkMask`]: compiled on the first prepare
+    /// that draws one.
+    ink_mask_pipeline: Option<InkMaskPipeline>,
     /// Anchor compute pipelines plus the label draw's module and layouts.
     /// Compiled on the first frame that asks for a contour label; a chart with
     /// none never pays for the shader.
@@ -470,8 +477,9 @@ pub struct Renderer {
     monotonic: monotonic::MonotonicState,
     arc_pipelines: Option<data_render::line_arc::ArcScanPipelines>,
     /// The background compiles of this renderer's render pipelines in the
-    /// browser (#299): a renderer built by `for_window_minimal_async_observed`
-    /// (or with a shader set) has one; any other renderer creates each
+    /// browser (#299): a renderer built by
+    /// `for_window_with_shader_set_async_observed` has one; any other
+    /// renderer creates each
     /// pipeline when it first draws it, as before.
     #[cfg(target_arch = "wasm32")]
     compile_queue: Option<crate::browser_compile::CompileQueue>,
@@ -523,9 +531,10 @@ pub struct Renderer {
 }
 
 /// In the browser a dropped renderer cannot wait for its submitted work, so
-/// it hands its device and queue to that work's completion instead: the
-/// browser device is never collected with work in flight
-/// (`release_after_submitted_work`).
+/// it hands its device and queue to that work's completion instead, and
+/// destroys the device first when figgy requested it and nothing else holds
+/// it: the browser device is never left for the garbage collector to end
+/// (`release_after_submitted_work`, #322).
 #[cfg(target_arch = "wasm32")]
 impl Drop for Renderer {
     fn drop(&mut self) {

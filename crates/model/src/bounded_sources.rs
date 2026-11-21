@@ -22,10 +22,8 @@
 //! indices and one value column per series, each borrowing the document's
 //! values ([`UploadValues::Dense`]).
 //!
-//! The three document types are deprecated with their readers' names and
-//! are removed in the next milestone.
-// The readers take the deprecated document types.
-#![allow(deprecated)]
+//! The three document types are the readers for documents written before
+//! 0.13.
 
 use crate::boxplot::{BoxPlotChart, BoxPlotDirection, BoxSummary};
 use crate::categorical::CategoricalChart;
@@ -36,13 +34,13 @@ use crate::config::{
 };
 use crate::data::ColumnId;
 use crate::data_config::{
-    BarGroups, BoxPlotSeriesLabels, CategoryBarDirection, CategoryBarMode, CategoryBarSeriesLabels,
-    DataRenderType, RadarSeriesLabels, SeriesConfig, format_box_plot_labels, format_labels,
-    format_radar_labels,
+    BarGroups, BoxPlotSeriesLabels, BoxSeries, CategoryBarDirection, CategoryBarMode,
+    CategoryBarSeries, CategoryBarSeriesLabels, DataRenderType, RadarPolygonSeries,
+    RadarSeriesLabels, SeriesConfig, format_box_plot_labels, format_labels, format_radar_labels,
 };
 use crate::decoration::DecorationId;
 use crate::format::{LabelFormat, PlainNumberFormat};
-use crate::layout::{Side, axis_mut};
+use crate::layout::{ChartArea, DataArea, FitStrategy, LayoutError, Rect, RectF, Side, axis_mut};
 use crate::polar::{AngleUnit, GridShape, PolarInterpolation, PolarOptions};
 use crate::radar::{RadarChart, RadarGridShape};
 use crate::text::RichText;
@@ -372,7 +370,7 @@ pub struct ConvertedColumn {
     pub column: ColumnId,
 }
 
-/// What a `Config::from_*_with_report` conversion returns beside the
+/// What a `Config::from_*_with_report_in` conversion returns beside the
 /// converted chart: which document series each upload belongs to, and every
 /// field the document set that the chart does not carry as it was set.
 ///
@@ -386,13 +384,15 @@ pub struct ConversionReport {
     /// One entry per upload, in upload order.
     pub columns: Vec<ConvertedColumn>,
     /// The dropped and changed fields, in the order the conversion meets
-    /// them: the document-wide fields first.
+    /// them: the document-wide fields first, and an explicit data area the
+    /// converted layout cannot hold last, since it is fitted to the
+    /// finished layout.
     pub notes: Vec<ConversionNote>,
 }
 
 /// The note recorder a converter writes to: off for the plain
 /// `Config::from_*`, which then neither formats a path nor allocates a
-/// note, and on for the `_with_report` variants.
+/// note, and on for the `_with_report_in` variants.
 struct Notes(Option<Vec<ConversionNote>>);
 
 impl Notes {
@@ -441,8 +441,9 @@ struct LegacyDocument<'a> {
 }
 
 /// The notes on the document-wide fields no converter carries: the hover,
-/// the background, an explicit data area, the decoration selection, a
-/// legacy title the rich title hides, and an overlay or subplot layer.
+/// the background, the decoration selection, a legacy title the rich title
+/// hides, and an overlay or subplot layer. An explicit data area is carried
+/// ([`legacy_data_area`]).
 fn legacy_document_notes(notes: &mut Notes, document: &LegacyDocument<'_>) {
     if document.hovered {
         notes.dropped(
@@ -454,12 +455,6 @@ fn legacy_document_notes(notes: &mut Notes, document: &LegacyDocument<'_>) {
         notes.dropped(
             || "background".into(),
             "the background is the host's clear colour, not part of a Config",
-        );
-    }
-    if document.decorations.data_area.is_some() {
-        notes.dropped(
-            || "decorations.data_area".into(),
-            "the converted chart area is a placeholder the host sets; the data area follows the layout",
         );
     }
     if document.decorations.selected.is_some() {
@@ -479,6 +474,53 @@ fn legacy_document_notes(notes: &mut Notes, document: &LegacyDocument<'_>) {
             || "active_layer".into(),
             ConversionNoteKind::Changed,
             "a legacy document has no overlays or subplots; the base layer is active instead",
+        );
+    }
+}
+
+/// Place a converted `config` on the host's `chart_area`, when one is
+/// given (`Config::from_*_with_report_in`), and carry a legacy document's
+/// explicit data area into it ([`Config::fit_legacy_data_area`]) once the
+/// rest of the layout is in place, or, when the layout cannot hold it, keep
+/// the automatic layout and note the field as dropped with the reason.
+///
+/// A document with `text_sizes`, which no release before #357 wrote, and no
+/// explicit data area (or one the layout cannot hold) converts to a layout
+/// its chart keeps fitted ([`crate::config::LayoutState::Fitted`]: the
+/// chart object made from it fits it); every other document draws its
+/// layout as converted.
+fn legacy_data_area(
+    notes: &mut Notes,
+    config: &mut Config,
+    decorations: &crate::DecorationLayout,
+    chart_area: Option<&ChartArea>,
+    sized: bool,
+) {
+    if let Some(chart_area) = chart_area {
+        config.chart_area = chart_area.clone();
+    }
+    if sized {
+        config.layout_state = crate::config::LayoutState::Fitted;
+    }
+    let Some(area) = &decorations.data_area else {
+        return;
+    };
+    if let Err(error) = config.fit_legacy_data_area(area) {
+        notes.dropped(
+            || "decorations.data_area".into(),
+            match error {
+                LayoutError::TargetOutOfChartArea => {
+                    "the explicit data area does not lie inside the converted chart area"
+                }
+                LayoutError::EmptyDataArea => {
+                    "the explicit data area is empty once its edges are rounded to whole pixels"
+                }
+                LayoutError::Infeasible
+                | LayoutError::OverflowHorizontal { .. }
+                | LayoutError::OverflowVertical { .. } => {
+                    "the explicit data area leaves less room than the converted chart's titles, ticks and axis bands take"
+                }
+            },
         );
     }
 }
@@ -539,6 +581,70 @@ fn conversion_report<'a>(
     }
 }
 
+impl Config {
+    /// Place the data area at `area`, a legacy document's explicit
+    /// `decorations.data_area` in this chart's logical pixels (#334): the
+    /// margins are set with [`Config::fit_to_data_area`] and
+    /// [`FitStrategy::PreserveTitles`], so the chart title, the tick marks
+    /// and any colourbar keep their room and each side's axis band takes
+    /// the rest. The legacy rectangle is `f32` and the data area whole
+    /// pixels, so each edge is rounded to the nearest pixel (halves away
+    /// from zero): the left edge to `round(x)`, the right one to
+    /// `round(x + width)`, and the width is their difference; likewise
+    /// vertically. The data area then equals that rounded rectangle
+    /// exactly ([`Config::data_area`]).
+    ///
+    /// Refused, with the config unchanged, when a rounded edge is not
+    /// finite or is negative ([`LayoutError::TargetOutOfChartArea`]), the
+    /// rounded rectangle is empty ([`LayoutError::EmptyDataArea`]) or does
+    /// not lie inside the chart area (`TargetOutOfChartArea`), or a side
+    /// leaves less than its fixed parts take
+    /// ([`LayoutError::Infeasible`]). The converters (`Config::from_*`) call
+    /// it on their placeholder chart area and report a refusal as a dropped
+    /// `decorations.data_area`; a host that sets another chart area calls it
+    /// again on a config converted without the field.
+    pub fn fit_legacy_data_area(&mut self, area: &RectF) -> Result<(), LayoutError> {
+        let target = legacy_data_area_rect(area)?;
+        // Fitted on a copy of the configuration: a refusal, or a fit whose
+        // `f32` margins would not give back the target exactly, changes
+        // nothing.
+        let mut fitted = self.clone();
+        fitted.fit_to_data_area(DataArea(target), FitStrategy::PreserveTitles)?;
+        match fitted.data_area() {
+            Ok(DataArea(placed)) if placed == target => {
+                *self = fitted;
+                Ok(())
+            }
+            Ok(_) => Err(LayoutError::Infeasible),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+/// The whole-pixel rectangle of a legacy explicit data area: each edge
+/// rounded to the nearest pixel ([`Config::fit_legacy_data_area`]).
+fn legacy_data_area_rect(area: &RectF) -> Result<Rect, LayoutError> {
+    let edge = |v: f32| {
+        let v = v.round();
+        if v.is_finite() && v >= 0.0 && v <= u32::MAX as f32 {
+            Ok(v as u32)
+        } else {
+            Err(LayoutError::TargetOutOfChartArea)
+        }
+    };
+    let (left, top) = (edge(area.x)?, edge(area.y)?);
+    let (right, bottom) = (edge(area.x + area.width)?, edge(area.y + area.height)?);
+    if right <= left || bottom <= top {
+        return Err(LayoutError::EmptyDataArea);
+    }
+    Ok(Rect {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+    })
+}
+
 /// The grid colour of a legacy bounded value axis.
 const LEGACY_GRID_COLOR: Color = Color::from_rgb8(224, 229, 235);
 
@@ -555,16 +661,29 @@ impl Config {
     /// [`Config::from_categorical`] with its [`ConversionReport`]: the
     /// series each upload belongs to, and a note for each field the
     /// document set that the chart does not carry as set: `hovered`,
-    /// `background`, `decorations.data_area`, `decorations.selected`, a
-    /// legacy `title` that `chart_title` hides, an overlay or subplot
+    /// `background`, `decorations.selected`, a legacy `title` that
+    /// `chart_title` hides, an overlay or subplot
     /// `active_layer` (changed to the base layer), a `selected` category the
     /// document does not hold, each `decorations.offsets[i]` the chart has
-    /// no counterpart for or whose value label offset is refused, and each
-    /// `overrides[i]` that names no series. The config, series and uploads
-    /// are the ones `from_categorical` returns.
-    pub fn from_categorical_with_report(chart: &CategoricalChart) -> ConvertedDocument<'_> {
+    /// no counterpart for or whose value label offset is refused, each
+    /// `overrides[i]` that names no series, and a `decorations.data_area`
+    /// the converted layout cannot hold, with the reason. The config,
+    /// series and uploads are the ones `from_categorical` returns.
+    ///
+    /// The conversion runs on the host's `chart_area` (logical pixels;
+    /// `None` keeps the placeholder) (#334): the converted config
+    /// takes that chart area once the rest of the conversion is done, and
+    /// an explicit `decorations.data_area` is fitted to it
+    /// ([`Config::fit_legacy_data_area`]) and noted as dropped when it
+    /// cannot hold it. This is the conversion a host that opens the
+    /// document on a chart of that chart area installs, so a preview and
+    /// the opened chart get the same config, series and notes.
+    pub fn from_categorical_with_report_in<'a>(
+        chart: &'a CategoricalChart,
+        chart_area: Option<&ChartArea>,
+    ) -> ConvertedDocument<'a> {
         let mut notes = Notes::on();
-        let (config, series, uploads) = Self::categorical_conversion(chart, &mut notes);
+        let (config, series, uploads) = Self::categorical_conversion(chart, &mut notes, chart_area);
         let report = conversion_report(
             &uploads,
             chart.series.iter().map(|s| s.id.as_str()),
@@ -577,10 +696,22 @@ impl Config {
     /// [`Config::from_boxplot`] with its [`ConversionReport`]: the series
     /// each upload belongs to (its record and its outliers), and a note for
     /// each field the document set that the chart does not carry as set,
-    /// the same fields [`Config::from_categorical_with_report`] reports.
-    pub fn from_boxplot_with_report(chart: &BoxPlotChart) -> ConvertedDocument<'_> {
+    /// the same fields [`Config::from_categorical_with_report_in`] reports.
+    ///
+    /// The conversion runs on the host's `chart_area` (logical pixels;
+    /// `None` keeps the placeholder) (#334): the converted config
+    /// takes that chart area once the rest of the conversion is done, and
+    /// an explicit `decorations.data_area` is fitted to it
+    /// ([`Config::fit_legacy_data_area`]) and noted as dropped when it
+    /// cannot hold it. This is the conversion a host that opens the
+    /// document on a chart of that chart area installs, so a preview and
+    /// the opened chart get the same config, series and notes.
+    pub fn from_boxplot_with_report_in<'a>(
+        chart: &'a BoxPlotChart,
+        chart_area: Option<&ChartArea>,
+    ) -> ConvertedDocument<'a> {
         let mut notes = Notes::on();
-        let (config, series, uploads) = Self::boxplot_conversion(chart, &mut notes);
+        let (config, series, uploads) = Self::boxplot_conversion(chart, &mut notes, chart_area);
         let report = conversion_report(
             &uploads,
             chart.series.iter().map(|s| s.id.as_str()),
@@ -596,16 +727,30 @@ impl Config {
     /// [`Config::from_radar`] with its [`ConversionReport`]: the series each
     /// upload belongs to, and a note for each field the document set that
     /// the chart does not carry as set: `hovered`, `background`,
-    /// `decorations.data_area`, `decorations.selected`, a legacy `title`
+    /// `decorations.selected`, a legacy `title`
     /// that `chart_title` hides, an overlay or subplot `active_layer`
     /// (changed to the base layer), `style.emphasis_brightness`, a selected
     /// whole series (`selected` without a category) or a `selected`
     /// category the document does not hold, and each
     /// `decorations.offsets[i]` the chart has no counterpart for (a spoke
-    /// label's, among others) or whose value label offset is refused.
-    pub fn from_radar_with_report(chart: &RadarChart) -> ConvertedDocument<'_> {
+    /// label's, among others) or whose value label offset is refused, and a
+    /// `decorations.data_area` the converted layout cannot hold, with the
+    /// reason.
+    ///
+    /// The conversion runs on the host's `chart_area` (logical pixels;
+    /// `None` keeps the placeholder) (#334): the converted config
+    /// takes that chart area once the rest of the conversion is done, and
+    /// an explicit `decorations.data_area` is fitted to it
+    /// ([`Config::fit_legacy_data_area`]) and noted as dropped when it
+    /// cannot hold it. This is the conversion a host that opens the
+    /// document on a chart of that chart area installs, so a preview and
+    /// the opened chart get the same config, series and notes.
+    pub fn from_radar_with_report_in<'a>(
+        chart: &'a RadarChart,
+        chart_area: Option<&ChartArea>,
+    ) -> ConvertedDocument<'a> {
         let mut notes = Notes::on();
-        let (config, series, uploads) = Self::radar_conversion(chart, &mut notes);
+        let (config, series, uploads) = Self::radar_conversion(chart, &mut notes, chart_area);
         let report = conversion_report(
             &uploads,
             chart.series.iter().map(|s| s.id.as_str()),
@@ -619,7 +764,7 @@ impl Config {
 impl Config {
     /// The Cartesian chart a legacy [`CategoricalChart`] document draws:
     /// its `Config`, its series and the columns to upload.
-    /// [`Config::from_categorical_with_report`] returns the same with a report of
+    /// [`Config::from_categorical_with_report_in`] returns the same with a report of
     /// every field the document set that is not carried as set.
     ///
     /// The chart is a `Config` with a categorical axis (`bottom_x` for
@@ -647,14 +792,17 @@ impl Config {
     /// legend are the matching offsets; the category axis line crosses the
     /// value axis at zero (`cross_at`); `selected` is the typed selection;
     /// `active_layer` and `annotations` carry over. Not carried: `hovered`
-    /// (transient), `background` (the host's clear colour), an explicit
-    /// `decorations.data_area` and the decoration selection. The data label
-    /// offsets are the series' value label offsets (`labels.offsets`). The
-    /// chart area is the default placeholder; the host sets it.
+    /// (transient), `background` (the host's clear colour) and the
+    /// decoration selection. The data label offsets are the series' value
+    /// label offsets (`labels.offsets`). The chart area is the default
+    /// placeholder; the host sets it. An explicit
+    /// `decorations.data_area` is the data area
+    /// ([`Config::fit_legacy_data_area`] on the placeholder chart area; one
+    /// the layout cannot hold leaves the automatic layout).
     pub fn from_categorical(
         chart: &CategoricalChart,
     ) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>) {
-        Self::categorical_conversion(chart, &mut Notes::off())
+        Self::categorical_conversion(chart, &mut Notes::off(), None)
     }
 
     /// The conversion of [`Config::from_categorical`], writing its notes to
@@ -662,6 +810,7 @@ impl Config {
     fn categorical_conversion<'a>(
         chart: &'a CategoricalChart,
         notes: &mut Notes,
+        chart_area: Option<&ChartArea>,
     ) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'a>>) {
         let horizontal = chart.direction == CategoryBarDirection::Horizontal;
         legacy_document_notes(
@@ -682,7 +831,7 @@ impl Config {
             value_title: &chart.value_title,
             category_title: &chart.category_title,
             font_family: &chart.font_family,
-            font_size: chart.font_size,
+            sizes: chart.resolved_text_sizes(),
             text_color: chart.text_color,
             grid: chart.grid,
             title: chart.resolved_title(),
@@ -699,11 +848,12 @@ impl Config {
             },
         )
         .cross_at = Some(0.0);
+        let sizes = chart.resolved_text_sizes();
         let text = |s: &str| {
             RichText::plain(
                 s,
                 chart.text_color,
-                chart.font_size,
+                sizes.legend,
                 chart.font_family.as_str(),
             )
         };
@@ -735,7 +885,7 @@ impl Config {
                 x_column: ColumnId::new(),
                 y_column: ColumnId::new(),
                 z_column: None,
-                render_type: DataRenderType::CategoryBars {
+                render_type: DataRenderType::CategoryBars(CategoryBarSeries {
                     color: s.color,
                     style: s.style.clone().unwrap_or_else(|| chart.style.clone()),
                     labels: CategoryBarSeriesLabels {
@@ -744,10 +894,11 @@ impl Config {
                         value_suffix: chart.value_suffix.clone(),
                         text: Vec::new(),
                         offsets: Vec::new(),
+                        contrast_ink: None,
                     },
                     label_format: chart.label_format,
                     overrides: (!overrides.is_empty()).then_some(overrides),
-                },
+                }),
             };
             let column = category_values_column(&s.id);
             // The direction decides the roles, like a histogram's orientation.
@@ -772,7 +923,11 @@ impl Config {
             &mut config,
             &series,
             chart.legend,
-            (&chart.font_family, chart.font_size, chart.text_color),
+            (
+                &chart.font_family,
+                chart.resolved_text_sizes().legend,
+                chart.text_color,
+            ),
             |id| {
                 chart
                     .series
@@ -797,6 +952,13 @@ impl Config {
             chart.overrides.iter().map(|o| o.target.series_id.as_str()),
             |id| chart.series.iter().any(|s| s.id == id),
         );
+        legacy_data_area(
+            notes,
+            &mut config,
+            &chart.decorations,
+            chart_area,
+            chart.text_sizes.is_some(),
+        );
         (config, series, uploads)
     }
 }
@@ -809,7 +971,8 @@ struct LegacyChrome<'a> {
     value_title: &'a str,
     category_title: &'a str,
     font_family: &'a str,
-    font_size: f32,
+    /// The text sizes by role ([`DocumentTextSizes::resolved`]).
+    sizes: crate::DocumentTextSizes,
     text_color: Color,
     grid: bool,
     title: crate::BoundedTitleOptions,
@@ -826,11 +989,17 @@ struct LegacyChrome<'a> {
 /// the active layer and the annotations.
 fn legacy_config(chrome: &LegacyChrome<'_>) -> Config {
     let horizontal = chrome.horizontal;
-    let text =
-        |s: &str| RichText::plain(s, chrome.text_color, chrome.font_size, chrome.font_family);
+    let text = |s: &str| {
+        RichText::plain(
+            s,
+            chrome.text_color,
+            chrome.sizes.axis_title,
+            chrome.font_family,
+        )
+    };
     let style_axis = |axis: &mut AxisOptions, title: &str| {
         axis.label_style.color = chrome.text_color;
-        axis.label_style.font_size = chrome.font_size;
+        axis.label_style.font_size = chrome.sizes.tick_label;
         axis.label_style.label_font = chrome.font_family.to_owned();
         axis.tick = TickVisibility::None;
         axis.title_option = AxisTitleOptions {
@@ -912,9 +1081,16 @@ fn legacy_legend<'a>(
     config.legend.content.font_size = font_size;
     config.legend.content.color = color;
     for item in series {
+        let mut symbol = crate::legend::series_symbol_segments(item, None);
+        // A converted document draws its legend as the release that wrote
+        // it did: rules keep the default thickness, not the series stroke
+        // width that new legends take (#357).
+        for segment in &mut symbol {
+            segment.rule_thickness_em = None;
+        }
         crate::legend::append_legend_entry(
             &mut config.legend.content,
-            crate::legend::series_symbol_segments(item, None),
+            symbol,
             label(&item.series_id).unwrap_or(""),
         );
     }
@@ -1032,7 +1208,7 @@ fn legacy_label_offsets(
 impl Config {
     /// The Cartesian chart a legacy [`BoxPlotChart`] document draws: its
     /// `Config`, its series and what to upload.
-    /// [`Config::from_boxplot_with_report`] returns the same with a report of
+    /// [`Config::from_boxplot_with_report_in`] returns the same with a report of
     /// every field the document set that is not carried as set.
     ///
     /// The chart is a `Config` with a categorical axis (`bottom_x` for
@@ -1069,14 +1245,17 @@ impl Config {
     /// the axis lines, tick labels and titles and the legend are the
     /// matching offsets; `selected` is the typed selection; `active_layer`
     /// and `annotations` carry over. Not carried: `hovered` (transient),
-    /// `background` (the host's clear colour), an explicit
-    /// `decorations.data_area` and the decoration selection. The data label
-    /// offsets are the series' value label offsets (`labels.offsets`). The
-    /// chart area is the default placeholder; the host sets it.
+    /// `background` (the host's clear colour) and the decoration selection.
+    /// The data label offsets are the series' value label offsets
+    /// (`labels.offsets`). The chart area is the default placeholder; the
+    /// host sets it. An explicit
+    /// `decorations.data_area` is the data area
+    /// ([`Config::fit_legacy_data_area`] on the placeholder chart area; one
+    /// the layout cannot hold leaves the automatic layout).
     pub fn from_boxplot(
         chart: &BoxPlotChart,
     ) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>) {
-        Self::boxplot_conversion(chart, &mut Notes::off())
+        Self::boxplot_conversion(chart, &mut Notes::off(), None)
     }
 
     /// The conversion of [`Config::from_boxplot`], writing its notes to
@@ -1084,6 +1263,7 @@ impl Config {
     fn boxplot_conversion<'a>(
         chart: &'a BoxPlotChart,
         notes: &mut Notes,
+        chart_area: Option<&ChartArea>,
     ) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'a>>) {
         let horizontal = chart.direction == BoxPlotDirection::Horizontal;
         legacy_document_notes(
@@ -1104,7 +1284,7 @@ impl Config {
             value_title: &chart.value_title,
             category_title: &chart.category_title,
             font_family: &chart.font_family,
-            font_size: chart.font_size,
+            sizes: chart.resolved_text_sizes(),
             text_color: chart.text_color,
             grid: chart.grid,
             title: chart.resolved_title(),
@@ -1145,11 +1325,12 @@ impl Config {
             group_width: chart.group_width,
             bar_gap: chart.box_gap,
         });
+        let sizes = chart.resolved_text_sizes();
         let text = |s: &str| {
             RichText::plain(
                 s,
                 chart.text_color,
-                chart.font_size,
+                sizes.legend,
                 chart.font_family.as_str(),
             )
         };
@@ -1177,7 +1358,7 @@ impl Config {
                 x_column: BOX_PLOT_POSITIONS_COLUMN.into(),
                 y_column: record.clone(),
                 z_column: None,
-                render_type: DataRenderType::BoxPlot {
+                render_type: DataRenderType::BoxPlot(BoxSeries {
                     color: s.color,
                     style: s.style.clone().unwrap_or_else(|| chart.style.clone()),
                     labels: BoxPlotSeriesLabels {
@@ -1191,7 +1372,7 @@ impl Config {
                     overrides: (!overrides.is_empty()).then_some(overrides),
                     violin: None,
                     points: None,
-                },
+                }),
             });
             uploads.push(SeriesUpload {
                 column: record,
@@ -1213,7 +1394,11 @@ impl Config {
             &mut config,
             &series,
             chart.legend,
-            (&chart.font_family, chart.font_size, chart.text_color),
+            (
+                &chart.font_family,
+                chart.resolved_text_sizes().legend,
+                chart.text_color,
+            ),
             |id| {
                 chart
                     .series
@@ -1238,6 +1423,13 @@ impl Config {
             chart.overrides.iter().map(|o| o.target.series_id.as_str()),
             |id| chart.series.iter().any(|s| s.id == id),
         );
+        legacy_data_area(
+            notes,
+            &mut config,
+            &chart.decorations,
+            chart_area,
+            chart.text_sizes.is_some(),
+        );
         (config, series, uploads)
     }
 }
@@ -1245,7 +1437,7 @@ impl Config {
 impl Config {
     /// The polar chart a legacy [`RadarChart`] document draws: its `Config`,
     /// its series and the columns to upload.
-    /// [`Config::from_radar_with_report`] returns the same with a report of
+    /// [`Config::from_radar_with_report_in`] returns the same with a report of
     /// every field the document set that is not carried as set.
     ///
     /// The chart is a polar `Config` ([`PolarOptions`]) whose angle axis
@@ -1284,12 +1476,15 @@ impl Config {
     /// `hovered` (transient), a selected whole series (a selection names a
     /// vertex), the style's `emphasis_brightness` (the former renderer
     /// brightened the hovered or selected series; a picked vertex takes the
-    /// picked ring instead), `background` (the host's clear colour), an explicit
-    /// `decorations.data_area` and the decoration selection; the data label offsets
-    /// are the series' value label offsets (`labels.offsets`). The chart area is the default
-    /// placeholder; the host sets it.
+    /// picked ring instead), `background` (the host's clear colour) and the
+    /// decoration selection; the data label offsets are the series' value
+    /// label offsets (`labels.offsets`). The chart area is the default
+    /// placeholder; the host sets it. An explicit
+    /// `decorations.data_area` is the data area
+    /// ([`Config::fit_legacy_data_area`] on the placeholder chart area; one
+    /// the layout cannot hold leaves the automatic layout).
     pub fn from_radar(chart: &RadarChart) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>) {
-        Self::radar_conversion(chart, &mut Notes::off())
+        Self::radar_conversion(chart, &mut Notes::off(), None)
     }
 
     /// The conversion of [`Config::from_radar`], writing its notes to
@@ -1297,6 +1492,7 @@ impl Config {
     fn radar_conversion<'a>(
         chart: &'a RadarChart,
         notes: &mut Notes,
+        chart_area: Option<&ChartArea>,
     ) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'a>>) {
         legacy_document_notes(
             notes,
@@ -1317,17 +1513,18 @@ impl Config {
             );
         }
         let mut config = crate::defaults::config();
+        let sizes = chart.resolved_text_sizes();
         let text = |s: &str| {
             RichText::plain(
                 s,
                 chart.text_color,
-                chart.font_size,
+                sizes.legend,
                 chart.font_family.as_str(),
             )
         };
         let style_axis = |axis: &mut AxisOptions| {
             axis.label_style.color = chart.text_color;
-            axis.label_style.font_size = chart.font_size;
+            axis.label_style.font_size = sizes.tick_label;
             axis.label_style.label_font = chart.font_family.clone();
             axis.tick = TickVisibility::None;
             axis.title_option = AxisTitleOptions {
@@ -1434,7 +1631,7 @@ impl Config {
                 x_column: RADAR_POSITIONS_COLUMN.into(),
                 y_column: column.clone(),
                 z_column: None,
-                render_type: DataRenderType::Radar {
+                render_type: DataRenderType::Radar(RadarPolygonSeries {
                     color: s.color,
                     style: s
                         .style
@@ -1448,7 +1645,7 @@ impl Config {
                         text: Vec::new(),
                         offsets: Vec::new(),
                     },
-                },
+                }),
             });
             uploads.push(SeriesUpload {
                 column,
@@ -1463,7 +1660,11 @@ impl Config {
             &mut config,
             &series,
             chart.legend,
-            (&chart.font_family, chart.font_size, chart.text_color),
+            (
+                &chart.font_family,
+                chart.resolved_text_sizes().legend,
+                chart.text_color,
+            ),
             |id| {
                 chart
                     .series
@@ -1552,8 +1753,124 @@ impl Config {
             }
         }
         legacy_label_offsets(&mut series, notes, &chart.categories, &chart.decorations);
+        legacy_data_area(
+            notes,
+            &mut config,
+            &chart.decorations,
+            chart_area,
+            chart.text_sizes.is_some(),
+        );
         (config, series, uploads)
     }
+}
+
+/// Check that `convert` carries an explicit data area (#334): the issue's
+/// rectangle on the placeholder chart area and, refitted, on a 640 x 480
+/// host chart area; the edges rounded to whole pixels; an unset one keeps
+/// the automatic layout; and one the layout cannot hold is noted as
+/// dropped with its reason and keeps the automatic layout. `plain` is the
+/// converter without the report.
+#[cfg(test)]
+fn check_legacy_data_area<C>(
+    chart: &mut C,
+    decorations: fn(&mut C) -> &mut crate::DecorationLayout,
+    convert_in: for<'a> fn(&'a C, Option<&ChartArea>) -> ConvertedDocument<'a>,
+    plain: for<'a> fn(&'a C) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'a>>),
+) {
+    let rect = |x, y, width, height| RectF {
+        x,
+        y,
+        width,
+        height,
+    };
+    let whole = |x, y, width, height| Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    let note = |report: &ConversionReport| {
+        report
+            .notes
+            .iter()
+            .find(|n| n.path == "decorations.data_area")
+            .cloned()
+    };
+    decorations(chart).data_area = None;
+    let (automatic, _, _, report) = convert_in(chart, None);
+    assert_eq!(note(&report), None);
+
+    // The issue's rectangle, on the placeholder chart area.
+    let issue = rect(80.0, 70.0, 420.0, 260.0);
+    decorations(chart).data_area = Some(issue);
+    let (config, _, _, report) = convert_in(chart, None);
+    assert_eq!(note(&report), None, "{:?}", report.notes);
+    assert_eq!(config.data_area().unwrap().0, whole(80, 70, 420, 260));
+    assert_eq!(config.chart_area, automatic.chart_area);
+    // The title keeps its room; only the axis bands move.
+    assert_eq!(config.chart_title, automatic.chart_title);
+    assert_eq!(config, plain(chart).0);
+
+    // On a host's 640 x 480 logical chart area, refitted on the config
+    // converted without the field (what `set_*_document` does).
+    let mut host = automatic.clone();
+    host.chart_area = ChartArea(whole(0, 0, 640, 480));
+    host.fit_legacy_data_area(&issue).unwrap();
+    assert_eq!(host.data_area().unwrap().0, whole(80, 70, 420, 260));
+    // Converted on that chart area: the same config, with no note.
+    let host_area = ChartArea(whole(0, 0, 640, 480));
+    let (config, series, _, report) = convert_in(chart, Some(&host_area));
+    assert_eq!(config, host);
+    assert_eq!(series, plain(chart).1);
+    assert_eq!(note(&report), None, "{:?}", report.notes);
+    // A rectangle the placeholder holds but the host's chart area does
+    // not: carried on the placeholder, dropped on the host's.
+    let wide = rect(500.0, 300.0, 400.0, 300.0);
+    decorations(chart).data_area = Some(wide);
+    assert_eq!(note(&convert_in(chart, None).3), None);
+    let (config, _, _, report) = convert_in(chart, Some(&host_area));
+    let dropped = note(&report).expect("dropped on the host's chart area");
+    assert!(
+        dropped.reason.contains("does not lie inside"),
+        "{dropped:?}"
+    );
+    let mut automatic_host = automatic.clone();
+    automatic_host.chart_area = host_area.clone();
+    assert_eq!(config, automatic_host);
+    decorations(chart).data_area = Some(issue);
+
+    // Each edge is rounded to the nearest whole pixel.
+    decorations(chart).data_area = Some(rect(80.4, 69.6, 419.7, 260.2));
+    assert_eq!(
+        plain(chart).0.data_area().unwrap().0,
+        whole(80, 70, 420, 260)
+    );
+
+    // What the layout cannot hold is dropped with its reason, before any
+    // margin moves.
+    for (area, reason) in [
+        (rect(900.0, 700.0, 300.0, 200.0), "does not lie inside"),
+        (rect(-10.0, 70.0, 420.0, 260.0), "does not lie inside"),
+        (rect(f32::NAN, 70.0, 420.0, 260.0), "does not lie inside"),
+        (rect(80.0, 70.0, 0.2, 260.0), "empty"),
+        (rect(0.0, 0.0, 1000.0, 800.0), "less room"),
+    ] {
+        decorations(chart).data_area = Some(area);
+        let (config, _, _, report) = convert_in(chart, None);
+        let dropped = note(&report).unwrap_or_else(|| panic!("{area:?} is carried"));
+        assert_eq!(dropped.kind, ConversionNoteKind::Dropped);
+        assert!(
+            dropped.reason.contains(reason),
+            "{area:?}: {}",
+            dropped.reason
+        );
+        assert_eq!(config, automatic, "{area:?}");
+        let mut host = automatic.clone();
+        host.chart_area = ChartArea(whole(0, 0, 1000, 800));
+        assert!(host.fit_legacy_data_area(&area).is_err());
+        assert_eq!(host, automatic, "{area:?}: a refusal changes nothing");
+    }
+    decorations(chart).data_area = None;
 }
 
 #[cfg(test)]
@@ -1597,7 +1914,7 @@ mod tests {
         }
     }
 
-    fn bars(series: &SeriesConfig) -> crate::data_config::CategoryBarsRef<'_> {
+    fn bars(series: &SeriesConfig) -> &crate::data_config::CategoryBarSeries {
         series.render_type.category_bars().expect("category bars")
     }
 
@@ -1666,8 +1983,8 @@ mod tests {
         });
         let (_, series, _) = Config::from_categorical(&c);
         assert_eq!(bars(&series[0]).color, c.series[0].color);
-        assert_eq!(bars(&series[0]).style, &c.style);
-        assert_eq!(bars(&series[1]).style, c.series[1].style.as_ref().unwrap());
+        assert_eq!(&bars(&series[0]).style, &c.style);
+        assert_eq!(&bars(&series[1]).style, c.series[1].style.as_ref().unwrap());
         let label = series[0].label.as_ref().unwrap();
         assert_eq!(
             label.segments.iter().map(|s| s.text).collect::<String>(),
@@ -1725,8 +2042,8 @@ mod tests {
         o.label_format = Some(CategoryBarLabelFormat::Percent);
         c.overrides.push(o.clone());
         let (_, series, _) = Config::from_categorical(&c);
-        assert!(bars(&series[0]).overrides.is_empty());
-        assert_eq!(bars(&series[1]).overrides, [o]);
+        assert!(bars(&series[0]).overrides.is_none());
+        assert_eq!(bars(&series[1]).overrides, Some(vec![o]));
         assert_eq!(bars(&series[1]).labels.text[1], "100%");
     }
 
@@ -1762,9 +2079,99 @@ mod tests {
         assert!(!config.chart_title.visible);
     }
 
+    // #357: the text sizes by role. A document without them draws every
+    // text at `font_size` and the title half as large again, exactly as
+    // and its chart keeps its layout fitted unless it holds a data area.
+    // and its layout fits on its first draw unless it holds a data area.
+    #[test]
+    fn text_sizes_set_each_role_and_their_absence_keeps_the_legacy_size() {
+        use crate::DocumentTextSizes;
+        let legacy = CategoricalChart {
+            text_sizes: None,
+            ..chart()
+        };
+        let (config, _, _) = Config::from_categorical(&legacy);
+        assert_eq!(config.chart_title.text.font_size, 21.0);
+        for axis in [&config.bottom_x, &config.left_y] {
+            assert_eq!(axis.label_style.font_size, 14.0);
+            assert_eq!(axis.title_option.text.font_size, 14.0);
+        }
+        assert_eq!(config.legend.content.font_size, 14.0);
+        assert_eq!(config.layout_state, crate::config::LayoutState::Fixed);
+
+        let sized = chart();
+        assert_eq!(sized.text_sizes, Some(DocumentTextSizes::CARTESIAN));
+        let (config, _, _) = Config::from_categorical(&sized);
+        let cartesian = crate::defaults::config();
+        assert_eq!(
+            config.chart_title.text.font_size,
+            cartesian.chart_title.text.font_size
+        );
+        for axis in [&config.bottom_x, &config.left_y] {
+            assert_eq!(
+                axis.label_style.font_size,
+                cartesian.left_y.label_style.font_size
+            );
+            assert_eq!(
+                axis.title_option.text.font_size,
+                cartesian.left_y.title_option.text.font_size
+            );
+        }
+        assert_eq!(
+            config.legend.content.font_size,
+            cartesian.legend.content.font_size
+        );
+        assert_eq!(config.layout_state, crate::config::LayoutState::Fitted);
+
+        // An explicit data area is drawn where the document puts it.
+        let mut placed = chart();
+        placed.decorations.data_area = Some(crate::layout::RectF {
+            x: 80.0,
+            y: 70.0,
+            width: 420.0,
+            height: 260.0,
+        });
+        let (config, _, _) = Config::from_categorical(&placed);
+        assert_eq!(config.layout_state, crate::config::LayoutState::Fixed);
+
+        // Out of range sizes are refused.
+        let mut wrong = chart();
+        wrong.text_sizes = Some(DocumentTextSizes {
+            title: 80.0,
+            ..DocumentTextSizes::CARTESIAN
+        });
+        assert!(wrong.validate().is_err());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn text_sizes_are_absent_from_older_documents_and_round_trip() {
+        let older: CategoricalChart = serde_json::from_value(serde_json::json!({
+            "categories": [{"id": "a", "label": "A"}],
+            "series": [{"id": "s", "label": "S", "values": [1.0],
+                        "color": {"r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0}}]
+        }))
+        .unwrap();
+        assert_eq!(older.text_sizes, None);
+        assert!(
+            !serde_json::to_string(&older)
+                .unwrap()
+                .contains("text_sizes")
+        );
+        let sized = chart();
+        let json = serde_json::to_string(&sized).unwrap();
+        assert!(json.contains("\"text_sizes\""));
+        assert_eq!(
+            serde_json::from_str::<CategoricalChart>(&json).unwrap(),
+            sized
+        );
+    }
+
     #[test]
     fn the_font_and_text_colour_style_both_axes_and_the_legend() {
         let mut c = chart();
+        // A document without `text_sizes`: one size for every text (#357).
+        c.text_sizes = None;
         c.font_family = "Serif".into();
         c.font_size = 18.0;
         c.text_color = Color::from_rgb8(10, 20, 30);
@@ -1917,18 +2324,23 @@ mod tests {
     }
 
     #[test]
-    fn background_and_the_explicit_data_area_are_not_carried() {
+    fn the_background_is_not_carried() {
         let mut c = chart();
         let (before, _, _) = Config::from_categorical(&c);
         c.background = Color::BLACK;
-        c.decorations.data_area = Some(crate::layout::RectF {
-            x: 100.0,
-            y: 100.0,
-            width: 300.0,
-            height: 200.0,
-        });
         let (after, _, _) = Config::from_categorical(&c);
         assert_eq!(after, before);
+    }
+
+    /// An explicit data area is the converted chart's data area (#334).
+    #[test]
+    fn the_explicit_data_area_is_carried() {
+        super::check_legacy_data_area(
+            &mut chart(),
+            |c| &mut c.decorations,
+            Config::from_categorical_with_report_in,
+            Config::from_categorical,
+        );
     }
 }
 
@@ -1941,7 +2353,7 @@ mod box_tests {
     use crate::config::Category;
     use crate::decoration::DecorationOffset;
     use crate::layer::LayerRef;
-    use crate::{BoxPlotRef, Material};
+    use crate::{BoxSeries, Material};
 
     fn summary(low: f64, q1: f64, med: f64, q3: f64, high: f64) -> BoxSummary {
         BoxSummary::new(low, q1, med, q3, high)
@@ -1983,7 +2395,7 @@ mod box_tests {
         }
     }
 
-    fn boxes(series: &SeriesConfig) -> BoxPlotRef<'_> {
+    fn boxes(series: &SeriesConfig) -> &BoxSeries {
         series.render_type.box_plot().expect("box plot")
     }
 
@@ -2067,7 +2479,10 @@ mod box_tests {
             matches!(uploads[2].values, UploadValues::BoxOutliers(v) if std::ptr::eq(v, &c.series[0].values[..]))
         );
         // A series without outliers names no outlier column.
-        assert_eq!(boxes(&series[0]).outliers, Some("boxplot.outliers.s"));
+        assert_eq!(
+            boxes(&series[0]).outliers.as_deref(),
+            Some("boxplot.outliers.s")
+        );
         assert_eq!(boxes(&series[1]).outliers, None);
         // A record or a ragged upload is not one column.
         assert_eq!(uploads[1].values.len(), 0);
@@ -2143,10 +2558,13 @@ mod box_tests {
         c.overrides.push(o.clone());
         let (_, series, _) = Config::from_boxplot(&c);
         assert_eq!(boxes(&series[0]).color, c.series[0].color);
-        assert_eq!(boxes(&series[0]).style, &c.style);
-        assert_eq!(boxes(&series[1]).style, c.series[1].style.as_ref().unwrap());
-        assert_eq!(boxes(&series[0]).overrides, [o]);
-        assert!(boxes(&series[1]).overrides.is_empty());
+        assert_eq!(&boxes(&series[0]).style, &c.style);
+        assert_eq!(
+            &boxes(&series[1]).style,
+            c.series[1].style.as_ref().unwrap()
+        );
+        assert_eq!(boxes(&series[0]).overrides, Some(vec![o]));
+        assert!(boxes(&series[1]).overrides.is_none());
         let label = series[1].label.as_ref().unwrap();
         assert_eq!(
             label.segments.iter().map(|s| s.text).collect::<String>(),
@@ -2164,7 +2582,7 @@ mod box_tests {
         o.labels = Some(BoxPlotLabels::Median);
         c.overrides.push(o);
         let (_, series, _) = Config::from_boxplot(&c);
-        let labels = boxes(&series[0]).labels;
+        let labels = &boxes(&series[0]).labels;
         assert_eq!(labels.placement, BoxPlotLabels::MedianAndCount);
         assert_eq!((labels.decimals, labels.value_suffix.as_str()), (2, " ms"));
         assert_eq!(labels.text, ["3.00 ms (n=42)", "", "4.00 ms (n=—)"]);
@@ -2282,18 +2700,23 @@ mod box_tests {
     }
 
     #[test]
-    fn background_and_the_explicit_data_area_are_not_carried() {
+    fn the_background_is_not_carried() {
         let mut c = chart();
         let (before, _, _) = Config::from_boxplot(&c);
         c.background = Color::BLACK;
-        c.decorations.data_area = Some(crate::layout::RectF {
-            x: 100.0,
-            y: 100.0,
-            width: 300.0,
-            height: 200.0,
-        });
         let (after, _, _) = Config::from_boxplot(&c);
         assert_eq!(after, before);
+    }
+
+    /// An explicit data area is the converted chart's data area (#334).
+    #[test]
+    fn the_explicit_data_area_is_carried() {
+        super::check_legacy_data_area(
+            &mut chart(),
+            |c| &mut c.decorations,
+            Config::from_boxplot_with_report_in,
+            Config::from_boxplot,
+        );
     }
 }
 
@@ -2301,7 +2724,7 @@ mod box_tests {
 mod radar_tests {
     use super::*;
     use crate::config::Category;
-    use crate::data_config::{RadarLabels, RadarMarker, RadarRef, RadarSeriesStyle};
+    use crate::data_config::{RadarLabels, RadarMarker, RadarPolygonSeries, RadarSeriesStyle};
     use crate::decoration::DecorationOffset;
     use crate::layer::LayerRef;
     use crate::radar::{RadarSeries, RadarTarget};
@@ -2332,7 +2755,7 @@ mod radar_tests {
         }
     }
 
-    fn radar(series: &SeriesConfig) -> RadarRef<'_> {
+    fn radar(series: &SeriesConfig) -> &RadarPolygonSeries {
         series.render_type.radar().expect("radar")
     }
 
@@ -2351,6 +2774,22 @@ mod radar_tests {
         assert_eq!(config.validate_radar(&series), Ok(()));
         assert_eq!(series[0].x_column, RADAR_POSITIONS_COLUMN);
         assert_eq!(series[0].y_column, radar_values_column("a"));
+    }
+
+    // A converted radar document's legend rules keep the default
+    // thickness, so it draws as the release that wrote it did (#357).
+    #[test]
+    fn converted_legend_rules_keep_the_default_thickness() {
+        let (config, _, _) = Config::from_radar(&chart());
+        let rules: Vec<_> = config
+            .legend
+            .content
+            .segments
+            .iter()
+            .filter(|s| s.rule)
+            .collect();
+        assert!(!rules.is_empty());
+        assert!(rules.iter().all(|s| s.rule_thickness_em.is_none()));
     }
 
     #[test]
@@ -2452,7 +2891,7 @@ mod radar_tests {
         assert_eq!(a.color, c.series[0].color);
         assert_eq!(
             a.style,
-            &RadarSeriesStyle {
+            RadarSeriesStyle {
                 line_width_px: Some(3.0),
                 fill: None,
                 marker: Some(RadarMarker::Square),
@@ -2486,7 +2925,7 @@ mod radar_tests {
         c.label_decimals = 2;
         c.value_suffix = " pt".into();
         let (_, series, _) = Config::from_radar(&c);
-        let labels = radar(&series[0]).labels;
+        let labels = &radar(&series[0]).labels;
         assert_eq!(labels.placement, RadarLabels::Values);
         assert_eq!((labels.decimals, labels.value_suffix.as_str()), (2, " pt"));
         // A non-finite value has no label.
@@ -2622,18 +3061,23 @@ mod radar_tests {
     }
 
     #[test]
-    fn background_and_the_explicit_data_area_are_not_carried() {
+    fn the_background_is_not_carried() {
         let mut c = chart();
         let (before, _, _) = Config::from_radar(&c);
         c.background = Color::BLACK;
-        c.decorations.data_area = Some(crate::layout::RectF {
-            x: 100.0,
-            y: 100.0,
-            width: 300.0,
-            height: 200.0,
-        });
         let (after, _, _) = Config::from_radar(&c);
         assert_eq!(after, before);
+    }
+
+    /// An explicit data area is the converted chart's data area (#334).
+    #[test]
+    fn the_explicit_data_area_is_carried() {
+        super::check_legacy_data_area(
+            &mut chart(),
+            |c| &mut c.decorations,
+            Config::from_radar_with_report_in,
+            Config::from_radar,
+        );
     }
 }
 
@@ -2675,7 +3119,8 @@ mod report_tests {
     }
 
     /// Set the decoration fields every converter drops: an explicit data
-    /// area and a decoration selection.
+    /// area too tight for the converted layout (#334) and a decoration
+    /// selection.
     fn decorate(decorations: &mut crate::DecorationLayout) {
         decorations.data_area = Some(RectF {
             x: 10.0,
@@ -2699,7 +3144,7 @@ mod report_tests {
             ..crate::defaults::categorical_chart()
         };
         // An unedited document drops nothing.
-        let (_, _, _, report) = Config::from_categorical_with_report(&c);
+        let (_, _, _, report) = Config::from_categorical_with_report_in(&c, None);
         assert_eq!(report.notes, []);
 
         c.hovered = Some(CategoryBarTarget::new("a", "s"));
@@ -2721,13 +3166,12 @@ mod report_tests {
             CategoryBarOverride::new(CategoryBarTarget::new("a", "s")),
             CategoryBarOverride::new(CategoryBarTarget::new("a", "gone")),
         ];
-        let (config, series, uploads, report) = Config::from_categorical_with_report(&c);
+        let (config, series, uploads, report) = Config::from_categorical_with_report_in(&c, None);
         assert_eq!(
             paths(&report),
             [
                 ("hovered", Dropped),
                 ("background", Dropped),
-                ("decorations.data_area", Dropped),
                 ("decorations.selected", Dropped),
                 ("title", Dropped),
                 ("active_layer", Changed),
@@ -2736,7 +3180,8 @@ mod report_tests {
                 ("decorations.offsets[2]", Dropped),
                 ("decorations.offsets[3]", Dropped),
                 ("decorations.offsets[4]", Dropped),
-                ("overrides[1]", Dropped),
+                ("overrides[1]", Dropped), // Too tight for the converted axis bands (#334).
+                ("decorations.data_area", Dropped),
             ]
         );
         assert!(report.notes.iter().all(|n| !n.reason.is_empty()));
@@ -2781,7 +3226,7 @@ mod report_tests {
             ],
             ..crate::defaults::box_plot_chart()
         };
-        let (_, _, _, report) = Config::from_boxplot_with_report(&c);
+        let (_, _, _, report) = Config::from_boxplot_with_report_in(&c, None);
         assert_eq!(report.notes, []);
 
         c.background = Color::BLACK;
@@ -2798,17 +3243,17 @@ mod report_tests {
         ];
         c.selected = Some(BoxPlotTarget::new("zz", "t"));
         c.overrides = vec![BoxPlotOverride::new(BoxPlotTarget::new("a", "gone"))];
-        let (config, series, uploads, report) = Config::from_boxplot_with_report(&c);
+        let (config, series, uploads, report) = Config::from_boxplot_with_report_in(&c, None);
         assert_eq!(
             paths(&report),
             [
                 ("background", Dropped),
-                ("decorations.data_area", Dropped),
                 ("decorations.selected", Dropped),
                 ("selected.category_id", Dropped),
                 ("decorations.offsets[1]", Dropped),
                 ("decorations.offsets[2]", Dropped),
-                ("overrides[0]", Dropped),
+                ("overrides[0]", Dropped), // Too tight for the converted axis bands (#334).
+                ("decorations.data_area", Dropped),
             ]
         );
         assert_eq!((config, series, uploads), Config::from_boxplot(&c));
@@ -2854,7 +3299,7 @@ mod report_tests {
             ],
             ..crate::defaults::radar_chart()
         };
-        let (_, _, _, report) = Config::from_radar_with_report(&c);
+        let (_, _, _, report) = Config::from_radar_with_report_in(&c, None);
         assert_eq!(report.notes, []);
 
         c.hovered = Some(RadarTarget::series("a"));
@@ -2872,19 +3317,19 @@ mod report_tests {
             offset(DecorationId::AxisTitle(Side::Bottom), [1.0, 1.0]),
             offset(data_label("b", "zz"), [1.0, 1.0]),
         ];
-        let (config, series, uploads, report) = Config::from_radar_with_report(&c);
+        let (config, series, uploads, report) = Config::from_radar_with_report_in(&c, None);
         assert_eq!(
             paths(&report),
             [
                 ("hovered", Dropped),
-                ("decorations.data_area", Dropped),
                 ("decorations.selected", Dropped),
                 ("style.emphasis_brightness", Dropped),
                 ("selected", Dropped),
                 // offsets[1], the spoke label, is carried as category "a"'s
                 // own label offset (#309).
                 ("decorations.offsets[2]", Dropped),
-                ("decorations.offsets[3]", Dropped),
+                ("decorations.offsets[3]", Dropped), // Too tight for the converted axis bands (#334).
+                ("decorations.data_area", Dropped),
             ]
         );
         assert_ne!(
@@ -2898,7 +3343,7 @@ mod report_tests {
             series_id: "a".into(),
             category_id: Some("zz".into()),
         });
-        let (_, _, _, report) = Config::from_radar_with_report(&c);
+        let (_, _, _, report) = Config::from_radar_with_report_in(&c, None);
         assert!(
             report
                 .notes

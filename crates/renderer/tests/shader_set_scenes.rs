@@ -33,6 +33,11 @@
 //! comparison still refuses.
 #![cfg(not(target_arch = "wasm32"))]
 
+#[path = "support/harness.rs"]
+mod harness;
+#[path = "support/gpu.rs"]
+mod test_gpu;
+use harness::headless_renderer as renderer;
 #[path = "support/playground_scenes.rs"]
 mod scenes;
 
@@ -83,10 +88,6 @@ fn uses_a_full_feature(config: &Config) -> bool {
             .subplots
             .iter()
             .any(|subplot| uses_a_full_feature(&subplot.config))
-}
-
-fn renderer() -> Renderer {
-    Renderer::headless_blocking().expect("headless renderer")
 }
 
 /// A renderer that has been handed a chart with a probability axis, so it

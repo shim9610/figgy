@@ -58,7 +58,7 @@ fn with_line_joins_the_markers() {
     let series = SeriesConfig::ternary("t", "p", "q", "r")
         .marker(ScatterShape::CircleFilled, 5.0)
         .with_line(1.5);
-    let DataRenderType::Ternary { line, .. } = &series.render_type else {
+    let DataRenderType::Ternary(TernarySeries { line, .. }) = &series.render_type else {
         panic!("a ternary series");
     };
     assert_eq!(line.as_ref().unwrap().line_width, 1.5);
@@ -100,7 +100,7 @@ fn stem_error_and_bar_modifiers() {
         .bar_border(ink, 0.5)
         .bar_gap(3.0)
         .horizontal();
-    let DataRenderType::Histogram { bar } = &bars.render_type else {
+    let DataRenderType::Histogram(HistogramSeries { bar }) = &bars.render_type else {
         panic!("a histogram");
     };
     assert_eq!(
@@ -144,7 +144,8 @@ fn point_maps() {
     valid(&config, &series);
 
     let parallel = SeriesConfig::parallel("p", ["a", "b"]).color_by("c");
-    let DataRenderType::Parallel { color_column, .. } = &parallel.render_type else {
+    let DataRenderType::Parallel(ParallelSeries { color_column, .. }) = &parallel.render_type
+    else {
         panic!("a parallel series");
     };
     assert_eq!(color_column.as_deref(), Some("c"));
@@ -185,9 +186,9 @@ fn field_modifiers() {
     let image = SeriesConfig::rgb_image("i", "x", "y", grid("r"), grid("g"), grid("b"))
         .shading(Shading::Interpolated)
         .opacity(0.8);
-    let DataRenderType::RgbImage {
+    let DataRenderType::RgbImage(RgbImageSeries {
         shading, opacity, ..
-    } = &image.render_type
+    }) = &image.render_type
     else {
         panic!("an RGB image");
     };
@@ -201,7 +202,7 @@ fn vector_constructors_and_modifiers() {
         .arrow_head(12.0, 6.0)
         .pivot(VectorPivot::Middle)
         .style_vectors(|style| style.min_length_px = 2.0);
-    let DataRenderType::Vector { components, style } = &arrows.render_type else {
+    let DataRenderType::Vector(VectorSeries { components, style }) = &arrows.render_type else {
         panic!("a vector series");
     };
     assert!(components.grid().is_some());
@@ -218,10 +219,10 @@ fn vector_constructors_and_modifiers() {
 
     let quiver = SeriesConfig::vectors_3d("q", "x", "y", "z", "u", "v", "w");
     assert_eq!(quiver.z_column.as_deref(), Some("z"));
-    let DataRenderType::Vector {
+    let DataRenderType::Vector(VectorSeries {
         components: VectorComponents::Points { w, .. },
         ..
-    } = &quiver.render_type
+    }) = &quiver.render_type
     else {
         panic!("point vectors");
     };
@@ -239,7 +240,7 @@ fn closures_reach_sub_styles() {
     );
     let bars =
         SeriesConfig::category_bars("b", "i", "v").style_bars(|style| style.corner_radius = 3.0);
-    let DataRenderType::CategoryBars { style, .. } = &bars.render_type else {
+    let DataRenderType::CategoryBars(CategoryBarSeries { style, .. }) = &bars.render_type else {
         panic!("category bars");
     };
     assert_eq!(style.corner_radius, 3.0);

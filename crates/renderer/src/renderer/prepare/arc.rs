@@ -152,7 +152,9 @@ impl PrepareContext<'_> {
                         &cfg.y_column,
                         match (&cfg.render_type, cfg.z_column.as_deref(), camera.as_ref()) {
                             (
-                                crate::data_config::DataRenderType::Ternary { c_column, .. },
+                                crate::data_config::DataRenderType::Ternary(
+                                    crate::data_config::TernarySeries { c_column, .. },
+                                ),
                                 _,
                                 _,
                             ) => Some(ArcThird::Ternary(c_column.as_str())),

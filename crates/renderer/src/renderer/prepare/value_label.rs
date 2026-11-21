@@ -60,14 +60,40 @@ pub(in crate::renderer) fn value_label_categories<'c>(
     }
 }
 
+/// The contrast ink of series `render_type`'s labels in the panel
+/// `config` (#357): a range bar series with `labels.contrast_ink`, over the
+/// plot's background (`plot_background`, else the chart's `background`,
+/// else white). `None` draws the labels in their baked colour.
+pub(in crate::renderer) fn value_label_ink(
+    config: &Config,
+    render_type: &DataRenderType,
+) -> Option<data_render::ValueLabelInk> {
+    let bars = render_type.range_bars()?;
+    let [dark, light] = bars.labels.contrast_ink?;
+    Some(data_render::ValueLabelInk {
+        dark,
+        light,
+        back: config
+            .plot_background
+            .or(config.background)
+            .unwrap_or(Color::WHITE),
+        base: bars.color,
+    })
+}
+
 /// The colour a series' labels are baked in: the value axis' tick label
 /// colour, or white over a dark bar its labels sit inside (`Inside`, or
-/// `Auto` in a stack), as the former categorical chart wrote them.
+/// `Auto` in a stack), as the former categorical chart wrote them. Labels
+/// in contrast ink ([`value_label_ink`]) are baked in white: the shader
+/// reads the atlas' alpha as coverage and picks the ink.
 fn value_label_color(
     config: &Config,
     render_type: &DataRenderType,
     axis: &crate::config::AxisOptions,
 ) -> Color {
+    if value_label_ink(config, render_type).is_some() {
+        return Color::WHITE;
+    }
     if let Some(bars) = render_type.category_bars() {
         let stacked = config
             .bar_groups
@@ -361,6 +387,7 @@ impl PrepareContext<'_> {
             axis.label_style.font_size,
             scale,
             &group,
+            value_label_ink(config, &cfg.render_type),
         );
         data_render::create_value_label_data(
             self.device,
@@ -453,8 +480,12 @@ impl PrepareContext<'_> {
         let count = u32::try_from(x.len_values.min(y.len_values)).unwrap_or(u32::MAX);
         let group = radar_label_group(config, series.clone(), cfg);
         let params = data_render::radar_label_params(lane(&x)?, count, &group, scale);
-        let style_map =
-            data_render::create_bar_style_map(self.device, self.per_point_style_map_bgl, &[])?;
+        let style_map = data_render::create_bar_style_map_with_slots(
+            self.device,
+            self.per_point_style_map_bgl,
+            &[],
+            &[],
+        )?;
         let own = lane(&y)?;
         data_render::create_category_bar_data_bind_group(
             self.device,
@@ -484,6 +515,7 @@ impl PrepareContext<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data_config::CategoryBarSeries;
     use crate::data_config::{CategoryBarLabels, CategoryBarSeriesLabels, CategoryBarStyle};
 
     fn chart() -> Config {
@@ -503,7 +535,7 @@ mod tests {
             x_column: "pos".into(),
             y_column: "v".into(),
             z_column: None,
-            render_type: DataRenderType::CategoryBars {
+            render_type: DataRenderType::CategoryBars(CategoryBarSeries {
                 color,
                 style: CategoryBarStyle::default(),
                 labels: CategoryBarSeriesLabels {
@@ -513,12 +545,14 @@ mod tests {
                 },
                 label_format: Default::default(),
                 overrides: None,
-            },
+            }),
         }
     }
 
     fn text_mut(series: &mut SeriesConfig) -> &mut Vec<String> {
-        let DataRenderType::CategoryBars { labels, .. } = &mut series.render_type else {
+        let DataRenderType::CategoryBars(CategoryBarSeries { labels, .. }) =
+            &mut series.render_type
+        else {
             unreachable!()
         };
         &mut labels.text

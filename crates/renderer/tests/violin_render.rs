@@ -14,13 +14,18 @@
 //! renderer draws with.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::ShowForPick as _;
+use harness::{
+    BLUE, CYAN, GREEN, ORANGE, RED, YELLOW, col, is_blue, is_cyan, is_magenta, is_orange, is_red,
+    pixel,
+};
+use test_gpu::shared_device;
 
 use renderer::config::Category;
-use renderer::data::Column;
 use renderer::data_config::{
     BarGroups, BoxOutlierShape, BoxPlotOverride, BoxPlotSeriesLabels, BoxPlotStyle, BoxPlotTarget,
     BoxPoints, BoxPointsStyle, CategoryBarDirection, CategoryBarMode, Violin, ViolinBody,
@@ -28,35 +33,15 @@ use renderer::data_config::{
 };
 use renderer::layout::{ChartArea, Rect};
 use renderer::{
-    BOX_PLOT_RECORD, Chart, Color, ColumnSource, DataRenderType, DataSelectionsConfig, LayerRef,
-    Material, PickedDataRef, RaggedSource, RasterImage, RecordSource, Renderer, RendererDevice,
-    SeriesConfig,
+    BOX_PLOT_RECORD, BoxSeries, Chart, Color, ColumnSource, DataRenderType, DataSelectionsConfig,
+    LayerRef, Material, PickedDataRef, RaggedSource, RasterImage, RecordSource, Renderer,
+    RendererDevice, SeriesConfig,
 };
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 320;
-const RED: Color = Color::from_rgb8(255, 0, 0);
-const BLUE: Color = Color::from_rgb8(0, 0, 255);
-const GREEN: Color = Color::from_rgb8(0, 255, 0);
-const YELLOW: Color = Color::from_rgb8(255, 255, 0);
-const CYAN: Color = Color::from_rgb8(0, 255, 255);
-const ORANGE: Color = Color::from_rgb8(255, 128, 0);
-
 /// The curve grid of every category: values 10..=90, one per unit.
 const GRID: std::ops::RangeInclusive<i32> = 10..=90;
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
-
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
 
 /// A triangular density on the grid peaking at `peak` with height 1 and
 /// reaching 0 `spread` away.
@@ -184,7 +169,7 @@ fn violin_series(id: &str, body: ViolinBody, box_width: f32) -> SeriesConfig {
         x_column: "pos".into(),
         y_column: "box.record".into(),
         z_column: None,
-        render_type: DataRenderType::BoxPlot {
+        render_type: DataRenderType::BoxPlot(BoxSeries {
             color: CYAN,
             style: flat_style(),
             labels: BoxPlotSeriesLabels::default(),
@@ -192,12 +177,12 @@ fn violin_series(id: &str, body: ViolinBody, box_width: f32) -> SeriesConfig {
             overrides: None,
             violin: Some(Violin { body, box_width }),
             points: None,
-        },
+        }),
     }
 }
 
 fn with_points(mut series: SeriesConfig, offset: f32, jitter: f32) -> SeriesConfig {
-    let DataRenderType::BoxPlot { points, .. } = &mut series.render_type else {
+    let DataRenderType::BoxPlot(BoxSeries { points, .. }) = &mut series.render_type else {
         unreachable!()
     };
     *points = Some(BoxPoints {
@@ -263,26 +248,6 @@ fn chart(direction: CategoryBarDirection) -> Chart {
     chart
 }
 
-fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
-    let i = ((y * img.width + x) * 4) as usize;
-    &img.rgba[i..i + 4]
-}
-
-fn is_red(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && p[1] < 60 && p[2] < 60
-}
-fn is_blue(p: &[u8]) -> bool {
-    p[3] > 200 && p[2] > 200 && p[0] < 60 && p[1] < 60
-}
-fn is_cyan(p: &[u8]) -> bool {
-    p[3] > 200 && p[1] > 200 && p[2] > 200 && p[0] < 60
-}
-fn is_orange(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && (90..170).contains(&p[1]) && p[2] < 60
-}
-fn is_magenta(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && p[2] > 200 && p[1] < 60
-}
 fn is_ink(p: &[u8]) -> bool {
     p[3] > 100
 }
@@ -375,7 +340,13 @@ fn pick(
         display_scale: scale,
         max_distance_px: 0.0,
     };
-    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let hit = test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap();
     r.remove_chart(id).unwrap();
     hit
 }
@@ -611,7 +582,9 @@ fn violins_and_points_pick_and_highlight_what_they_paint() {
         along(&chart, direction, 65.0, 1.0),
     );
     assert!(is_blue(pixel(&img, at.0 as u32, at.1 as u32)));
-    let hit = pick(&mut r, &chart, &series, 1.0, (at.0 + 0.5, at.1 + 0.5));
+    // The body is the typed hit; the selection is the nearest raw point
+    // (#381 phase 4).
+    let hit = pick_full(&mut r, &chart, &series, (at.0 + 0.5, at.1 + 0.5)).data;
     assert!(
         matches!(
             &hit,
@@ -716,7 +689,7 @@ fn a_box_override_restyles_its_categorys_violin() {
     let direction = CategoryBarDirection::Vertical;
     let chart = chart(direction);
     let mut series = violin_series("v", ViolinBody::Symmetric(half("sym", RED)), 0.0);
-    let DataRenderType::BoxPlot { overrides, .. } = &mut series.render_type else {
+    let DataRenderType::BoxPlot(BoxSeries { overrides, .. }) = &mut series.render_type else {
         unreachable!()
     };
     let mut o = BoxPlotOverride::new(BoxPlotTarget::new("b", "v"));
@@ -885,7 +858,7 @@ fn value_labels_clear_the_curve() {
     chart.set_y_range(0.0, 150.0);
     let mut series = violin_series("v", ViolinBody::Symmetric(half("sym", RED)), 0.25);
     series.y_column.clear();
-    let DataRenderType::BoxPlot { labels, .. } = &mut series.render_type else {
+    let DataRenderType::BoxPlot(BoxSeries { labels, .. }) = &mut series.render_type else {
         unreachable!()
     };
     labels.placement = renderer::data_config::BoxPlotLabels::Median;
@@ -1147,13 +1120,25 @@ fn long_curves_many_categories_and_a_million_points_draw_and_pick() {
         display_scale: 1.0,
         max_distance_px: 0.0,
     };
-    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let hit = test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap();
     assert!(
         matches!(&hit, Some(renderer::PickedData::HistogramBin { bin_index, .. }) if *bin_index == N - 1),
         "{hit:?}"
     );
     let started = std::time::Instant::now();
-    let _ = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let _ = test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap();
     eprintln!(
         "violin pick over {N} categories of {POINTS} curve points: {:?}",
         started.elapsed()
@@ -1177,7 +1162,7 @@ fn long_curves_many_categories_and_a_million_points_draw_and_pick() {
         )
         .unwrap();
         let mut series = violin_series("v", ViolinBody::Symmetric(half("sym", RED)), 0.0);
-        let DataRenderType::BoxPlot { points, .. } = &mut series.render_type else {
+        let DataRenderType::BoxPlot(BoxSeries { points, .. }) = &mut series.render_type else {
             unreachable!()
         };
         *points = Some(BoxPoints {
@@ -1220,9 +1205,21 @@ fn long_curves_many_categories_and_a_million_points_draw_and_pick() {
             display_scale: 1.0,
             max_distance_px: 4.0,
         };
-        let _ = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        let _ = test_gpu::block_on(
+            r.shown(id, &request)
+                .pick_chart_data(id, request)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap();
         let started = std::time::Instant::now();
-        let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        let hit = test_gpu::block_on(
+            r.shown(id, &request)
+                .pick_chart_data(id, request)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap();
         let pick = started.elapsed();
         assert!(
             matches!(&hit, Some(renderer::PickedData::Point { .. })),
@@ -1376,4 +1373,145 @@ fn a_split_violin_picks_and_highlights_each_half() {
         ),
         "{hit:?}"
     );
+}
+
+/// The typed data pick of `series` at `at`, every answer (#381).
+fn pick_full(
+    r: &mut Renderer,
+    chart: &Chart,
+    series: &[SeriesConfig],
+    at: (f32, f32),
+) -> renderer::DataPickResult {
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(chart.config().clone(), series.to_vec())
+        .unwrap();
+    let request = renderer::GpuPickRequest {
+        canvas_position_px: [at.0, at.1],
+        display_panel_px: Rect {
+            x: 0,
+            y: 0,
+            width: WIDTH,
+            height: HEIGHT,
+        },
+        display_scale: 1.0,
+        max_distance_px: 0.0,
+    };
+    let result = r
+        .shown(id, &request)
+        .pick_chart_data(id, request)
+        .unwrap()
+        .resolve_full_blocking()
+        .unwrap();
+    r.remove_chart(id).unwrap();
+    result
+}
+
+/// The pick selects the logical datum, not the nearer of a point and a
+/// body (#381 phase 4): on a violin with raw points a click on a point
+/// selects that point, and a click on the body far from every point
+/// selects the nearest point, the body still answered as the typed hit; a
+/// violin without points selects its body.
+#[test]
+fn a_violin_click_selects_the_nearest_point_or_the_body_without_points() {
+    let mut r = renderer();
+    let direction = CategoryBarDirection::Vertical;
+    let chart = chart(direction);
+    let body = ViolinBody::Split {
+        low: None,
+        high: Some(half("hi", BLUE)),
+    };
+    let with = [with_points(
+        violin_series("v", body.clone(), 0.0),
+        -0.5,
+        0.4,
+    )];
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &with),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
+
+    // On a raw point of category c: that point.
+    let (centre, full) = member(&chart, direction, 2, 1.0);
+    let da = chart.config().data_area().unwrap();
+    let mut point_at = None;
+    'find: for y in da.y..da.y + da.height {
+        for x in (centre - full) as u32..centre as u32 {
+            if is_orange(pixel(&img, x, y))
+                && is_orange(pixel(&img, x + 1, y))
+                && is_orange(pixel(&img, x, y + 1))
+                && is_orange(pixel(&img, x + 1, y + 1))
+            {
+                point_at = Some((x as f32 + 1.0, y as f32 + 1.0));
+                break 'find;
+            }
+        }
+    }
+    let at = point_at.expect("a raw point of c");
+    let on_point = pick_full(&mut r, &chart, &with, at);
+    let Some(renderer::PickedData::Point {
+        series_id,
+        point_index,
+        distance_px,
+        ..
+    }) = &on_point.picked
+    else {
+        panic!("a point is selected: {on_point:?}");
+    };
+    assert_eq!(series_id, "v");
+    assert!(
+        (200..300).contains(point_index),
+        "a point of c: {point_index}"
+    );
+    // The 4 px marker covers the cursor: its centre is within its radius.
+    assert!(*distance_px <= 2.5, "{on_point:?}");
+
+    // On the body of category b, right of its centre at 65, off every raw
+    // point: the nearest point is selected; the body is the typed hit.
+    let (centre, full) = member(&chart, direction, 1, 1.0);
+    let at = xy(
+        direction,
+        centre + full * 0.5 + 0.5,
+        along(&chart, direction, 65.0, 1.0) + 0.5,
+    );
+    let on_body = pick_full(&mut r, &chart, &with, at);
+    assert!(
+        matches!(
+            &on_body.data,
+            Some(renderer::PickedData::HistogramBin {
+                bin_index: 1,
+                half: Some(ViolinSide::High),
+                ..
+            })
+        ),
+        "the body is the typed hit: {on_body:?}"
+    );
+    let nearest = on_body.point.hit.as_ref().expect("the body's ink hits");
+    assert!(
+        matches!(
+            &on_body.picked,
+            Some(renderer::PickedData::Point { series_id, point_index, .. })
+                if series_id == "v" && *point_index == nearest.point_index
+        ),
+        "the nearest point is selected: {on_body:?}"
+    );
+
+    // Without points: the body.
+    let without = [violin_series("v", body, 0.0)];
+    let alone = pick_full(&mut r, &chart, &without, at);
+    assert!(
+        matches!(
+            &alone.picked,
+            Some(renderer::PickedData::HistogramBin {
+                bin_index: 1,
+                half: Some(ViolinSide::High),
+                ..
+            })
+        ),
+        "a violin without points selects its body: {alone:?}"
+    );
+    assert!(alone.point.nearest.is_empty(), "{alone:?}");
 }

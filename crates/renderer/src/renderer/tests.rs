@@ -7,7 +7,8 @@ use crate::test_gpu::BlockOn as _;
 /// Wait until every retired GPU charge of `renderer` has completed. A
 /// completion callback can run on another test's polling thread on the
 /// shared device, so one `poll(Wait)` does not guarantee it has run yet.
-fn settle_gpu_retirement(renderer: &mut Renderer) {
+/// The streaming tests nested under `renderer` call it too.
+pub(crate) fn settle_gpu_retirement(renderer: &mut Renderer) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while renderer.gpu_memory_usage().retired_bytes() != 0 {
         renderer.service_gpu_completions().unwrap();
@@ -19,7 +20,10 @@ fn settle_gpu_retirement(renderer: &mut Renderer) {
     }
 }
 use crate::data::Column;
-use crate::data_config::{DataErrorBarPointStyleOverride, DataScatterPointStyleOverride};
+use crate::data_config::{
+    BoxSeries, CategoryBarSeries, DataErrorBarPointStyleOverride, DataScatterPointStyleOverride,
+    RadarPolygonSeries, RangeBarSeries,
+};
 
 #[test]
 fn every_line_preset_packs_without_gpu_dash_truncation() {
@@ -477,7 +481,7 @@ fn nonresident_queries_and_streamed_statistics_preserve_revision_contract() {
     fitted.consume_data_dirty();
     fitted.consume_raster_dirty();
     assert!(matches!(
-        renderer.fit_ranges(&mut fitted, std::slice::from_ref(&series)),
+        renderer.fit_ranges(&mut fitted, std::slice::from_mut(&mut series.clone())),
         Err(FiggyError::ColumnNotResident { .. })
     ));
     assert_eq!(fitted.config(), &crate::default::default_config());
@@ -884,71 +888,295 @@ fn pool_capacity_clamps_to_storage_and_buffer_limits() {
     assert_eq!(effective_pool_capacity(512 * mb, caps_big), 512 * mb);
 }
 
+/// Enabling picking creates the gate and reduction pipelines once, and a
+/// second enable creates nothing. The exact point pipelines and every typed
+/// data kernel wait for the first pick that dispatches them
+/// (`PickExactPipelines`, `DataPickKernels`, #327): activation compiles none
+/// of them, so a first pick never waits for kernels its chart does not use.
 #[test]
-/// Enabling picking creates the gate and reduction pipelines and the
-/// typed data pipelines once; the exact point pipelines wait for the first
-/// pick that needs each (`PickExactPipelines`).
-fn renderer_gpu_picker_activation_creates_six_pipelines_once() {
+fn renderer_gpu_picker_activation_is_idempotent_and_defers_pick_kernels() {
     let Some(mut renderer) = state_test_renderer() else {
         return;
     };
-    let mut events = Vec::new();
+    let mut first = Vec::new();
     renderer
-        .enable_gpu_picking_observed(&mut |event| events.push(event))
+        .enable_gpu_picking_observed(&mut |event| first.push(event))
         .unwrap();
+    let mut second = Vec::new();
     renderer
-        .enable_gpu_picking_observed(&mut |event| events.push(event))
+        .enable_gpu_picking_observed(&mut |event| second.push(event))
         .unwrap();
 
-    let pipeline_starts = events
-        .iter()
-        .filter(|event| {
-            event.scope == "renderer.gpu_pick"
-                && event.phase == crate::init::InitPhase::Started
-                && matches!(
-                    event.stage,
-                    "pick_gate_x"
-                        | "pick_gate_y"
-                        | "pick_exact_candidates"
-                        | "pick_reduce_candidates"
-                )
-        })
-        .count();
-    let setup_starts = events
-        .iter()
-        .filter(|event| {
-            event.scope == "renderer.gpu_pick"
-                && event.phase == crate::init::InitPhase::Started
-                && event.stage == "setup"
-        })
-        .count();
-    let data_pipeline_starts = events
-        .iter()
-        .filter(|event| {
-            event.scope == "renderer.gpu_data_pick"
-                && event.phase == crate::init::InitPhase::Started
-                && matches!(
-                    event.stage,
-                    "pick_histogram_bin"
-                        | "pick_field_contour"
-                        | "pick_field_cell"
-                        | "pick_vector_cell"
-                )
-        })
-        .count();
-    let data_setup_starts = events
+    let started = |events: &[crate::init::InitEvent], scope: &str, stage: &str| {
+        events
+            .iter()
+            .filter(|event| {
+                event.scope == scope
+                    && event.phase == crate::init::InitPhase::Started
+                    && event.stage == stage
+            })
+            .count()
+    };
+    for stage in [
+        "setup",
+        "pick_gate_x",
+        "pick_gate_y",
+        "pick_reduce_candidates",
+    ] {
+        assert_eq!(
+            started(&first, "renderer.gpu_pick", stage),
+            1,
+            "activation creates {stage} once"
+        );
+    }
+    assert_eq!(
+        started(&first, "renderer.gpu_pick", "pick_exact_candidates"),
+        0,
+        "the exact point pipelines wait for the first point pick"
+    );
+    assert_eq!(started(&first, "renderer.gpu_data_pick", "setup"), 1);
+    let data_kernels = first
         .iter()
         .filter(|event| {
             event.scope == "renderer.gpu_data_pick"
                 && event.phase == crate::init::InitPhase::Started
-                && event.stage == "setup"
+                && event.stage != "setup"
         })
         .count();
-    assert_eq!(pipeline_starts, 3);
-    assert_eq!(setup_starts, 1);
-    assert_eq!(data_pipeline_starts, 4);
-    assert_eq!(data_setup_starts, 1);
+    assert_eq!(data_kernels, 0, "activation compiles no data pick kernel");
+    assert!(
+        crate::gpu_data_pick::DataPickKernel::ALL
+            .into_iter()
+            .all(|kernel| renderer.picker.data_kernels.get(kernel).is_none())
+    );
+    assert!(
+        second
+            .iter()
+            .all(|event| event.phase != crate::init::InitPhase::Started),
+        "a second enable creates nothing: {second:?}"
+    );
     assert!(renderer.picker.active.is_none());
+}
+
+/// The compute pipelines created so far in `capture` whose label is a
+/// typed data pick kernel's (#327), by kernel.
+fn created_data_kernels(
+    capture: &[serde_json::Value],
+) -> Vec<crate::gpu_data_pick::DataPickKernel> {
+    crate::gpu_data_pick::DataPickKernel::ALL
+        .into_iter()
+        .flat_map(|kernel| {
+            capture
+                .iter()
+                .filter(move |pipeline| {
+                    pipeline["kind"] == "compute"
+                        && pipeline["descriptor"]["label"] == kernel.label()
+                        && pipeline["descriptor"]["compute"]["entryPoint"] == kernel.entry()
+                })
+                .map(move |_| kernel)
+        })
+        .collect()
+}
+
+/// #327: a typed data pick compiles only the kernels its chart
+/// dispatches. Enabling picking and picking a radar chart and an XY line
+/// chart create no data pick kernel at all; a histogram pick then creates
+/// its own kernel once and nothing else, and a second pick creates none.
+#[test]
+fn a_data_pick_compiles_only_the_kernels_its_chart_dispatches() {
+    use crate::gpu_compile::capture;
+    use crate::gpu_data_pick::{DataPickKernel, DataPickKernelSet};
+    // Begun before the renderer, so every module it compiles is captured.
+    let session = capture::Session::begin();
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    renderer
+        .add_column("cat", &col_f64(vec![0.0, 1.0, 2.0, 3.0, 4.0]))
+        .unwrap();
+    renderer
+        .add_column("radius", &col_f64(vec![0.5, 0.8, 0.3, 0.9, 0.6]))
+        .unwrap();
+    renderer
+        .add_column("edges", &col_f64(vec![0.0, 1.0, 2.0]))
+        .unwrap();
+    renderer
+        .add_column("counts", &col_f64(vec![5.0, 8.0]))
+        .unwrap();
+
+    // A radar chart: five categories on a polar chart.
+    let mut radar_config = typed_pick_config((0.0, 4.0), (0.0, 1.0));
+    radar_config.bottom_x.categories = Some(
+        (0..5)
+            .map(|i| crate::config::Category::new(format!("c{i}"), format!("C{i}")))
+            .collect(),
+    );
+    radar_config.set_polar(Some(crate::polar::PolarOptions::default()));
+    let radar = renderer
+        .register_chart(
+            radar_config.clone(),
+            vec![SeriesConfig {
+                series_id: "radar".into(),
+                source_id: None,
+                label: None,
+                x_column: "cat".into(),
+                y_column: "radius".into(),
+                z_column: None,
+                render_type: DataRenderType::Radar(RadarPolygonSeries {
+                    color: Color::BLACK,
+                    style: Default::default(),
+                    labels: Default::default(),
+                }),
+            }],
+        )
+        .unwrap();
+    // An XY line chart.
+    let xy_config = typed_pick_config((0.0, 4.0), (0.0, 1.0));
+    let xy = renderer
+        .register_chart(
+            xy_config.clone(),
+            vec![state_test_line("xy", "cat", "radius")],
+        )
+        .unwrap();
+
+    renderer.enable_gpu_picking().unwrap();
+    assert!(
+        created_data_kernels(&capture::snapshot_pipelines()).is_empty(),
+        "enabling picking creates no data pick kernel"
+    );
+    for (chart, config) in [(radar, &radar_config), (xy, &xy_config)] {
+        let center = config.data_area().unwrap().0;
+        let request = typed_pick_request(
+            config,
+            [
+                center.x as f32 + center.width as f32 * 0.5,
+                center.y as f32 + center.height as f32 * 0.3,
+            ],
+        );
+        assert_eq!(
+            renderer.data_pick_kernels_for(chart, request).unwrap(),
+            DataPickKernelSet::EMPTY
+        );
+        crate::test_gpu::block_on(renderer.pick_chart_data(chart, request).unwrap().resolve())
+            .unwrap();
+    }
+    assert_eq!(
+        created_data_kernels(&capture::snapshot_pipelines()),
+        [],
+        "a radar or XY pick creates no data pick kernel"
+    );
+    assert!(
+        DataPickKernel::ALL.into_iter().all(|kernel| renderer
+            .picker
+            .data_kernels
+            .get(kernel)
+            .is_none())
+    );
+
+    // A histogram compiles its own kernel on its first pick, once.
+    let hist_config = typed_pick_config((0.0, 2.0), (0.0, 10.0));
+    let hist_series = vec![SeriesConfig {
+        series_id: "hist".into(),
+        source_id: None,
+        label: None,
+        x_column: "edges".into(),
+        y_column: "counts".into(),
+        z_column: None,
+        render_type: DataRenderType::Histogram(HistogramSeries {
+            bar: crate::data_config::DataBarStyleConfig {
+                fill_color: Color::BLACK,
+                border_color: Color::BLACK,
+                border_width: 1.0,
+                baseline: 0.0,
+                gap_px: 2.0,
+                width_ratio: 1.0,
+                orientation: crate::data_config::BarOrientation::Vertical,
+                bar_style_overrides: None,
+            },
+        }),
+    }];
+    let hist = renderer
+        .register_chart(hist_config.clone(), hist_series.clone())
+        .unwrap();
+    let request = typed_pick_request(&hist_config, typed_pick_position(&hist_config, 1.5, 4.0));
+    assert_eq!(
+        renderer.data_pick_kernels_for(hist, request).unwrap(),
+        DataPickKernelSet::EMPTY.with(DataPickKernel::Histogram)
+    );
+    for _ in 0..2 {
+        let picked =
+            crate::test_gpu::block_on(renderer.pick_chart_data(hist, request).unwrap().resolve())
+                .unwrap();
+        assert!(matches!(
+            picked,
+            Some(crate::pick::PickedData::HistogramBin { bin_index: 1, .. })
+        ));
+    }
+    assert_eq!(
+        created_data_kernels(&capture::snapshot_pipelines()),
+        [DataPickKernel::Histogram]
+    );
+    // What any pick of each chart can dispatch (#363): the histogram's
+    // kernel, and none for the radar or XY chart.
+    assert_eq!(
+        renderer.data_pick_kernels_of_chart(hist).unwrap(),
+        DataPickKernelSet::EMPTY.with(DataPickKernel::Histogram)
+    );
+    for chart in [radar, xy] {
+        assert_eq!(
+            renderer.data_pick_kernels_of_chart(chart).unwrap(),
+            DataPickKernelSet::EMPTY
+        );
+    }
+    // A release keeps a live chart's kernel.
+    renderer
+        .release_unused_pool_memory_blocking(1024 * 1024)
+        .unwrap();
+    assert!(
+        renderer
+            .picker
+            .data_kernels
+            .get(DataPickKernel::Histogram)
+            .is_some()
+    );
+    // Removed, its kernel stays for reuse: the same chart registered again
+    // picks without compiling.
+    renderer.remove_chart(hist).unwrap();
+    let hist = renderer
+        .register_chart(hist_config.clone(), hist_series.clone())
+        .unwrap();
+    crate::test_gpu::block_on(renderer.pick_chart_data(hist, request).unwrap().resolve()).unwrap();
+    assert_eq!(
+        created_data_kernels(&capture::snapshot_pipelines()),
+        [DataPickKernel::Histogram]
+    );
+    // Once no registered chart dispatches it, the host's release of unused
+    // GPU memory drops it, and the next histogram creates it again, once.
+    renderer.remove_chart(hist).unwrap();
+    renderer
+        .release_unused_pool_memory_blocking(1024 * 1024)
+        .unwrap();
+    assert!(
+        DataPickKernel::ALL.into_iter().all(|kernel| renderer
+            .picker
+            .data_kernels
+            .get(kernel)
+            .is_none()),
+        "no registered chart dispatches a data pick kernel"
+    );
+    let hist = renderer
+        .register_chart(hist_config.clone(), hist_series)
+        .unwrap();
+    for _ in 0..2 {
+        crate::test_gpu::block_on(renderer.pick_chart_data(hist, request).unwrap().resolve())
+            .unwrap();
+    }
+    assert_eq!(
+        created_data_kernels(&capture::snapshot_pipelines()),
+        [DataPickKernel::Histogram, DataPickKernel::Histogram],
+        "created again after the release, once"
+    );
+    drop(session);
 }
 
 fn typed_pick_config(x: (f64, f64), y: (f64, f64)) -> Config {
@@ -1010,7 +1238,7 @@ fn typed_gpu_pick_returns_histogram_bin_without_cpu_bar_bounds() {
         x_column: "edges".into(),
         y_column: "counts".into(),
         z_column: None,
-        render_type: DataRenderType::Histogram {
+        render_type: DataRenderType::Histogram(HistogramSeries {
             bar: crate::data_config::DataBarStyleConfig {
                 fill_color: Color::BLACK,
                 border_color: Color::BLACK,
@@ -1021,7 +1249,7 @@ fn typed_gpu_pick_returns_histogram_bin_without_cpu_bar_bounds() {
                 orientation: crate::data_config::BarOrientation::Vertical,
                 bar_style_overrides: None,
             },
-        },
+        }),
     };
     let chart = renderer
         .register_chart(config.clone(), vec![series])
@@ -1043,6 +1271,7 @@ fn typed_gpu_pick_returns_histogram_bin_without_cpu_bar_bounds() {
             bin_index: 1,
             distance_px: 0.0,
             half: None,
+            extent_px: None,
         }
     );
 }
@@ -1066,7 +1295,7 @@ fn typed_gpu_pick_uses_the_overridden_histogram_width() {
         x_column: "edges".into(),
         y_column: "counts".into(),
         z_column: None,
-        render_type: DataRenderType::Histogram {
+        render_type: DataRenderType::Histogram(HistogramSeries {
             bar: DataBarStyleConfig {
                 fill_color: Color::BLACK,
                 border_color: Color::BLACK,
@@ -1083,7 +1312,7 @@ fn typed_gpu_pick_uses_the_overridden_histogram_width() {
                     },
                 }]),
             },
-        },
+        }),
     };
     let chart = renderer
         .register_chart(config.clone(), vec![series])
@@ -1771,19 +2000,18 @@ fn picker_ticket_resolves_after_chart_registry_pool_and_renderer_drop() {
     renderer.enable_gpu_picking().unwrap();
     let (display, panel, scale) = display_config_for_surface(&config, (320, 240));
     let area = display.data_area().unwrap().0;
+    let request = GpuPickRequest {
+        canvas_position_px: [
+            area.x as f32 + area.width as f32 * 0.5,
+            area.y as f32 + area.height as f32 * 0.5,
+        ],
+        display_panel_px: panel,
+        display_scale: scale,
+        max_distance_px: 20.0,
+    };
     let ticket = renderer
-        .pick_chart(
-            chart,
-            GpuPickRequest {
-                canvas_position_px: [
-                    area.x as f32 + area.width as f32 * 0.5,
-                    area.y as f32 + area.height as f32 * 0.5,
-                ],
-                display_panel_px: panel,
-                display_scale: scale,
-                max_distance_px: 20.0,
-            },
-        )
+        .shown_for_pick(chart, &request)
+        .pick_chart(chart, request)
         .unwrap();
     renderer.remove_chart(chart).unwrap();
     drop(renderer);
@@ -2838,7 +3066,7 @@ fn field_and_bar_types_are_not_submitted_to_the_paired_extent_reducer() {
         labels: None,
     };
     let unpaired = [
-        DataRenderType::Histogram {
+        DataRenderType::Histogram(HistogramSeries {
             bar: crate::data_config::DataBarStyleConfig {
                 fill_color: Color::BLACK,
                 border_color: Color::BLACK,
@@ -2849,7 +3077,7 @@ fn field_and_bar_types_are_not_submitted_to_the_paired_extent_reducer() {
                 orientation: crate::data_config::BarOrientation::Vertical,
                 bar_style_overrides: None,
             },
-        },
+        }),
         DataRenderType::Field(crate::data_config::FieldSeries {
             matrix: matrix.clone(),
             fill: Some(fill.clone()),
@@ -2956,7 +3184,7 @@ fn draw_style_supports_matches_the_primitives_each_style_draws() {
         stem: None,
     });
     let precise_only = [
-        DataRenderType::Histogram {
+        DataRenderType::Histogram(HistogramSeries {
             bar: crate::data_config::DataBarStyleConfig {
                 fill_color: Color::BLACK,
                 border_color: Color::BLACK,
@@ -2967,7 +3195,7 @@ fn draw_style_supports_matches_the_primitives_each_style_draws() {
                 orientation: crate::data_config::BarOrientation::Vertical,
                 bar_style_overrides: None,
             },
-        },
+        }),
         DataRenderType::Field(crate::data_config::FieldSeries {
             matrix: matrix.clone(),
             fill: Some(fill.clone()),
@@ -4985,13 +5213,38 @@ fn empty_prepare_compiles_only_axis_and_leaves_extent_engine_idle() {
     let mut items = empty_chart_items(&renderer, &chart, &mut view);
     renderer.prepare(&mut items).unwrap();
 
-    assert!(renderer.line_pipeline().is_none());
-    assert!(renderer.scatter_pipeline().is_none());
-    assert!(renderer.errorbar_pipeline().is_none());
-    assert!(renderer.bar_pipeline().is_none());
-    assert!(renderer.pipelines.scatter_mapped.is_none());
-    assert!(renderer.pipelines.errorbar_mapped.is_none());
-    assert!(renderer.pipelines.pick_ring_mapped.is_none());
+    assert!(renderer.pipelines.precise(PrecisePipeline::Line).is_none());
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Scatter)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Errorbar)
+            .is_none()
+    );
+    assert!(renderer.pipelines.precise(PrecisePipeline::Bar).is_none());
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ScatterMapped)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ErrorbarMapped)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::PickRingMapped)
+            .is_none()
+    );
     assert!(!renderer.errorbar_extent_engine_ready());
     crate::test_gpu::block_on(renderer.wait_submitted_work()).unwrap();
 }
@@ -5005,19 +5258,69 @@ fn full_prewarm_materializes_every_deferred_pipeline() {
     crate::test_gpu::block_on(renderer.prewarm_all_observed(&mut |event| events.push(event)))
         .unwrap();
 
-    assert!(renderer.pipelines.line.is_some());
-    assert!(renderer.pipelines.scatter.is_some());
-    assert!(renderer.pipelines.scatter_mapped.is_some());
-    assert!(renderer.pipelines.pick_ring.is_some());
-    assert!(renderer.pipelines.pick_ring_mapped.is_some());
-    assert!(renderer.pipelines.errorbar.is_some());
-    assert!(renderer.pipelines.errorbar_mapped.is_some());
-    assert!(renderer.pipelines.bar.is_some());
-    assert!(renderer.pipelines.bar_selection.is_some());
-    assert!(renderer.pipelines.field.is_some());
-    assert!(renderer.pipelines.field_selection.is_some());
-    assert!(renderer.pipelines.contour.is_some());
-    assert!(renderer.pipelines.contour_label.is_some());
+    assert!(renderer.pipelines.precise(PrecisePipeline::Line).is_some());
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Scatter)
+            .is_some()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ScatterMapped)
+            .is_some()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::PickRing)
+            .is_some()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::PickRingMapped)
+            .is_some()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Errorbar)
+            .is_some()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ErrorbarMapped)
+            .is_some()
+    );
+    assert!(renderer.pipelines.precise(PrecisePipeline::Bar).is_some());
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::BarSelection)
+            .is_some()
+    );
+    assert!(renderer.pipelines.precise(PrecisePipeline::Field).is_some());
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::FieldSelection)
+            .is_some()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Contour)
+            .is_some()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ContourLabel)
+            .is_some()
+    );
     assert!(renderer.pipelines.styled.contains_key(&StyleKey::Sketch));
     assert!(renderer.pipelines.styled.contains_key(&StyleKey::Milkyway));
     assert!(
@@ -5051,7 +5354,7 @@ fn state_test_histogram(
         x_column: x.to_string(),
         y_column: y.to_string(),
         z_column: None,
-        render_type: DataRenderType::Histogram {
+        render_type: DataRenderType::Histogram(HistogramSeries {
             bar: crate::data_config::DataBarStyleConfig {
                 fill_color: Color::new(0.2, 0.5, 0.8, 1.0),
                 border_color: Color::BLACK,
@@ -5062,7 +5365,7 @@ fn state_test_histogram(
                 orientation,
                 bar_style_overrides: None,
             },
-        },
+        }),
     }
 }
 
@@ -5110,12 +5413,32 @@ fn histogram_prepare_compiles_only_the_bar_pipeline() {
     }];
     renderer.prepare(&mut items).unwrap();
 
-    assert!(renderer.bar_pipeline().is_some());
-    assert!(renderer.line_pipeline().is_none());
-    assert!(renderer.scatter_pipeline().is_none());
-    assert!(renderer.errorbar_pipeline().is_none());
-    assert!(renderer.pipelines.scatter_mapped.is_none());
-    assert!(renderer.pipelines.errorbar_mapped.is_none());
+    assert!(renderer.pipelines.precise(PrecisePipeline::Bar).is_some());
+    assert!(renderer.pipelines.precise(PrecisePipeline::Line).is_none());
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Scatter)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Errorbar)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ScatterMapped)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ErrorbarMapped)
+            .is_none()
+    );
     assert!(!renderer.errorbar_extent_engine_ready());
 }
 
@@ -5271,13 +5594,38 @@ fn line_prepare_compiles_only_the_line_pipeline() {
         series: &series,
     }];
     renderer.prepare(&mut items).unwrap();
-    assert!(renderer.line_pipeline().is_some());
-    assert!(renderer.scatter_pipeline().is_none());
-    assert!(renderer.errorbar_pipeline().is_none());
-    assert!(renderer.bar_pipeline().is_none());
-    assert!(renderer.pipelines.scatter_mapped.is_none());
-    assert!(renderer.pipelines.errorbar_mapped.is_none());
-    assert!(renderer.pipelines.pick_ring_mapped.is_none());
+    assert!(renderer.pipelines.precise(PrecisePipeline::Line).is_some());
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Scatter)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Errorbar)
+            .is_none()
+    );
+    assert!(renderer.pipelines.precise(PrecisePipeline::Bar).is_none());
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ScatterMapped)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ErrorbarMapped)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::PickRingMapped)
+            .is_none()
+    );
     assert!(!renderer.errorbar_extent_engine_ready());
 }
 
@@ -5324,15 +5672,38 @@ fn scatter_prepare_compiles_only_the_scatter_pipeline() {
         series: &series,
     }];
     renderer.prepare(&mut items).unwrap();
-    assert!(renderer.line_pipeline().is_none());
-    assert!(renderer.scatter_pipeline().is_some());
-    assert!(renderer.errorbar_pipeline().is_none());
+    assert!(renderer.pipelines.precise(PrecisePipeline::Line).is_none());
     assert!(
-        renderer.pipelines.scatter_mapped.is_none(),
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Scatter)
+            .is_some()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Errorbar)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ScatterMapped)
+            .is_none(),
         "unmapped scatter must not compile the mapped pipeline"
     );
-    assert!(renderer.pipelines.errorbar_mapped.is_none());
-    assert!(renderer.pipelines.pick_ring_mapped.is_none());
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ErrorbarMapped)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::PickRingMapped)
+            .is_none()
+    );
 }
 
 #[test]
@@ -5385,15 +5756,38 @@ fn errorbar_prepare_compiles_scatter_and_errorbar_pipelines() {
         series: &series,
     }];
     renderer.prepare(&mut items).unwrap();
-    assert!(renderer.line_pipeline().is_none());
-    assert!(renderer.scatter_pipeline().is_some());
-    assert!(renderer.errorbar_pipeline().is_some());
+    assert!(renderer.pipelines.precise(PrecisePipeline::Line).is_none());
     assert!(
-        renderer.pipelines.scatter_mapped.is_none(),
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Scatter)
+            .is_some()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Errorbar)
+            .is_some()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ScatterMapped)
+            .is_none(),
         "errorbar without a style map must not compile mapped pipelines"
     );
-    assert!(renderer.pipelines.errorbar_mapped.is_none());
-    assert!(renderer.pipelines.pick_ring_mapped.is_none());
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ErrorbarMapped)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::PickRingMapped)
+            .is_none()
+    );
     assert!(!renderer.errorbar_extent_engine_ready());
 }
 
@@ -5994,9 +6388,18 @@ fn render_mapped_style_case(
         }];
         let prepared = renderer.prepare(&mut items).unwrap();
         let pipeline_state = (
-            renderer.pipelines.scatter_mapped.is_some(),
-            renderer.pipelines.errorbar_mapped.is_some(),
-            renderer.pipelines.pick_ring_mapped.is_some(),
+            renderer
+                .pipelines
+                .precise(PrecisePipeline::ScatterMapped)
+                .is_some(),
+            renderer
+                .pipelines
+                .precise(PrecisePipeline::ErrorbarMapped)
+                .is_some(),
+            renderer
+                .pipelines
+                .precise(PrecisePipeline::PickRingMapped)
+                .is_some(),
         );
         (
             paint_prepared_rgba(renderer, &prepared, w, h),
@@ -6553,104 +6956,6 @@ fn value_map_columns_must_cover_every_point() {
     ));
 }
 
-/// Streaming is not extended to the value maps: a streamed series with one
-/// is rejected with an explicit reason, like a streamed line fill.
-#[test]
-fn streamed_series_reject_value_maps() {
-    let config = basic_errorbar_chart().config().clone();
-    let colour = value_mapped_scatter_series("stream", Some("c"), None);
-    let size = value_mapped_scatter_series("stream", None, Some(("s", SizeScale::Area)));
-    for series in [colour, size] {
-        assert!(matches!(
-            PrepareContext::validate_stream_series(&config, &series),
-            Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-                if reason.to_string().contains("streamed sources are not supported")
-        ));
-    }
-    let plain = test_scatter_style();
-    let plain = SeriesConfig {
-        series_id: "plain".into(),
-        source_id: None,
-        label: None,
-        x_column: "x".into(),
-        y_column: "y".into(),
-        z_column: None,
-        render_type: DataRenderType::Xy(crate::data_config::XySeries {
-            scatter: Some(plain),
-            line: None,
-            errors: None,
-            stem: None,
-        }),
-    };
-    assert!(PrepareContext::validate_stream_series(&config, &plain).is_ok());
-}
-
-/// Streaming is not extended to stems (rule 8, #206), although the
-/// error-bar path they reuse streams: a stem series is refused with its
-/// explicit reason.
-#[test]
-fn streamed_series_reject_stems() {
-    let config = basic_errorbar_chart().config().clone();
-    let series = SeriesConfig {
-        series_id: "stems".into(),
-        source_id: None,
-        label: None,
-        x_column: "x".into(),
-        y_column: "y".into(),
-        z_column: None,
-        render_type: DataRenderType::Xy(crate::data_config::XySeries {
-            scatter: Some(test_scatter_style()),
-            line: None,
-            errors: None,
-            stem: Some(crate::data_config::Stem {
-                baseline: 0.0,
-                direction: crate::data_config::CategoryBarDirection::Vertical,
-                color: Color::BLACK,
-                width: 1.0,
-                line_style: crate::line::LineStylePreset::Solid,
-            }),
-        }),
-    };
-    assert!(matches!(
-        PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-            if reason == streaming_runtime::STREAMED_STEM_REASON
-    ));
-}
-
-/// Streaming is not extended to DataLess series (rule 8, #203, #234): an
-/// energy-level or Feynman series in a streamed display is refused with its
-/// explicit reason.
-#[test]
-fn streamed_series_reject_dataless_series() {
-    let config = basic_errorbar_chart().config().clone();
-    let dataless = |render_type| SeriesConfig {
-        series_id: "dataless".into(),
-        source_id: None,
-        label: None,
-        x_column: String::new(),
-        y_column: String::new(),
-        z_column: None,
-        render_type,
-    };
-    for (render_type, want) in [
-        (
-            DataRenderType::Feynman(crate::feynman::FeynmanSeries::default()),
-            streaming_runtime::STREAMED_FEYNMAN_REASON,
-        ),
-        (
-            DataRenderType::EnergyLevels(crate::energy_levels::EnergyLevelSeries::default()),
-            streaming_runtime::STREAMED_ENERGY_LEVELS_REASON,
-        ),
-    ] {
-        let series = dataless(render_type);
-        assert!(matches!(
-            PrepareContext::validate_stream_series(&config, &series),
-            Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) if reason == want
-        ));
-    }
-}
-
 /// The group-3 state is rebuilt only when its inputs change: two prepares
 /// of the same chart share one entry, and editing the colourbar's range
 /// (SSOT config) replaces it.
@@ -6700,7 +7005,7 @@ fn vector_points_series(id: &str) -> SeriesConfig {
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::Vector {
+        render_type: DataRenderType::Vector(VectorSeries {
             components: crate::data_config::VectorComponents::Points {
                 u: "u".into(),
                 v: "v".into(),
@@ -6715,312 +7020,10 @@ fn vector_points_series(id: &str) -> SeriesConfig {
                 head_width_px: 8.0,
                 min_length_px: 0.0,
                 color_map: None,
+                auto_scale: false,
             },
-        },
-    }
-}
-
-/// Streaming is not extended to vector series: a streamed one is rejected
-/// with an explicit reason, like a streamed value map.
-#[test]
-fn streamed_series_reject_vectors() {
-    let config = basic_errorbar_chart().config().clone();
-    assert!(matches!(
-        PrepareContext::validate_stream_series(&config, &vector_points_series("stream")),
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-            if reason.to_string().contains("streamed sources are not supported")
-    ));
-}
-
-/// Streaming is not extended to category bars: a streamed category bar
-/// series is rejected with an explicit reason, on a chart without a
-/// categorical axis (whose own rejection would otherwise come first) too.
-#[test]
-fn streamed_series_reject_category_bars() {
-    let config = basic_errorbar_chart().config().clone();
-    let series = SeriesConfig {
-        series_id: "stream".into(),
-        source_id: None,
-        label: None,
-        x_column: "x".into(),
-        y_column: "y".into(),
-        z_column: None,
-        render_type: DataRenderType::CategoryBars {
-            color: Color::BLACK,
-            style: Default::default(),
-            labels: Default::default(),
-            label_format: Default::default(),
-            overrides: None,
-        },
-    };
-    assert!(matches!(
-        PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-            if reason.to_string().contains("category bar") && reason.to_string().contains("streamed sources are not supported")
-    ));
-}
-
-/// Streaming is not extended to box plots: a streamed box plot series is
-/// rejected with an explicit reason (CLAUDE.md rule 8), and the draw-phase
-/// backstop says the same.
-#[test]
-fn streamed_series_reject_box_plots() {
-    let config = basic_errorbar_chart().config().clone();
-    let series = SeriesConfig {
-        series_id: "stream".into(),
-        source_id: None,
-        label: None,
-        x_column: "x".into(),
-        y_column: "record".into(),
-        z_column: None,
-        render_type: DataRenderType::BoxPlot {
-            color: Color::BLACK,
-            style: Default::default(),
-            labels: Default::default(),
-            outliers: None,
-            overrides: None,
-            violin: None,
-            points: None,
-        },
-    };
-    assert!(matches!(
-        PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-            if reason.to_string().contains("box plot") && reason.to_string().contains("streamed sources are not supported")
-    ));
-}
-
-/// Streaming is not extended to range bars: a streamed range bar series is
-/// rejected with an explicit reason (CLAUDE.md rule 8) before a cursor
-/// exists.
-#[test]
-fn streamed_series_reject_range_bars() {
-    let config = basic_errorbar_chart().config().clone();
-    let series = SeriesConfig {
-        series_id: "stream".into(),
-        source_id: None,
-        label: None,
-        x_column: "x".into(),
-        y_column: "y".into(),
-        z_column: None,
-        render_type: DataRenderType::RangeBars {
-            color: Color::BLACK,
-            style: Default::default(),
-            start: "start".into(),
-            whiskers: None,
-            color_by: Default::default(),
-            progress: None,
-            connector: None,
-            slot_width: None,
-            labels: Default::default(),
-        },
-    };
-    assert!(matches!(
-        PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-            if reason.to_string().contains("range bar") && reason.to_string().contains("streamed sources are not supported")
-    ));
-}
-
-/// A histogram's columns are the host's bins, one row per bin, so it is
-/// resident only (#284): a streamed one is rejected with an explicit reason
-/// before a cursor exists, in either orientation and with or without bar
-/// style overrides.
-#[test]
-fn streamed_series_reject_histograms() {
-    let config = basic_errorbar_chart().config().clone();
-    for orientation in [
-        crate::data_config::BarOrientation::Vertical,
-        crate::data_config::BarOrientation::Horizontal,
-    ] {
-        for overrides in [
-            None,
-            Some(vec![crate::data_config::DataBarStyleOverride {
-                index: 1,
-                style: Default::default(),
-            }]),
-        ] {
-            let series = SeriesConfig {
-                series_id: "stream".into(),
-                source_id: None,
-                label: None,
-                x_column: "x".into(),
-                y_column: "y".into(),
-                z_column: None,
-                render_type: DataRenderType::Histogram {
-                    bar: DataBarStyleConfig {
-                        fill_color: Color::BLACK,
-                        border_color: Color::BLACK,
-                        border_width: 1.0,
-                        baseline: 0.0,
-                        gap_px: 0.0,
-                        width_ratio: 1.0,
-                        orientation: orientation.clone(),
-                        bar_style_overrides: overrides,
-                    },
-                },
-            };
-            let refused = PrepareContext::validate_stream_series(&config, &series);
-            assert!(
-                matches!(
-                    &refused,
-                    Err(FiggyError::InvalidSeriesConfig {
-                        series_id,
-                        kind: crate::RuleKind::StreamedHistogram,
-                    }) if series_id == "stream"
-                ),
-                "{refused:?}"
-            );
-            let reason = refused.unwrap_err().to_string();
-            assert!(
-                reason.contains("histogram")
-                    && reason.contains("streamed sources are not supported"),
-                "{reason}"
-            );
-        }
-    }
-}
-
-/// Streaming is not extended to ternary series (CLAUDE.md rule 8): a
-/// streamed one is rejected with an explicit reason.
-/// A hexagonal grid reads its lattice from resident coordinate columns
-/// whose uniform steps the pool measured; a streamed one is rejected (rule
-/// 8, #134).
-#[test]
-fn streamed_series_reject_hexagonal_grids() {
-    let config = basic_errorbar_chart().config().clone();
-    let series = SeriesConfig {
-        series_id: "stream".into(),
-        source_id: None,
-        z_column: None,
-        label: None,
-        x_column: "x".into(),
-        y_column: "y".into(),
-        render_type: DataRenderType::Field(crate::data_config::FieldSeries {
-            matrix: crate::data_config::MatrixRef {
-                columns: vec!["z0".into(), "z1".into()],
-                orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
-                grid_layout: crate::data_config::GridLayout::Hexagonal,
-            },
-            fill: Some(crate::data_config::FieldFillConfig {
-                mode: crate::data_config::FillMode::Continuous,
-                shading: crate::data_config::Shading::Flat,
-                opacity: 1.0,
-            }),
-            contour: None,
-            surface: None,
         }),
-    };
-    assert!(matches!(
-        PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-            if reason.to_string().contains("hexagonal") && reason.to_string().contains("streamed sources are not supported")
-    ));
-}
-
-#[test]
-fn streamed_series_reject_ternary_series() {
-    let config = basic_errorbar_chart().config().clone();
-    let series = SeriesConfig {
-        series_id: "stream".into(),
-        source_id: None,
-        label: None,
-        x_column: "x".into(),
-        y_column: "y".into(),
-        z_column: None,
-        render_type: DataRenderType::Ternary {
-            c_column: "c".into(),
-            scatter: Some(crate::data_config::DataScatterStyleConfig {
-                point_color: Color::BLACK,
-                point_shape: crate::ScatterShape::CircleFilled,
-                point_size: 4.0,
-                point_style_table: None,
-                point_style_index_column: None,
-                point_style_overrides: None,
-                point_color_map: None,
-                point_size_map: None,
-            }),
-            line: None,
-            region: None,
-        },
-    };
-    assert!(matches!(
-        PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-            if reason.to_string().contains("ternary") && reason.to_string().contains("streamed sources are not supported")
-    ));
-}
-
-/// Streaming is not extended to a box plot's violin or raw points (CLAUDE.md
-/// rule 8): a streamed one is rejected with an explicit reason naming them.
-#[test]
-fn streamed_series_reject_violins_and_raw_points() {
-    use crate::data_config::{BoxPoints, Violin, ViolinBody, ViolinHalf};
-    let config = basic_errorbar_chart().config().clone();
-    let series = SeriesConfig {
-        series_id: "stream".into(),
-        source_id: None,
-        label: None,
-        x_column: "x".into(),
-        y_column: String::new(),
-        z_column: None,
-        render_type: DataRenderType::BoxPlot {
-            color: Color::BLACK,
-            style: Default::default(),
-            labels: Default::default(),
-            outliers: None,
-            overrides: None,
-            violin: Some(Violin::new(ViolinBody::Symmetric(ViolinHalf {
-                curve: "curve".into(),
-                density: "density".into(),
-                density_scale: 1.0,
-                style: Default::default(),
-            }))),
-            points: Some(BoxPoints {
-                positions: "x".into(),
-                values: "y".into(),
-                style: Default::default(),
-            }),
-        },
-    };
-    assert!(matches!(
-        PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-            if reason.to_string().contains("violin") && matches!(reason, crate::RuleKind::StreamedBoxPlot)
-                && reason.to_string().contains("streamed sources are not supported")
-    ));
-}
-
-/// Streaming is not extended to radar series: a streamed radar series is
-/// rejected with an explicit reason (CLAUDE.md rule 8), on its polar chart
-/// and before the polar rejection.
-#[test]
-fn streamed_series_reject_radar() {
-    let mut config = basic_errorbar_chart().config().clone();
-    config.set_polar(Some(crate::polar::PolarOptions::default()));
-    config.bottom_x.categories = Some(vec![
-        crate::config::Category::new("a", "A"),
-        crate::config::Category::new("b", "B"),
-        crate::config::Category::new("c", "C"),
-    ]);
-    let series = SeriesConfig {
-        series_id: "stream".into(),
-        source_id: None,
-        label: None,
-        x_column: "x".into(),
-        y_column: "y".into(),
-        z_column: None,
-        render_type: DataRenderType::Radar {
-            color: Color::BLACK,
-            style: Default::default(),
-            labels: Default::default(),
-        },
-    };
-    assert!(matches!(
-        PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-            if reason.to_string().contains("radar") && reason.to_string().contains("streamed sources are not supported")
-    ));
+    }
 }
 
 fn streamline_series(id: &str, color: Option<&str>) -> SeriesConfig {
@@ -7031,39 +7034,13 @@ fn streamline_series(id: &str, color: Option<&str>) -> SeriesConfig {
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::Streamlines {
+        render_type: DataRenderType::Streamlines(StreamlineSeries {
             line: crate::data_config::DataLineStyleConfig::default(),
             arrows: Some(crate::data_config::StreamlineArrows::default()),
             color_map: color.map(|column| crate::data_config::PointColorMap {
                 column: column.into(),
             }),
-        },
-    }
-}
-
-/// Streaming is not extended to streamlines (CLAUDE.md rule 8): a streamed
-/// streamline series is rejected with an explicit reason, with or without
-/// arrowheads and a colour map.
-#[test]
-fn streamed_sources_reject_streamlines() {
-    let config = basic_errorbar_chart().config().clone();
-    for mut series in [
-        streamline_series("stream", None),
-        streamline_series("stream", Some("c")),
-    ] {
-        for arrows in [true, false] {
-            if let DataRenderType::Streamlines { arrows: a, .. } = &mut series.render_type
-                && !arrows
-            {
-                *a = None;
-            }
-            assert!(matches!(
-                PrepareContext::validate_stream_series(&config, &series),
-                Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-                    if reason.to_string().contains("streamline")
-                        && reason.to_string().contains("streamed sources are not supported")
-            ));
-        }
+        }),
     }
 }
 
@@ -7108,20 +7085,20 @@ fn polar_rejects_streamlines() {
     };
     for series in [
         rejected(|s| {
-            if let DataRenderType::Streamlines { line, .. } = &mut s.render_type {
+            if let DataRenderType::Streamlines(StreamlineSeries { line, .. }) = &mut s.render_type {
                 line.interpolation = LineInterpolation::StepPost;
             }
         }),
         rejected(|s| {
-            if let DataRenderType::Streamlines { line, .. } = &mut s.render_type {
+            if let DataRenderType::Streamlines(StreamlineSeries { line, .. }) = &mut s.render_type {
                 line.fill = Some(LineFill::ToBaseline(0.0));
             }
         }),
         rejected(|s| {
-            if let DataRenderType::Streamlines {
+            if let DataRenderType::Streamlines(StreamlineSeries {
                 arrows: Some(arrows),
                 ..
-            } = &mut s.render_type
+            }) = &mut s.render_type
             {
                 arrows.spacing_px = arrows.head_length_px * 0.5;
             }
@@ -7148,86 +7125,154 @@ fn polar_rejects_streamlines() {
         .unwrap();
 }
 
-/// Streaming is not extended to polar charts: a streamed series on one
-/// is rejected with an explicit reason.
-#[test]
-fn streamed_series_reject_polar_charts() {
-    let mut config = basic_errorbar_chart().config().clone();
-    config.set_polar(Some(crate::polar::PolarOptions::default()));
-    let series = SeriesConfig {
+/// A streamed series `stream` drawn by `render_type`, reading `x` and
+/// `y_column`.
+fn streamed_series(render_type: DataRenderType, y_column: &str) -> SeriesConfig {
+    SeriesConfig {
         series_id: "stream".into(),
         source_id: None,
         label: None,
         x_column: "x".into(),
-        y_column: "y".into(),
+        y_column: y_column.into(),
         z_column: None,
-        render_type: DataRenderType::Xy(crate::data_config::XySeries {
-            scatter: Some(DataScatterStyleConfig {
-                point_color: Color::BLACK,
-                point_shape: crate::data_config::ScatterShape::CircleFilled,
-                point_size: 4.0,
-                point_style_table: None,
-                point_style_index_column: None,
-                point_style_overrides: None,
-                point_color_map: None,
-                point_size_map: None,
-            }),
-            line: None,
-            errors: None,
-            stem: None,
-        }),
-    };
-    assert!(matches!(
-        PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-            if reason.to_string().contains("polar") && reason.to_string().contains("streamed sources are not supported")
-    ));
-    // A polar heatmap (#208) is held to the same rule: no new streaming.
-    let field = SeriesConfig {
-        series_id: "stream_field".into(),
-        source_id: None,
-        label: None,
-        x_column: "x".into(),
-        y_column: "y".into(),
-        z_column: None,
-        render_type: DataRenderType::Field(crate::data_config::FieldSeries {
-            matrix: crate::data_config::MatrixRef {
-                columns: vec!["z0".into()],
-                orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
-                grid_layout: crate::data_config::GridLayout::Centers,
-            },
-            fill: Some(crate::data_config::FieldFillConfig {
-                mode: crate::data_config::FillMode::Continuous,
-                shading: crate::data_config::Shading::Flat,
-                opacity: 1.0,
-            }),
-            contour: None,
-            surface: None,
-        }),
-    };
-    assert!(matches!(
-        PrepareContext::validate_stream_series(&config, &field),
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-            if reason.to_string().contains("polar") && reason.to_string().contains("streamed sources are not supported")
-    ));
-    config.set_polar(None);
-    assert!(PrepareContext::validate_stream_series(&config, &series).is_ok());
+        render_type,
+    }
 }
 
-/// Streaming is not extended to categorical axes: a streamed series on a
-/// chart with one, the overlays' included, is rejected with an explicit
-/// reason.
+/// A scatter of `point_color` circles.
+fn streamed_scatter(point_color: Color) -> DataRenderType {
+    DataRenderType::Xy(crate::data_config::XySeries {
+        scatter: Some(DataScatterStyleConfig {
+            point_color,
+            point_shape: crate::data_config::ScatterShape::CircleFilled,
+            point_size: 4.0,
+            point_style_table: None,
+            point_style_index_column: None,
+            point_style_overrides: None,
+            point_color_map: None,
+            point_size_map: None,
+        }),
+        line: None,
+        errors: None,
+        stem: None,
+    })
+}
+
+/// A field over `columns`, filled, in `grid_layout`.
+fn streamed_field(columns: &[&str], grid_layout: crate::data_config::GridLayout) -> DataRenderType {
+    DataRenderType::Field(crate::data_config::FieldSeries {
+        matrix: crate::data_config::MatrixRef {
+            columns: columns.iter().map(|&c| c.into()).collect(),
+            orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
+            grid_layout,
+        },
+        fill: Some(crate::data_config::FieldFillConfig {
+            mode: crate::data_config::FillMode::Continuous,
+            shading: crate::data_config::Shading::Flat,
+            opacity: 1.0,
+        }),
+        contour: None,
+        surface: None,
+    })
+}
+
+/// Streaming is not extended to these families (CLAUDE.md rule 8): a
+/// streamed series of each is refused before a cursor exists, with its own
+/// `RuleKind` and its series id (#341: one row per family). A plain scatter
+/// or line still streams, and so does a scatter once its chart is not polar.
 #[test]
-fn streamed_series_reject_categorical_axes() {
+fn streamed_series_are_rejected_per_family() {
+    use crate::RuleKind;
+    use crate::data_config::{
+        BarOrientation, BoxPoints, DataBarStyleConfig, DataBarStyleOverride, GridLayout, Violin,
+        ViolinBody, ViolinHalf,
+    };
     let base = basic_errorbar_chart().config().clone();
-    let series = SeriesConfig {
-        series_id: "stream".into(),
+    let mut polar = base.clone();
+    polar.set_polar(Some(crate::polar::PolarOptions::default()));
+    // A radar is refused on its polar chart, before the polar rejection.
+    let mut radar_chart = polar.clone();
+    radar_chart.bottom_x.categories = Some(vec![
+        crate::config::Category::new("a", "A"),
+        crate::config::Category::new("b", "B"),
+        crate::config::Category::new("c", "C"),
+    ]);
+    let dataless = |render_type| SeriesConfig {
+        series_id: "dataless".into(),
         source_id: None,
         label: None,
-        x_column: "x".into(),
-        y_column: "y".into(),
+        x_column: String::new(),
+        y_column: String::new(),
         z_column: None,
-        render_type: DataRenderType::Xy(crate::data_config::XySeries {
+        render_type,
+    };
+    let stems = SeriesConfig {
+        series_id: "stems".into(),
+        ..streamed_series(
+            DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(test_scatter_style()),
+                line: None,
+                errors: None,
+                stem: Some(crate::data_config::Stem {
+                    baseline: 0.0,
+                    direction: crate::data_config::CategoryBarDirection::Vertical,
+                    color: Color::BLACK,
+                    width: 1.0,
+                    line_style: crate::line::LineStylePreset::Solid,
+                }),
+            }),
+            "y",
+        )
+    };
+    let box_plot = |violin, points, y_column: &str| {
+        streamed_series(
+            DataRenderType::BoxPlot(BoxSeries {
+                color: Color::BLACK,
+                style: Default::default(),
+                labels: Default::default(),
+                outliers: None,
+                overrides: None,
+                violin,
+                points,
+            }),
+            y_column,
+        )
+    };
+    let histogram = |orientation: BarOrientation, overrides| {
+        streamed_series(
+            DataRenderType::Histogram(HistogramSeries {
+                bar: DataBarStyleConfig {
+                    fill_color: Color::BLACK,
+                    border_color: Color::BLACK,
+                    border_width: 1.0,
+                    baseline: 0.0,
+                    gap_px: 0.0,
+                    width_ratio: 1.0,
+                    orientation,
+                    bar_style_overrides: overrides,
+                },
+            }),
+            "y",
+        )
+    };
+    let histogram_override = || {
+        Some(vec![DataBarStyleOverride {
+            index: 1,
+            style: Default::default(),
+        }])
+    };
+    let streamlines = |color: Option<&str>, arrows: bool| {
+        let mut series = streamline_series("stream", color);
+        if let DataRenderType::Streamlines(StreamlineSeries { arrows: a, .. }) =
+            &mut series.render_type
+            && !arrows
+        {
+            *a = None;
+        }
+        series
+    };
+    let line = streamed_series(
+        DataRenderType::Xy(crate::data_config::XySeries {
             scatter: None,
             line: Some(crate::data_config::DataLineStyleConfig {
                 line_style: crate::line::LineStylePreset::Solid,
@@ -7240,32 +7285,313 @@ fn streamed_series_reject_categorical_axes() {
             errors: None,
             stem: None,
         }),
-    };
-    assert!(PrepareContext::validate_stream_series(&base, &series).is_ok());
-    let categories = Some(vec![crate::config::Category::new("a", "A")]);
-    let edits: [fn(&mut Config, Option<Vec<crate::config::Category>>); 5] = [
-        |c, k| c.top_x.categories = k,
-        |c, k| c.bottom_x.categories = k,
-        |c, k| c.left_y.categories = k,
-        |c, k| c.right_y.categories = k,
-        |c, k| {
-            let mut layer = crate::OverlayLayer::default();
-            layer.y_axis.categories = k;
-            c.overlays.push(layer);
-        },
-    ];
-    for (index, edit) in edits.into_iter().enumerate() {
+        "y",
+    );
+    // A categorical axis anywhere, the overlays' included.
+    let categorical = |edit: fn(&mut Config, Option<Vec<crate::config::Category>>)| {
         let mut config = base.clone();
-        edit(&mut config, categories.clone());
+        edit(
+            &mut config,
+            Some(vec![crate::config::Category::new("a", "A")]),
+        );
+        config
+    };
+
+    let refused: Vec<(&str, Config, SeriesConfig, RuleKind)> = vec![
+        (
+            "colour map",
+            base.clone(),
+            value_mapped_scatter_series("stream", Some("c"), None),
+            RuleKind::StreamedPointMaps,
+        ),
+        (
+            "size map",
+            base.clone(),
+            value_mapped_scatter_series("stream", None, Some(("s", SizeScale::Area))),
+            RuleKind::StreamedPointMaps,
+        ),
+        (
+            "stems",
+            base.clone(),
+            stems,
+            streaming_runtime::STREAMED_STEM_REASON,
+        ),
+        (
+            "Feynman",
+            base.clone(),
+            dataless(DataRenderType::Feynman(
+                crate::feynman::FeynmanSeries::default(),
+            )),
+            streaming_runtime::STREAMED_FEYNMAN_REASON,
+        ),
+        (
+            "energy levels",
+            base.clone(),
+            dataless(DataRenderType::EnergyLevels(
+                crate::energy_levels::EnergyLevelSeries::default(),
+            )),
+            streaming_runtime::STREAMED_ENERGY_LEVELS_REASON,
+        ),
+        (
+            "vectors",
+            base.clone(),
+            vector_points_series("stream"),
+            RuleKind::StreamedVector,
+        ),
+        // On a chart without a categorical axis, whose own rejection would
+        // otherwise come first.
+        (
+            "category bars",
+            base.clone(),
+            streamed_series(
+                DataRenderType::CategoryBars(CategoryBarSeries {
+                    color: Color::BLACK,
+                    style: Default::default(),
+                    labels: Default::default(),
+                    label_format: Default::default(),
+                    overrides: None,
+                }),
+                "y",
+            ),
+            RuleKind::StreamedCategoryBars,
+        ),
+        (
+            "box plots",
+            base.clone(),
+            box_plot(None, None, "record"),
+            RuleKind::StreamedBoxPlot,
+        ),
+        (
+            "violins and raw points",
+            base.clone(),
+            box_plot(
+                Some(Violin::new(ViolinBody::Symmetric(ViolinHalf {
+                    curve: "curve".into(),
+                    density: "density".into(),
+                    density_scale: 1.0,
+                    style: Default::default(),
+                }))),
+                Some(BoxPoints {
+                    positions: "x".into(),
+                    values: "y".into(),
+                    style: Default::default(),
+                }),
+                "",
+            ),
+            RuleKind::StreamedBoxPlot,
+        ),
+        (
+            "range bars",
+            base.clone(),
+            streamed_series(
+                DataRenderType::RangeBars(RangeBarSeries {
+                    color: Color::BLACK,
+                    style: Default::default(),
+                    start: "start".into(),
+                    whiskers: None,
+                    color_by: Default::default(),
+                    progress: None,
+                    connector: None,
+                    slot_width: None,
+                    labels: Default::default(),
+                }),
+                "y",
+            ),
+            RuleKind::StreamedRangeBars,
+        ),
+        // Dependency links (#357) read their bars' rows from the pool.
+        (
+            "range links",
+            base.clone(),
+            streamed_series(
+                SeriesConfig::range_links("stream", "bars", [(0, 1)]).render_type,
+                "y",
+            ),
+            RuleKind::StreamedRangeLinks,
+        ),
+        // A histogram's columns are the host's bins, one row per bin, so it
+        // is resident only (#284), in either orientation and with or without
+        // bar style overrides.
+        (
+            "vertical histogram",
+            base.clone(),
+            histogram(BarOrientation::Vertical, None),
+            RuleKind::StreamedHistogram,
+        ),
+        (
+            "vertical histogram with overrides",
+            base.clone(),
+            histogram(BarOrientation::Vertical, histogram_override()),
+            RuleKind::StreamedHistogram,
+        ),
+        (
+            "horizontal histogram",
+            base.clone(),
+            histogram(BarOrientation::Horizontal, None),
+            RuleKind::StreamedHistogram,
+        ),
+        (
+            "horizontal histogram with overrides",
+            base.clone(),
+            histogram(BarOrientation::Horizontal, histogram_override()),
+            RuleKind::StreamedHistogram,
+        ),
+        // The lattice is read from resident coordinate columns whose uniform
+        // steps the pool measured (#134).
+        (
+            "hexagonal grid",
+            base.clone(),
+            streamed_series(streamed_field(&["z0", "z1"], GridLayout::Hexagonal), "y"),
+            RuleKind::StreamedHexagonal,
+        ),
+        (
+            "ternary",
+            base.clone(),
+            streamed_series(
+                DataRenderType::Ternary(TernarySeries {
+                    c_column: "c".into(),
+                    scatter: Some(crate::data_config::DataScatterStyleConfig {
+                        point_color: Color::BLACK,
+                        point_shape: crate::ScatterShape::CircleFilled,
+                        point_size: 4.0,
+                        point_style_table: None,
+                        point_style_index_column: None,
+                        point_style_overrides: None,
+                        point_color_map: None,
+                        point_size_map: None,
+                    }),
+                    line: None,
+                    region: None,
+                }),
+                "y",
+            ),
+            RuleKind::StreamedTernary,
+        ),
+        (
+            "radar",
+            radar_chart,
+            streamed_series(
+                DataRenderType::Radar(RadarPolygonSeries {
+                    color: Color::BLACK,
+                    style: Default::default(),
+                    labels: Default::default(),
+                }),
+                "y",
+            ),
+            RuleKind::StreamedRadar,
+        ),
+        (
+            "streamlines with arrowheads",
+            base.clone(),
+            streamlines(None, true),
+            RuleKind::StreamedStreamlines,
+        ),
+        (
+            "streamlines",
+            base.clone(),
+            streamlines(None, false),
+            RuleKind::StreamedStreamlines,
+        ),
+        (
+            "colour-mapped streamlines with arrowheads",
+            base.clone(),
+            streamlines(Some("c"), true),
+            RuleKind::StreamedStreamlines,
+        ),
+        (
+            "colour-mapped streamlines",
+            base.clone(),
+            streamlines(Some("c"), false),
+            RuleKind::StreamedStreamlines,
+        ),
+        (
+            "polar scatter",
+            polar.clone(),
+            streamed_series(streamed_scatter(Color::BLACK), "y"),
+            RuleKind::StreamedPolar,
+        ),
+        // A polar heatmap (#208) is held to the same rule.
+        (
+            "polar heatmap",
+            polar.clone(),
+            SeriesConfig {
+                series_id: "stream_field".into(),
+                ..streamed_series(streamed_field(&["z0"], GridLayout::Centers), "y")
+            },
+            RuleKind::StreamedPolar,
+        ),
+        (
+            "categorical top_x",
+            categorical(|c, k| c.top_x.categories = k),
+            line.clone(),
+            RuleKind::StreamedCategoricalAxis,
+        ),
+        (
+            "categorical bottom_x",
+            categorical(|c, k| c.bottom_x.categories = k),
+            line.clone(),
+            RuleKind::StreamedCategoricalAxis,
+        ),
+        (
+            "categorical left_y",
+            categorical(|c, k| c.left_y.categories = k),
+            line.clone(),
+            RuleKind::StreamedCategoricalAxis,
+        ),
+        (
+            "categorical right_y",
+            categorical(|c, k| c.right_y.categories = k),
+            line.clone(),
+            RuleKind::StreamedCategoricalAxis,
+        ),
+        (
+            "categorical overlay y",
+            categorical(|c, k| {
+                let mut layer = crate::OverlayLayer::default();
+                layer.y_axis.categories = k;
+                c.overlays.push(layer);
+            }),
+            line.clone(),
+            RuleKind::StreamedCategoricalAxis,
+        ),
+    ];
+    for (family, config, series, want) in refused {
+        let result = PrepareContext::validate_stream_series(&config, &series);
         assert!(
             matches!(
-                PrepareContext::validate_stream_series(&config, &series),
-                Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-                    if reason.to_string().contains("categorical")
-                        && reason.to_string().contains("streamed sources are not supported")
+                &result,
+                Err(FiggyError::InvalidSeriesConfig { series_id, kind })
+                    if *series_id == series.series_id && *kind == want
             ),
-            "axis {index}"
+            "{family}: expected {want:?}, got {result:?}"
         );
+    }
+
+    let plain = SeriesConfig {
+        series_id: "plain".into(),
+        ..streamed_series(
+            DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(test_scatter_style()),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
+            "y",
+        )
+    };
+    let mut no_longer_polar = polar.clone();
+    no_longer_polar.set_polar(None);
+    for (family, config, series) in [
+        ("plain scatter", &base, plain),
+        (
+            "scatter on a chart no longer polar",
+            &no_longer_polar,
+            streamed_series(streamed_scatter(Color::BLACK), "y"),
+        ),
+        ("line", &base, line),
+    ] {
+        let result = PrepareContext::validate_stream_series(config, &series);
+        assert!(result.is_ok(), "{family}: {result:?}");
     }
 }
 
@@ -7307,7 +7633,7 @@ fn vector_scratch_is_reused_until_its_inputs_change() {
         "an unchanged chart repaints identically"
     );
 
-    let DataRenderType::Vector { style, .. } = &mut series[0].render_type else {
+    let DataRenderType::Vector(VectorSeries { style, .. }) = &mut series[0].render_type else {
         unreachable!()
     };
     style.width_px = 12.0;
@@ -14708,15 +15034,11 @@ fn records_and_ragged_columns_reject_streaming_both_ways() {
         offsets: &offsets,
     };
     let streamed = |result: Result<String>| match result {
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) => {
-            assert!(
-                reason
-                    .to_string()
-                    .contains("streaming is not extended to records, ragged and triangle columns"),
-                "{reason}"
-            );
-        }
-        other => panic!("expected InvalidSeriesConfig, got {other:?}"),
+        Err(FiggyError::InvalidSeriesConfig {
+            kind: crate::RuleKind::CompositeNeedsResident { .. },
+            ..
+        }) => {}
+        other => panic!("expected CompositeNeedsResident, got {other:?}"),
     };
     let indices = Column {
         data: vec![0u32, 1, 2],
@@ -14734,13 +15056,11 @@ fn records_and_ragged_columns_reject_streaming_both_ways() {
     renderer.upsert_triangles("mesh", &triangles).unwrap();
     for id in ["box", "outliers", "mesh"] {
         match renderer.register_streamed_columns(vec![state_test_stream(id, 1)]) {
-            Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) => assert!(
-                reason
-                    .to_string()
-                    .contains("streaming is not extended to records, ragged and triangle columns"),
-                "{reason}"
-            ),
-            other => panic!("expected InvalidSeriesConfig for {id}, got {other:?}"),
+            Err(FiggyError::InvalidSeriesConfig {
+                kind: crate::RuleKind::StreamedCompositeId { .. },
+                ..
+            }) => {}
+            other => panic!("expected StreamedCompositeId for {id}, got {other:?}"),
         }
         assert!(renderer.logical_column(id).is_none());
     }
@@ -15234,12 +15554,12 @@ fn every_windowed_call_reports_its_own_gpu_errors() {
         "self.draw_prepared(",
         "self.first_frame_ready(",
         "self.first_frame_ready_blocking(",
-        "Renderer::for_window_async_observed(",
-        "Renderer::for_window_blocking_observed(",
         // `Renderer` calls that run the check themselves (#160).
         "self.inner.pick_chart(",
         "self.inner.pick_chart_data(",
         "self.inner.compile_pick_pipelines_async(",
+        // rustfmt puts this call on its own line after `self.inner`.
+        ".compile_data_pick_pipelines_async(",
     ];
     let mut seen = 0;
     for (index, _) in methods.match_indices("\n    pub ") {
@@ -15276,9 +15596,15 @@ fn every_windowed_call_reports_its_own_gpu_errors() {
         include_str!("frame/submit.rs"),
         include_str!("frame/paint.rs"),
         include_str!("streaming.rs"),
+        include_str!("streaming_demote.rs"),
+        include_str!("streaming_handoff.rs"),
         include_str!("style.rs"),
         include_str!("preparation.rs"),
         include_str!("device/renderer_prewarm.rs"),
+        include_str!("monotonic/resize.rs"),
+        include_str!("monotonic/selection.rs"),
+        include_str!("monotonic/plan.rs"),
+        include_str!("monotonic_chart.rs"),
         include_str!("../streaming_runtime.rs"),
     ];
     let mut wrapped = 0;
@@ -15371,8 +15697,14 @@ fn pipeline_enums_index_their_target_arrays() {
             .collect(),
         slots(|t| &t.ternary_region),
     );
+    check(
+        "PrecisePipeline",
+        PrecisePipeline::ALL.iter().map(|&k| k as usize).collect(),
+        slots(|t| &t.precise),
+    );
     assert_eq!(slots(|t| &t.ternary), TERNARY_PIPELINES);
     assert_eq!(slots(|t| &t.view3d), VIEW3D_PIPELINES);
+    assert_eq!(slots(|t| &t.precise), PRECISE_PIPELINES);
 }
 
 /// CONTOUR_LEVELS_COVER_DECLARED (#152): `contour_levels` holds at least
@@ -15912,7 +16244,14 @@ fn pick_style_meta_counts_stay_within_the_style_rows() {
     let pick = |renderer: &mut Renderer, x: f64| {
         let mut request = typed_pick_request(&config, typed_pick_position(&config, x, 4.0));
         request.max_distance_px = 2.0;
-        crate::test_gpu::block_on(renderer.pick_chart(chart, request).unwrap().resolve()).unwrap()
+        crate::test_gpu::block_on(
+            renderer
+                .shown_for_pick(chart, &request)
+                .pick_chart(chart, request)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap()
     };
     let hit = pick(&mut renderer, 1.0).expect("the painted bar picks");
     assert_eq!(
@@ -16047,7 +16386,7 @@ fn whole_chart_auto_fit_fits_a_histogram_from_its_columns() {
         .add_column("counts", &col_f64(vec![5.0, 8.0]))
         .unwrap();
     let mut series = state_test_line("hist", "edges", "counts");
-    series.render_type = DataRenderType::Histogram {
+    series.render_type = DataRenderType::Histogram(HistogramSeries {
         bar: crate::data_config::DataBarStyleConfig {
             fill_color: Color::BLACK,
             border_color: Color::BLACK,
@@ -16058,7 +16397,7 @@ fn whole_chart_auto_fit_fits_a_histogram_from_its_columns() {
             orientation: crate::data_config::BarOrientation::Vertical,
             bar_style_overrides: None,
         },
-    };
+    });
     assert_eq!(
         fit::histogram_fit_columns(&series, &crate::data_config::BarOrientation::Vertical),
         ("edges", "counts")
@@ -16167,6 +16506,8 @@ fn wait_test_chart(renderer: &mut Renderer) -> (ChartId, GpuPickRequest, Config)
         display_scale: scale,
         max_distance_px: 20.0,
     };
+    // A pick hits the ink its on-screen prepare drew (#381).
+    renderer.shown_for_pick(chart, &request);
     (chart, request, config)
 }
 

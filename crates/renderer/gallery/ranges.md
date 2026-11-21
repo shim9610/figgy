@@ -37,7 +37,7 @@ A profit bridge: the host's running totals as start and end columns, increases a
 
 <a href="../examples/range_bars.rs"><img src="../assets/gallery-gantt.png" alt="Gantt chart of a release plan" width="760"></a>
 
-A release plan on six rows over a date axis: a state column colours each task and a progress column shades its finished part.
+A release plan on six rows over a date axis: a state column colours each task, a progress column shades its finished part, and dependency links (`RangeLinks`) join the tasks.
 
 **Code:** [range_bars.rs](../examples/range_bars.rs), `gantt`
 

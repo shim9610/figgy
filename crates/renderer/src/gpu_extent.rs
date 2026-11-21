@@ -15,7 +15,7 @@ use crate::TryResolve;
 use crate::gpu_readback::{GpuReadback, ReadbackError};
 
 use crate::data::COLUMN_VALUE_BYTES;
-use crate::data_config::DataRenderType;
+use crate::data_config::{DataRenderType, RgbImageSeries, VectorSeries};
 use crate::data_render::ColumnHandle;
 use crate::gpu_memory::{
     ChargeTally, GpuByteCharge, GpuLedger, GpuResourceKind, charged_buffer, charged_buffer_init,
@@ -157,7 +157,7 @@ impl GpuSeriesFitMode {
                 matrix, fill: None, ..
             }) => (matrix, true),
             // An image fits as a heatmap of its red grid's layout.
-            DataRenderType::RgbImage { red, shading, .. } => {
+            DataRenderType::RgbImage(RgbImageSeries { red, shading, .. }) => {
                 (red, matches!(shading, Shading::Interpolated))
             }
             DataRenderType::Field(crate::data_config::FieldSeries {
@@ -173,23 +173,24 @@ impl GpuSeriesFitMode {
             }
             // Category bars fit from column and stack statistics, box plots
             // from record and ragged statistics.
-            DataRenderType::Histogram { .. }
-            | DataRenderType::CategoryBars { .. }
-            | DataRenderType::BoxPlot { .. }
-            | DataRenderType::RangeBars { .. } => {
+            DataRenderType::Histogram(_)
+            | DataRenderType::CategoryBars(_)
+            | DataRenderType::BoxPlot(_)
+            | DataRenderType::RangeBars(_)
+            | DataRenderType::RangeLinks(_) => {
                 return None;
             }
             // A radar series and streamlines fit as the line they draw (the
             // extent mode above answers them first).
-            DataRenderType::Radar { .. }
-            | DataRenderType::Streamlines { .. }
+            DataRenderType::Radar(_)
+            | DataRenderType::Streamlines(_)
             | DataRenderType::MonotonicLine(_) => return None,
             // A ternary chart's axes are the triangle, not a data extent.
-            DataRenderType::Ternary { .. } => return None,
+            DataRenderType::Ternary(_) => return None,
             // A parallel chart's axes are the categorical positions and the
             // normalized band; each parallel axis fits from its column's
             // statistics (`Chart::auto_fit_parallel_axes`).
-            DataRenderType::Parallel { .. }
+            DataRenderType::Parallel(_)
             | DataRenderType::EnergyLevels(_)
             | DataRenderType::Feynman(_) => return None,
             // A triangle mesh fits from its vertex columns' statistics at
@@ -198,14 +199,14 @@ impl GpuSeriesFitMode {
             // A grid vector's anchors are the grid's sample points: the
             // coordinates under `Centers`, the cell centres under `Edges`.
             // Data-mode tips over a grid are not part of the fit.
-            DataRenderType::Vector {
+            DataRenderType::Vector(VectorSeries {
                 components: crate::data_config::VectorComponents::Grid { u, .. },
                 ..
-            } => (u, true),
-            DataRenderType::Vector {
+            }) => (u, true),
+            DataRenderType::Vector(VectorSeries {
                 components: crate::data_config::VectorComponents::Points { .. },
                 ..
-            }
+            })
             | DataRenderType::Xy(_) => {
                 // The paired mode answered these above; it is their mode.
                 return GpuSeriesExtentMode::from_render_type(render_type).map(Self::Paired);
@@ -251,8 +252,8 @@ impl GpuSeriesExtentMode {
             // A radar outline is a line through (position, value) pairs;
             // streamlines are polylines whose NaN rows hold no extent.
             DataRenderType::Xy(crate::data_config::XySeries { scatter: None, .. })
-            | DataRenderType::Radar { .. }
-            | DataRenderType::Streamlines { .. }
+            | DataRenderType::Radar(_)
+            | DataRenderType::Streamlines(_)
             // A monotonic envelope fits as the line it draws: its kept
             // points, the visible samples and one on each side (#271).
             | DataRenderType::MonotonicLine(_) => Some(Self::Line),
@@ -265,26 +266,27 @@ impl GpuSeriesExtentMode {
             // Point vectors fit their anchors; in `Data` mode the tips are data
             // coordinates too and join the extent. `Pixels` tips are screen
             // lengths, not data, so they are left out like marker radii.
-            DataRenderType::Vector {
+            DataRenderType::Vector(VectorSeries {
                 components: crate::data_config::VectorComponents::Points { .. },
                 style,
-            } => Some(match style.scale {
+            }) => Some(match style.scale {
                 crate::data_config::VectorScale::Data { .. } => Self::VectorTips,
                 crate::data_config::VectorScale::Pixels { .. } => Self::Points,
             }),
-            DataRenderType::Vector {
+            DataRenderType::Vector(VectorSeries {
                 components: crate::data_config::VectorComponents::Grid { .. },
                 ..
-            }
-            | DataRenderType::Histogram { .. }
-            | DataRenderType::CategoryBars { .. }
-            | DataRenderType::BoxPlot { .. }
-            | DataRenderType::RangeBars { .. }
+            })
+            | DataRenderType::Histogram(_)
+            | DataRenderType::CategoryBars(_)
+            | DataRenderType::BoxPlot(_)
+            | DataRenderType::RangeBars(_)
+            | DataRenderType::RangeLinks(_)
             // A ternary chart's axes are the triangle, not a data extent.
-            | DataRenderType::Ternary { .. }
+            | DataRenderType::Ternary(_)
             // A parallel chart's are the categorical positions and the
             // normalized band.
-            | DataRenderType::Parallel { .. }
+            | DataRenderType::Parallel(_)
             // A DataLess energy-level series has no column to fit; its
             // extent is read from the SSOT (#203).
             | DataRenderType::EnergyLevels(_)
@@ -292,7 +294,7 @@ impl GpuSeriesExtentMode {
             | DataRenderType::TriMesh(_)
             | DataRenderType::Feynman(_)
             | DataRenderType::Field(_)
-            | DataRenderType::RgbImage { .. } => None,
+            | DataRenderType::RgbImage(_) => None,
         }
     }
 
@@ -580,16 +582,6 @@ impl GpuErrorbarExtentEngine {
             },
         );
 
-        let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only },
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        };
         let uniform = wgpu::BindGroupLayoutEntry {
             binding: 2,
             visibility: wgpu::ShaderStages::COMPUTE,
@@ -605,7 +597,11 @@ impl GpuErrorbarExtentEngine {
                 &device,
                 &wgpu::BindGroupLayoutDescriptor {
                     label: Some(label),
-                    entries: &[storage(0, true), storage(1, false), uniform],
+                    entries: &[
+                        crate::gpu_compile::storage_entry(0, true),
+                        crate::gpu_compile::storage_entry(1, false),
+                        uniform,
+                    ],
                 },
             )
         };
@@ -685,16 +681,6 @@ impl GpuErrorbarExtentEngine {
             },
         );
 
-        let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only },
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        };
         let uniform = wgpu::BindGroupLayoutEntry {
             binding: 2,
             visibility: wgpu::ShaderStages::COMPUTE,
@@ -710,7 +696,11 @@ impl GpuErrorbarExtentEngine {
                 &device,
                 &wgpu::BindGroupLayoutDescriptor {
                     label: Some(label),
-                    entries: &[storage(0, true), storage(1, false), uniform],
+                    entries: &[
+                        crate::gpu_compile::storage_entry(0, true),
+                        crate::gpu_compile::storage_entry(1, false),
+                        uniform,
+                    ],
                 },
             )
         };

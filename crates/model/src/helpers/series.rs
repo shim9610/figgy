@@ -15,12 +15,15 @@
 use crate::color::Color;
 use crate::data::ColumnId;
 use crate::data_config::{
-    DataBarStyleConfig, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
-    DataScatterStyleConfig, ErrorBars, ErrorRef, FieldFillConfig, FieldSeries, GridLayout,
-    LineFill, MatrixOrientation, MatrixRef, ScatterShape, SeriesConfig, Stem, VectorComponents,
-    VectorStyle, XySeries,
+    BoxSeries, CategoryBarLabels, CategoryBarSeries, DataBarStyleConfig, DataErrorBarStyleConfig,
+    DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorBars, ErrorRef,
+    FieldFillConfig, FieldSeries, GridLayout, HistogramSeries, LineFill, MatrixOrientation,
+    MatrixRef, ParallelSeries, RadarPolygonSeries, RangeBarSeries, RangeColor, RangeLinkSeries,
+    RangeProgress, RgbImageSeries, ScatterShape, SeriesConfig, Stem, StreamlineSeries,
+    TernarySeries, VectorComponents, VectorSeries, VectorStyle, XySeries,
 };
 use crate::line::LineStylePreset;
+use crate::preset::ColorCycle;
 use crate::text::RichText;
 
 impl MatrixRef {
@@ -60,9 +63,20 @@ impl MatrixRef {
 }
 
 /// The colour a constructor gives a series that takes one colour, the
-/// ink a line or a marker starts in: black until [`SeriesConfig::color`]
-/// or a theme's palette sets it.
-const SERIES_INK: Color = Color::BLACK;
+/// ink a line or a marker starts in: the first colour of
+/// [`ColorCycle::DEFAULT`] until [`SeriesConfig::color`], a theme's palette
+/// or [`crate::Config::apply_palette`] sets it (#357). It was black before.
+pub(super) const SERIES_INK: Color = ColorCycle::DEFAULT.color(0);
+
+/// The ink of contour lines a host leaves uncoloured (#357): a dark grey
+/// that reads on white and on the light end of a colour map, where palette
+/// blue was hard to see on a chart without a theme. A theme's
+/// `FieldTheme::unfilled_contour_color` or `contour_color` replaces it.
+pub(super) const CONTOUR_INK: Color = Color::from_rgb8(0x26, 0x26, 0x26);
+
+/// The corner radius of [`SeriesConfig::timeline_bars`], logical pixels:
+/// the rounding of a web timeline's bars.
+const TIMELINE_CORNER_RADIUS: f32 = 4.0;
 
 impl SeriesConfig {
     /// A series of `render_type` over the `x` and `y` columns, unlabelled
@@ -90,7 +104,7 @@ impl SeriesConfig {
         y: impl Into<ColumnId>,
         xy: XySeries,
     ) -> Self {
-        Self::of_kind(id, x, y, DataRenderType::Xy(xy))
+        Self::of_kind(id, x, y, DataRenderType::Xy(xy)).color(SERIES_INK)
     }
 
     /// A line through `(x, y)`.
@@ -170,10 +184,11 @@ impl SeriesConfig {
             id,
             edges,
             counts,
-            DataRenderType::Histogram {
+            DataRenderType::Histogram(HistogramSeries {
                 bar: DataBarStyleConfig::default(),
-            },
+            }),
         )
+        .color(SERIES_INK)
     }
 
     fn field(
@@ -182,7 +197,7 @@ impl SeriesConfig {
         y: impl Into<ColumnId>,
         field: FieldSeries,
     ) -> Self {
-        Self::of_kind(id, x, y, DataRenderType::Field(field))
+        Self::of_kind(id, x, y, DataRenderType::Field(field)).color(SERIES_INK)
     }
 
     /// A heatmap of `matrix` over the `x` and `y` coordinate columns,
@@ -206,7 +221,9 @@ impl SeriesConfig {
         )
     }
 
-    /// Contour lines of `matrix` at the host's `levels`.
+    /// Contour lines of `matrix` at the host's `levels`, drawn 1 px in a
+    /// dark grey ink (`#262626`, #357) so they read on a chart without a
+    /// theme; `.color(c)` or a theme recolours them.
     pub fn contours(
         id: impl Into<String>,
         x: impl Into<ColumnId>,
@@ -230,6 +247,7 @@ impl SeriesConfig {
                 surface: None,
             },
         )
+        .color(CONTOUR_INK)
     }
 
     /// A hexagonal heatmap of pre-binned `matrix` cells: the host bins,
@@ -257,14 +275,14 @@ impl SeriesConfig {
             id,
             x,
             y,
-            DataRenderType::RgbImage {
+            DataRenderType::RgbImage(RgbImageSeries {
                 red,
                 green,
                 blue,
                 range: [0.0, 1.0],
                 shading: crate::data_config::Shading::Flat,
                 opacity: 1.0,
-            },
+            }),
         )
     }
 
@@ -281,15 +299,16 @@ impl SeriesConfig {
             id,
             x,
             y,
-            DataRenderType::Vector {
+            DataRenderType::Vector(VectorSeries {
                 components: VectorComponents::Points {
                     u: u.into(),
                     v: v.into(),
                     w: None,
                 },
                 style: VectorStyle::default(),
-            },
+            }),
         )
+        .color(SERIES_INK)
     }
 
     /// The host's streamlines: paths through `x` and `y`, separated by
@@ -303,17 +322,19 @@ impl SeriesConfig {
             id,
             x,
             y,
-            DataRenderType::Streamlines {
+            DataRenderType::Streamlines(StreamlineSeries {
                 line: DataLineStyleConfig::default(),
                 arrows: Some(crate::defaults::streamline_arrows()),
                 color_map: None,
-            },
+            }),
         )
+        .color(SERIES_INK)
     }
 
     /// Vertical category bars: `positions` holds `0, 1, ..., n - 1` and
-    /// `values` one value per category. Black until [`Self::color`] or a
-    /// theme's palette colours it, like every constructor here.
+    /// `values` one value per category. In the default cycle's first colour
+    /// until [`Self::color`] or a theme's palette colours it, like every
+    /// constructor here.
     pub fn category_bars(
         id: impl Into<String>,
         positions: impl Into<ColumnId>,
@@ -323,19 +344,20 @@ impl SeriesConfig {
             id,
             positions,
             values,
-            DataRenderType::CategoryBars {
+            DataRenderType::CategoryBars(CategoryBarSeries {
                 color: SERIES_INK,
                 style: crate::defaults::category_bar_style(),
                 labels: crate::defaults::category_bar_series_labels(),
                 label_format: crate::defaults::category_bar_label_format(),
                 overrides: None,
-            },
+            }),
         )
     }
 
     /// Box plots: `positions` holds `0, 1, ..., n - 1` and `records` names
     /// the column of the host's five-number records, one per category.
-    /// Black until [`Self::color`] or a theme's palette colours it.
+    /// In the default cycle's first colour until [`Self::color`] or a
+    /// theme's palette colours it.
     pub fn box_plot(
         id: impl Into<String>,
         positions: impl Into<ColumnId>,
@@ -345,7 +367,7 @@ impl SeriesConfig {
             id,
             positions,
             records,
-            DataRenderType::BoxPlot {
+            DataRenderType::BoxPlot(BoxSeries {
                 color: SERIES_INK,
                 style: crate::defaults::box_plot_style(),
                 labels: crate::defaults::box_plot_series_labels(),
@@ -353,15 +375,15 @@ impl SeriesConfig {
                 overrides: None,
                 violin: None,
                 points: None,
-            },
+            }),
         )
     }
 
     /// Range bars (a Gantt or floating-bar chart): one bar per row at
     /// `positions`, from `start` to `end`, on a category axis. On a numeric
     /// axis the series also needs its `slot_width`, set through
-    /// [`Self::style_range_bars`]. Black until [`Self::color`] or a theme's
-    /// palette colours it.
+    /// [`Self::style_range_bars`]. In the default cycle's first colour until
+    /// [`Self::color`] or a theme's palette colours it.
     pub fn range_bars(
         id: impl Into<String>,
         positions: impl Into<ColumnId>,
@@ -372,7 +394,7 @@ impl SeriesConfig {
             id,
             positions,
             end,
-            DataRenderType::RangeBars {
+            DataRenderType::RangeBars(RangeBarSeries {
                 color: SERIES_INK,
                 style: crate::defaults::category_bar_style(),
                 start: start.into(),
@@ -382,13 +404,89 @@ impl SeriesConfig {
                 connector: None,
                 slot_width: None,
                 labels: crate::defaults::category_bar_series_labels(),
-            },
+            }),
         )
     }
 
+    /// Timeline (Gantt) bars: [`Self::range_bars`] in the timeline look of
+    /// the common web timelines (#357). Each row takes its own colour from
+    /// the muted [`crate::default::TIMELINE_COLORS`] ([`RangeColor::ByRow`]; the series
+    /// colour, the legend swatch, is the first), and the bars are flat with
+    /// 4 px corners, without texture or gloss. A label the host writes
+    /// (`labels.text`) sits inside its bar when it fits and beside the bar's
+    /// end otherwise ([`CategoryBarLabels::InsideOrBeside`]), in the dark or
+    /// light [`crate::default::TIMELINE_LABEL_INK`], whichever contrasts more with what lies
+    /// under it. Pair it with [`crate::default::default_timeline_config`]
+    /// for the chart, and [`Self::with_progress`] for a progress column.
+    /// Every choice is a field of the series, so a theme or an edit can
+    /// change it; [`Self::range_bars`] keeps the documented look for
+    /// waterfalls and candlesticks.
+    pub fn timeline_bars(
+        id: impl Into<String>,
+        positions: impl Into<ColumnId>,
+        start: impl Into<ColumnId>,
+        end: impl Into<ColumnId>,
+    ) -> Self {
+        Self::range_bars(id, positions, start, end)
+            .color(super::default::TIMELINE_COLORS[0])
+            .style_range_bars(|bars| {
+                bars.color_by = RangeColor::ByRow {
+                    colors: super::default::TIMELINE_COLORS.to_vec(),
+                };
+                bars.style.corner_radius = TIMELINE_CORNER_RADIUS;
+                bars.style.texture_strength = 0.0;
+                bars.style.gloss = 0.0;
+                bars.labels.placement = CategoryBarLabels::InsideOrBeside;
+                bars.labels.contrast_ink = Some(super::default::TIMELINE_LABEL_INK);
+            })
+    }
+
+    /// Dependency links (#357) between the bars of the range bar series
+    /// `bars`, one per `(from, to)` row pair, in the web Gantt look: amber
+    /// (`#D4A24C`), 1.5 px wide, leaving the predecessor 6 px from its start
+    /// and ending in a 6 px open chevron ([`RangeLinkSeries`]). The series
+    /// is DataLess: the links are its SSOT. List the links before their
+    /// bars so the bars cover the link ends.
+    pub fn range_links(
+        id: impl Into<String>,
+        bars: impl Into<String>,
+        links: impl IntoIterator<Item = (u32, u32)>,
+    ) -> Self {
+        Self::of_kind(
+            id,
+            "",
+            "",
+            DataRenderType::RangeLinks(RangeLinkSeries {
+                bars: bars.into(),
+                color: Color::from_rgb8(212, 162, 76),
+                width: 1.5,
+                head: 6.0,
+                inset: 6.0,
+                links: links
+                    .into_iter()
+                    .map(|(from, to)| crate::data_config::RangeLink::new(from, to))
+                    .collect(),
+            }),
+        )
+    }
+
+    /// A range bar series' progress (#357): each bar is drawn whole up to
+    /// its share in `column` (`0..=1`, the host's) and in the light tint of
+    /// [`crate::default::TIMELINE_REMAINING_OPACITY`] past it ([`RangeProgress`]). No effect
+    /// on any other kind of series.
+    pub fn with_progress(self, column: impl Into<ColumnId>) -> Self {
+        let column = column.into();
+        self.style_range_bars(|bars| {
+            bars.progress = Some(RangeProgress {
+                column,
+                remaining_opacity: super::default::TIMELINE_REMAINING_OPACITY,
+            });
+        })
+    }
+
     /// A radar polygon: `categories` holds `0, 1, ..., n - 1` and `values`
-    /// one value per category on the radius axis. Black until
-    /// [`Self::color`] or a theme's palette colours it.
+    /// one value per category on the radius axis. In the default cycle's
+    /// first colour until [`Self::color`] or a theme's palette colours it.
     pub fn radar(
         id: impl Into<String>,
         categories: impl Into<ColumnId>,
@@ -398,11 +496,11 @@ impl SeriesConfig {
             id,
             categories,
             values,
-            DataRenderType::Radar {
+            DataRenderType::Radar(RadarPolygonSeries {
                 color: SERIES_INK,
                 style: crate::defaults::radar_series_style(),
                 labels: crate::defaults::radar_series_labels(),
-            },
+            }),
         )
     }
 
@@ -418,18 +516,23 @@ impl SeriesConfig {
             id,
             a,
             b,
-            DataRenderType::Ternary {
+            DataRenderType::Ternary(TernarySeries {
                 c_column: c.into(),
                 scatter: Some(DataScatterStyleConfig::default()),
                 line: None,
                 region: None,
-            },
+            }),
         )
+        .color(SERIES_INK)
     }
 
     /// One polyline per row across the parallel axes, one column per axis
     /// in the axes' order. The first two also name the series' `x_column`
-    /// and `y_column`, as the variant requires.
+    /// and `y_column`, as the variant requires. The rows draw 1 px wide in
+    /// the series ink, opaque, so [`crate::Config::apply_palette`] colours
+    /// them like any other series; a theme's `ParallelTheme::line_opacity` or the host's
+    /// alpha makes many rows read as a density (#357), and a colour column
+    /// ([`Self::color_by`]) colours them through the chart's colourbar.
     pub fn parallel<I, C>(id: impl Into<String>, columns: I) -> Self
     where
         I: IntoIterator<Item = C>,
@@ -442,12 +545,13 @@ impl SeriesConfig {
             id,
             x,
             y,
-            DataRenderType::Parallel {
+            DataRenderType::Parallel(ParallelSeries {
                 columns,
                 line: DataLineStyleConfig::default(),
                 color_column: None,
-            },
+            }),
         )
+        .color(SERIES_INK)
     }
 
     /// An energy-level (Grotrian) diagram held in the document.
@@ -499,6 +603,7 @@ impl SeriesConfig {
                 line: DataLineStyleConfig::default(),
             }),
         )
+        .color(SERIES_INK)
     }
 
     /// A Feynman diagram held in the document.
@@ -559,13 +664,14 @@ impl SeriesConfig {
                     contour.line.line_color = color;
                 }
             }
-            DataRenderType::Histogram { bar } => bar.fill_color = color,
-            DataRenderType::Vector { style, .. } => style.color = color,
-            DataRenderType::CategoryBars { color: c, .. }
-            | DataRenderType::BoxPlot { color: c, .. }
-            | DataRenderType::RangeBars { color: c, .. }
-            | DataRenderType::Radar { color: c, .. } => *c = color,
-            DataRenderType::Ternary { scatter, line, .. } => {
+            DataRenderType::Histogram(HistogramSeries { bar }) => bar.fill_color = color,
+            DataRenderType::Vector(VectorSeries { style, .. }) => style.color = color,
+            DataRenderType::CategoryBars(CategoryBarSeries { color: c, .. })
+            | DataRenderType::BoxPlot(BoxSeries { color: c, .. })
+            | DataRenderType::RangeBars(RangeBarSeries { color: c, .. })
+            | DataRenderType::RangeLinks(RangeLinkSeries { color: c, .. })
+            | DataRenderType::Radar(RadarPolygonSeries { color: c, .. }) => *c = color,
+            DataRenderType::Ternary(TernarySeries { scatter, line, .. }) => {
                 if let Some(scatter) = scatter {
                     scatter.point_color = color;
                 }
@@ -573,11 +679,12 @@ impl SeriesConfig {
                     line.line_color = color;
                 }
             }
-            DataRenderType::Streamlines { line, .. } | DataRenderType::Parallel { line, .. } => {
+            DataRenderType::Streamlines(StreamlineSeries { line, .. })
+            | DataRenderType::Parallel(ParallelSeries { line, .. }) => {
                 line.line_color = color;
             }
             DataRenderType::MonotonicLine(series) => series.line.line_color = color,
-            DataRenderType::RgbImage { .. }
+            DataRenderType::RgbImage(_)
             | DataRenderType::EnergyLevels(_)
             | DataRenderType::Feynman(_) => {}
         }
@@ -594,8 +701,10 @@ impl SeriesConfig {
                     stem.width = width;
                 }
             }
-            DataRenderType::Vector { style, .. } => style.width_px = width,
-            DataRenderType::Radar { style, .. } => style.line_width_px = Some(width),
+            DataRenderType::Vector(VectorSeries { style, .. }) => style.width_px = width,
+            DataRenderType::Radar(RadarPolygonSeries { style, .. }) => {
+                style.line_width_px = Some(width)
+            }
             _ => {}
         }
         self
@@ -621,7 +730,7 @@ impl SeriesConfig {
         });
         let slot = match &mut self.render_type {
             DataRenderType::Xy(xy) => Some(&mut xy.scatter),
-            DataRenderType::Ternary { scatter, .. } => Some(scatter),
+            DataRenderType::Ternary(TernarySeries { scatter, .. }) => Some(scatter),
             _ => None,
         };
         if let Some(slot) = slot {
@@ -690,7 +799,7 @@ impl SeriesConfig {
     /// sideways to a vertical baseline. (Category bars take their direction
     /// from the chart's `bar_groups`.)
     pub fn horizontal(mut self) -> Self {
-        if let DataRenderType::Histogram { bar } = &mut self.render_type {
+        if let DataRenderType::Histogram(HistogramSeries { bar }) = &mut self.render_type {
             bar.orientation = crate::data_config::BarOrientation::Horizontal;
         }
         self.horizontal_stem();
@@ -704,11 +813,11 @@ impl SeriesConfig {
             DataRenderType::Xy(XySeries {
                 line: Some(line), ..
             })
-            | DataRenderType::Ternary {
+            | DataRenderType::Ternary(TernarySeries {
                 line: Some(line), ..
-            }
-            | DataRenderType::Streamlines { line, .. }
-            | DataRenderType::Parallel { line, .. } => visit(line),
+            })
+            | DataRenderType::Streamlines(StreamlineSeries { line, .. })
+            | DataRenderType::Parallel(ParallelSeries { line, .. }) => visit(line),
             DataRenderType::MonotonicLine(series) => visit(&mut series.line),
             DataRenderType::Field(FieldSeries {
                 contour: Some(contour),
@@ -734,6 +843,44 @@ mod tests {
         MatrixRef::columns_are_x((0..3).map(|i| format!("{prefix}{i}")))
     }
 
+    /// The parallel rows draw 1 px in the opaque series ink, which the colour
+    /// cycle recognises as unset (#357), and the parallel
+    /// preset is a valid chart once the host writes its axes and names, and
+    /// reads back unchanged.
+    #[test]
+    fn the_parallel_helpers_are_a_light_valid_chart() {
+        let series = SeriesConfig::parallel("rows", ["a", "b", "c"]);
+        let DataRenderType::Parallel(ParallelSeries { line, .. }) = &series.render_type else {
+            panic!("a parallel series");
+        };
+        assert_eq!((line.line_width, line.line_color), (1.0, SERIES_INK));
+        let mut config = crate::helpers::default::default_parallel_config();
+        let options = config.parallel().unwrap();
+        assert!(options.names_on_top);
+        assert_eq!(options.label_backdrop.unwrap().a, 0.8);
+        assert_eq!((config.left_y.min, config.left_y.max), (0.0, 1.0));
+        assert_eq!(config.left_y.minor_count, 0);
+        assert!(!config.top_x.line_visible && !config.right_y.line_visible);
+        assert!(!config.grid.show_major_x && !config.grid.show_major_y);
+        // A new chart's layout: its chart object fits it.
+        assert_eq!(config.layout_state, crate::config::LayoutState::Fitted);
+        config.bottom_x.categories = Some(
+            ["a", "b", "c"]
+                .map(|id| Category::new(id, id.to_uppercase()))
+                .to_vec(),
+        );
+        config.parallel_mut().unwrap().axes =
+            vec![crate::parallel::ParallelAxis::new(0.0, 10.0); 3];
+        assert_eq!(config.validate_parallel(), Ok(()));
+        valid_on(&config, &[series]);
+        #[cfg(feature = "serde")]
+        {
+            let json = serde_json::to_string(&config).unwrap();
+            let back: Config = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, config);
+        }
+    }
+
     fn valid_on(config: &Config, series: &[SeriesConfig]) {
         for item in series {
             if let Err(error) = config.validate_series(std::slice::from_ref(item)) {
@@ -754,6 +901,141 @@ mod tests {
 
     // Each constructor returns a series that validates on the chart its
     // family draws on (#265).
+    // Isolines a host leaves uncoloured read on a chart without a theme
+    // (#357): dark ink, not palette blue; the host's colour still wins, and
+    // a heatmap's fill keeps its colour map.
+    #[test]
+    fn contours_draw_in_dark_ink() {
+        let line = |s: &SeriesConfig| match &s.render_type {
+            DataRenderType::Field(FieldSeries {
+                contour: Some(contour),
+                ..
+            }) => contour.line.line_color,
+            _ => unreachable!("contours"),
+        };
+        let plain = SeriesConfig::contours("c", "x", "y", grid("z"), vec![0.5]);
+        assert_eq!(line(&plain), CONTOUR_INK);
+        assert_ne!(CONTOUR_INK, SERIES_INK);
+        let red = Color::from_rgb8(200, 0, 0);
+        assert_eq!(line(&plain.clone().color(red)), red);
+        // Its contrast on white is at least 7:1 (WCAG AAA for text).
+        let lum = |c: u8| {
+            let c = f64::from(c) / 255.0;
+            if c <= 0.039_28 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let l = lum(0x26);
+        assert!((1.05 / (l + 0.05)) >= 7.0);
+    }
+
+    #[test]
+    fn constructors_start_in_the_default_cycle() {
+        // #357: an uncoloured series is no longer black.
+        let ink = ColorCycle::DEFAULT.color(0);
+        assert_ne!(ink, Color::BLACK);
+        let line = SeriesConfig::scatter_line("s", "x", "y").y_errors("e");
+        let DataRenderType::Xy(xy) = &line.render_type else {
+            panic!("an x-y series");
+        };
+        assert_eq!(xy.line.as_ref().unwrap().line_color, ink);
+        assert_eq!(xy.scatter.as_ref().unwrap().point_color, ink);
+        assert_eq!(xy.errors.as_ref().unwrap().style.error_bar_color, ink);
+        let bars = SeriesConfig::category_bars("b", "p", "v");
+        let DataRenderType::CategoryBars(bars) = &bars.render_type else {
+            panic!("category bars");
+        };
+        assert_eq!(bars.color, ink);
+        let hist = SeriesConfig::histogram("h", "e", "c");
+        let DataRenderType::Histogram(hist) = &hist.render_type else {
+            panic!("a histogram");
+        };
+        assert_eq!(hist.bar.fill_color, ink);
+    }
+
+    #[test]
+    fn apply_palette_gives_series_i_colour_i_and_redraws_the_legend() {
+        let red = Color::from_rgb8(200, 0, 0);
+        let mut series = [
+            SeriesConfig::line("a", "x", "y").label("a"),
+            SeriesConfig::scatter("b", "x", "y").color(red).label("b"),
+            SeriesConfig::line("c", "x", "y").color(Color::BLACK),
+            SeriesConfig::stem("d", "x", "y"),
+            SeriesConfig::box_plot("e", "p", "r"),
+            SeriesConfig::histogram("f", "e", "c"),
+            SeriesConfig::heatmap("g", "x", "y", grid("z")),
+            SeriesConfig::contours("h", "x", "y", grid("z"), vec![0.5]),
+            SeriesConfig::energy_levels("i", crate::defaults::energy_level_series()),
+            SeriesConfig::line("j", "x", "y"),
+        ];
+        let untouched = series.clone();
+        let mut config = Config {
+            layout_state: crate::LayoutState::Fitted,
+            ..Config::default()
+        };
+        for item in &series[..2] {
+            let symbol = crate::legend::series_symbol_segments(item, None);
+            let label = item.label.as_ref().unwrap().segments.clone();
+            crate::legend::append_legend_entry_rich(&mut config.legend.content, symbol, label);
+        }
+        let before = config.clone();
+        config.apply_palette(&mut series, ColorCycle::DEFAULT.colors());
+        let first = |s: &SeriesConfig| match &s.render_type {
+            DataRenderType::Xy(xy) => xy
+                .line
+                .as_ref()
+                .map(|l| l.line_color)
+                .or(xy.scatter.as_ref().map(|m| m.point_color))
+                .unwrap(),
+            DataRenderType::BoxPlot(b) => b.color,
+            DataRenderType::Histogram(h) => h.bar.fill_color,
+            _ => unreachable!(),
+        };
+        let d = ColorCycle::DEFAULT;
+        // Every palette-coloured series takes the colour of its place, a
+        // colour set before included: the method applies the palette.
+        for i in [0, 1, 2, 3, 4, 5, 9] {
+            assert_eq!(first(&series[i]), d.color(i), "series {i}");
+        }
+        // A stem's marker and stem take the same colour.
+        let DataRenderType::Xy(stem) = &series[3].render_type else {
+            unreachable!()
+        };
+        assert_eq!(stem.stem.as_ref().unwrap().color, d.color(3));
+        // The fill, the contour ink and the levels keep their colours.
+        for i in [6, 7, 8] {
+            assert_eq!(series[i], untouched[i], "series {i}");
+        }
+        // The legend's symbols follow the series; its text, and the rest
+        // of the chart (the layout included), stay.
+        let symbol = crate::legend::series_symbol_segments(&series[1], None);
+        assert!(
+            symbol
+                .iter()
+                .all(|seg| config.legend.content.segments.contains(seg))
+        );
+        assert_ne!(config.legend, before.legend);
+        assert_eq!(
+            Config {
+                legend: before.legend.clone(),
+                ..config.clone()
+            },
+            before
+        );
+        // A second call changes nothing; another preset cycles the same
+        // way; an empty palette changes nothing.
+        let (mut again, mut config_again) = (series.clone(), config.clone());
+        config_again.apply_palette(&mut again, d.colors());
+        assert_eq!((&again, &config_again), (&series, &config));
+        config_again.apply_palette(&mut again, &[]);
+        assert_eq!(again, series);
+        config_again.apply_palette(&mut again, ColorCycle::Set2.colors());
+        assert_eq!(first(&again[1]), ColorCycle::Set2.color(1));
+        assert_eq!(first(&again[9]), ColorCycle::Set2.color(9));
+    }
+
     #[test]
     fn each_constructor_validates_on_its_chart() {
         valid_on(
@@ -837,7 +1119,7 @@ mod tests {
         let bars = SeriesConfig::histogram("h", "e", "c")
             .color(red)
             .horizontal();
-        let DataRenderType::Histogram { bar } = &bars.render_type else {
+        let DataRenderType::Histogram(HistogramSeries { bar }) = &bars.render_type else {
             panic!("a histogram");
         };
         assert_eq!(bar.fill_color, red);

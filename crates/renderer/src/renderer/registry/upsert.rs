@@ -77,6 +77,12 @@ impl ColumnUpload {
         self.staging.staging_bytes()
     }
 
+    /// The staging buffer the chunks were written into, for a batch that
+    /// installs the upload ([`crate::BatchSource::Staged`], #334).
+    pub(crate) fn staging(&self) -> &data_render::ColumnStaging {
+        &self.staging
+    }
+
     /// Write one chunk at value `start`, which must be [`Self::written`]:
     /// the source writes its whole length into the staging buffer. An
     /// overlapping or gapped chunk, a chunk past the end and a chunk of

@@ -7,21 +7,23 @@ use super::*;
 macro_rules! renderer_prewarm_layouts {
     ($renderer:expr) => {
         PrewarmLayouts {
-            device: &$renderer.device,
+            precise: PreciseLayouts {
+                device: &$renderer.device,
+                transform_bgl: &$renderer.transform_bgl,
+                style_bgl: &$renderer.style_bgl,
+                per_point_style_map_bgl: &$renderer.per_point_style_map_bgl,
+                point_value_map_bgl: &$renderer.point_value_map_bgl,
+                data_selection_bgl: &$renderer.data_selection_bgl,
+                field_bgl: &$renderer.field_bgl,
+                vector_bgl: &$renderer.vector_bgl,
+                category_bar_data_bgl: &$renderer.category_bar_data_bgl,
+                parallel_bgl: &$renderer.parallel_bgl,
+                star_data_bgl: &$renderer.star_data_bgl,
+                label_pipelines: $renderer.contour_label_pipelines.as_ref(),
+                surface_format: $renderer.surface_format,
+            },
             queue: &$renderer.queue,
-            transform_bgl: &$renderer.transform_bgl,
-            style_bgl: &$renderer.style_bgl,
-            per_point_style_map_bgl: &$renderer.per_point_style_map_bgl,
-            point_value_map_bgl: &$renderer.point_value_map_bgl,
-            data_selection_bgl: &$renderer.data_selection_bgl,
-            field_bgl: &$renderer.field_bgl,
-            vector_bgl: &$renderer.vector_bgl,
-            category_bar_data_bgl: &$renderer.category_bar_data_bgl,
-            parallel_bgl: &$renderer.parallel_bgl,
-            star_data_bgl: &$renderer.star_data_bgl,
-            label_pipelines: $renderer.contour_label_pipelines.as_ref(),
             feature: None,
-            surface_format: $renderer.surface_format,
         }
     };
 }
@@ -162,6 +164,10 @@ impl Renderer {
             finished(observer, "renderer.prewarm", "fit extent compute");
             crate::init::yield_init_frame().await;
         }
+        // The ink mask pass every on-screen prepare of a chart runs (#381).
+        if self.ink_mask_pipeline.is_none() {
+            self.ink_mask_pipeline = Some(InkMaskPipeline::new(&self.device));
+        }
         started(observer, "renderer.prewarm", "point picking compute");
         self.enable_gpu_picking_observed_async(observer)
             .await
@@ -217,6 +223,10 @@ impl Renderer {
             self.ensure_errorbar_extent_engine_blocking()
                 .map_err(prewarm_extent_failure)?;
             finished(observer, "renderer.prewarm", "fit extent compute");
+        }
+        // The ink mask pass every on-screen prepare of a chart runs (#381).
+        if self.ink_mask_pipeline.is_none() {
+            self.ink_mask_pipeline = Some(InkMaskPipeline::new(&self.device));
         }
         started(observer, "renderer.prewarm", "point picking compute");
         self.enable_gpu_picking_observed(observer)

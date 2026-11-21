@@ -7,21 +7,20 @@
 //! radar document with a moved spoke label.
 use test_gpu::BlockOn as _;
 
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/svg_parts.rs"]
 mod svg_parts;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::measure;
 
-use renderer::axis_render::{
-    AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at, try_raster_chart_to_rgba,
-};
+use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at};
 use renderer::config::{Category, TickVisibility};
 use renderer::layout::{ChartArea, DrawnPart, Element, NudgeResult, Rect, RectF};
 use renderer::polar::{PolarOptions, screen_to_spoke_offset, spoke_offset_to_screen};
 use renderer::sink::Parts;
-use renderer::{
-    Chart, Config, CpuTextMeasure, HitMap, Renderer, RendererDevice, SelectionGeometry,
-};
+use renderer::{Chart, Config, HitMap, Renderer, RendererDevice, SelectionGeometry};
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 420;
@@ -60,10 +59,6 @@ fn config() -> Config {
         ..PolarOptions::default()
     }));
     cfg
-}
-
-fn measure(cfg: &Config) -> CpuTextMeasure {
-    CpuTextMeasure::for_style(&cfg.draw_style)
 }
 
 /// The drawn box of category `i`'s label.
@@ -138,7 +133,15 @@ fn a_label_offset_moves_only_that_label() {
         }
     }
     for scale in [1.0f32, 2.0] {
-        let raster = |cfg: &Config| try_raster_chart_to_rgba(&cfg.scaled(scale)).unwrap();
+        let raster = |cfg: &Config| {
+            try_raster_chart_layer_to_rgba_with_selection_at(
+                &cfg.scaled(scale),
+                AxisLayerKind::All,
+                &[],
+                1.0,
+            )
+            .unwrap()
+        };
         let (a, b) = (raster(&base), raster(&moved));
         let ink = |img: &[u8], r: RectF| {
             let mut n = 0;
@@ -443,7 +446,6 @@ fn a_label_offset_round_trips_and_zero_is_omitted() {
 /// keeps that label's place relative to its unmoved position.
 #[cfg(feature = "serde")]
 #[test]
-#[allow(deprecated)]
 fn a_released_radar_document_keeps_its_moved_spoke_label() {
     let json = include_str!("fixtures/released/model-0.12.1-radar-edited.json");
     let document: renderer::RadarChart = serde_json::from_str(json).unwrap();

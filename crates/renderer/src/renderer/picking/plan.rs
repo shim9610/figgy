@@ -31,6 +31,7 @@ impl LayerPickInputs {
     }
 
     /// The transform of member `k`'s panel.
+    #[cfg(test)]
     pub(in crate::renderer) fn member_transform(&self, k: usize) -> data_render::ScatterTransform {
         data_render::scatter_transform_from_config(&self.member_panels[k])
     }
@@ -164,7 +165,7 @@ impl PickChartPlan {
             if let Some(points) = series
                 .render_type
                 .box_plot()
-                .and_then(|b| b.points)
+                .and_then(|b| b.points.as_ref())
                 .filter(|_| primitives.box_points)
             {
                 descriptors.push(box_points_pick_descriptor(
@@ -351,7 +352,7 @@ impl PickChartPlan {
                         series
                             .render_type
                             .streamlines()
-                            .and_then(|streamlines| streamlines.arrows.copied())
+                            .and_then(|streamlines| streamlines.arrows)
                     }),
                     category_jitter: None,
                     // A ternary series' markers and line are placed by
@@ -363,16 +364,6 @@ impl PickChartPlan {
         }
 
         Ok(Self { descriptors })
-    }
-
-    pub(in crate::renderer) fn registry_slots<'a>(
-        &'a self,
-        current: Option<&[OwnedGpuPickSeriesDescriptor]>,
-    ) -> std::result::Result<
-        Vec<crate::gpu_pick::GpuPickRegistrySlot<'a>>,
-        crate::gpu_pick::GpuPickError,
-    > {
-        self.registry_slots_rebuilding(current, &[])
     }
 
     pub(in crate::renderer) fn registry_slots_rebuilding<'a>(

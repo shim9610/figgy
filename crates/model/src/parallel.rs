@@ -25,7 +25,7 @@
 //! [`Element::ParallelAxisLabel`]: crate::layout::Element::ParallelAxisLabel
 
 use crate::config::{AxisOptions, AxisScale, Config};
-use crate::data_config::{DataRenderType, LineInterpolation, SeriesConfig};
+use crate::data_config::{DataRenderType, LineInterpolation, ParallelSeries, SeriesConfig};
 use crate::line::LineStylePreset;
 
 /// One axis of a parallel chart: its own range and scale, the direction
@@ -154,7 +154,34 @@ impl ParallelAxis {
 )]
 pub struct ParallelOptions {
     pub axes: Vec<ParallelAxis>,
+    /// Whether the axis names (`bottom_x`'s category labels,
+    /// [`Element::AxisLabel`]`(Bottom)`) are placed above the plot, as web
+    /// parallel-coordinate charts place them, instead of below it (#357).
+    /// Only the names move: `bottom_x`'s line, ticks and title stay at the
+    /// bottom. `false` (the default, omitted from JSON) keeps them below.
+    ///
+    /// [`Element::AxisLabel`]: crate::layout::Element::AxisLabel
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
+    pub names_on_top: bool,
+    /// A box filled in this colour behind every tick label of every
+    /// parallel axis, so a label stays readable over the rows it sits on
+    /// (#357): the label's extents grown by [`LABEL_BACKDROP_PAD`] of its
+    /// font size on each side, drawn as part of
+    /// [`Element::ParallelAxisLabel`]. `None` (the default, omitted from
+    /// JSON) draws no box.
+    ///
+    /// [`Element::ParallelAxisLabel`]: crate::layout::Element::ParallelAxisLabel
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub label_backdrop: Option<crate::Color>,
 }
+
+/// The margin of a [`ParallelOptions::label_backdrop`] box around its
+/// label, as a share of the label's font size, so the box scales with the
+/// text at every export scale.
+pub const LABEL_BACKDROP_PAD: f32 = 0.15;
 
 impl ParallelOptions {
     /// The axis count every reader of a parallel chart relies on: at least
@@ -232,16 +259,17 @@ impl Config {
     /// without a fill; a colour column maps through `Config.colorbar`.
     pub fn validate_parallel_series(&self, series: &[SeriesConfig]) -> Result<(), crate::RuleKind> {
         for item in series {
-            match (&item.render_type, self.parallel()) {
-                (DataRenderType::Parallel { .. }, None) => {
+            let chart = self.series_chart(&item.series_id);
+            match (&item.render_type, chart.parallel()) {
+                (DataRenderType::Parallel(_), None) => {
                     return Err(crate::RuleKind::ParallelSeriesNotParallel);
                 }
                 (
-                    DataRenderType::Parallel {
+                    DataRenderType::Parallel(ParallelSeries {
                         columns,
                         line,
                         color_column,
-                    },
+                    }),
                     Some(parallel),
                 ) => {
                     if columns.len() != parallel.axes.len() {
@@ -268,7 +296,7 @@ impl Config {
                     if color_column.as_deref().is_some_and(str::is_empty) {
                         return Err(crate::RuleKind::ParallelSeriesColorColumn);
                     }
-                    if color_column.is_some() && self.colorbar.is_none() {
+                    if color_column.is_some() && chart.colorbar.is_none() {
                         return Err(crate::RuleKind::ParallelSeriesColorbar);
                     }
                 }
@@ -308,11 +336,11 @@ mod tests {
             x_column: columns[0].into(),
             y_column: columns[1].into(),
             z_column: None,
-            render_type: DataRenderType::Parallel {
+            render_type: DataRenderType::Parallel(ParallelSeries {
                 columns: columns.iter().map(|c| c.to_string()).collect(),
                 line: line(),
                 color_column: None,
-            },
+            }),
         }
     }
 
@@ -326,6 +354,8 @@ mod tests {
         config.left_y.min = 0.0;
         config.left_y.max = 1.0;
         config.set_parallel(Some(ParallelOptions {
+            names_on_top: false,
+            label_backdrop: None,
             axes: vec![
                 ParallelAxis::new(0.0, 10.0),
                 ParallelAxis {
@@ -339,6 +369,45 @@ mod tests {
             ],
         }));
         config
+    }
+
+    /// A Cartesian root chart whose one subplot is `cell`, drawing `ids`
+    /// (#325).
+    fn root_with_subplot(mut cell: Config, ids: &[&str]) -> Config {
+        let mut root = crate::defaults::config();
+        cell.chart_area = root.chart_area.clone();
+        root.subplots.push(crate::layer::Subplot {
+            config: cell,
+            series: ids.iter().map(|id| id.to_string()).collect(),
+            ..crate::defaults::subplot()
+        });
+        root
+    }
+
+    #[test]
+    fn a_subplot_draws_parallel_series_on_its_own_parallel_chart() {
+        let root = root_with_subplot(chart(), &["rows"]);
+        let rows = series(&["a", "b", "c"]);
+        assert_eq!(
+            root.validate_parallel_series(std::slice::from_ref(&rows)),
+            Ok(())
+        );
+        assert_eq!(root.validate_series(&[rows]), Ok(()));
+        // The colour map is the subplot's colour bar, not the root's.
+        let mut coloured_cell = chart();
+        coloured_cell.colorbar = Some(crate::defaults::color_bar_options());
+        let coloured = root_with_subplot(coloured_cell, &["rows"]);
+        let mut s = series(&["a", "b", "c"]);
+        if let DataRenderType::Parallel(ParallelSeries { color_column, .. }) = &mut s.render_type {
+            *color_column = Some("class".into());
+        }
+        assert_eq!(coloured.validate_parallel_series(&[s]), Ok(()));
+        // The plain root still refuses a parallel series of its own.
+        let unplaced = root_with_subplot(chart(), &["other"]);
+        assert_eq!(
+            unplaced.validate_parallel_series(&[series(&["a", "b", "c"])]),
+            Err(crate::RuleKind::ParallelSeriesNotParallel)
+        );
     }
 
     #[test]
@@ -424,7 +493,8 @@ mod tests {
         };
         assert_eq!(
             reject_series(&|s| {
-                if let DataRenderType::Parallel { columns, .. } = &mut s.render_type {
+                if let DataRenderType::Parallel(ParallelSeries { columns, .. }) = &mut s.render_type
+                {
                     columns.pop();
                 }
             }),
@@ -436,7 +506,7 @@ mod tests {
         );
         assert_eq!(
             reject_series(&|s| {
-                if let DataRenderType::Parallel { line, .. } = &mut s.render_type {
+                if let DataRenderType::Parallel(ParallelSeries { line, .. }) = &mut s.render_type {
                     line.line_style = LineStylePreset::Dash;
                 }
             }),
@@ -444,7 +514,9 @@ mod tests {
         );
         assert_eq!(
             reject_series(&|s| {
-                if let DataRenderType::Parallel { color_column, .. } = &mut s.render_type {
+                if let DataRenderType::Parallel(ParallelSeries { color_column, .. }) =
+                    &mut s.render_type
+                {
                     *color_column = Some("class".into());
                 }
             }),
@@ -453,7 +525,7 @@ mod tests {
         let mut coloured = chart();
         coloured.colorbar = Some(crate::defaults::color_bar_options());
         let mut s = series(&["a", "b", "c"]);
-        if let DataRenderType::Parallel { color_column, .. } = &mut s.render_type {
+        if let DataRenderType::Parallel(ParallelSeries { color_column, .. }) = &mut s.render_type {
             *color_column = Some("class".into());
         }
         assert_eq!(coloured.validate_parallel_series(&[s]), Ok(()));
@@ -498,11 +570,11 @@ mod tests {
                 x_column: "a".into(),
                 y_column: "b".into(),
                 z_column: None,
-                render_type: DataRenderType::Parallel {
+                render_type: DataRenderType::Parallel(ParallelSeries {
                     columns,
                     line: line(),
                     color_column: None,
-                },
+                }),
             };
             assert_eq!(
                 config.validate_parallel_series(&[item]),
@@ -527,6 +599,150 @@ mod tests {
         assert_eq!(axes[1].label_offset, [6.0 - LABEL_GAP, 10.0]);
     }
 
+    /// Records the texts and filled rectangles an element emits, in order.
+    #[derive(Default)]
+    struct Parts {
+        texts: Vec<crate::layout::RectF>,
+        boxes: Vec<(crate::layout::RectF, Color)>,
+        /// For each text, whether the part just before it was a box.
+        backed: Vec<bool>,
+        last_box: bool,
+    }
+
+    impl crate::sink::Sink for Parts {
+        fn text(&mut self, _: crate::sink::Slot, text: &crate::sink::PlacedText<'_>) {
+            self.texts.push(text.rect());
+            self.backed.push(self.last_box);
+            self.last_box = false;
+        }
+        fn stroke(
+            &mut self,
+            _: crate::sink::Slot,
+            _: [f32; 2],
+            _: [f32; 2],
+            _: &crate::sink::StrokeStyle<'_>,
+        ) {
+            self.last_box = false;
+        }
+        fn rect(
+            &mut self,
+            _: crate::sink::Slot,
+            rect: crate::layout::RectF,
+            fill: Option<Color>,
+            _: Option<crate::sink::Border<'_>>,
+        ) {
+            if let Some(fill) = fill {
+                self.boxes.push((rect, fill));
+                self.last_box = true;
+            }
+        }
+        fn triangle(&mut self, _: crate::sink::Slot, _: [[f32; 2]; 3], _: Color) {}
+        fn path(
+            &mut self,
+            _: crate::sink::Slot,
+            _: &[crate::sink::PathSegment],
+            _: &crate::sink::StrokeStyle<'_>,
+        ) {
+        }
+        fn polygon(
+            &mut self,
+            _: crate::sink::Slot,
+            _: &[[f32; 2]],
+            _: Option<Color>,
+            _: Option<&crate::sink::StrokeStyle<'_>>,
+        ) {
+        }
+        fn ramp(
+            &mut self,
+            _: crate::sink::Slot,
+            _: crate::layout::RectF,
+            _: &crate::config::ColorBarOptions,
+        ) {
+        }
+    }
+
+    /// 8 px per character, 10 px up and 3 px down.
+    struct Chars;
+    impl crate::text::MeasureText for Chars {
+        fn measure_rich(&self, rt: &crate::text::RichText) -> crate::text::TextExtents {
+            crate::text::TextExtents {
+                width: rt.segments.len() as f32 * 8.0,
+                ascent: 10.0,
+                descent: 3.0,
+            }
+        }
+    }
+
+    fn placed(config: &Config, element: crate::layout::Element) -> Parts {
+        let mut parts = Parts::default();
+        assert!(crate::select::emit_element(
+            config, &element, &Chars, &mut parts
+        ));
+        parts
+    }
+
+    fn sized(mut config: Config) -> Config {
+        config.chart_area = crate::layout::ChartArea(crate::layout::Rect {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 600,
+        });
+        config
+    }
+
+    /// `names_on_top` places the names (`bottom_x`'s labels) above the data
+    /// area, through the one emit every sink reads (#357); without it they
+    /// stay below.
+    #[test]
+    fn names_on_top_places_the_axis_names_above_the_plot() {
+        use crate::layout::{Element, Side};
+        let below = sized(chart());
+        let mut above = below.clone();
+        above.parallel_mut().unwrap().names_on_top = true;
+        let area = below.data_area().unwrap();
+        let (top, bottom) = (area.0.y as f32, (area.0.y + area.0.height) as f32);
+        let names = placed(&below, Element::AxisLabel(Side::Bottom)).texts;
+        assert_eq!(names.len(), 3);
+        assert!(names.iter().all(|r| r.y >= bottom), "{names:?}");
+        let names = placed(&above, Element::AxisLabel(Side::Bottom)).texts;
+        assert_eq!(names.len(), 3);
+        assert!(names.iter().all(|r| r.y + r.height <= top), "{names:?}");
+        // The whole chrome draws them there too, and the axis line and
+        // ticks stay at the bottom.
+        let mut whole = Parts::default();
+        crate::chrome::emit_chart_chrome(&above, &Chars, &mut whole, 1.0);
+        for name in &names {
+            assert!(whole.texts.contains(name), "{name:?}");
+        }
+    }
+
+    /// `label_backdrop` puts one box of its colour under every tick label
+    /// of a parallel axis, grown by the pad, inside the element's own parts
+    /// (#357); `None` draws none.
+    #[test]
+    fn a_label_backdrop_boxes_every_parallel_tick_label() {
+        use crate::layout::Element;
+        let plain = sized(chart());
+        let parts = placed(&plain, Element::ParallelAxisLabel(0));
+        assert!(!parts.texts.is_empty());
+        assert!(parts.boxes.is_empty());
+        let mut backed = plain.clone();
+        let fill = Color::from_rgba(1.0, 1.0, 1.0, 0.8);
+        backed.parallel_mut().unwrap().label_backdrop = Some(fill);
+        let parts = placed(&backed, Element::ParallelAxisLabel(0));
+        assert_eq!(parts.boxes.len(), parts.texts.len());
+        assert!(parts.backed.iter().all(|b| *b), "each text follows its box");
+        let pad = backed.left_y.label_style.font_size * LABEL_BACKDROP_PAD;
+        for (text, (boxed, color)) in parts.texts.iter().zip(&parts.boxes) {
+            assert_eq!(*color, fill);
+            assert!((boxed.x - (text.x - pad)).abs() < 1e-4);
+            assert!((boxed.y - (text.y - pad)).abs() < 1e-4);
+            assert!((boxed.width - (text.width + 2.0 * pad)).abs() < 1e-4);
+            assert!((boxed.height - (text.height + 2.0 * pad)).abs() < 1e-4);
+        }
+    }
+
     #[cfg(feature = "serde")]
     #[test]
     fn parallel_options_round_trip_with_defaults_omitted() {
@@ -536,10 +752,21 @@ mod tests {
         assert!(axes[0].get("inverted").is_none(), "{axes}");
         assert!(axes[0].get("scale").is_none());
         assert!(axes[0].get("label_offset").is_none());
+        assert!(json["parallel"].get("names_on_top").is_none());
+        assert!(json["parallel"].get("label_backdrop").is_none());
         assert_eq!(axes[1]["inverted"], true);
         assert_eq!(axes[2]["scale"], "Logarithmic");
         let back: Config = serde_json::from_value(json).unwrap();
         assert_eq!(back, config);
+        // The look fields (#357) round-trip when set.
+        let mut styled = config.clone();
+        let options = styled.parallel_mut().unwrap();
+        options.names_on_top = true;
+        options.label_backdrop = Some(Color::from_rgba(1.0, 1.0, 1.0, 0.8));
+        let json = serde_json::to_value(&styled).unwrap();
+        assert_eq!(json["parallel"]["names_on_top"], true);
+        let back: Config = serde_json::from_value(json).unwrap();
+        assert_eq!(back, styled);
         let plain = serde_json::to_value(crate::defaults::config()).unwrap();
         assert!(plain.get("parallel").is_none());
         let series_json = serde_json::to_value(series(&["a", "b", "c"])).unwrap();

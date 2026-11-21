@@ -8,39 +8,25 @@
 //! positions go through the chart's own data area and axis range.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::ShowForPick as _;
+use harness::{
+    BLUE, RED, col as col_f64, data_y_to_px, export, is_blue_ink as is_blue,
+    is_empty_ink as is_empty, is_red_ink as is_red, pixel_rounded as pixel,
+    renderer_bgra as renderer,
+};
+use test_gpu::shared_device;
 
 use renderer::config::AxisScale;
-use renderer::data::Column;
 use renderer::data_config::{
     CategoryBarDirection, DataScatterStyleConfig, ScatterShape, Stem, XySeries,
 };
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
-use renderer::{Chart, Color, DataRenderType, RasterImage, Renderer, RendererDevice, SeriesConfig};
-
-fn col_f64(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(test_gpu::device);
-    (device.clone(), queue.clone())
-}
-
-fn renderer() -> Renderer {
-    let (device, queue) = shared_device();
-    Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Bgra8Unorm,
-        64 * 1024 * 1024,
-    )
-    .expect("renderer init")
-}
+use renderer::{Chart, DataRenderType, RasterImage, Renderer, RendererDevice, SeriesConfig};
 
 /// A chart with grid and legend off, so probes see only the series.
 fn bare_chart(width: u32, height: u32) -> Chart {
@@ -58,19 +44,6 @@ fn bare_chart(width: u32, height: u32) -> Chart {
     config.grid.show_minor_y = false;
     Chart::new(config)
 }
-
-const RED: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 0.0,
-    a: 1.0,
-};
-const BLUE: Color = Color {
-    r: 0.0,
-    g: 0.0,
-    b: 1.0,
-    a: 1.0,
-};
 
 fn blue_points(size: f32) -> DataScatterStyleConfig {
     DataScatterStyleConfig {
@@ -112,15 +85,6 @@ fn stem_series(id: &str, x: &str, y: &str, stem: Stem) -> SeriesConfig {
     }
 }
 
-fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], scale: f32) -> RasterImage {
-    r.export_rgba(
-        renderer::ExportSource::chart(chart, series),
-        renderer::ExportOptions::panel(scale),
-    )
-    .block_on()
-    .unwrap()
-}
-
 /// The whole document: overlays, subplots and line offset members are
 /// drawn too.
 fn export_document(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig]) -> RasterImage {
@@ -156,41 +120,6 @@ fn data_x_to_px(chart: &Chart, value: f64) -> f32 {
         AxisScale::Probability(_) => unreachable!("these charts are linear or logarithmic"),
     };
     da.x as f32 + t as f32 * da.width as f32
-}
-
-/// Data y → panel pixel y (screen y grows downward), linear or logarithmic.
-fn data_y_to_px(chart: &Chart, value: f64) -> f32 {
-    let cfg = chart.config();
-    let da = cfg.data_area().expect("data area");
-    let t = match cfg.left_y.scale {
-        AxisScale::Linear => (value - cfg.left_y.min) / (cfg.left_y.max - cfg.left_y.min),
-        AxisScale::Logarithmic => {
-            (value.log10() - cfg.left_y.min.log10())
-                / (cfg.left_y.max.log10() - cfg.left_y.min.log10())
-        }
-        AxisScale::Probability(_) => unreachable!("these charts are linear or logarithmic"),
-    };
-    (da.y + da.height) as f32 - t as f32 * da.height as f32
-}
-
-fn pixel(img: &RasterImage, x: f32, y: f32) -> [u8; 4] {
-    let (x, y) = (x.round() as u32, y.round() as u32);
-    assert!(
-        x < img.width && y < img.height,
-        "probe ({x}, {y}) outside the image"
-    );
-    let i = ((y * img.width + x) * 4) as usize;
-    img.rgba[i..i + 4].try_into().unwrap()
-}
-
-fn is_red(p: &[u8]) -> bool {
-    p[3] > 16 && p[0] > 120 && p[1] < 90 && p[2] < 90
-}
-fn is_blue(p: &[u8]) -> bool {
-    p[3] > 16 && p[2] > 120 && p[0] < 90 && p[1] < 90
-}
-fn is_empty(p: &[u8]) -> bool {
-    p[3] <= 16
 }
 
 /// A probe at data coordinates, asserting one colour class with a readable
@@ -398,7 +327,13 @@ fn pick_at(
         display_scale: 1.0,
         max_distance_px: 0.0,
     };
-    let picked = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let picked = test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap();
     r.remove_chart(id).unwrap();
     picked
 }
@@ -428,10 +363,22 @@ fn a_stem_picks_as_its_point() {
     )];
     let px = |x: f64, y: f64| (data_x_to_px(&chart, x), data_y_to_px(&chart, y));
     for (i, (&sx, &sy)) in XS.iter().zip(&YS).enumerate() {
+        // The stem's ink hits along its body; the selection is the nearest
+        // datum (#381): its own point near the tip, a neighbour's tip may
+        // be nearer at the base.
         for f in [0.05, 0.5, 0.9] {
             let picked = pick_at(&mut r, &chart, &series, px(sx, sy * f));
-            assert_eq!(point_index(&picked), Some(i), "stem {i} at {f}: {picked:?}");
+            assert!(
+                point_index(&picked).is_some(),
+                "stem {i} at {f}: {picked:?}"
+            );
         }
+        let picked = pick_at(&mut r, &chart, &series, px(sx, sy * 0.98));
+        assert_eq!(
+            point_index(&picked),
+            Some(i),
+            "stem {i} at its tip: {picked:?}"
+        );
         let beside = pick_at(&mut r, &chart, &series, px(sx + 0.3, sy * 0.5));
         assert!(beside.is_none(), "beside stem {i}: {beside:?}");
     }

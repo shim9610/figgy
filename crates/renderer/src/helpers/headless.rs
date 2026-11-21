@@ -57,7 +57,7 @@ impl Renderer {
     /// browser the pipelines compile through WebGPU's asynchronous compiler.
     pub async fn headless(options: HeadlessOptions) -> Result<Self> {
         let (device, queue) = headless_device(options).await?;
-        let gpu = RendererDevice::new(device, queue)?;
+        let gpu = RendererDevice::requested(device, queue)?;
         let mut observer = |_| {};
         Self::try_new_with_sample_count_observed_async(
             gpu,
@@ -85,7 +85,7 @@ impl Renderer {
             FiggyError::internal("a native wgpu adapter and device request completes at once"),
         )??;
         Self::try_new(
-            RendererDevice::new(device, queue)?,
+            RendererDevice::requested(device, queue)?,
             HEADLESS_FORMAT,
             options.column_pool_bytes,
         )
@@ -101,7 +101,7 @@ impl crate::radial::RadialRenderer {
     ) -> std::result::Result<Self, crate::radial::RadialError> {
         let gpu = headless_device(options)
             .await
-            .and_then(|(device, queue)| RendererDevice::new(device, queue))
+            .and_then(|(device, queue)| RendererDevice::requested(device, queue))
             .map_err(radial_gpu)?;
         Self::try_new(gpu, HEADLESS_FORMAT)
     }
@@ -115,7 +115,7 @@ impl crate::radial::RadialRenderer {
                 "a native wgpu adapter and device request completes at once",
             ))
             .and_then(|request| request)
-            .and_then(|(device, queue)| RendererDevice::new(device, queue))
+            .and_then(|(device, queue)| RendererDevice::requested(device, queue))
             .map_err(radial_gpu)?;
         Self::try_new(gpu, HEADLESS_FORMAT)
     }

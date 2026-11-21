@@ -90,9 +90,11 @@ pub enum ErrorRef {
 /// Points, a line and error bars over the `x_column` / `y_column` pair are
 /// one composed kind, [`DataRenderType::Xy`]; a filled field, its contours
 /// and its 3D surface over a matrix are another, [`DataRenderType::Field`]
-/// (#160). The other kinds each name their own fields. Serialized documents
-/// keep the earlier one-variant-per-combination form (`{"ScatterLine":
-/// {...}}`), so they parse and re-serialize byte for byte.
+/// (#160). Every other kind wraps one struct of its own fields
+/// ([`BoxSeries`], [`RangeBarSeries`] and the rest, #341). Serialized
+/// documents keep the earlier one-variant-per-combination form
+/// (`{"ScatterLine": {...}}`, `{"BoxPlot": {...}}`), so they parse and
+/// re-serialize byte for byte.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(
     feature = "serde",
@@ -113,7 +115,7 @@ pub enum DataRenderType {
     /// `bar.orientation` alone decides which column is which — `Vertical` reads
     /// `x_column` as edges and `y_column` as counts, `Horizontal` the reverse.
     /// The lengths are not consulted to guess the roles.
-    Histogram { bar: DataBarStyleConfig },
+    Histogram(HistogramSeries),
     /// Three matrices drawn as a colour image (#139): `red`, `green` and
     /// `blue` on one lattice (the series' coordinate columns; the grids
     /// share their column count, orientation and layout), each channel's
@@ -122,16 +124,7 @@ pub enum DataRenderType {
     /// colour, `Interpolated` blends each channel between sample points; a
     /// cell with a non-finite value in any channel is unpainted. Drawn flat
     /// only; see [`Config::validate_rgb_image_series`](crate::config::Config::validate_rgb_image_series).
-    RgbImage {
-        red: MatrixRef,
-        green: MatrixRef,
-        blue: MatrixRef,
-        /// The channel values that map to 0 and 1 (`[0, 1]` by default;
-        /// `[0, 255]` for bytes).
-        range: [f64; 2],
-        shading: Shading,
-        opacity: f32,
-    },
+    RgbImage(RgbImageSeries),
     /// A vector field (quiver plot): one arrow per sample, with the direction
     /// and length given by the host's `u` / `v` components.
     ///
@@ -142,10 +135,7 @@ pub enum DataRenderType {
     ///
     /// The columns must be GPU resident; a streamed source is rejected with
     /// an error. Polar charts (`Config.polar`) reject vector series.
-    Vector {
-        components: VectorComponents,
-        style: VectorStyle,
-    },
+    Vector(VectorSeries),
     /// The bars of a categorical bar chart: one bar per category of the
     /// chart's categorical axis ([`AxisOptions::categories`]), in this
     /// series' colour and look.
@@ -178,22 +168,7 @@ pub enum DataRenderType {
     /// an error. On a polar chart (`Config.polar`) with a categorical angle
     /// axis the bars fan around the centre as wedges, a rose (#133): the
     /// group is vertical, the value is the radius.
-    CategoryBars {
-        /// The fill colour of the series' bars, opaque.
-        color: Color,
-        /// The look of the bars: material, corner radius, outline, texture,
-        /// gloss and the brightness of a picked bar.
-        style: CategoryBarStyle,
-        /// Where the value labels go, how values are written and the drawn
-        /// text of each bar.
-        labels: CategoryBarSeriesLabels,
-        /// What a value label says.
-        label_format: CategoryBarLabelFormat,
-        /// Sparse per-bar overrides, keyed by category id and this series'
-        /// id. At most one per bar; an override's `style` replaces the
-        /// series' style whole.
-        overrides: Option<Vec<CategoryBarOverride>>,
-    },
+    CategoryBars(CategoryBarSeries),
     /// The boxes of a box plot: one box per category of the chart's
     /// categorical axis ([`AxisOptions::categories`]), in this series'
     /// colour and look, with its median, whiskers and caps, its mean and its
@@ -227,28 +202,7 @@ pub enum DataRenderType {
     /// The record and the outliers must be GPU resident; a streamed source
     /// is rejected with an error. Polar charts (`Config.polar`) reject box
     /// plots.
-    BoxPlot {
-        /// The fill colour of the series' boxes, opaque.
-        color: Color,
-        /// The look of the boxes and their parts.
-        style: BoxPlotStyle,
-        /// Which labels the boxes show, how a median is written and the
-        /// drawn text of each box.
-        labels: BoxPlotSeriesLabels,
-        /// The ragged column of the outliers, one group per category.
-        outliers: Option<ColumnId>,
-        /// Sparse per-box overrides, keyed by category id and this series'
-        /// id. At most one per box; an override's `style` replaces the
-        /// series' style whole.
-        overrides: Option<Vec<BoxPlotOverride>>,
-        /// The violin drawn behind each box: a host density curve per
-        /// category, mirrored or one per side ([`Violin`]). With a violin,
-        /// an empty `y_column` draws no box.
-        violin: Option<Violin>,
-        /// The raw points drawn beside each box, jittered across the slot
-        /// ([`BoxPoints`]): a raincloud with a one-sided violin.
-        points: Option<BoxPoints>,
-    },
+    BoxPlot(BoxSeries),
     /// Range bars: one bar per row, floating from a start value to an end
     /// value at a position, with optional whiskers from a low to a high
     /// value. One kind draws waterfall charts (the running total before and
@@ -287,31 +241,17 @@ pub enum DataRenderType {
     ///
     /// The columns must be GPU resident; a streamed source is rejected with
     /// an error. Polar charts (`Config.polar`) reject range bars.
-    RangeBars {
-        /// The fill colour of the series' bars under [`RangeColor::Single`],
-        /// opaque; the legend swatch and the whisker colour by default.
-        color: Color,
-        /// The look of the bars: material, corner radius, outline, texture,
-        /// gloss and the brightness of a picked bar.
-        style: CategoryBarStyle,
-        /// The column of the start values.
-        start: ColumnId,
-        /// The whiskers from a low to a high value (a candle's wick).
-        whiskers: Option<RangeWhiskers>,
-        /// How each bar's fill is chosen.
-        color_by: RangeColor,
-        /// The finished share of each bar (a Gantt task's progress).
-        progress: Option<RangeProgress>,
-        /// The line from each bar's end to the next bar (a waterfall).
-        connector: Option<RangeConnector>,
-        /// The slot of one row along a numeric position axis, in data units;
-        /// `None` on a categorical axis, where the slot is one category.
-        slot_width: Option<f64>,
-        /// Where the value labels go and the drawn text of each bar. The
-        /// renderer never writes the text; `decimals` and `value_suffix` are
-        /// not read.
-        labels: CategoryBarSeriesLabels,
-    },
+    RangeBars(RangeBarSeries),
+    /// Dependency links between the bars of one range bar series (#357):
+    /// one finish-to-start link per row, from the bar of row `x_column[i]`
+    /// to the bar of row `y_column[i]` of the series named by `bars`, in
+    /// the same layer. The renderer routes each link on every draw from
+    /// the two bars it draws (out of the predecessor's end, across to the
+    /// successor's row, into its start, with an arrowhead); it computes no
+    /// value. A NaN row, a row past the bars' columns or a bar that does
+    /// not draw draws no link. Any number of links. The columns must be
+    /// GPU resident; a streamed source is rejected with an error.
+    RangeLinks(RangeLinkSeries),
     /// The polygon of a radar chart: one vertex per category of the polar
     /// chart's categorical angle axis (`bottom_x` with
     /// [`AxisOptions::categories`]), joined into a closed outline, filled
@@ -337,17 +277,7 @@ pub enum DataRenderType {
     /// Only a polar chart (`Config.polar`) with a categorical angle axis
     /// draws radar series, in the precise draw style; the columns must be
     /// GPU resident, and a streamed source is rejected with an error.
-    Radar {
-        /// The outline and marker colour; the fill uses it at the style's
-        /// fill opacity unless the style names a fill.
-        color: Color,
-        /// Outline width, fill and marker; unset fields take
-        /// their defaults.
-        style: RadarSeriesStyle,
-        /// Which vertices carry value labels, how a value is written and
-        /// the drawn text of each vertex.
-        labels: RadarSeriesLabels,
-    },
+    Radar(RadarPolygonSeries),
     /// A ternary series on a ternary chart (`Config.ternary`): markers and/or
     /// a line through samples of three components, `x_column`, `y_column`
     /// and `c_column`, each an ordinary column, unnormalized. A sample is
@@ -361,15 +291,7 @@ pub enum DataRenderType {
     /// samples are the vertices of closed polygons (a NaN row separates
     /// them) filled with [`crate::ternary::TernaryRegionStyle`] under every
     /// series' markers and lines. Streamed sources are rejected.
-    Ternary {
-        /// The third component's column, read on `right_y`.
-        c_column: ColumnId,
-        scatter: Option<DataScatterStyleConfig>,
-        line: Option<DataLineStyleConfig>,
-        /// The fill of the polygons the samples outline; `None` (omitted
-        /// from JSON) fills nothing.
-        region: Option<crate::ternary::TernaryRegionStyle>,
-    },
+    Ternary(TernarySeries),
     /// Streamlines of a flow, electric or magnetic field: polylines the
     /// host integrated from its field, drawn by the line path, with
     /// arrowheads along each drawn line and an optional colour column.
@@ -400,16 +322,7 @@ pub enum DataRenderType {
     /// Drawn in the precise draw style only. The columns must be GPU
     /// resident; a streamed source is rejected with an error. Polar charts
     /// (`Config.polar`) reject streamlines.
-    Streamlines {
-        /// The line the streamlines are drawn with. `interpolation` must
-        /// be `Linear` and `fill` `None`.
-        line: DataLineStyleConfig,
-        /// Arrowheads along the drawn lines, or none.
-        arrows: Option<StreamlineArrows>,
-        /// Colour the lines and arrowheads by a host column through
-        /// `Config.colorbar`.
-        color_map: Option<PointColorMap>,
-    },
+    Streamlines(StreamlineSeries),
     /// Parallel coordinates (#141): one polyline per row across the axes of
     /// a parallel chart (`Config.parallel`), row `r` through
     /// `(axis i, (v_i − min_i) / (max_i − min_i))` for every axis, the
@@ -421,14 +334,7 @@ pub enum DataRenderType {
     /// colour. Drawn in the precise draw style only, solid and linear
     /// without a fill; the columns must be GPU resident. See
     /// [`Config::validate_parallel_series`](crate::config::Config::validate_parallel_series).
-    Parallel {
-        /// One column id per axis of the parallel chart, in order.
-        columns: Vec<ColumnId>,
-        /// The rows' line: its colour (without `color_column`) and width.
-        line: DataLineStyleConfig,
-        /// Colour each row by a host column through `Config.colorbar`.
-        color_column: Option<ColumnId>,
-    },
+    Parallel(ParallelSeries),
     /// An energy-level (Grotrian) diagram (#203): levels as strokes across
     /// the slots of a categorical `bottom_x` at their energies on `left_y`,
     /// ionization limits and the transitions the host listed. DataLess:
@@ -464,12 +370,20 @@ pub enum DataRenderType {
     MonotonicLine(MonotonicLineSeries),
 }
 
-/// A [`DataRenderType::Parallel`] series' fields, borrowed.
-#[derive(Clone, Copy, Debug)]
-pub struct ParallelRef<'a> {
-    pub columns: &'a [ColumnId],
-    pub line: &'a DataLineStyleConfig,
-    pub color_column: Option<&'a str>,
+/// The fields of a [`DataRenderType::Parallel`] series.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ParallelSeries {
+    /// One column id per axis of the parallel chart, in order.
+    pub columns: Vec<ColumnId>,
+    /// The rows' line: its colour (without `color_column`) and width.
+    pub line: DataLineStyleConfig,
+    /// Colour each row by a host column through `Config.colorbar`.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub color_column: Option<ColumnId>,
 }
 
 /// Identifier of another series in the same chart: its `series_id`. Plain
@@ -488,8 +402,9 @@ impl SeriesConfig {
     /// columns, and a vector field's components and colour. Records and
     /// ragged columns are visited by [`Self::visit_composite_columns`].
     pub fn visit_columns<'a>(&'a self, visit: &mut impl FnMut(&'a str)) {
-        // A DataLess series reads no column (#203, #234).
-        if self.is_dataless() {
+        // A DataLess series reads no column (#203, #234), nor do range
+        // links, whose links are SSOT (#357).
+        if self.is_dataless() || self.render_type.range_links().is_some() {
             return;
         }
         visit(&self.x_column);
@@ -504,7 +419,7 @@ impl SeriesConfig {
         }
         let scatter = match &self.render_type {
             DataRenderType::Xy(xy) => xy.scatter.as_ref(),
-            DataRenderType::Ternary { scatter, .. } => scatter.as_ref(),
+            DataRenderType::Ternary(TernarySeries { scatter, .. }) => scatter.as_ref(),
             // A radar series' markers read no column of their own.
             _ => None,
         };
@@ -544,10 +459,11 @@ impl SeriesConfig {
             | DataRenderType::Feynman(_)
             // Its envelope columns are its x and y columns (#271).
             | DataRenderType::MonotonicLine(_)
-            | DataRenderType::Histogram { .. }
-            | DataRenderType::CategoryBars { .. }
-            | DataRenderType::Radar { .. } => {}
-            DataRenderType::Ternary { c_column, .. } => visit(c_column),
+            | DataRenderType::Histogram(_)
+            | DataRenderType::CategoryBars(_)
+            | DataRenderType::Radar(_)
+            | DataRenderType::RangeLinks(_) => {}
+            DataRenderType::Ternary(TernarySeries { c_column, .. }) => visit(c_column),
             // Its triangle index column and its value column (#210); the
             // height is the `z_column` visited above.
             DataRenderType::TriMesh(mesh) => {
@@ -555,11 +471,11 @@ impl SeriesConfig {
                 visit(&mesh.values.column);
             }
             // The first two axis columns are its x and y columns.
-            DataRenderType::Parallel {
+            DataRenderType::Parallel(ParallelSeries {
                 columns,
                 color_column,
                 ..
-            } => {
+            }) => {
                 for column in columns.iter().skip(2) {
                     visit(column);
                 }
@@ -567,23 +483,19 @@ impl SeriesConfig {
                     visit(column);
                 }
             }
-            DataRenderType::Streamlines { color_map, .. } => {
+            DataRenderType::Streamlines(StreamlineSeries { color_map, .. }) => {
                 if let Some(map) = color_map {
                     visit(&map.column);
                 }
             }
-            DataRenderType::BoxPlot { .. } => {
-                if let Some(boxes) = self.render_type.box_plot() {
-                    for id in boxes.plain_columns() {
-                        visit(id);
-                    }
+            DataRenderType::BoxPlot(boxes) => {
+                for id in boxes.plain_columns() {
+                    visit(id);
                 }
             }
-            DataRenderType::RangeBars { .. } => {
-                if let Some(bars) = self.render_type.range_bars() {
-                    for id in bars.extra_columns() {
-                        visit(id);
-                    }
+            DataRenderType::RangeBars(bars) => {
+                for id in bars.extra_columns() {
+                    visit(id);
                 }
             }
             DataRenderType::Field(field) => {
@@ -591,9 +503,9 @@ impl SeriesConfig {
                     visit(column);
                 }
             }
-            DataRenderType::RgbImage {
+            DataRenderType::RgbImage(RgbImageSeries {
                 red, green, blue, ..
-            } => {
+            }) => {
                 for column in red
                     .columns
                     .iter()
@@ -603,7 +515,7 @@ impl SeriesConfig {
                     visit(column);
                 }
             }
-            DataRenderType::Vector { components, style } => {
+            DataRenderType::Vector(VectorSeries { components, style }) => {
                 match components {
                     VectorComponents::Points { u, v, w } => {
                         visit(u);
@@ -644,4 +556,29 @@ impl SeriesConfig {
             }
         }
     }
+}
+
+/// The fields of a [`DataRenderType::Ternary`] series.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct TernarySeries {
+    /// The third component's column, read on `right_y`.
+    pub c_column: ColumnId,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub scatter: Option<DataScatterStyleConfig>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub line: Option<DataLineStyleConfig>,
+    /// The fill of the polygons the samples outline; `None` (omitted
+    /// from JSON) fills nothing.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub region: Option<crate::ternary::TernaryRegionStyle>,
 }

@@ -8,9 +8,8 @@ by the host and uploaded through `ColumnSource`: a **record** of box
 statistics per series and, when the series has outliers, a **ragged column**
 of them. Streamed sources are rejected. `BoxPlotChart` is the document format
 of the releases up to 0.12; `Config::from_boxplot` reads it as such a chart
-([Opening a legacy document](#opening-a-legacy-document)). It is kept as a
-deprecated document reader for this release and is removed in the next
-milestone.
+([Opening a legacy document](#opening-a-legacy-document)). It is kept as the
+reader for documents written before 0.13.
 
 ## Series and uploads
 
@@ -30,7 +29,7 @@ the direction: the series names its record in `y_column` either way.
 
 ```rust,no_run
 use renderer::{
-    BOX_PLOT_RECORD, Chart, Color, Column, ColumnSource, DataRenderType, LayerRef,
+    BOX_PLOT_RECORD, BoxSeries, Chart, Color, Column, ColumnSource, DataRenderType, LayerRef,
     RaggedSource, RecordSource, Renderer, SeriesConfig,
 };
 /// A host column (NaN is a missing value); the renderer measures its range.
@@ -71,13 +70,13 @@ r.upsert_ragged(
 let series = [SeriesConfig {
     x_column: "positions".into(),
     y_column: "response.record".into(),
-    render_type: DataRenderType::BoxPlot {
+    render_type: DataRenderType::BoxPlot(BoxSeries {
         color: Color::from_rgb8(65, 144, 208),
         style: Default::default(),
         labels: Default::default(),
         outliers: Some("response.outliers".into()),
         overrides: None,
-    },
+    }),
     ..template
 }];
 let mut chart = Chart::new(config);
@@ -363,10 +362,16 @@ colour, its style (or the chart's), the chart's label settings with the text
 written from the medians and counts, and its overrides. `value_range` becomes
 the fixed value axis range; the titles, grid, legend, font, text colour, chart
 title, annotations, active layer, selection and decoration offsets map onto
-their Cartesian options. The hover state, the background colour (the host's
-clear colour draws) and an explicit `decorations.data_area` are not carried;
-the data label offsets become the series' `labels.offsets`. In the browser, `FiggyChart.set_boxplot_document(json)`
-does the same.
+their Cartesian options. An explicit `decorations.data_area` becomes the plot
+area through the margins (`Config::fit_legacy_data_area`, edges rounded to
+whole pixels; #334); one the layout cannot hold keeps the automatic layout and
+is reported as dropped with the reason. The hover state and the background
+colour (the host's clear colour draws) are not carried; the data label offsets become the series' `labels.offsets`. In the browser, `FiggyChart.set_boxplot_document(json, options?)`
+does the same and returns the conversion report (`{ config, series,
+uploads, columns, notes }`), which `convert_boxplot_document(json,
+{chart_area})` previews without a chart; its `{ "refuse": [...] | "any" }`
+option refuses a lossy document with `code: "conversion_loss"` before
+anything changes (#334; see [WASM.md](WASM.md#model-api)).
 
 ### Document rules
 
@@ -404,7 +409,7 @@ document in `FiggyChart`.
 범주마다 이상치 묶음 하나를 담은 가변 길이 컬럼의 ID다. 레코드와 가변 길이 컬럼은
 `Renderer::upsert_record`, `upsert_ragged`로 올리며 스트리밍 소스는 거부한다.
 `BoxPlotChart`는 0.12까지의 문서 형식이고, `Config::from_boxplot`이 이 문서를 박스플롯 차트로 읽는다.
-`BoxPlotChart`는 이번 릴리스에서 문서 리더로만 남아 사용 중단(deprecated)되며, 다음 마일스톤에서 제거된다.
+`BoxPlotChart`는 0.13 이전에 쓰인 문서를 읽는 리더로 남는다.
 
 박스플롯은 집계한 통계값을 받는다. 문서에서는 `BoxSummary::new(수염 하한, Q1, 중앙값, Q3,
 수염 상한)`으로 만들고, 평균·표본 수·이상치·중앙값 신뢰구간은 필요할 때 추가한다.

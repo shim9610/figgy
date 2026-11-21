@@ -15,6 +15,7 @@
 //!
 //! Not `data_render/surface.rs`, which is the wgpu window surface.
 
+use super::RenderPipelineSpec;
 use model::view3d::{Projection3d, View3d};
 
 use crate::config::{AxisScale, Config};
@@ -514,18 +515,15 @@ pub(crate) fn create_surface_pipeline(
     pass: SurfacePass,
     input: SurfaceInput,
 ) -> wgpu::RenderPipeline {
-    let layout = crate::gpu_compile::pipeline_layout(
-        &device,
-        &wgpu::PipelineLayoutDescriptor {
-            label: Some("figgy surface layout"),
-            bind_group_layouts: &[
-                Some(transform_bgl),
-                Some(style_bgl),
-                Some(field_bgl),
-                Some(surface_bgl),
-            ],
-            immediate_size: 0,
-        },
+    let layout = RenderPipelineSpec::layout(
+        device,
+        "figgy surface layout",
+        &[
+            Some(transform_bgl),
+            Some(style_bgl),
+            Some(field_bgl),
+            Some(surface_bgl),
+        ],
     );
     let (vertex, fragment) = pass.entries(input);
     let (format, samples, blend) = match pass {
@@ -536,42 +534,22 @@ pub(crate) fn create_surface_pipeline(
             Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
         ),
     };
-    crate::gpu_compile::render_pipeline(
-        &device,
-        &wgpu::RenderPipelineDescriptor {
-            label: Some(pass.label(input)),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some(vertex),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: pass.depth_stencil(),
-            multisample: super::multisample_state(samples),
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some(fragment),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
+    RenderPipelineSpec {
+        label: pass.label(input),
+        layout: &layout,
+        shader,
+        entries: (vertex, fragment),
+        buffers: &[],
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        depth_stencil: pass.depth_stencil(),
+        multisample: super::multisample_state(samples),
+        target: wgpu::ColorTargetState {
+            format,
+            blend,
+            write_mask: wgpu::ColorWrites::ALL,
         },
-    )
+    }
+    .create(device)
 }
 
 /// One heatmap or triangle mesh drawn as a surface, its floor contours or

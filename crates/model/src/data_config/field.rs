@@ -461,3 +461,38 @@ pub struct ContourLabelAnchor {
     pub tx: f64,
     pub ty: f64,
 }
+
+/// The fields of a [`DataRenderType::RgbImage`] series.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RgbImageSeries {
+    pub red: MatrixRef,
+    pub green: MatrixRef,
+    pub blue: MatrixRef,
+    /// The channel values that map to 0 and 1 (`[0, 1]` by default;
+    /// `[0, 255]` for bytes).
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            default = "crate::defaults::image_range",
+            skip_serializing_if = "is_default_image_range"
+        )
+    )]
+    pub range: [f64; 2],
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            default = "crate::defaults::image_shading",
+            skip_serializing_if = "is_default_image_shading"
+        )
+    )]
+    pub shading: Shading,
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            default = "crate::defaults::image_opacity",
+            skip_serializing_if = "is_default_image_opacity"
+        )
+    )]
+    pub opacity: f32,
+}

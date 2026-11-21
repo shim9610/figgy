@@ -8,14 +8,17 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/playground_scenes.rs"]
 mod scenes;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::measure;
 
 use renderer::layout::{Element, RectF, Side, auto_layout};
 use renderer::sink::Parts;
-use renderer::{Config, CpuTextMeasure, HitMap, Renderer, RendererDevice};
+use renderer::{Config, HitMap, Renderer, RendererDevice};
 
 use scenes::SceneKind;
 
@@ -28,10 +31,6 @@ fn renderer() -> Renderer {
     let (device, queue) = test_gpu::device();
     let gpu = RendererDevice::new(device, queue).expect("figgy poll thread");
     Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, POOL_BYTES).expect("renderer")
-}
-
-fn measure(cfg: &Config) -> CpuTextMeasure {
-    CpuTextMeasure::for_style(&cfg.draw_style)
 }
 
 fn laid_out(cfg: &Config) -> Config {
@@ -117,6 +116,170 @@ fn auto_layout_is_pure_and_idempotent_on_every_catalogue_scene() {
         assert_eq!(laid_out(&scene.config), once, "{kind:?}: not deterministic");
         assert_eq!(laid_out(&once), once, "{kind:?}: not idempotent");
     }
+}
+
+/// The two subplot documents of the gallery (`examples/subplots.rs`), laid
+/// out as there without their data: four half-size cells linked to the
+/// first one's X axis over a figure that draws only its background, and a
+/// grid of the parent and three full-size subplots, one linked to the
+/// parent and one with a twin Y axis of its own.
+fn gallery_subplot_documents() -> [(&'static str, Config, Vec<renderer::SeriesConfig>); 2] {
+    use renderer::{CellRef, Chart, Color, SeriesConfig, Subplot};
+    let cell = |x: u32, y: u32, title: &str, x_title: &str, y_title: &str| {
+        Chart::placed(x, y, 600, 400)
+            .with_title(title)
+            .with_x_title(x_title)
+            .with_y_title(y_title)
+    };
+    let sensors = [
+        ("temperature", "Temperature", "°C", 8.0, 28.0, 5.0),
+        ("humidity", "Humidity", "%", 30.0, 80.0, 10.0),
+        ("co2", "CO$_2$", "ppm", 300.0, 950.0, 150.0),
+        ("light", "Daylight", "lux", 0.0, 850.0, 200.0),
+    ];
+    let mut small = Chart::sized(1200, 800).config().clone();
+    small.subplots = [(0u32, 0u32), (600, 0), (0, 400), (600, 400)]
+        .into_iter()
+        .zip(sensors)
+        .enumerate()
+        .map(|(k, ((x, y), (id, title, unit, ..)))| Subplot {
+            config: cell(x, y, title, "Hour", unit).config().clone(),
+            series: vec![id.to_string()],
+            link_x: (k > 0).then_some(CellRef::Subplot(0)),
+            ..Default::default()
+        })
+        .collect();
+    let mut small = Chart::new(small);
+    small.set_subplot_x_range(0, 0.0, 24.0);
+    for (index, (.., min, max, spacing)) in sensors.into_iter().enumerate() {
+        small.set_subplot_y_range(index, min, max);
+        small.with_axis_range_change(|config| {
+            config.subplots[index].config.left_y.major_spacing = spacing;
+            config.subplots[index].config.bottom_x.major_spacing = 6.0;
+        });
+    }
+    small.with_axis_range_change(|config| {
+        config.chart_title.visible = false;
+        config.legend.visible = false;
+        for axis in [
+            &mut config.top_x,
+            &mut config.bottom_x,
+            &mut config.left_y,
+            &mut config.right_y,
+        ] {
+            axis.label_style.visible = false;
+            axis.title_option.visible = false;
+        }
+    });
+    let small_series = sensors
+        .iter()
+        .map(|&(id, ..)| SeriesConfig::line(id, "h", id))
+        .collect();
+
+    let cell = |x: u32, y: u32, title: &str, x_title: &str, y_title: &str| {
+        Chart::placed(x, y, 480, 420)
+            .with_title(title)
+            .with_x_title(x_title)
+            .with_y_title(y_title)
+    };
+    let subplot = |chart: Chart, series: &[&str]| Subplot {
+        config: chart.config().clone(),
+        series: series.iter().map(|id| id.to_string()).collect(),
+        ..Default::default()
+    };
+    let mut mixed = cell(0, 0, "Temperature", "Hour", "°C").config().clone();
+    let mut pressure = subplot(cell(480, 0, "Pressure", "Hour", "hPa"), &["pressure"]);
+    pressure.link_x = Some(CellRef::Parent);
+    let humidity = subplot(
+        cell(0, 420, "Humidity against temperature", "°C", "%"),
+        &["humidity_t"],
+    );
+    let mut twin = renderer::default::default_axis_options_y();
+    twin.title_option.visible = true;
+    twin.title_option.text = renderer::text::RichText::plain("%", Color::BLACK, 22.0, "");
+    let daytime = subplot(
+        cell(480, 420, "Daytime", "Hour", "hPa").with_overlay(twin, &["daytime_humidity"]),
+        &["daytime"],
+    );
+    mixed.subplots = vec![pressure, humidity, daytime];
+    let mut mixed = Chart::new(mixed);
+    mixed.set_x_range(0.0, 24.0);
+    mixed.set_y_range(10.0, 26.0);
+    mixed.set_subplot_y_range(0, 1002.0, 1014.0);
+    mixed.set_subplot_x_range(1, 10.0, 26.0);
+    mixed.set_subplot_y_range(1, 35.0, 85.0);
+    mixed.set_subplot_x_range(2, 6.0, 18.0);
+    mixed.set_subplot_y_range(2, 1002.0, 1014.0);
+    mixed.with_axis_range_change(|config| {
+        let overlay = &mut config.subplots[2].config.overlays[0].y_axis;
+        overlay.min = 30.0;
+        overlay.max = 90.0;
+        overlay.major_spacing = 10.0;
+    });
+    let mixed_series = vec![
+        SeriesConfig::line("temperature", "hour", "air_temperature"),
+        SeriesConfig::line("pressure", "hour", "pressure"),
+        SeriesConfig::line("humidity_t", "air_temperature", "air_humidity"),
+        SeriesConfig::line("daytime", "hour", "pressure"),
+        SeriesConfig::line("daytime_humidity", "hour", "air_humidity"),
+    ];
+    [
+        (
+            "gallery small multiples",
+            small.config().clone(),
+            small_series,
+        ),
+        ("gallery mixed axes", mixed.config().clone(), mixed_series),
+    ]
+}
+
+// One fit is a fixed point of the fit (#357): fitting a fitted document
+// again changes nothing, so applying a theme twice gives the same layout.
+// On every catalogue scene and the gallery's subplot documents, as built
+// and with every theme family's text written into them but not yet fitted
+// (`Theme::apply_named`, what `Chart::apply_theme_to` fits afterwards), at
+// 1x and at 2x.
+#[test]
+fn auto_layout_is_a_fixed_point_on_every_themed_scene_at_1x_and_2x() {
+    use renderer::theme::{Theme, ThemeFamily, ThemeScope};
+    let mut r = renderer();
+    let mut documents: Vec<(String, Config, Vec<renderer::SeriesConfig>)> = catalogue(&mut r)
+        .into_iter()
+        .map(|(kind, scene)| (format!("{kind:?}"), scene.config, scene.series))
+        .collect();
+    documents.extend(
+        gallery_subplot_documents()
+            .into_iter()
+            .map(|(name, config, series)| (name.to_string(), config, series)),
+    );
+    let mut checked = 0;
+    for (name, config, series) in &documents {
+        let mut inputs = vec![("as built", config.clone())];
+        for family in ThemeFamily::ALL {
+            let mut themed = config.clone();
+            let mut series = series.clone();
+            Theme::apply_named(family.name(), &mut themed, &mut series, ThemeScope::All)
+                .unwrap_or_else(|error| panic!("{name}: {}: {error}", family.name()));
+            inputs.push((family.name(), themed));
+        }
+        for (look, input) in inputs {
+            for scale in [1.0, 2.0] {
+                let input = if scale == 1.0 {
+                    input.clone()
+                } else {
+                    input.scaled(scale)
+                };
+                let once = laid_out(&input);
+                assert_eq!(
+                    laid_out(&once),
+                    once,
+                    "{name}: {look} at {scale}x: fitting twice differs from fitting once"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked >= documents.len() * 2, "{checked}");
 }
 
 // Only display parameters move: ranges, ticks, scales, categories, series
@@ -208,8 +371,9 @@ fn layout_changes(before: &Config, after: &Config) -> Vec<String> {
 //   right band, which grows to the overhang.
 // - `config-series` is the default with a right-hand colourbar: its band
 //   shrinks to its labels and the 9 px padding (no title).
-// - `config-edited` shows the top labels (the band grows to their reach and
-//   the padding), puts each axis title beside its labels in a band set to
+// - `config-edited` shows the top labels (the band grows to their reach,
+//   the tick row's shared descent below their baseline (#376), and the
+//   padding), puts each axis title beside its labels in a band set to
 //   labels, the 9 px gap, title and padding (10 px past the 20 px bottom
 //   title, 11 px past the 22 px left one; the bottom title moves 8 px
 //   outward, the left one 26 px), holds the last x label's overhang past
@@ -224,13 +388,19 @@ fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands
     let default = renderer::default::default_config();
     let out = laid_out(&default);
     assert_eq!(laid_out(&out), out, "default: not idempotent");
+    // The x bands hold the labels' unhinted ink (#357): a pixel more than
+    // the hinted ink took (10 and 25 px), the bands being whole pixels. The
+    // bottom labels sit on the tick row's shared baseline
+    // (`TICK_ROW_REFERENCE`, #376), below the digits' own ascent, so the
+    // bottom band holds one pixel more.
     assert_eq!(
         layout_changes(&default, &out),
         [
-            "top_x.out_margin 8 -> 10",
-            "bottom_x.out_margin 80 -> 25",
-            "left_y.out_margin 110 -> 49",
-            "right_y.out_margin 32 -> 22",
+            "top_x.out_margin 8 -> 11",
+            "bottom_x.out_margin 80 -> 27",
+            // The helpers' `Auto` labels (#357): `0.0` … `1.0`.
+            "left_y.out_margin 110 -> 39",
+            "right_y.out_margin 32 -> 17",
             "chart_title.top_margin 32 -> 0",
         ]
     );
@@ -249,8 +419,8 @@ fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands
             (
                 "default",
                 &[
-                    "top_x.out_margin 8 -> 10",
-                    "bottom_x.out_margin 80 -> 25",
+                    "top_x.out_margin 8 -> 11",
+                    "bottom_x.out_margin 80 -> 27",
                     "left_y.out_margin 110 -> 49",
                     "right_y.out_margin 8 -> 22",
                     "chart_title.top_margin 32 -> 0",
@@ -259,7 +429,7 @@ fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands
             (
                 "edited",
                 &[
-                    "top_x.out_margin 8 -> 17",
+                    "top_x.out_margin 8 -> 20",
                     "bottom_x.out_margin 80 -> 54",
                     "bottom_x.title_option.offset_y 0 -> 8",
                     "left_y.out_margin 120 -> 97",
@@ -272,8 +442,8 @@ fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands
             (
                 "series",
                 &[
-                    "top_x.out_margin 8 -> 10",
-                    "bottom_x.out_margin 80 -> 25",
+                    "top_x.out_margin 8 -> 11",
+                    "bottom_x.out_margin 80 -> 27",
                     "left_y.out_margin 110 -> 49",
                     "right_y.out_margin 8 -> 22",
                     "colorbar.axis.out_margin 60 -> 55",
@@ -510,12 +680,14 @@ fn the_long_labels_scene_overlaps_as_laid_out_and_clears_after_auto_layout() {
     );
     // The band is set to exactly the labels, the gap (half the 18 px label
     // font), the title beside them and the edge padding (half the 22 px
-    // title font, 11 px): the 110 px band grows to 114 px, the title moves
+    // title font, 11 px): the 110 px band grows to 115 px, the title moves
     // outward by its offset and ends the padding (within the pixel the
-    // offset is rounded to) from the chart edge.
+    // offset is rounded to) from the chart edge. (114 px while the labels'
+    // exponents were hinted: unhinted scripts, #357, measure their ink a
+    // fraction of a pixel wider, and the band is whole pixels.)
     assert_eq!(
         (scene.config.left_y.out_margin, out.left_y.out_margin),
-        (110.0, 114.0)
+        (110.0, 115.0)
     );
     assert!(out.left_y.title_option.offset_y < 0.0);
     let title = rects(&out, Element::AxisTitle(Side::Left))[0];

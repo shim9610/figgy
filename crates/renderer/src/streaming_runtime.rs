@@ -97,20 +97,21 @@ pub(crate) const STREAMED_MONOTONIC_REASON: crate::RuleKind = crate::RuleKind::S
 pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
     match rt {
         DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. }) => true,
-        DataRenderType::RgbImage { .. }
+        DataRenderType::RgbImage(_)
         | DataRenderType::Xy(_)
-        | DataRenderType::Histogram { .. }
+        | DataRenderType::Histogram(_)
         | DataRenderType::Field(crate::data_config::FieldSeries {
             contour: Some(_), ..
         })
-        | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. }
-        | DataRenderType::RangeBars { .. }
-        | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. }
+        | DataRenderType::Vector(_)
+        | DataRenderType::CategoryBars(_)
+        | DataRenderType::BoxPlot(_)
+        | DataRenderType::RangeBars(_)
+        | DataRenderType::RangeLinks(_)
+        | DataRenderType::Radar(_)
+        | DataRenderType::Streamlines(_)
+        | DataRenderType::Ternary(_)
+        | DataRenderType::Parallel(_)
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_)
@@ -702,14 +703,12 @@ fn stream_draw_phases(
     match &series.render_type {
         // Histograms are refused (#284). Rejected before a cursor exists;
         // this is a backstop.
-        DataRenderType::Histogram { .. } if primitives.bar => {
-            Err(FiggyError::InvalidSeriesConfig {
-                series_id: series.series_id.clone(),
-                kind: STREAMED_HISTOGRAM_REASON.into(),
-            }
-            .into())
+        DataRenderType::Histogram(_) if primitives.bar => Err(FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            kind: STREAMED_HISTOGRAM_REASON.into(),
         }
-        DataRenderType::Histogram { .. } => Ok(&[]),
+        .into()),
+        DataRenderType::Histogram(_) => Ok(&[]),
         // Streaming is not extended to stems (rule 8, #206);
         // `validate_stream_series` rejects them first, so this is a backstop.
         DataRenderType::Xy(crate::data_config::XySeries { stem: Some(_), .. }) => {
@@ -759,97 +758,100 @@ fn stream_draw_phases(
         }
         // Streaming is not extended to images; `validate_stream_series`
         // rejects them before a cursor exists, so this is a backstop.
-        DataRenderType::RgbImage { .. } if primitives.field => {
-            Err(FiggyError::InvalidSeriesConfig {
-                series_id: series.series_id.clone(),
-                kind: STREAMED_IMAGE_REASON.into(),
-            }
-            .into())
+        DataRenderType::RgbImage(_) if primitives.field => Err(FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            kind: STREAMED_IMAGE_REASON.into(),
         }
-        DataRenderType::RgbImage { .. } => Ok(&[]),
+        .into()),
+        DataRenderType::RgbImage(_) => Ok(&[]),
         // Streaming is not extended to vectors; `validate_stream_series`
         // rejects them before a cursor exists, so this is a backstop.
-        DataRenderType::Vector { .. } if primitives.vector => {
-            Err(FiggyError::InvalidSeriesConfig {
-                series_id: series.series_id.clone(),
-                kind: crate::RuleKind::StreamedVector,
-            }
-            .into())
+        DataRenderType::Vector(_) if primitives.vector => Err(FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            kind: crate::RuleKind::StreamedVector,
         }
-        DataRenderType::Vector { .. } => Ok(&[]),
+        .into()),
+        DataRenderType::Vector(_) => Ok(&[]),
         // Streaming is not extended to category bars either: rejected
         // before a cursor exists, so this is a backstop too.
-        DataRenderType::CategoryBars { .. } if primitives.category_bars => {
+        DataRenderType::CategoryBars(_) if primitives.category_bars => {
             Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
                 kind: crate::RuleKind::StreamedCategoryBars,
             }
             .into())
         }
-        DataRenderType::CategoryBars { .. } => Ok(&[]),
+        DataRenderType::CategoryBars(_) => Ok(&[]),
         // Nor to box plots: a box reads a resident record and ragged
         // column. Rejected before a cursor exists; this is a backstop.
-        DataRenderType::BoxPlot { .. } if primitives.box_plot => {
-            Err(FiggyError::InvalidSeriesConfig {
-                series_id: series.series_id.clone(),
-                kind: crate::RuleKind::StreamedBoxPlot,
-            }
-            .into())
+        DataRenderType::BoxPlot(_) if primitives.box_plot => Err(FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            kind: crate::RuleKind::StreamedBoxPlot,
         }
-        DataRenderType::BoxPlot { .. } => Ok(&[]),
+        .into()),
+        DataRenderType::BoxPlot(_) => Ok(&[]),
         // Nor to range bars. Rejected before a cursor exists; this is a
         // backstop.
-        DataRenderType::RangeBars { .. } if primitives.range_bars => {
+        DataRenderType::RangeBars(_) if primitives.range_bars => {
             Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
                 kind: STREAMED_RANGE_BARS_REASON.into(),
             }
             .into())
         }
-        DataRenderType::RangeBars { .. } => Ok(&[]),
+        DataRenderType::RangeBars(_) => Ok(&[]),
+        // Nor to range links (#357, rule 8): a link reads its bars' rows,
+        // which a stream has not placed. A backstop to the rejection before
+        // a cursor exists.
+        DataRenderType::RangeLinks(_) if primitives.range_links => {
+            Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: crate::RuleKind::StreamedRangeLinks,
+            }
+            .into())
+        }
+        DataRenderType::RangeLinks(_) => Ok(&[]),
         // Nor to radar series: a polygon closes on its first vertex. Rejected
         // before a cursor exists; this is a backstop.
-        DataRenderType::Radar { .. } if primitives.line || primitives.scatter => {
+        DataRenderType::Radar(_) if primitives.line || primitives.scatter => {
             Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
                 kind: crate::RuleKind::StreamedRadar,
             }
             .into())
         }
-        DataRenderType::Radar { .. } => Ok(&[]),
+        DataRenderType::Radar(_) => Ok(&[]),
         // Nor to streamlines: their arrowheads walk the resident arc prefix
         // and their colour column is read index-aligned. Rejected before a
         // cursor exists; this is a backstop.
-        DataRenderType::Streamlines { .. } if primitives.line => {
-            Err(FiggyError::InvalidSeriesConfig {
-                series_id: series.series_id.clone(),
-                kind: STREAMED_STREAMLINES_REASON.into(),
-            }
-            .into())
+        DataRenderType::Streamlines(_) if primitives.line => Err(FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            kind: STREAMED_STREAMLINES_REASON.into(),
         }
-        DataRenderType::Streamlines { .. } => Ok(&[]),
+        .into()),
+        DataRenderType::Streamlines(_) => Ok(&[]),
         // Nor to ternary series: a sample reads its third component from
         // the resident pool. Rejected before a cursor exists; this is a
         // backstop.
-        DataRenderType::Ternary { .. } if primitives.line || primitives.scatter => {
+        DataRenderType::Ternary(_) if primitives.line || primitives.scatter => {
             Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
                 kind: STREAMED_TERNARY_REASON.into(),
             }
             .into())
         }
-        DataRenderType::Ternary { .. } => Ok(&[]),
+        DataRenderType::Ternary(_) => Ok(&[]),
         // Nor to parallel series: a row reads every axis column from the
         // resident pool. Rejected before a cursor exists; this is a
         // backstop.
-        DataRenderType::Parallel { .. } if primitives.parallel => {
+        DataRenderType::Parallel(_) if primitives.parallel => {
             Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
                 kind: STREAMED_PARALLEL_REASON.into(),
             }
             .into())
         }
-        DataRenderType::Parallel { .. } => Ok(&[]),
+        DataRenderType::Parallel(_) => Ok(&[]),
         // A DataLess energy-level series has no column a stream could feed
         // (#203); a streamed display that meets one is refused.
         DataRenderType::EnergyLevels(_) => Err(FiggyError::InvalidSeriesConfig {
@@ -1314,7 +1316,7 @@ impl Renderer {
         };
 
         let previous_config = snapshot.config.clone();
-        let chart = Chart::new(config.clone());
+        let chart = Chart::stored(config.clone());
         let panel = snapshot.view.panel_rect;
         let updated = if snapshot.config == config {
             Ok(())
@@ -2489,7 +2491,7 @@ impl Renderer {
             statistics.insert(id.clone(), cache);
         }
 
-        let snapshot_chart = Chart::new(config.clone());
+        let snapshot_chart = Chart::stored(config.clone());
         let owned_view = self.create_chart_view(&snapshot_chart, config.chart_area.0)?;
         let job = self
             .begin_chart_stream_surface_with_sources(
@@ -2795,7 +2797,7 @@ impl Renderer {
         }
         source_versions.sort_unstable_by(|left, right| left.id.cmp(&right.id));
 
-        let snapshot_chart = Chart::new(render_config.clone());
+        let snapshot_chart = Chart::stored(render_config.clone());
         let owned_view = self.create_chart_view(&snapshot_chart, render_config.chart_area.0)?;
         let job = self
             .begin_chart_stream_surface_with_sources(

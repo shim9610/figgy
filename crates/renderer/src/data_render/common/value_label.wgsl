@@ -19,6 +19,11 @@
 //   category column, `category_lanes[k]` the value column of the label
 //   group's member `k`, this series' at its rank).
 //
+// A range bar series with contrast ink (#357) bakes its atlas in white and
+// draws each label pixel in the dark or light ink that contrasts more with
+// what lies under it: the bar's fill, its unfinished part past a progress
+// split, or the plot background, read on every draw (`fs_value_label`).
+//
 // The CPU bakes the strings (SSOT configuration, `labels.text`) into the
 // atlas with the one text stack and writes each label's content width,
 // placement and drag offset into the series' label cells
@@ -59,6 +64,15 @@ struct ValueLabelParams {
     /// along max, across min, across max), across toward the ring labels'
     /// side; empty (x > y) without ring labels.
     ring: vec4<f32>,
+    /// Contrast ink (#357; `selection.z` = 1 when on): the dark ink, the
+    /// light ink, the plot background under a label beside its bar, and
+    /// the series colour a range bar's fill falls back to; each straight
+    /// RGB with alpha 1. The atlas is baked in white then: its alpha is the
+    /// glyph coverage.
+    ink_dark: vec4<f32>,
+    ink_light: vec4<f32>,
+    ink_back: vec4<f32>,
+    ink_base: vec4<f32>,
 };
 
 const VALUE_LABEL_KIND_BARS: u32 = 0u;
@@ -68,6 +82,8 @@ const VALUE_LABEL_KIND_RANGE: u32 = 3u;
 const VALUE_LABEL_OUTSIDE: u32 = 0u;
 const VALUE_LABEL_INSIDE: u32 = 1u;
 const VALUE_LABEL_AUTO: u32 = 2u;
+/// Inside the bar when the label fits, else beside its end (#357).
+const VALUE_LABEL_INSIDE_OR_BESIDE: u32 = 3u;
 /// Vertices per label: one quad.
 const VALUE_LABEL_VERTICES: u32 = 6u;
 /// The typed pick kind of a value label (`gpu_data_pick.rs`).
@@ -193,13 +209,17 @@ fn value_label_bar_at(row: u32, bar: CategoryBar, grouped: bool, size: vec2<f32>
     let font = value_label.metrics.z;
     let middle = (bar.rect.xy + bar.rect.zw) * 0.5;
     var inside = placement == VALUE_LABEL_INSIDE;
+    let pad = VALUE_LABEL_FIT_PAD * value_label.metrics.w;
+    let fits = size.x + pad <= bar.rect.z - bar.rect.x
+        && font * VALUE_LABEL_FIT_HEIGHT <= bar.rect.w - bar.rect.y;
     if (placement == VALUE_LABEL_AUTO) {
         inside = !grouped;
-        let pad = VALUE_LABEL_FIT_PAD * value_label.metrics.w;
-        if (inside && (size.x + pad > bar.rect.z - bar.rect.x
-            || font * VALUE_LABEL_FIT_HEIGHT > bar.rect.w - bar.rect.y)) {
+        if (inside && !fits) {
             return value_label_hidden();
         }
+    }
+    if (placement == VALUE_LABEL_INSIDE_OR_BESIDE) {
+        inside = fits;
     }
     if (inside) {
         let centre = vec2<f32>(middle.x, value_label_centre_y(middle.y + font * VALUE_LABEL_CENTRE_BASELINE, size));
@@ -303,9 +323,11 @@ fn value_label_box_plot(row: u32, size: vec2<f32>) -> ValueLabelBox {
     let s = box_stats(row);
     let style = box_body_style(category_geometry_style(), row);
     let horizontal = category_params.horizontal != 0u;
-    let boxed = box_layout(s, style);
+    // The box's full place, and the narrowed place it is drawn at, from
+    // one `box_slot` (#363).
+    let slot = box_slot(s.position, s.q_low, style);
+    let boxed = box_narrowed(slot);
     if (s.valid && boxed.valid) {
-        let slot = box_slot(s.position, s.q_low, style);
         let median = box_along(s.position, s.median);
         if (!slot.valid || !bar_finite(median)) {
             return value_label_hidden();
@@ -450,9 +472,21 @@ fn value_label_radar(row: u32, size: vec2<f32>) -> ValueLabelBox {
     if (!category_finite(x)) {
         return value_label_hidden();
     }
-    // The spoke from the inner ring to the outer one at the category.
-    let inner = category_px(data_to_ndc(tf, x, vec2<f32>(transform.data_min.y, transform.data_min_lo.y)));
-    let outer = category_px(data_to_ndc(tf, x, vec2<f32>(transform.data_max.y, transform.data_max_lo.y)));
+    // The spoke from the inner ring to the outer one at the category, both
+    // ends through one inlined projection (#363): `data_to_ndc` is what a
+    // software GPU compiler pays for per copy.
+    var ends: array<vec2<f32>, 2>;
+    for (var k = 0u; k < 2u; k = k + 1u) {
+        let outer_end = k == 1u;
+        let y = select(
+            vec2<f32>(transform.data_min.y, transform.data_min_lo.y),
+            vec2<f32>(transform.data_max.y, transform.data_max_lo.y),
+            outer_end,
+        );
+        ends[k] = category_px(data_to_ndc(tf, x, y));
+    }
+    let inner = ends[0];
+    let outer = ends[1];
     let along = outer - inner;
     if (!(dot(along, along) > 0.0) || !bar_finite(inner.x) || !bar_finite(inner.y)) {
         return value_label_hidden();
@@ -464,12 +498,20 @@ fn value_label_radar(row: u32, size: vec2<f32>) -> ValueLabelBox {
     var prev1 = value_label_no_rect();
     var prev2 = value_label_no_rect();
     var split = 0.0;
-    var cur = value_label_radar_next(value_label_radar_none(), row, x, spoke);
-    for (var step = 0u; step < value_label.shape.w; step = step + 1u) {
+    // One call site of the member search (#363): the first pass finds the
+    // first label, and each later pass the label after the current one.
+    var cur = value_label_radar_none();
+    var started = false;
+    for (var step = 0u; step <= value_label.shape.w; step = step + 1u) {
+        let following = value_label_radar_next(cur, row, x, spoke);
+        if (!started) {
+            started = true;
+            cur = following;
+            continue;
+        }
         if (!cur.valid) {
             break;
         }
-        let following = value_label_radar_next(cur, row, x, spoke);
         let placed = value_label_radar_choose(cur, following, split, prev1, prev2, spoke);
         if (cur.member == own) {
             return value_label_box_at(row, placed.xy, size);
@@ -782,25 +824,130 @@ fn value_label_ndc(p: vec2<f32>) -> vec2<f32> {
 
 /// One corner of label `row`'s quad, upright, through the shared label
 /// quad; a hidden label collapses.
-@vertex
-fn vs_value_label(@builtin(vertex_index) vid: u32, @builtin(instance_index) row: u32) -> LabelOut {
-    let place = value_label_place(row);
-    if (!place.valid) {
-        return label_quad_hidden();
+/// A value label's quad corner: the shared label quad, and what the
+/// contrast ink reads under the label (#357), the same for every vertex.
+struct ValueLabelOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    /// The vertex in chart-area render pixels, y down.
+    @location(1) local: vec2<f32>,
+    /// The straight colour of the label's range bar, its fill under the
+    /// series' colour mode.
+    @location(2) @interpolate(flat) under: vec4<f32>,
+    /// x = the progress split along the value axis in render pixels, y = 1
+    /// past the split towards larger render pixels, -1 towards smaller
+    /// ones, 0 for no split, z = the unfinished part's opacity, w = 1 for a
+    /// horizontal bar (the split is along x).
+    @location(3) @interpolate(flat) split: vec4<f32>,
+    /// The bar's rect `(x0, y0, x1, y1)` in chart-area render pixels; empty
+    /// (x0 > x1) for no bar. A label pixel over it reads the bar, any other
+    /// the plot background, wherever placement or a drag put the label.
+    @location(4) @interpolate(flat) bar: vec4<f32>,
+};
+
+/// Whether the series draws its labels in contrast ink.
+fn value_label_contrast() -> bool {
+    return value_label.selection.z > 0.5;
+}
+
+/// What lies under label `row`: its range bar's rect, fill (the series'
+/// colour mode on every draw, `range_fill`) and progress split; around
+/// the bar, the plot background.
+fn value_label_under(row: u32, out: ptr<function, ValueLabelOut>) {
+    if (value_label.shape.x != VALUE_LABEL_KIND_RANGE) {
+        return;
     }
-    let size = place.rect.zw - place.rect.xy;
-    let frame = ContourLabelFrame(
-        value_label_ndc((place.rect.xy + place.rect.zw) * 0.5),
-        vec2<f32>(1.0, 0.0),
-        vec2<f32>(0.0, 1.0),
-    );
-    return label_quad(transform, value_label.atlas, vid, frame, row, size.x, true);
+    let bar = range_bar(row, category_geometry_style());
+    if (!bar.valid) {
+        return;
+    }
+    (*out).bar = bar.rect;
+    let fill = range_fill(row, bar, value_label.ink_base);
+    (*out).under = vec4<f32>(fill.rgb / max(fill.a, 1e-6), 1.0);
+    let split = range_progress(row, bar);
+    let remaining = range_slot(RANGE_SLOT_PROGRESS);
+    let has_opacity = (u32(remaining.params.w) & BAR_STYLE_MASK_WIDTH_RATIO) != 0u;
+    if (split.ok && has_opacity) {
+        (*out).split = vec4<f32>(
+            split.along,
+            select(-1.0, 1.0, bar.end_px > bar.start_px),
+            clamp(remaining.params.z, 0.0, 1.0),
+            select(0.0, 1.0, category_params.horizontal != 0u),
+        );
+    }
+}
+
+/// One corner of label `row`'s quad, upright, through the shared label
+/// quad; a hidden label collapses.
+@vertex
+fn vs_value_label(@builtin(vertex_index) vid: u32, @builtin(instance_index) row: u32) -> ValueLabelOut {
+    var out: ValueLabelOut;
+    let place = value_label_place(row);
+    var quad = label_quad_hidden();
+    if (place.valid) {
+        let size = place.rect.zw - place.rect.xy;
+        let frame = ContourLabelFrame(
+            value_label_ndc((place.rect.xy + place.rect.zw) * 0.5),
+            vec2<f32>(1.0, 0.0),
+            vec2<f32>(0.0, 1.0),
+        );
+        quad = label_quad(transform, value_label.atlas, vid, frame, row, size.x, true);
+    }
+    out.pos = quad.pos;
+    out.uv = quad.uv;
+    // Back from NDC to chart-area render pixels (the inverse of
+    // `value_label_ndc`), for the progress split.
+    let ndc = quad.pos.xy / max(quad.pos.w, 1e-6);
+    out.local = vec2<f32>((ndc.x + 1.0) / transform.pixel_to_ndc.x, (1.0 - ndc.y) / transform.pixel_to_ndc.y);
+    out.under = value_label.ink_back;
+    out.split = vec4<f32>(0.0);
+    out.bar = vec4<f32>(1.0, 1.0, 0.0, 0.0);
+    if (place.valid && value_label_contrast()) {
+        value_label_under(row, &out);
+    }
+    return out;
+}
+
+/// The relative luminance of a straight sRGB colour (WCAG 2).
+fn value_label_luminance(c: vec3<f32>) -> f32 {
+    let lin = select(pow((c + 0.055) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045));
+    return dot(lin, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+/// Of the dark and light ink, the one whose contrast ratio with `under`
+/// is higher (the dark one on a tie).
+fn value_label_ink(under: vec3<f32>) -> vec3<f32> {
+    let l = value_label_luminance(under);
+    let dark = value_label.ink_dark.rgb;
+    let light = value_label.ink_light.rgb;
+    let ld = value_label_luminance(dark);
+    let ll = value_label_luminance(light);
+    let cd = (max(l, ld) + 0.05) / (min(l, ld) + 0.05);
+    let cl = (max(l, ll) + 0.05) / (min(l, ll) + 0.05);
+    return select(dark, light, cl > cd);
 }
 
 @fragment
-fn fs_value_label(in: LabelOut) -> @location(0) vec4<f32> {
+fn fs_value_label(in: ValueLabelOut) -> @location(0) vec4<f32> {
     // The atlas is tiny-skia output, premultiplied, as the contour labels'.
-    return textureSampleLevel(value_label_atlas, value_label_sampler, in.uv, 0.0);
+    let texel = textureSampleLevel(value_label_atlas, value_label_sampler, in.uv, 0.0);
+    if (!value_label_contrast()) {
+        return texel;
+    }
+    // Contrast ink, chosen per pixel against what lies under it: the plot
+    // background off the bar, the bar's fill on it, and past a progress
+    // split the bar's unfinished part, its fill at the remaining opacity
+    // over the background.
+    let on_bar = all(in.local >= in.bar.xy) && all(in.local <= in.bar.zw);
+    var under = select(value_label.ink_back.rgb, in.under.rgb, on_bar);
+    if (on_bar && in.split.y != 0.0) {
+        let along = select(in.local.y, in.local.x, in.split.w > 0.5);
+        if ((along - in.split.x) * in.split.y > 0.0) {
+            under = mix(value_label.ink_back.rgb, under, in.split.z);
+        }
+    }
+    let ink = value_label_ink(under);
+    return vec4<f32>(ink * texel.a, texel.a);
 }
 
 // ───── Selection box ─────

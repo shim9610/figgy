@@ -495,7 +495,7 @@ mod tests {
     #[test]
     fn streamed_point_style_map_reuses_rows_and_charges_only_meta() {
         let (device, _queue) = shared_device().expect("streamed point style map GPU adapter");
-        let layout = create_scatter_style_map_bind_group_layout(&device);
+        let layout = create_per_point_style_map_bind_group_layout(&device);
         let map = create_scatter_style_map(
             &device,
             &layout,
@@ -540,57 +540,75 @@ mod tests {
         };
         let transform_bgl = create_scatter_transform_bind_group_layout(&device);
         let style_bgl = create_style_bind_group_layout(&device);
-        let style_map_bgl = create_scatter_style_map_bind_group_layout(&device);
+        let style_map_bgl = create_per_point_style_map_bind_group_layout(&device);
         let value_map_bgl = create_point_value_map_bind_group_layout(&device);
         let shaders = ShaderModules::new(&device, crate::shader_assembly::ShaderSet::Full);
 
-        let mapped = create_scatter_columnar_mapped_pipeline(
-            &device,
-            &transform_bgl,
-            &style_bgl,
-            &style_map_bgl,
-            &value_map_bgl,
-            wgpu::TextureFormat::Bgra8Unorm,
-            1,
-        );
-        let picked = create_scatter_columnar_pipeline_with_entries(
+        let mapped_bgls = [&transform_bgl, &style_bgl, &style_map_bgl, &value_map_bgl];
+        let mapped = create_scatter_mapped_pipeline(
             &device,
             &shaders.scatter,
-            &transform_bgl,
-            &style_bgl,
+            mapped_bgls,
             wgpu::TextureFormat::Bgra8Unorm,
             1,
-            "vs_pick_ring",
-            "fs_pick_ring",
-            "figgy picked point ring pipeline test",
+            (
+                "vs_mapped",
+                "fs_mapped",
+                "figgy scatter mapped pipeline test",
+            ),
+            false,
+            None,
         );
-        let picked_mapped = create_scatter_columnar_mapped_pipeline_with_entries(
+        let picked = create_scatter_pipeline(
             &device,
             &shaders.scatter,
-            &transform_bgl,
-            &style_bgl,
-            &style_map_bgl,
-            &value_map_bgl,
+            [&transform_bgl, &style_bgl],
             wgpu::TextureFormat::Bgra8Unorm,
             1,
-            "vs_pick_ring_mapped",
-            "fs_pick_ring",
-            "figgy picked point mapped ring pipeline test",
+            (
+                "vs_pick_ring",
+                "fs_pick_ring",
+                "figgy picked point ring pipeline test",
+            ),
+            None,
+            false,
+            None,
         );
-        let errorbar_mapped = create_errorbar_columnar_mapped_pipeline(
+        let picked_mapped = create_scatter_mapped_pipeline(
             &device,
+            &shaders.scatter,
+            mapped_bgls,
+            wgpu::TextureFormat::Bgra8Unorm,
+            1,
+            (
+                "vs_pick_ring_mapped",
+                "fs_pick_ring",
+                "figgy picked point mapped ring pipeline test",
+            ),
+            false,
+            None,
+        );
+        let errorbar_mapped = create_errorbar_mapped_pipeline(
+            &device,
+            &shaders.errorbar,
             &transform_bgl,
             &style_bgl,
             &style_map_bgl,
             wgpu::TextureFormat::Bgra8Unorm,
             1,
         );
-        let bar_mapped = create_bar_columnar_mapped_pipeline(
+        let bar_mapped = create_bar_pipeline(
             &device,
+            &shaders.bar,
             &transform_bgl,
             &style_bgl,
-            &style_map_bgl,
+            Some(&style_map_bgl),
             wgpu::TextureFormat::Bgra8Unorm,
+            1,
+            (
+                "vs_envelope_mapped_bars",
+                "figgy mapped bar columnar pipeline",
+            ),
         );
 
         let _ = (mapped, picked, picked_mapped, errorbar_mapped, bar_mapped);

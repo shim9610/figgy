@@ -26,10 +26,11 @@
 
 use crate::annotation::{AnnotationAxis, AnnotationSpace};
 use crate::color::Color;
-use crate::data_config::{MAX_VALUE_LABEL_OFFSET, SeriesConfig};
+use crate::data_config::SeriesConfig;
+use crate::energy_levels::{color_ok, offset_ok};
 use crate::layout::{NudgeReject, NudgeResult, RectF};
 use crate::sink::{PathSegment, PlacedText, Sink, Slot, StrokeStyle, TextRef};
-use crate::text::{MeasureText, RichText};
+use crate::text::{MeasureText, RichText, TextExtents};
 use std::f32::consts::PI;
 
 /// A Feynman diagram: its vertices, its propagators and their look. See the
@@ -358,6 +359,19 @@ pub struct FeynmanStyle {
     pub fan_step: f32,
     /// How the picked part is drawn.
     pub picked: FeynmanPicked,
+    /// The factor every vertex, propagator and momentum label is drawn at,
+    /// `0.25..=4`: a label's stored size (its `RichText` sizes, the host's
+    /// data) times this is the size measured, placed, drawn, picked and
+    /// exported. An appearance choice of the series; the stored labels keep
+    /// their sizes.
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            default = "crate::defaults::feynman_label_scale",
+            skip_serializing_if = "is_default_label_scale"
+        )
+    )]
+    pub label_scale: f32,
 }
 
 /// How the picked vertex, propagator or label of a Feynman series is drawn:
@@ -402,6 +416,7 @@ impl FeynmanStyle {
             || !finite_in(self.dot_radius, 0.0, 64.0)
             || !finite_in(self.loop_radius, 2.0, 512.0)
             || !finite_in(self.fan_step, 0.0, 120.0)
+            || !finite_in(self.label_scale, 0.25, 4.0)
         {
             return Err(crate::RuleKind::FeynmanSizes);
         }
@@ -453,6 +468,11 @@ fn is_zero_offset(offset: &[f32; 2]) -> bool {
 }
 
 #[cfg(feature = "serde")]
+fn is_default_label_scale(scale: &f32) -> bool {
+    *scale == crate::defaults::feynman_label_scale()
+}
+
+#[cfg(feature = "serde")]
 fn is_false(v: &bool) -> bool {
     !*v
 }
@@ -466,20 +486,8 @@ fn finite_in(v: f32, lo: f32, hi: f32) -> bool {
     v.is_finite() && (lo..=hi).contains(&v)
 }
 
-fn color_ok(color: Color) -> bool {
-    [color.r, color.g, color.b, color.a]
-        .iter()
-        .all(|c| c.is_finite() && (0.0..=1.0).contains(c))
-}
-
 fn rich_ok(text: Option<&RichText>) -> bool {
     text.is_none_or(|t| t.validate_math().is_ok() && t.within_limits())
-}
-
-fn offset_ok(offset: [f32; 2]) -> bool {
-    offset
-        .iter()
-        .all(|v| v.is_finite() && v.abs() <= MAX_VALUE_LABEL_OFFSET)
 }
 
 // Working memory (#234, rule 3).
@@ -1172,7 +1180,8 @@ impl FeynmanSeries {
     /// Move the label of row `index` of `part` by `(dx, dy)` logical pixels
     /// (x right, y down). Rejected for a row past the end, a missing
     /// momentum arrow, a non-finite delta or an offset past
-    /// [`MAX_VALUE_LABEL_OFFSET`]; nothing changes then.
+    /// [`MAX_VALUE_LABEL_OFFSET`](crate::data_config::MAX_VALUE_LABEL_OFFSET);
+    /// nothing changes then.
     pub fn drag_label(
         &mut self,
         part: FeynmanLabelPart,
@@ -1510,7 +1519,7 @@ impl FeynmanSeries {
                 if let Some(text) = placed.label(part, index, measure) {
                     offer(
                         FeynmanHit::Label(part, index),
-                        rect_distance(cursor, text.rect()),
+                        crate::select::rect_distance(&text.rect(), cursor[0], cursor[1]),
                     );
                 }
             }
@@ -1938,13 +1947,6 @@ fn segment_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
         0.0
     };
     len(sub(p, lerp(a, b, t)))
-}
-
-/// The distance from `p` to `rect`, zero inside it.
-fn rect_distance(p: [f32; 2], rect: RectF) -> f32 {
-    let dx = (rect.x - p[0]).max(p[0] - (rect.x + rect.width)).max(0.0);
-    let dy = (rect.y - p[1]).max(p[1] - (rect.y + rect.height)).max(0.0);
-    dx.hypot(dy)
 }
 
 /// A placed propagator: its base path, its ends, whether it is a loop and
@@ -2425,7 +2427,17 @@ impl Placed<'_> {
                 )
             }
         };
-        let extents = measure.measure_rich(text);
+        // Drawn at `style.label_scale` times its stored size: the measure
+        // scales with the size (as an export at another scale draws it), so
+        // the extents measured once here are the ones every sink places,
+        // draws, bounds and hit tests.
+        let scale = series.style.label_scale;
+        let measured = measure.measure_rich(text);
+        let extents = TextExtents {
+            width: measured.width * scale,
+            ascent: measured.ascent * scale,
+            descent: measured.descent * scale,
+        };
         // The block's centre sits half its size beyond the anchor, along
         // `direction`, so its near side touches the anchor.
         let centre = [
@@ -2433,13 +2445,18 @@ impl Placed<'_> {
             anchor[1] + direction[1] * extents.height() / 2.0,
         ];
         Some(PlacedText {
-            text: TextRef::Rich(text),
+            text: if scale == 1.0 {
+                TextRef::Rich(text)
+            } else {
+                TextRef::ScaledRich { text, scale }
+            },
             origin: (
                 centre[0] - extents.width / 2.0 + offset[0],
                 centre[1] + (extents.ascent - extents.descent) / 2.0 + offset[1],
             ),
             extents,
             rotation: None,
+            outline: None,
         })
     }
 

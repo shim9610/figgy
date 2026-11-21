@@ -1,15 +1,10 @@
 //! Series styles: lines, markers, bars, box plots, fields, vectors, ranges.
 
-#![allow(unused_imports)]
 // Some sources are read only by `Default` (`crate::helpers`).
 #![cfg_attr(not(feature = "helpers"), allow(dead_code))]
 
-use super::*;
 use crate::data_config::*;
-use crate::format::*;
-use crate::layout::*;
 use crate::line::*;
-use crate::text::*;
 use crate::*;
 
 /// The documented default of [`BarGroups`]: the value a document that
@@ -126,6 +121,7 @@ pub(crate) fn category_bar_series_labels() -> CategoryBarSeriesLabels {
         value_suffix: String::new(),
         text: Vec::new(),
         offsets: Vec::new(),
+        contrast_ink: None,
     }
 }
 
@@ -311,6 +307,15 @@ pub(crate) fn histogram_bar_width_ratio() -> f32 {
 #[cfg(any(feature = "serde", feature = "helpers"))]
 pub(crate) fn contour_label_color() -> Color {
     Color::BLACK
+}
+
+/// [`ContourLabelConfig::bg_color`] of the host default label
+/// (`crate::helpers`, #357): a translucent white plate, so the black text
+/// reads on the dark end of a map as well as the light. A document that
+/// omits it still reads `None`.
+#[cfg(feature = "helpers")]
+pub(crate) fn contour_label_background() -> Option<Color> {
+    Some(Color::new(1.0, 1.0, 1.0, 0.75))
 }
 
 /// An image series' value range where a document omits it.

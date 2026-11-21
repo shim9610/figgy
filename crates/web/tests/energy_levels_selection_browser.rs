@@ -4,25 +4,12 @@
 //! categorical `labels.text`.
 
 use figgy::FiggyChart;
-use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
-use web_sys::HtmlCanvasElement;
+
+mod support;
+use support::{canvas_480x320 as canvas, details};
 
 wasm_bindgen_test_configure!(run_in_browser);
-
-fn canvas() -> HtmlCanvasElement {
-    let canvas: HtmlCanvasElement = web_sys::window()
-        .unwrap()
-        .document()
-        .unwrap()
-        .create_element("canvas")
-        .unwrap()
-        .dyn_into()
-        .unwrap();
-    canvas.set_width(480);
-    canvas.set_height(320);
-    canvas
-}
 
 /// A rich label, serialized as the model writes it.
 fn label(text: &str) -> serde_json::Value {
@@ -57,10 +44,6 @@ fn levels() -> serde_json::Value {
                        "label": label("band")}]
         }}
     }])
-}
-
-async fn details(chart: &FiggyChart) -> serde_json::Value {
-    serde_json::from_str(&chart.selection_details().await.unwrap()).unwrap()
 }
 
 fn select(chart: &mut FiggyChart, index: usize, part: &str) {

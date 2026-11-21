@@ -91,34 +91,19 @@ impl Pipelines {
                 cache: None,
             },
         );
-        let render = crate::gpu_compile::render_pipeline(
-            &device,
-            &wgpu::RenderPipelineDescriptor {
-                label: Some("histogram envelope fill"),
-                layout: Some(&layout(&render_layout)),
-                vertex: wgpu::VertexState {
-                    module: shader,
-                    entry_point: Some("vs_bar_envelope"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: multisample_state(samples),
-                fragment: Some(wgpu::FragmentState {
-                    module: shader,
-                    entry_point: Some("fs_bar_envelope"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            },
-        );
+        let render_pipeline_layout = layout(&render_layout);
+        let render = RenderPipelineSpec {
+            label: "histogram envelope fill",
+            layout: &render_pipeline_layout,
+            shader,
+            entries: ("vs_bar_envelope", "fs_bar_envelope"),
+            buffers: &[],
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            depth_stencil: None,
+            multisample: multisample_state(samples),
+            target: blended_target(format, wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+        }
+        .create(device);
         Self {
             compute,
             render,
@@ -193,7 +178,7 @@ impl Pipelines {
         let data = bg(&self.render_layout, 2);
         let map = match style_map {
             Some(map) => map.clone(),
-            None => create_bar_style_map(device, &self.map_layout, &[])?.bind_group,
+            None => create_bar_style_map_with_slots(device, &self.map_layout, &[], &[])?.bind_group,
         };
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("histogram envelope preparation"),

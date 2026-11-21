@@ -77,6 +77,26 @@ impl Renderer {
         if series.monotonic().is_some() {
             info.truncated = self.monotonic.truncated(series);
         }
+        // A link naming a row past its bars' rows draws nothing (#357): the
+        // declaration asked for more than the data supports.
+        if let Some(links) = series.render_type.range_links() {
+            let rows = state
+                .series
+                .iter()
+                .find(|s| s.series_id == links.bars && s.render_type.range_bars().is_some())
+                .map_or(0, |bars| {
+                    series_draw_info_from_pool(
+                        &(&self.pool, &self.streaming_sources),
+                        bars,
+                        state.config.drawn_z_column(bars),
+                    )
+                    .drawn_count
+                });
+            info.truncated = links
+                .links
+                .iter()
+                .any(|l| u64::from(l.from) >= rows || u64::from(l.to) >= rows);
+        }
         Ok(info)
     }
 
@@ -113,19 +133,55 @@ impl Renderer {
     /// A monotonic line series lives only in a monotonic chart
     /// ([`Self::register_monotonic_chart`], #271): refused with
     /// `RuleKind::MonotonicGeneralChart`.
+    ///
+    /// A new chart's config ([`crate::LayoutState::Fitted`]: `Chart::sized`,
+    /// `default::config_for_series`, the family presets) is fitted here,
+    /// once, when the renderer first holds the chart and its series (#357):
+    /// the axis ranges by the code [`Self::fit_ranges`] runs, then the
+    /// layout ([`crate::layout::auto_layout`]), then the scale of every
+    /// auto-scaled vector series ([`Self::fit_vector_scales`], which
+    /// consumes `VectorStyle::auto_scale`). The fitted values are stored in
+    /// the chart's config and series and nothing fits them again on its
+    /// own: draws and exports read them as stored, and only an explicit fit
+    /// or an edit of a kept layout fits again. The fit refuses what
+    /// [`Self::fit_ranges`] refuses, a streamed source with
+    /// `ColumnNotResident` (rule 8) among them, and a refused fit registers
+    /// nothing. A `Fixed` config (every stored document) is registered
+    /// exactly as given; [`Self::register_chart_as_given`] registers any
+    /// config without the fit.
     pub fn register_chart(&mut self, config: Config, series: Vec<SeriesConfig>) -> Result<ChartId> {
         let result = refuse_monotonic_series(&series)
-            .and_then(|()| self.register_chart_unreported(config, series, false));
+            .and_then(|()| self.register_chart_unreported(config, series, false, true));
+        self.reported(result)
+    }
+
+    /// Register one renderer-owned chart exactly as given (#357): no axis
+    /// range, layout or vector scale is fitted, whatever its
+    /// [`crate::LayoutState`], so the chart draws the SSOT it was handed.
+    /// The opt-out of the one-time fit [`Self::register_chart`] makes. A
+    /// `Fitted` config stays `Fitted`: a later config edit through the
+    /// registry still fits its layout, as for any registered chart. Refused
+    /// as [`Self::register_chart`] refuses a chart, the fit's refusals
+    /// aside.
+    pub fn register_chart_as_given(
+        &mut self,
+        config: Config,
+        series: Vec<SeriesConfig>,
+    ) -> Result<ChartId> {
+        let result = refuse_monotonic_series(&series)
+            .and_then(|()| self.register_chart_unreported(config, series, false, false));
         self.reported(result)
     }
 
     /// Registers a chart: a general one, or a monotonic one (`monotonic`),
-    /// kept out of [`Self::chart_order`].
+    /// kept out of [`Self::chart_order`]; `fit` makes the one-time fit of a
+    /// new chart ([`Self::register_chart`]).
     pub(in crate::renderer) fn register_chart_unreported(
         &mut self,
         mut config: Config,
-        series: Vec<SeriesConfig>,
+        mut series: Vec<SeriesConfig>,
         monotonic: bool,
+        fit: bool,
     ) -> Result<ChartId> {
         crate::chart::validate_renderer_config(&config)?;
         validate_renderer_series(&(&self.pool, &self.streaming_sources), &config, &series)?;
@@ -133,6 +189,12 @@ impl Renderer {
         config.set_active_layer(config.active_layer);
         // Linked subplot axes are stored equal to their targets.
         config.sync_subplot_links(None);
+        // The chart is created with its fitted values (#357): a new chart's
+        // ranges, layout and vector scales are fitted here, once. A
+        // monotonic chart is registered `Fixed` (M4).
+        if fit && !monotonic {
+            config = self.first_fit(config, &mut series)?;
+        }
         let id_value = self
             .next_chart_id
             .checked_add(1)
@@ -181,6 +243,8 @@ impl Renderer {
                 revisions: ChartRevisions::initial(chart_revision),
                 fit_extents: HashMap::new(),
                 display: None,
+                #[cfg(target_arch = "wasm32")]
+                pick_warmup: None,
             },
         );
         if monotonic {
@@ -205,6 +269,7 @@ impl Renderer {
         let visual_revision = self.visual_revision.successor("renderer visual revision")?;
         self.chart_states.remove(&id);
         self.chart_order.retain(|candidate| *candidate != id);
+        self.ink_masks.retain(|mask| mask.chart != id);
         self.monotonic_order.retain(|candidate| *candidate != id);
         if self
             .picker
@@ -278,6 +343,15 @@ impl Renderer {
         // group here, inside this one `&mut self` call: no frame can show one
         // member moved and another not.
         config.sync_subplot_links(Some(&state.config));
+        // A layout the chart keeps fitted is fitted to the edit as part of
+        // it (#357); an identical config changes nothing, and an edit that
+        // sets `Fixed` keeps its margins. A monotonic chart's layout moves
+        // only through its own calls (M4): it stays `Fixed`.
+        if self.monotonic_order.contains(&id) {
+            config.layout_state = crate::LayoutState::Fixed;
+        } else if config != state.config {
+            config = kept_layout(config);
+        }
         Ok(config)
     }
 
@@ -692,6 +766,28 @@ impl Renderer {
     }
 }
 
+impl Renderer {
+    /// The one-time fit of a new chart (#357, [`Self::register_chart`]):
+    /// `config` with its ranges and layout fitted and `series` with their
+    /// vector scales fitted, when `config` is `Fitted`; a `Fixed` config is
+    /// returned as given. Every refusal comes before `series` is written.
+    pub(in crate::renderer) fn first_fit(
+        &self,
+        config: Config,
+        series: &mut [SeriesConfig],
+    ) -> Result<Config> {
+        if !config.layout_state.is_fitted() {
+            return Ok(config);
+        }
+        // The chart object fits the layout it is created with; the range
+        // fit fits it again to the new tick labels, and the vector scales
+        // read the data area of that layout.
+        let mut chart = crate::chart::Chart::new(config);
+        self.fit_ranges_unreported(&mut chart, series)?;
+        Ok(chart.config().clone())
+    }
+}
+
 /// A general chart holds no monotonic line series (#271): they live only in
 /// a monotonic chart (`Renderer::register_monotonic_chart`).
 pub(in crate::renderer) fn refuse_monotonic_series(series: &[SeriesConfig]) -> Result<()> {
@@ -702,4 +798,18 @@ pub(in crate::renderer) fn refuse_monotonic_series(series: &[SeriesConfig]) -> R
         }),
         None => Ok(()),
     }
+}
+
+/// `config` with its layout fitted when the chart keeps it fitted
+/// ([`crate::LayoutState::Fitted`], #357): the fit
+/// [`crate::layout::auto_layout`] makes, measured with the font the draw
+/// style renders. A `Fixed` config is returned as given. A registered
+/// chart's layout is fitted here when the chart is registered and when a
+/// config edit commits, never by a draw or an export.
+pub(in crate::renderer) fn kept_layout(config: Config) -> Config {
+    if !config.layout_state.is_fitted() {
+        return config;
+    }
+    let measure = crate::CpuTextMeasure::for_style(&config.draw_style);
+    crate::layout::auto_layout(&config, &measure)
 }

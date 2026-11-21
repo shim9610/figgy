@@ -73,6 +73,8 @@ impl AxisViewState {
             breaks: _,
             // What the axis prints, not how data maps (#273).
             unit: _,
+            // Row striping: style, not how data maps (#357).
+            category_bands: _,
         } = axis;
         let (min, max) = match axis.categories {
             Some(_) => axis.data_range(),
@@ -130,6 +132,8 @@ impl ChartViewState {
             line_offsets: _,
             plot_background: _,
             background: _,
+            // Who owns the layout: not part of the data-to-screen mapping.
+            layout_state: _,
         } = config;
         Self {
             chart_area: chart_area.0,
@@ -198,6 +202,8 @@ impl ChartViewState {
             line_offsets: _,
             plot_background: _,
             background: _,
+            // Who owns the layout: not part of the data-to-screen mapping.
+            layout_state: _,
         } = config;
         config_area.0 = *chart_area;
         top_x.apply_to(config_top_x);

@@ -77,6 +77,9 @@ impl Renderer {
                 target_sample_count: self.target_sample_count,
                 resident_displays: &mut self.resident_displays,
                 resident_display_serial: &mut self.resident_display_serial,
+                ink_masks: &mut self.ink_masks,
+                ink_mask_pipeline: &mut self.ink_mask_pipeline,
+                ink_charts: &[],
                 contour_label_pipelines: &mut self.contour_label_pipelines,
                 arc_pipelines: &mut self.arc_pipelines,
                 surface_format: self.surface_format,
@@ -207,7 +210,7 @@ impl Renderer {
                 .get(hit)
                 .map(|element| element.element_id())
         });
-        let chart = Chart::new(config.into_owned());
+        let chart = Chart::stored(config.into_owned());
         self.refresh_axis_with_selection_unreported(
             view,
             &chart,
@@ -350,6 +353,10 @@ impl Renderer {
             } else {
                 self.ensure_registered_styles(item.chart_id)?;
             }
+            // A chart on screen compiles its first pick's pipelines ahead
+            // of that pick (#363, #381).
+            #[cfg(target_arch = "wasm32")]
+            self.warm_first_pick(item.chart_id);
         }
         // Whether each series of each item is drawn: resident sources only,
         // and in a browser only once its pipelines have compiled (#299).
@@ -435,6 +442,11 @@ impl Renderer {
                 series,
             });
         }
+        // Each chart's panels keep their ink masks (#381).
+        let mut charts = Vec::new();
+        charts.try_reserve_exact(items.len()).map_err(allocation)?;
+        charts.extend(items.iter().map(|item| item.chart_id));
+        preparation.ink_charts = &charts;
         let mut frame = preparation.prepare(&draws)?;
         frame.registered_charts = stamps;
         Ok(frame)

@@ -15,7 +15,10 @@ use crate::raster::{Canvas, Paint};
 use crate::select::{SelectionBox, SelectionOutline, part_outline};
 use crate::sink::{Border, PlacedText, Sink, Slot, StrokeStyle, TextRef};
 use crate::sketch::DecoStroker;
-use crate::text_render::{FontPolicy, draw_plain_text, draw_rich_text};
+use crate::text_render::{
+    FontPolicy, draw_plain_text_at, draw_plain_text_outline_at, draw_rich_text_at,
+    draw_rich_text_outline_at,
+};
 
 /// Paints emitted parts onto up to two canvases: the one below the data and
 /// the one above. A slot without a canvas drops its parts, which is how a
@@ -32,6 +35,10 @@ pub(crate) struct CanvasSink<'a> {
     policy: FontPolicy,
     origin: [f32; 2],
     scale: f32,
+    /// The scale the emitted config's pixel values already carry (1 for a
+    /// logical config): with `scale` it gives the drawing's pixel scale,
+    /// from which its glyphs' hinting is decided (#357).
+    carried: f32,
     /// The first text that could not be drawn (a glyph above
     /// `MAX_GLYPH_PX`); [`Self::finish`] returns it. Later parts still
     /// paint, later text does not.
@@ -66,7 +73,18 @@ impl<'a> CanvasSink<'a> {
             policy,
             origin,
             scale,
+            carried: 1.0,
             text_error: None,
+        }
+    }
+
+    /// The sink for a config whose pixel values already carry `scale` (a
+    /// display's or export's scaled config): its glyphs are hinted only when
+    /// the drawing is at 1x (#357).
+    pub(crate) fn carrying(self, scale: f32) -> Self {
+        Self {
+            carried: scale,
+            ..self
         }
     }
 
@@ -86,19 +104,11 @@ impl<'a> CanvasSink<'a> {
     }
 
     fn point(&self, p: [f32; 2]) -> (f32, f32) {
-        (
-            (p[0] - self.origin[0]) * self.scale,
-            (p[1] - self.origin[1]) * self.scale,
-        )
+        output_point(self.origin, self.scale, p)
     }
 
     fn place_rect(&self, r: RectF) -> RectF {
-        RectF {
-            x: (r.x - self.origin[0]) * self.scale,
-            y: (r.y - self.origin[1]) * self.scale,
-            width: r.width * self.scale,
-            height: r.height * self.scale,
-        }
+        output_rect(self.origin, self.scale, r)
     }
 
     /// A stroke paint at the sink's scale. Dash patterns have at most eight
@@ -127,6 +137,7 @@ impl Sink for CanvasSink<'_> {
             .rotation
             .map(|(degrees, center)| (degrees, self.point([center.0, center.1])));
         let (scale, policy) = (self.scale, self.policy);
+        let pixel_scale = self.scale * self.carried;
         if self.text_error.is_some() {
             return;
         }
@@ -137,29 +148,68 @@ impl Sink for CanvasSink<'_> {
             canvas.save();
             canvas.rotate_at(degrees, center.0, center.1);
         }
+        // The outline (#357), its reach scaled as the text is, under the
+        // fill.
+        let outline = text.outline.map(|o| crate::sink::TextOutline {
+            width: o.width * scale,
+            ..o
+        });
         let drawn = match text.text {
             TextRef::Plain {
                 text,
                 family,
                 size,
                 color,
-            } => draw_plain_text(
-                canvas,
-                text,
-                origin,
-                color,
-                family,
-                size * scale,
-                false,
-                false,
-                policy,
-            ),
-            TextRef::Rich(rich) => {
+            } => outline
+                .map_or(Ok(()), |outline| {
+                    draw_plain_text_outline_at(
+                        canvas,
+                        text,
+                        origin,
+                        family,
+                        size * scale,
+                        false,
+                        false,
+                        policy,
+                        pixel_scale,
+                        outline,
+                    )
+                })
+                .and_then(|()| {
+                    draw_plain_text_at(
+                        canvas,
+                        text,
+                        origin,
+                        color,
+                        family,
+                        size * scale,
+                        false,
+                        false,
+                        policy,
+                        pixel_scale,
+                    )
+                }),
+            TextRef::Rich(rich) | TextRef::ScaledRich { text: rich, .. } => {
+                let scale = scale * text.text.rich().map_or(1.0, |(_, own)| own);
+                let draw = |canvas: &mut crate::raster::Canvas, rich: &crate::text::RichText| {
+                    outline
+                        .map_or(Ok(()), |outline| {
+                            draw_rich_text_outline_at(
+                                canvas,
+                                rich,
+                                origin,
+                                policy,
+                                pixel_scale,
+                                outline,
+                            )
+                        })
+                        .and_then(|()| draw_rich_text_at(canvas, rich, origin, policy, pixel_scale))
+                };
                 if scale == 1.0 {
-                    draw_rich_text(canvas, rich, origin, policy)
+                    draw(canvas, rich)
                 } else {
                     let scaled = crate::decoration::scaled_rich_text(rich, scale);
-                    draw_rich_text(canvas, &scaled, origin, policy)
+                    draw(canvas, &scaled)
                 }
             }
         };
@@ -257,6 +307,23 @@ impl Sink for CanvasSink<'_> {
     }
 }
 
+/// The chart-frame point `p` in output pixels: offset by `origin`, then
+/// multiplied by `scale`. Shared by the canvas sink and the vector sink.
+pub(crate) fn output_point(origin: [f32; 2], scale: f32, p: [f32; 2]) -> (f32, f32) {
+    ((p[0] - origin[0]) * scale, (p[1] - origin[1]) * scale)
+}
+
+/// The chart-frame rectangle `r` in output pixels, mapped as
+/// [`output_point`] maps its corner.
+pub(crate) fn output_rect(origin: [f32; 2], scale: f32, r: RectF) -> RectF {
+    RectF {
+        x: (r.x - origin[0]) * scale,
+        y: (r.y - origin[1]) * scale,
+        width: r.width * scale,
+        height: r.height * scale,
+    }
+}
+
 /// Draw one selection highlight box, the raster realization of the model's
 /// selection policy. `b` is in the chart frame; the canvas shows the chart
 /// from `origin` at `scale`, so every coordinate and the stroke width are
@@ -266,7 +333,7 @@ impl Sink for CanvasSink<'_> {
 /// every scale). Resize handles (when present) are drawn as white squares
 /// with the selection color as border, slide-editor style.
 pub fn draw_selection_box(canvas: &mut Canvas, b: &SelectionBox, origin: [f32; 2], scale: f32) {
-    let map = |p: [f32; 2]| ((p[0] - origin[0]) * scale, (p[1] - origin[1]) * scale);
+    let map = |p: [f32; 2]| output_point(origin, scale, p);
     let rect = |r: RectF| {
         let (x, y) = map([r.x, r.y]);
         (x, y, r.width * scale, r.height * scale)

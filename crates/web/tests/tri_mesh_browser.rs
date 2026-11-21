@@ -9,25 +9,12 @@ use renderer::{
     data_config::{FieldFillConfig, FillMode, Shading},
     tri_mesh::{MeshValueLocation, MeshValues, TriMeshSeries},
 };
-use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
-use web_sys::HtmlCanvasElement;
+
+mod support;
+use support::{canvas_480x320 as canvas, details};
 
 wasm_bindgen_test_configure!(run_in_browser);
-
-fn canvas() -> HtmlCanvasElement {
-    let canvas: HtmlCanvasElement = web_sys::window()
-        .unwrap()
-        .document()
-        .unwrap()
-        .create_element("canvas")
-        .unwrap()
-        .dyn_into()
-        .unwrap();
-    canvas.set_width(480);
-    canvas.set_height(320);
-    canvas
-}
 
 fn mesh(at: MeshValueLocation, values: &str) -> SeriesConfig {
     SeriesConfig {
@@ -66,10 +53,6 @@ fn at(config: &Config, x: f64, y: f64) -> (f32, f32) {
         area.x as f32 + area.width as f32 * fx,
         area.y as f32 + area.height as f32 * (1.0 - fy),
     )
-}
-
-async fn details(chart: &FiggyChart) -> serde_json::Value {
-    serde_json::from_str(&chart.selection_details().await.unwrap()).unwrap()
 }
 
 #[wasm_bindgen_test(async)]

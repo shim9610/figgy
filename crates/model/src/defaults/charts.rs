@@ -1,23 +1,16 @@
 //! Chart families: radial, radar, polar, ternary, parallel, 3D and the bounded documents.
 
-#![allow(unused_imports)]
-// The deprecated document readers keep their defaults until they go.
-#![allow(deprecated)]
 // Some sources are read only by `Default` (`crate::helpers`).
 #![cfg_attr(not(feature = "helpers"), allow(dead_code))]
 
 use super::*;
 use crate::boxplot::*;
 use crate::categorical::*;
-use crate::format::*;
-use crate::layout::*;
-use crate::line::*;
 use crate::parallel::*;
 use crate::polar::*;
 use crate::radar::*;
 use crate::radial::*;
 use crate::ternary::*;
-use crate::text::*;
 use crate::view3d::*;
 use crate::*;
 
@@ -55,6 +48,9 @@ pub(crate) fn box_plot_chart() -> BoxPlotChart {
         box_gap: 8.0,
         font_family: "sans-serif".into(),
         font_size: 14.0,
+        // Built in Rust: the documented Cartesian chart's text sizes (#357).
+        // A document without the field keeps the legacy single size.
+        text_sizes: Some(DocumentTextSizes::CARTESIAN),
         text_color: Color::from_rgb8(32, 46, 60),
         background: Color::WHITE,
     }
@@ -95,6 +91,9 @@ pub(crate) fn categorical_chart() -> CategoricalChart {
         bar_gap: 3.0,
         font_family: "sans-serif".into(),
         font_size: 14.0,
+        // Built in Rust: the documented Cartesian chart's text sizes (#357).
+        // A document without the field keeps the legacy single size.
+        text_sizes: Some(DocumentTextSizes::CARTESIAN),
         text_color: Color::from_rgb8(35, 45, 65),
         background: Color::WHITE,
     }
@@ -109,7 +108,11 @@ pub(crate) const fn grid_shape() -> GridShape {
 /// The documented default of [`ParallelOptions`]: the value a document that
 /// omits it takes.
 pub(crate) fn parallel_options() -> ParallelOptions {
-    ParallelOptions { axes: Vec::new() }
+    ParallelOptions {
+        axes: Vec::new(),
+        names_on_top: false,
+        label_backdrop: None,
+    }
 }
 
 /// The documented default of [`PolarInterpolation`]: the value a document that
@@ -163,6 +166,9 @@ pub(crate) fn radar_chart() -> RadarChart {
         legend: true,
         font_family: "sans-serif".into(),
         font_size: 14.0,
+        // Built in Rust: the documented Cartesian chart's text sizes (#357).
+        // A document without the field keeps the legacy single size.
+        text_sizes: Some(DocumentTextSizes::CARTESIAN),
         text_color: Color::from_rgb8(32, 46, 60),
         background: Color::WHITE,
     }
@@ -213,6 +219,7 @@ pub(crate) fn radial_chart() -> RadialChart {
         font_size: 16.0,
         label_color: Color::new(0.12, 0.16, 0.22, 1.0),
         background: Color::WHITE,
+        inner_label_fallback: crate::radial::InnerLabelFallback::Hide,
     }
 }
 

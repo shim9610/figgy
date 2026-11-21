@@ -49,6 +49,15 @@ pub enum RangeColor {
         column: ColumnId,
         styles: Vec<RangeStateStyle>,
     },
+    /// By the bar's row: the bar of row `i` (its row in the series'
+    /// columns, as a pick reports it) takes `colors[i % colors.len()]`, a
+    /// timeline's one colour per task. Empty draws every bar in the series
+    /// colour. A colour mapping by row index: it reads no column and
+    /// computes no value, and the list cycles, so every row draws.
+    ByRow {
+        /// The fill colours, opaque.
+        colors: Vec<Color>,
+    },
 }
 
 impl RangeColor {
@@ -100,65 +109,279 @@ pub struct RangeConnector {
     pub width: f32,
 }
 
-/// The fields of a [`DataRenderType::RangeBars`] series, borrowed.
-#[derive(Clone, Copy, Debug)]
-pub struct RangeBarsRef<'a> {
+/// One dependency link of a [`RangeLinkSeries`] (#357): from the bar of
+/// row `from` to the bar of row `to` of the series' bars, finish to start.
+/// A row at or past the bars' row count draws and picks nothing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RangeLink {
+    /// The predecessor's row.
+    pub from: u32,
+    /// The successor's row.
+    pub to: u32,
+    /// Where the link leaves the predecessor's edge, in logical pixels
+    /// from the predecessor's start (clamped to the bar when drawn); `None`
+    /// is the series' default, `inset`. A user's drag writes it.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub exit_offset: Option<f32>,
+}
+
+impl RangeLink {
+    /// A link from row `from` to row `to` at the default exit.
+    pub fn new(from: u32, to: u32) -> Self {
+        Self {
+            from,
+            to,
+            exit_offset: None,
+        }
+    }
+}
+
+/// How close to the default exit, in logical pixels, a dragged exit snaps
+/// back to it ([`RangeLinkSeries::drag_link_exit`]).
+pub const RANGE_LINK_EXIT_SNAP: f32 = 3.0;
+
+/// The fields of a [`DataRenderType::RangeLinks`] series (#357): the
+/// dependency links between the bars of the range bar series `bars`, drawn
+/// in `color`, `width` logical pixels wide: out of the predecessor's edge
+/// facing the successor, `inset` pixels from its start, down to the
+/// successor's centre line and into its start, ending in an open chevron
+/// `head` pixels long. The series is DataLess: its links are SSOT
+/// (`links`), and it reads no column (`x_column` and `y_column` empty).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RangeLinkSeries {
+    /// The `series_id` of the range bar series whose rows the links join,
+    /// in the same layer.
+    pub bars: String,
+    /// The stroke and head colour; channels in `0..=1`.
     pub color: Color,
-    pub style: &'a CategoryBarStyle,
-    pub start: &'a str,
-    pub whiskers: Option<&'a RangeWhiskers>,
-    pub color_by: &'a RangeColor,
-    pub progress: Option<&'a RangeProgress>,
-    pub connector: Option<&'a RangeConnector>,
+    /// The stroke width in logical pixels, `0..=`[`MAX_RANGE_STROKE_WIDTH`].
+    pub width: f32,
+    /// The open chevron's length in logical pixels, `0..=32`.
+    pub head: f32,
+    /// How far from the predecessor's start a link leaves its edge by
+    /// default, in logical pixels, `0..=64`.
+    pub inset: f32,
+    /// The links, any number of them.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub links: Vec<RangeLink>,
+}
+
+impl RangeLinkSeries {
+    /// Set link `index`'s exit offset: `None`, `Some(0)` and a non-finite
+    /// value clear it back to the default exit. Returns `false`, changing
+    /// nothing, for an index past the links or a negative offset.
+    pub fn set_link_exit_offset(&mut self, index: usize, offset: Option<f32>) -> bool {
+        let offset = offset.filter(|o| o.is_finite() && *o != 0.0);
+        if offset.is_some_and(|o| o < 0.0) {
+            return false;
+        }
+        let Some(link) = self.links.get_mut(index) else {
+            return false;
+        };
+        link.exit_offset = offset;
+        true
+    }
+
+    /// Drag link `index`'s exit by `along` logical pixels along the
+    /// predecessor's edge (toward its end when positive). Every link that
+    /// leaves the same bar at the same exit moves with it, so a shared
+    /// trunk moves as one; an exit within [`RANGE_LINK_EXIT_SNAP`] of the
+    /// default snaps back to it (`None`), and one dragged before the bar's
+    /// start stops half a pixel in from it, since an offset of 0 means the
+    /// default.
+    ///
+    /// `limit` is the predecessor's drawn length in logical pixels, the
+    /// farthest an exit moves (the draw clamps the exit to the bar's end):
+    /// the stored offset stops there, so dragging back moves the exit at
+    /// once. The renderer holds no row values on the CPU, so the length
+    /// comes from the link's pick (`PickedData::HistogramBin::extent_px`,
+    /// in display pixels, divided by the display scale); with `None` the
+    /// offset is not clamped and only the draw stops the exit.
+    pub fn drag_link_exit(
+        &mut self,
+        index: usize,
+        along: f32,
+        limit: Option<f32>,
+    ) -> crate::layout::NudgeResult {
+        use crate::layout::{NudgeReject, NudgeResult};
+        let Some(&picked) = self.links.get(index) else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
+        if !along.is_finite() {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        }
+        let inset = self.inset;
+        let current = picked.exit_offset.unwrap_or(inset);
+        let limit = limit.filter(|l| l.is_finite()).map(|l| l.max(0.5));
+        // An offset stored past the bar moves from where the exit is drawn.
+        let from = limit.map_or(current, |l| current.min(l));
+        let moved = (from + along).max(0.5);
+        let moved = limit.map_or(moved, |l| moved.min(l));
+        let offset = ((moved - inset).abs() > RANGE_LINK_EXIT_SNAP).then_some(moved);
+        for link in &mut self.links {
+            if link.from == picked.from && link.exit_offset.unwrap_or(inset) == current {
+                link.exit_offset = offset;
+            }
+        }
+        NudgeResult::Moved
+    }
+}
+
+/// The fields of a [`DataRenderType::RangeBars`] series.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RangeBarSeries {
+    /// The fill colour of the series' bars under [`RangeColor::Single`],
+    /// opaque; the legend swatch and the whisker colour by default.
+    pub color: Color,
+    /// The look of the bars: material, corner radius, outline, texture,
+    /// gloss and the brightness of a picked bar.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::category_bar_style")
+    )]
+    pub style: CategoryBarStyle,
+    /// The column of the start values.
+    pub start: ColumnId,
+    /// The whiskers from a low to a high value (a candle's wick).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub whiskers: Option<RangeWhiskers>,
+    /// How each bar's fill is chosen.
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            default = "crate::defaults::range_color",
+            skip_serializing_if = "RangeColor::is_single"
+        )
+    )]
+    pub color_by: RangeColor,
+    /// The finished share of each bar (a Gantt task's progress).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub progress: Option<RangeProgress>,
+    /// The line from each bar's end to the next bar (a waterfall).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub connector: Option<RangeConnector>,
+    /// The slot of one row along a numeric position axis, in data units;
+    /// `None` on a categorical axis, where the slot is one category.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub slot_width: Option<f64>,
-    pub labels: &'a CategoryBarSeriesLabels,
+    /// Where the value labels go and the drawn text of each bar. The
+    /// renderer never writes the text; `decimals` and `value_suffix` are
+    /// not read.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::category_bar_series_labels")
+    )]
+    pub labels: CategoryBarSeriesLabels,
 }
 
 impl DataRenderType {
     /// The fields of a range bar series, or `None` for every other kind.
-    pub fn range_bars(&self) -> Option<RangeBarsRef<'_>> {
+    pub fn range_bars(&self) -> Option<&RangeBarSeries> {
         match self {
-            DataRenderType::RangeBars {
-                color,
-                style,
-                start,
-                whiskers,
-                color_by,
-                progress,
-                connector,
-                slot_width,
-                labels,
-            } => Some(RangeBarsRef {
-                color: *color,
-                style,
-                start,
-                whiskers: whiskers.as_ref(),
-                color_by,
-                progress: progress.as_ref(),
-                connector: connector.as_ref(),
-                slot_width: *slot_width,
-                labels,
-            }),
+            DataRenderType::RangeBars(bars) => Some(bars),
+            _ => None,
+        }
+    }
+
+    /// The fields of a range link series, or `None` for every other kind.
+    pub fn range_links(&self) -> Option<&RangeLinkSeries> {
+        match self {
+            DataRenderType::RangeLinks(links) => Some(links),
+            _ => None,
+        }
+    }
+
+    /// The fields of a range link series to edit, or `None` for every
+    /// other kind.
+    pub fn range_links_mut(&mut self) -> Option<&mut RangeLinkSeries> {
+        match self {
+            DataRenderType::RangeLinks(links) => Some(links),
             _ => None,
         }
     }
 }
 
-impl<'a> RangeBarsRef<'a> {
+/// The most a range link's arrowhead is long and wide, in logical pixels.
+pub const MAX_RANGE_LINK_HEAD: f32 = 32.0;
+/// The largest exit inset of a range link, in logical pixels.
+pub const MAX_RANGE_LINK_INSET: f32 = 64.0;
+
+/// The rules one range link series is held to among the chart's `series`
+/// (#357): its bars series is a range bar series of the same layer, it
+/// reads no column, its width, head and inset are in range, its colour's
+/// channels in `0..=1`, and every exit offset is finite and not negative.
+/// A link's rows are checked against the bars when drawn: one past them
+/// draws nothing, and `series_draw_info` reports it as `truncated`.
+pub fn validate_range_link_series(
+    config: &crate::config::Config,
+    series: &[SeriesConfig],
+    item: &SeriesConfig,
+) -> Result<(), crate::RuleKind> {
+    let Some(links) = item.render_type.range_links() else {
+        return Ok(());
+    };
+    let bars = series
+        .iter()
+        .find(|s| s.series_id == links.bars && s.render_type.range_bars().is_some());
+    match bars {
+        Some(bars)
+            if config.layer_of_series(&bars.series_id)
+                == config.layer_of_series(&item.series_id) => {}
+        _ => return Err(crate::RuleKind::RangeLinkBars),
+    }
+    if !item.x_column.is_empty() || !item.y_column.is_empty() || item.z_column.is_some() {
+        return Err(crate::RuleKind::RangeLinkColumns);
+    }
+    let offset_ok = |o: Option<f32>| o.is_none_or(|o| o.is_finite() && o >= 0.0);
+    if !finite_in(links.width, 0.0, MAX_RANGE_STROKE_WIDTH)
+        || !finite_in(links.head, 0.0, MAX_RANGE_LINK_HEAD)
+        || !finite_in(links.inset, 0.0, MAX_RANGE_LINK_INSET)
+        || !valid_bar_color(links.color, false)
+        || !links.links.iter().all(|l| offset_ok(l.exit_offset))
+    {
+        return Err(crate::RuleKind::RangeLinkStyle);
+    }
+    Ok(())
+}
+
+impl RangeBarSeries {
     /// Every column the series reads besides its positions and end values
     /// (`x_column`, `y_column`): the start, the whiskers' low and high, the
     /// total flag or the state index, and the progress, in that order.
-    pub fn extra_columns(self) -> impl Iterator<Item = &'a str> + 'a {
-        let colour = match self.color_by {
+    pub fn extra_columns(&self) -> impl Iterator<Item = &str> + '_ {
+        let colour = match &self.color_by {
             RangeColor::Single => None,
             RangeColor::Direction { total, .. } => total.as_ref().map(|t| t.column.as_str()),
             RangeColor::State { column, .. } => Some(column.as_str()),
+            RangeColor::ByRow { .. } => None,
         };
-        std::iter::once(self.start)
-            .chain(self.whiskers.map(|w| w.low.as_str()))
-            .chain(self.whiskers.map(|w| w.high.as_str()))
+        let whiskers = self.whiskers.as_ref();
+        std::iter::once(self.start.as_str())
+            .chain(whiskers.map(|w| w.low.as_str()))
+            .chain(whiskers.map(|w| w.high.as_str()))
             .chain(colour)
-            .chain(self.progress.map(|p| p.column.as_str()))
+            .chain(self.progress.as_ref().map(|p| p.column.as_str()))
     }
 }
 
@@ -167,12 +390,13 @@ pub const MAX_RANGE_STROKE_WIDTH: f32 = 24.0;
 
 /// The rules one range bar series is held to: an opaque colour and valid
 /// style, every column id not empty and distinct, whisker and connector
-/// widths in `0..=`[`MAX_RANGE_STROKE_WIDTH`], opaque whisker, direction
-/// and state colours, a connector colour with channels in `0..=1`, a
+/// widths in `0..=`[`MAX_RANGE_STROKE_WIDTH`], opaque whisker, direction,
+/// state and row colours, a connector colour with channels in `0..=1`, a
 /// remaining opacity in `0..=1`, label decimals `0..=6` and a one-line
 /// value suffix of at most 24 characters, `labels.text` of one-line strings
 /// of at most [`MAX_CATEGORY_BAR_LABEL_CHARS`] characters, and
-/// `labels.offsets` empty or one per string of `labels.text`.
+/// `labels.offsets` empty or one per string of `labels.text`, and opaque
+/// `labels.contrast_ink` colours.
 pub fn validate_range_bar_series(series: &SeriesConfig) -> Result<(), crate::RuleKind> {
     let Some(bars) = series.render_type.range_bars() else {
         return Ok(());
@@ -195,18 +419,18 @@ pub fn validate_range_bar_series(series: &SeriesConfig) -> Result<(), crate::Rul
     {
         return Err(crate::RuleKind::RangeBarColumnsDistinct);
     }
-    if bars.whiskers.is_some_and(|w| {
+    if bars.whiskers.as_ref().is_some_and(|w| {
         !finite_in(w.width, 0.0, MAX_RANGE_STROKE_WIDTH)
             || w.color.is_some_and(|c| !valid_bar_color(c, true))
     }) {
         return Err(crate::RuleKind::RangeBarWhiskers);
     }
-    if bars.connector.is_some_and(|c| {
+    if bars.connector.as_ref().is_some_and(|c| {
         !finite_in(c.width, 0.0, MAX_RANGE_STROKE_WIDTH) || !valid_bar_color(c.color, false)
     }) {
         return Err(crate::RuleKind::RangeBarConnector);
     }
-    let opaque = match bars.color_by {
+    let opaque = match &bars.color_by {
         RangeColor::Single => true,
         RangeColor::Direction { up, down, total } => {
             valid_bar_color(*up, true)
@@ -216,12 +440,14 @@ pub fn validate_range_bar_series(series: &SeriesConfig) -> Result<(), crate::Rul
                     .is_none_or(|t| valid_bar_color(t.color, true))
         }
         RangeColor::State { styles, .. } => styles.iter().all(|s| valid_bar_color(s.color, true)),
+        RangeColor::ByRow { colors } => colors.iter().all(|c| valid_bar_color(*c, true)),
     };
     if !opaque {
         return Err(crate::RuleKind::RangeBarStateColors);
     }
     if bars
         .progress
+        .as_ref()
         .is_some_and(|p| !finite_in(p.remaining_opacity, 0.0, 1.0))
     {
         return Err(crate::RuleKind::RangeBarRemainingOpacity);
@@ -229,7 +455,7 @@ pub fn validate_range_bar_series(series: &SeriesConfig) -> Result<(), crate::Rul
     if bars.slot_width.is_some_and(|w| !(w.is_finite() && w > 0.0)) {
         return Err(crate::RuleKind::RangeBarSlotWidth);
     }
-    let labels = bars.labels;
+    let labels = &bars.labels;
     if labels.decimals > 6 || !single_line_within(&labels.value_suffix, 24) {
         return Err(crate::RuleKind::RangeBarLabelFormat);
     }
@@ -239,6 +465,12 @@ pub fn validate_range_bar_series(series: &SeriesConfig) -> Result<(), crate::Rul
         .any(|text| !single_line_within(text, MAX_CATEGORY_BAR_LABEL_CHARS))
     {
         return Err(crate::RuleKind::RangeBarLabel);
+    }
+    if labels
+        .contrast_ink
+        .is_some_and(|inks| !inks.iter().all(|c| valid_bar_color(*c, true)))
+    {
+        return Err(crate::RuleKind::RangeBarContrastInk);
     }
     validate_value_label_offsets(&labels.offsets, labels.text.len())?;
     Ok(())
@@ -335,6 +567,17 @@ impl crate::config::Config {
                     return Err(crate::RuleKind::RangeBarSlotWidthAxis);
                 }
             }
+        }
+        Ok(())
+    }
+}
+
+impl crate::config::Config {
+    /// The rules the range link series of a chart are held to, with the
+    /// series list it draws: each passes [`validate_range_link_series`].
+    pub fn validate_range_links(&self, series: &[SeriesConfig]) -> Result<(), crate::RuleKind> {
+        for item in series {
+            validate_range_link_series(self, series, item)?;
         }
         Ok(())
     }

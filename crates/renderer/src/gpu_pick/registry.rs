@@ -66,22 +66,37 @@ pub(super) fn series_exact_key(
 
 /// The exact module and variant that pick `series` as the query draws it:
 /// the slot's stored key (its primitive class, the dash walk for a dashed
-/// line and its shape) plus the query's bits, the styled marker and line
-/// paths when the draw style uses them and the polar paths on polar axes.
+/// line and its shape) plus the query's bits ([`exact_variant_for`]).
 pub(super) fn series_exact_variant(series: &PickSeriesGpu, query: &GpuPickQuery) -> PickExactKey {
-    let mut key = series.exact_key;
+    exact_variant_for(
+        series.exact_key,
+        series.flags,
+        &query.draw_style,
+        query.transform.polar_angle[0] > 0.5,
+    )
+}
+
+/// `key` (a slot's stored key) with a query's bits, for a slot of `flags`:
+/// the styled marker and line paths when `draw_style` uses them and the
+/// polar paths on polar axes.
+pub(crate) fn exact_variant_for(
+    mut key: PickExactKey,
+    flags: u32,
+    draw_style: &GpuPickDrawStyle,
+    polar: bool,
+) -> PickExactKey {
     // A box plot's raw points draw precise markers under every style.
-    if series.flags & FLAG_SCATTER != 0
+    if flags & FLAG_SCATTER != 0
         && key.shader != PickShader::Vector
         && key.bits & exact_variant::CATEGORY_JITTER == 0
-        && query.draw_style.marker != PICK_MARKER_PRECISE
+        && draw_style.marker != PICK_MARKER_PRECISE
     {
         key.bits |= exact_variant::STYLED_MARKER;
     }
-    if series.flags & FLAG_LINE != 0 && query.draw_style.line != PICK_LINE_PRECISE {
+    if flags & FLAG_LINE != 0 && draw_style.line != PICK_LINE_PRECISE {
         key.bits |= exact_variant::STYLED_LINE;
     }
-    if query.transform.polar_angle[0] > 0.5 {
+    if polar {
         key.bits |= exact_variant::POLAR;
     }
     key
@@ -164,6 +179,7 @@ impl PreparedPickRegistryTransition<'_> {
 
 /// The arc prefix of the series at registry position `index`, when one was
 /// supplied and holds a value for each of its `point_count` points.
+#[cfg(test)]
 pub(super) fn series_arc(
     arcs: &[Option<wgpu::Buffer>],
     index: usize,
@@ -176,6 +192,7 @@ pub(super) fn series_arc(
 
 /// Series `index`'s ring starts (a region series', #49), when one covers its
 /// `point_count` rows.
+#[cfg(test)]
 pub(super) fn series_ring(
     rings: &[Option<wgpu::Buffer>],
     index: usize,
@@ -185,17 +202,4 @@ pub(super) fn series_ring(
         .get(index)
         .and_then(Option::as_ref)
         .filter(|buffer| buffer.size() >= u64::from(point_count) * 4)
-}
-
-/// The identities of a registry's series in registry order.
-pub(crate) struct GpuPickSeriesIdentities(pub(super) Arc<[PickIdentity]>);
-
-impl GpuPickSeriesIdentities {
-    pub(crate) fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub(crate) fn series_ids(&self) -> impl Iterator<Item = &str> {
-        self.0.iter().map(|identity| identity.series_id.as_str())
-    }
 }

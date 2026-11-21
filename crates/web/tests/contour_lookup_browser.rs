@@ -1,41 +1,20 @@
 #![cfg(target_arch = "wasm32")]
 
-use renderer::data::Column;
 use renderer::data_config::{
     ContourConfig, DataLineStyleConfig, FieldFillConfig, FillMode, GridLayout, MatrixOrientation,
     MatrixRef, Shading,
 };
-use renderer::gpu::{create_instance, request_adapter_async, request_device_async};
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
-use renderer::{
-    Chart, Color, ColorMap, DataRenderType, RasterImage, Renderer, RendererDevice, SeriesConfig,
-};
+use renderer::{Chart, Color, ColorMap, DataRenderType, RasterImage, SeriesConfig};
 use wasm_bindgen_test::*;
+
+mod support;
+use support::{column, renderer};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
 const SIZE: u32 = 400;
-
-fn column(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-async fn renderer() -> Renderer {
-    let instance = create_instance();
-    let adapter = request_adapter_async(&instance)
-        .await
-        .expect("Chrome/Dawn must expose a WebGPU adapter");
-    let (device, queue) = request_device_async(&adapter)
-        .await
-        .expect("Chrome/Dawn must create a WebGPU device");
-    Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Bgra8Unorm,
-        4 * 1024 * 1024,
-    )
-    .expect("renderer initialization failed")
-}
 
 fn colorbar() -> renderer::ColorBarOptions {
     let mut bar = renderer::default::default_colorbar_options();

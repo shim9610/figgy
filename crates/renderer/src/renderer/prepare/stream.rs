@@ -191,7 +191,7 @@ impl PrepareContext<'_> {
         }
         // Histograms are refused (#284): their columns are the host's bins,
         // one row per bin, which never need streaming.
-        if matches!(series.render_type, DataRenderType::Histogram { .. }) {
+        if matches!(series.render_type, DataRenderType::Histogram(_)) {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
                 kind: streaming_runtime::STREAMED_HISTOGRAM_REASON.into(),
@@ -203,6 +203,13 @@ impl PrepareContext<'_> {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
                 kind: streaming_runtime::STREAMED_RANGE_BARS_REASON.into(),
+            });
+        }
+        // Nor to range links (#357, rule 8): a link reads its bars' rows.
+        if series.render_type.range_links().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: crate::RuleKind::StreamedRangeLinks,
             });
         }
         // Nor to 3D charts: a surface and its floor read their grid from the

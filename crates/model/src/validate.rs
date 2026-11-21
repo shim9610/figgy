@@ -51,8 +51,8 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-/// An axis range's own rules: categories well formed, a finite crossing, and
-/// for a value axis finite, increasing bounds that are positive on a
+/// An axis range's own rules: categories well formed, a finite crossing, a
+/// category band fill with channels in `0..=1`, and for a value axis finite, increasing bounds that are positive on a
 /// logarithmic scale.
 fn validate_axis_range(field: &'static str, axis: &AxisOptions) -> Result<(), ConfigError> {
     let fail = |reason| Err(ConfigError::chart(field, reason));
@@ -67,6 +67,19 @@ fn validate_axis_range(field: &'static str, axis: &AxisOptions) -> Result<(), Co
     }
     if axis.cross_at.is_some_and(|v| !v.is_finite()) {
         return fail(crate::RuleKind::AxisCrossAt);
+    }
+    if let crate::format::LabelFormat::Timestamp(format) = &axis.label_style.format
+        && let Err(reason) = format.validate()
+    {
+        return fail(reason);
+    }
+    if axis.category_bands.is_some_and(|bands| {
+        let c = bands.fill;
+        ![c.r, c.g, c.b, c.a]
+            .into_iter()
+            .all(|v| v.is_finite() && (0.0..=1.0).contains(&v))
+    }) {
+        return fail(crate::RuleKind::CategoryBandsFill);
     }
     // A categorical axis maps its category range; `min` / `max` are ignored
     // there.
@@ -292,10 +305,11 @@ impl Config {
             })?;
         }
         type Rule = fn(&Config, &[SeriesConfig]) -> Result<(), crate::RuleKind>;
-        let rules: [(&'static str, Rule); 14] = [
+        let rules: [(&'static str, Rule); 15] = [
             ("category_bars", Config::validate_category_bars),
             ("box_plots", Config::validate_box_plots),
             ("range_bars", Config::validate_range_bars),
+            ("range_links", Config::validate_range_links),
             ("radar", Config::validate_radar),
             ("ternary", Config::validate_ternary_series),
             ("parallel", Config::validate_parallel_series),
@@ -358,12 +372,12 @@ impl Config {
                 return Err(crate::RuleKind::PolarStems);
             }
             DataRenderType::Xy(xy) => xy.line.as_ref().map(|line| line.interpolation.is_linear()),
-            DataRenderType::CategoryBars { .. } => None,
-            DataRenderType::Radar { .. } => item
+            DataRenderType::CategoryBars(_) => None,
+            DataRenderType::Radar(_) => item
                 .render_type
                 .radar()
                 .map(|radar| radar.line_style().interpolation.is_linear()),
-            DataRenderType::Histogram { .. } => {
+            DataRenderType::Histogram(_) => {
                 return Err(crate::RuleKind::PolarHistogram);
             }
             // A polar heatmap (#208): cells are annular sectors between angle
@@ -378,22 +392,25 @@ impl Config {
                 }
                 None
             }
-            DataRenderType::RgbImage { .. } => {
+            DataRenderType::RgbImage(_) => {
                 return Err(crate::RuleKind::PolarImage);
             }
-            DataRenderType::Vector { .. } => {
+            DataRenderType::Vector(_) => {
                 return Err(crate::RuleKind::PolarVector);
             }
-            DataRenderType::BoxPlot { .. } => {
+            DataRenderType::BoxPlot(_) => {
                 return Err(crate::RuleKind::PolarBoxPlot);
             }
-            DataRenderType::RangeBars { .. } => {
+            DataRenderType::RangeBars(_) => {
                 return Err(crate::RuleKind::PolarRangeBars);
             }
-            DataRenderType::Streamlines { .. } => {
+            DataRenderType::RangeLinks(_) => {
+                return Err(crate::RuleKind::PolarRangeLinks);
+            }
+            DataRenderType::Streamlines(_) => {
                 return Err(crate::RuleKind::PolarStreamlines);
             }
-            DataRenderType::Parallel { .. } => {
+            DataRenderType::Parallel(_) => {
                 return Err(crate::RuleKind::PolarParallel);
             }
             DataRenderType::EnergyLevels(_) => {
@@ -408,7 +425,7 @@ impl Config {
             DataRenderType::MonotonicLine(_) => {
                 return Err(crate::RuleKind::PolarMonotonic);
             }
-            DataRenderType::Ternary { .. } => {
+            DataRenderType::Ternary(_) => {
                 return Err(crate::RuleKind::PolarTernary);
             }
         };
@@ -428,7 +445,7 @@ impl Config {
 mod tests {
     use super::*;
     use crate::color::Color;
-    use crate::data_config::{DataScatterStyleConfig, ScatterShape};
+    use crate::data_config::{DataScatterStyleConfig, ScatterShape, StreamlineSeries};
     #[cfg(feature = "serde")]
     use crate::polar::PolarOptions;
 
@@ -599,11 +616,11 @@ mod tests {
         config.bottom_x.max = 360.0;
         config.set_polar(Some(crate::defaults::polar_options()));
         let mut vector = scatter("v");
-        vector.render_type = DataRenderType::Streamlines {
+        vector.render_type = DataRenderType::Streamlines(StreamlineSeries {
             line: crate::defaults::data_line_style_config(),
             arrows: None,
             color_map: None,
-        };
+        });
         let error = config.validate_series(&[scatter("a"), vector]);
         let error = error.unwrap_err();
         assert_eq!(error.series_id.as_deref(), Some("v"));

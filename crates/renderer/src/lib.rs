@@ -121,20 +121,24 @@ pub use helpers::{ExportFormat, HeadlessOptions, SaveError};
 pub use annotation::{
     AnnotationMap, AnnotationPreview, BoundedAnnotationFrame, LayerHit, preview_annotation,
 };
-pub use chart::{Chart, FitExtent};
+pub use chart::{Chart, FitAxes, FitAxis, FitAxisRef, FitExtent, FitScope, LinkedFitData};
 pub use color::Color;
 pub use colormap::{ColorMap, LUT_LEN};
-pub use config::{BarAlign, ColorBarOptions, Config, DataSelectionsConfig, PickedDataRef};
+pub use config::{
+    BarAlign, ColorBarOptions, Config, DataSelectionsConfig, LayoutState, PickedDataRef,
+};
 pub use data::{
     Column, ColumnLanes, ColumnPairWriter, ColumnRangeWriteError, ColumnSource, HiLoColumnSource,
     StreamColumnSource,
 };
 pub use data_config::{
-    DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
-    DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
-    DataScatterStyleConfig, ErrorBars, ErrorRef, FieldSeries, LineFill, LineInterpolation,
-    MAX_CONTOUR_LEVELS, MonotonicLineSeries, RadarRef, RadarSeriesLabels, ScatterShape,
-    SeriesConfig, SeriesRef, StreamlineArrows, XySeries,
+    BoxSeries, CategoryBarSeries, DataBarBinStyleConfig, DataBarStyleOverride,
+    DataErrorBarPointStyleConfig, DataErrorBarPointStyleOverride, DataErrorBarStyleConfig,
+    DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorBars, ErrorRef, FieldSeries,
+    HistogramSeries, LineFill, LineInterpolation, MAX_CONTOUR_LEVELS, MonotonicLineSeries,
+    ParallelSeries, RadarPolygonSeries, RadarSeriesLabels, RangeBarSeries, RgbImageSeries,
+    ScatterShape, SeriesConfig, SeriesRef, StreamlineArrows, StreamlineSeries, TernarySeries,
+    VectorSeries, XySeries,
 };
 pub use data_render::{
     AllocError, BOX_PLOT_RECORD, BatchSource, ColumnHandle, ColumnId, ColumnPool, ColumnStaging,
@@ -145,7 +149,7 @@ pub use data_render::{
 };
 pub use drag::Draggable;
 pub use error::{FiggyError, Result};
-pub use gpu_data_pick::GpuDataPickTicket;
+pub use gpu_data_pick::{DataPickResult, GpuDataPickTicket};
 pub use gpu_extent::{
     GpuErrorbarExtent, GpuErrorbarExtentTicket, GpuExtentError, GpuFieldExtentMode,
     GpuSeriesExtent, GpuSeriesExtentColumnIds, GpuSeriesExtentMode, GpuSeriesExtentTicket,
@@ -155,10 +159,10 @@ pub use gpu_memory::{
     GpuMemoryUsage, GpuResourceKind, ResidentAdmission, ResidentAdmissionRequest,
     ResidentAdmissionStatus,
 };
-pub use gpu_pick::{GpuPickError, GpuPickTicket};
+pub use gpu_pick::{GpuPickError, GpuPickTicket, NearestDatum, NearestPick, NearestPickTicket};
 pub use gpu_readback::TryResolve;
 pub use init::{INIT_EVENT_SCHEMA_VERSION, InitEvent, InitPhase};
-pub use pick::{PickedData, PickedPoint};
+pub use pick::{PickResult, PickedData, PickedPoint};
 pub use preset::{AxisPreset, ColorCycle};
 pub use render_warning::{
     AnnotationSkip, RenderWarning, SpacingRejection, SubplotAxis, WarningAxis,
@@ -197,19 +201,13 @@ pub use text_render::{CpuTextMeasure, FontPolicy};
 
 /// The surface material shared by bars, boxes and sectors.
 pub use model::Material;
-pub use radial::{
-    RadialChart, RadialError, RadialFrame, RadialInteraction, RadialKind, RadialLabelFormat,
-    RadialLabels, RadialOutline, RadialPickTicket, RadialRenderer, RadialSlice, RadialSplit,
-    RadialStyle, RadialTarget,
-};
-// The deprecated name stays importable from the crate root.
-#[allow(deprecated)]
-pub use radial::RadialMaterial;
-
-#[allow(deprecated)]
 pub use model::categorical::*;
+pub use radial::{
+    InnerLabelFallback, RadialChart, RadialError, RadialFrame, RadialInteraction, RadialKind,
+    RadialLabelFormat, RadialLabels, RadialOutline, RadialPickTicket, RadialRenderer, RadialSlice,
+    RadialSplit, RadialStyle, RadialTarget,
+};
 
-#[allow(deprecated)]
 pub use model::boxplot::*;
 /// Polar coordinates for the Cartesian chart: `PolarOptions` for
 /// `Config.polar`, the angle unit and segment interpolation it reads, and the
@@ -250,7 +248,7 @@ pub mod energy_levels {
 }
 pub use model::energy_levels::{
     EnergyLevel, EnergyLevelSeries, EnergyLevelStyle, IonizationLimit, LabelPart, LevelRole,
-    LevelView, Transition, TransitionDirection, WavelengthLabels,
+    LevelView, SpectralColors, Transition, TransitionDirection, WavelengthLabels, WavelengthUnit,
 };
 /// Triangle mesh fields (#210): the [`DataRenderType::TriMesh`] series, its
 /// value location and look.
@@ -273,10 +271,8 @@ pub use model::feynman::{
 /// axis, and the legacy `RadarChart` document `Config::from_radar` reads.
 pub mod radar {
     #![doc = include_str!("../RADAR.md")]
-    #[allow(deprecated)]
     pub use model::radar::*;
 }
-#[allow(deprecated)]
 pub use model::radar::*;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

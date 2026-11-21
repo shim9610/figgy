@@ -1467,6 +1467,7 @@ fn placed_label<'a>(text: &'a RichText, rect: RectF, measured: &MeasuredText) ->
             descent: (measured.size[1] - measured.ascent).max(0.0),
         },
         rotation: None,
+        outline: None,
     }
 }
 
@@ -1552,6 +1553,7 @@ pub fn emit_annotation(
                         origin: (rect.x + t.padding, rect.y + t.padding + t.ascent),
                         extents: t.extents(),
                         rotation: None,
+                        outline: None,
                     },
                 );
             }

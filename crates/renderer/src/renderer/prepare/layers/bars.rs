@@ -67,9 +67,11 @@ impl PrepareContext<'_> {
                 data,
                 params.count,
                 data_render::CATEGORY_BAR_VERTICES,
-                pipelines.bar_category.as_ref().ok_or(FiggyError::internal(
-                    "prepare ensured category bar pipeline",
-                ))?,
+                pipelines
+                    .precise(PrecisePipeline::CategoryBar)
+                    .ok_or(FiggyError::internal(
+                        "prepare ensured category bar pipeline",
+                    ))?,
             ))
         } else if primitives.box_plot && phase.is_none() {
             // Box plots: the group is this panel's box plot series; the
@@ -118,8 +120,7 @@ impl PrepareContext<'_> {
                 params.count,
                 vertices,
                 pipelines
-                    .bar_box_plot
-                    .as_ref()
+                    .precise(PrecisePipeline::BoxPlot)
                     .ok_or(FiggyError::internal("prepare ensured box plot pipeline"))?,
             ))
         } else if primitives.range_bars && phase.is_none() {
@@ -149,9 +150,37 @@ impl PrepareContext<'_> {
                 count,
                 data_render::RANGE_BAR_VERTICES,
                 pipelines
-                    .bar_range
-                    .as_ref()
+                    .precise(PrecisePipeline::RangeBar)
                     .ok_or(FiggyError::internal("prepare ensured range bar pipeline"))?,
+            ))
+        } else if primitives.range_links && phase.is_none() {
+            // Range links (#357): routed from the panel's range bar series
+            // they name, through that series' group 3. No streamed form.
+            let (data, count) = range_link_data(
+                &self.device,
+                self.gpu_ledger,
+                self.category_bar_data_bgl,
+                self.per_point_style_map_bgl,
+                column_buffer,
+                chart_config,
+                series_specs
+                    .iter()
+                    .filter(|s| {
+                        effective_series_primitives(&chart_config.draw_style, &s.config.render_type)
+                            .range_bars
+                    })
+                    .map(|s| s.config),
+                cfg,
+                series.style.display_scale,
+                &mut lookup,
+            )?;
+            Some((
+                data,
+                count,
+                data_render::RANGE_LINK_VERTICES,
+                pipelines
+                    .precise(PrecisePipeline::RangeLink)
+                    .ok_or(FiggyError::internal("prepare ensured range link pipeline"))?,
             ))
         } else {
             None
@@ -225,10 +254,10 @@ impl PrepareContext<'_> {
             })
         };
         let violin = (primitives.violin && phase.is_none())
-            .then(|| box_extra(false, pipelines.bar_violin.as_ref()))
+            .then(|| box_extra(false, pipelines.precise(PrecisePipeline::Violin)))
             .transpose()?;
         let box_points = (primitives.box_points && phase.is_none())
-            .then(|| box_extra(true, pipelines.bar_box_points.as_ref()))
+            .then(|| box_extra(true, pipelines.precise(PrecisePipeline::BoxPoints)))
             .transpose()?;
         Ok((violin, box_points))
     }
@@ -292,12 +321,10 @@ impl PrepareContext<'_> {
                 ),
                 pipeline: match style_map {
                     None => pipelines
-                        .bar
-                        .as_ref()
+                        .precise(PrecisePipeline::Bar)
                         .ok_or(FiggyError::internal("prepare ensured bar pipeline"))?,
                     Some(_) => pipelines
-                        .bar_mapped
-                        .as_ref()
+                        .precise(PrecisePipeline::BarMapped)
                         .ok_or(FiggyError::internal("prepare ensured mapped bar pipeline"))?,
                 },
                 transform_bg: &view.transform_bg,

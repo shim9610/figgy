@@ -89,6 +89,7 @@ const PICK_MODULES: [(&str, AssembledBySet); 5] = [
             "data_render/common/category_jitter.wgsl",
             "data_render/common/errorbar_segment.wgsl",
             "data_render/common/marker.wgsl",
+            "gpu_pick/category_place.wgsl",
             "gpu_pick/marker.wgsl",
             "gpu_pick/errorbar.wgsl",
             "gpu_pick/no_line.wgsl",
@@ -114,6 +115,7 @@ const PICK_MODULES: [(&str, AssembledBySet); 5] = [
             "data_render/common/arrow.wgsl",
             "data_render/common/path_arrow.wgsl",
             "data_render/common/marker.wgsl",
+            "gpu_pick/category_place.wgsl",
             "gpu_pick/marker.wgsl",
             "gpu_pick/errorbar.wgsl",
             "gpu_pick/line.wgsl",
@@ -248,12 +250,6 @@ impl PickExactKey {
         (constants, count)
     }
 
-    /// The WGSL source its pipeline compiles, for the shader set `set`.
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) fn source(self, set: ShaderSet) -> &'static str {
-        self.shader.assembled_for(set).source
-    }
-
     /// The marker-and-line module with every path and any shape.
     #[cfg(test)]
     pub(crate) const ALL_PATHS: Self = Self {
@@ -325,6 +321,7 @@ impl PickExactPipelines {
         Ok(&self.pipelines[index].1)
     }
 
+    #[cfg(test)]
     pub(crate) fn get(&self, key: PickExactKey) -> Option<&wgpu::ComputePipeline> {
         self.pipelines
             .iter()
@@ -405,7 +402,12 @@ pub(crate) struct PickPipelineBundle {
     /// Group 2 for a series picked without an arc prefix or ring starts:
     /// one zero pair in both bindings.
     pub(super) arc_placeholder: wgpu::BindGroup,
-    /// That zero pair, bound in place of whichever buffer a series lacks.
+    /// That zero pair, bound in place of whichever buffer a series lacks
+    /// by the exact pass's test dispatch (`arc_bind_group`).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read by the exact pass's test dispatch only")
+    )]
     pub(super) arc_placeholder_buffer: wgpu::Buffer,
     pub(super) _arc_placeholder_charge: SharedCharge,
 }
@@ -587,6 +589,7 @@ pub(super) fn create_arc_placeholder(
 impl PickPipelineBundle {
     /// The exact pass's group 2 holding one series' arc prefix and ring
     /// starts, the placeholder pair standing in for either it lacks.
+    #[cfg(test)]
     pub(super) fn arc_bind_group(
         &self,
         arc: Option<&wgpu::Buffer>,
@@ -609,6 +612,16 @@ impl PickPipelineBundle {
         })
     }
 }
+
+/// The labels of the gate module's pipelines a pick always needs, as the
+/// shader contract records them: compiled on a browser renderer's queue
+/// ahead of a chart's first pick (#363).
+#[cfg(target_arch = "wasm32")]
+pub(crate) const GATE_PIPELINE_LABELS: [&str; 3] = [
+    "figgy GPU pick X gate pipeline",
+    "figgy GPU pick Y gate pipeline",
+    "figgy GPU pick candidate reduction pipeline",
+];
 
 pub(super) async fn create_pipeline_bundle_observed_async(
     device: wgpu::Device,

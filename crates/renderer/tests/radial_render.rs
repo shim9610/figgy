@@ -1,20 +1,19 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::{gpu, radial_renderer as renderer};
 use renderer::{Color, Material, RendererDevice, radial::*};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 // A test may register fonts or poll the shared GPU and execute another test's
 // completion callbacks. Serialize these shared resources, not production work.
 static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-/// The shared test device in a bundle of its own per call, so each renderer
-/// a test builds charges its own ledger and budget (#160).
-fn gpu() -> RendererDevice {
-    static GPU: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (d, q) = GPU.get_or_init(test_gpu::device);
-    RendererDevice::new(d.clone(), q.clone()).expect("figgy poll thread")
-}
+/// The fixture draws without an outline (the documented outline, off):
+/// the tests switch one on where they test it. The host default draws
+/// white separators (#357).
 fn chart() -> RadialChart {
     RadialChart {
         labels: RadialLabels::None,
@@ -22,15 +21,16 @@ fn chart() -> RadialChart {
             RadialSlice::new("A", 25.0, Color::new(1.0, 0.0, 0.0, 1.0)),
             RadialSlice::new("B", 75.0, Color::new(0.0, 0.0, 1.0, 1.0)),
         ],
+        style: RadialStyle {
+            outline: RadialOutline::default(),
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
 /// The GPU pick at `p`, resolved.
 fn pick(frame: &Arc<RadialFrame>, p: [f32; 2]) -> Option<RadialTarget> {
     frame.pick(p).unwrap().resolve().block_on().unwrap()
-}
-fn renderer() -> RadialRenderer {
-    RadialRenderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap()
 }
 fn drain(r: &RadialRenderer) {
     r.end_frame();
@@ -1105,6 +1105,9 @@ fn radial_ssot_fields_are_explicit() {
         font_size: _,
         label_color: _,
         background: _,
+        // Moves inner-ring labels too small to read outside (#357); part of
+        // the frame key, so an edit redraws the frame.
+        inner_label_fallback: _,
     } = RadialChart::default();
     // Independent title fields are covered by the three CPU layout/pixel tests.
     // Keep this exhaustive so additions require an explicit editing/cache review.

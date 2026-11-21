@@ -24,6 +24,32 @@ pub struct PickedPoint {
     pub distance_px: f32,
 }
 
+/// A registered chart's resolved pick (#381): the hit, and every series'
+/// datum nearest to the cursor.
+///
+/// `hit` is the nearest datum of all when drawn ink lies within the
+/// request's `max_distance_px` of the cursor, and `None` otherwise.
+/// `nearest` holds each pickable series' nearest datum (in drawing order,
+/// with its layer and screen distance) whether or not the cursor hits, so
+/// a host can apply a rule of its own. A series the draw places nothing of
+/// has no entry.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PickResult {
+    pub hit: Option<PickedPoint>,
+    pub nearest: Vec<crate::gpu_pick::NearestDatum>,
+}
+
+impl From<crate::gpu_pick::NearestDatum> for PickedPoint {
+    fn from(datum: crate::gpu_pick::NearestDatum) -> Self {
+        Self {
+            source_id: datum.source_id,
+            series_id: datum.series_id,
+            point_index: datum.point_index,
+            distance_px: datum.distance_px,
+        }
+    }
+}
+
 /// One exact data-primitive hit.
 ///
 /// The result contains only source identity and stable indices. Data values,
@@ -45,6 +71,13 @@ pub enum PickedData {
         /// The half of a split violin under the cursor; `None` for every
         /// other bin, a box or a symmetric violin.
         half: Option<crate::data_config::ViolinSide>,
+        /// A drawn length along the value axis in display pixels, for the
+        /// hit of a range bar (the bar's) or a range link (its
+        /// predecessor's, the farthest its exit can be dragged); `None` for
+        /// every other bin. A display parameter read from the drawn bar,
+        /// not data: a link exit drag stops at it
+        /// (`RangeLinkSeries::drag_link_exit`).
+        extent_px: Option<f32>,
         distance_px: f32,
     },
     MatrixCell {
@@ -261,24 +294,6 @@ impl PickedData {
                 index: *index,
             },
         }
-    }
-
-    pub fn into_point(self) -> Option<PickedPoint> {
-        let Self::Point {
-            source_id,
-            series_id,
-            point_index,
-            distance_px,
-        } = self
-        else {
-            return None;
-        };
-        Some(PickedPoint {
-            source_id,
-            series_id,
-            point_index,
-            distance_px,
-        })
     }
 }
 

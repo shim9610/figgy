@@ -1,7 +1,7 @@
 use super::*;
 use crate::annotation::{Annotation, AnnotationAxis, AnnotationKind};
 use crate::config::{AxisScale, Category, PickedDataRef, ProbabilityScale, TickVisibility};
-use crate::data_config::MatrixRef;
+use crate::data_config::{MatrixRef, ParallelSeries};
 use crate::layer::{OverlayLayer, Subplot};
 use crate::layout::{ChartArea, Rect};
 use crate::legend::{append_legend_entry_rich, series_symbol_segments};
@@ -492,8 +492,12 @@ fn a_family_with_its_own_frame_keeps_it() {
     theme
         .apply(&mut config, &mut series, ThemeScope::All)
         .unwrap();
-    assert!(config.bottom_x.line_visible && config.top_x.line_visible);
-    assert_eq!(config.bottom_x.tick, TickVisibility::Outside);
+    // The Grotrian frame (#357): the energy axis alone, the term columns
+    // named without a line or ticks.
+    assert!(config.left_y.line_visible && !config.top_x.line_visible);
+    assert!(!config.bottom_x.line_visible && config.bottom_x.label_style.label_visible);
+    assert_eq!(config.left_y.tick, TickVisibility::Outside);
+    assert_eq!(config.bottom_x.tick, TickVisibility::None);
     let DataRenderType::EnergyLevels(levels) = &series[0].render_type else {
         panic!("an energy-level series");
     };
@@ -501,6 +505,58 @@ fn a_family_with_its_own_frame_keeps_it() {
         levels.style.transition.color,
         theme.series.energy_levels.transition_color
     );
+}
+
+// #357: every Grotrian member draws its lines and arrowheads at one weight
+// and its texts on one scale; the documented look keeps each series' own
+// arrowheads.
+#[test]
+fn the_grotrian_members_share_their_weights_and_text_scale() {
+    for family in ThemeFamily::ALL {
+        let theme = family.theme(ChartKind::EnergyLevels);
+        let energy = theme.series.energy_levels;
+        let name = family.name();
+        assert_eq!(energy.level_width, 3.0, "{name}");
+        assert_eq!(energy.transition_width, 2.2, "{name}");
+        assert_eq!(
+            (energy.head_length, energy.head_width),
+            (Some(13.0), Some(10.0)),
+            "{name}"
+        );
+        assert_eq!(theme.chrome.tick_label_size, 20.0, "{name}");
+        let size = |look: Option<TextLook>| look.map(|look| look.size);
+        assert_eq!(size(energy.level_labels), Some(20.0), "{name}");
+        assert_eq!(size(energy.column_labels), Some(24.0), "{name}");
+        assert_eq!(size(energy.transition_labels), Some(18.0), "{name}");
+        let mut series = [SeriesConfig::energy_levels(
+            "e",
+            crate::defaults::energy_level_series(),
+        )];
+        theme
+            .apply(&mut Config::default(), &mut series, ThemeScope::All)
+            .unwrap();
+        let DataRenderType::EnergyLevels(levels) = &series[0].render_type else {
+            panic!("an energy-level series");
+        };
+        let arrow = &levels.style.transition;
+        assert_eq!(
+            (arrow.head_length, arrow.head_width),
+            (13.0, 10.0),
+            "{name}"
+        );
+    }
+    let documented = named(ChartKind::EnergyLevels, "default");
+    assert_eq!(documented.series.energy_levels.head_length, None);
+    let mut own = crate::defaults::energy_level_series();
+    own.style.transition.head_length = 21.0;
+    let mut series = [SeriesConfig::energy_levels("e", own)];
+    documented
+        .apply(&mut Config::default(), &mut series, ThemeScope::All)
+        .unwrap();
+    let DataRenderType::EnergyLevels(levels) = &series[0].render_type else {
+        panic!("an energy-level series");
+    };
+    assert_eq!(levels.style.transition.head_length, 21.0);
 }
 
 // A chart without a selection gets the highlight look only when it differs
@@ -652,7 +708,7 @@ fn the_bar_family_takes_borders_corners_and_materials() {
     let theme = named(ChartKind::Histogram, "gallery");
     let mut series = SeriesConfig::histogram("a", "edges", "counts");
     theme.style_series(&mut series, 0);
-    let DataRenderType::Histogram { bar } = &series.render_type else {
+    let DataRenderType::Histogram(HistogramSeries { bar }) = &series.render_type else {
         panic!("a histogram");
     };
     let bars = &theme.series.bars;
@@ -664,7 +720,8 @@ fn the_bar_family_takes_borders_corners_and_materials() {
     let theme = named(ChartKind::CategoryBars, "cool-slate");
     let mut series = SeriesConfig::category_bars("a", "i", "v");
     theme.style_series(&mut series, 1);
-    let DataRenderType::CategoryBars { color, style, .. } = &series.render_type else {
+    let DataRenderType::CategoryBars(CategoryBarSeries { color, style, .. }) = &series.render_type
+    else {
         panic!("category bars");
     };
     assert_eq!(*color, palette_color(&theme, 1));
@@ -698,7 +755,7 @@ fn the_box_family_takes_its_parts_and_colours_own_violin_fills() {
                 box_width: 0.1,
             })
             .style_box_plot(|parts| {
-                *parts.points = Some(BoxPoints {
+                parts.points = Some(BoxPoints {
                     positions: "cat".into(),
                     values: "value".into(),
                     style: BoxPointsStyle::default(),
@@ -706,10 +763,10 @@ fn the_box_family_takes_its_parts_and_colours_own_violin_fills() {
             })
     };
     let fills = |series: &SeriesConfig| {
-        let DataRenderType::BoxPlot {
+        let DataRenderType::BoxPlot(BoxSeries {
             violin: Some(violin),
             ..
-        } = &series.render_type
+        }) = &series.render_type
         else {
             panic!("a violin");
         };
@@ -729,7 +786,7 @@ fn the_box_family_takes_its_parts_and_colours_own_violin_fills() {
     let (low, high) = fills(&series);
     assert_eq!((low.fill, high.fill), (None, None));
     assert!(!low.outline && !high.outline);
-    let DataRenderType::BoxPlot { style, points, .. } = &series.render_type else {
+    let DataRenderType::BoxPlot(BoxSeries { style, points, .. }) = &series.render_type else {
         panic!("a box plot");
     };
     let boxes = &theme.series.boxes;
@@ -761,7 +818,7 @@ fn the_box_family_takes_its_parts_and_colours_own_violin_fills() {
     theme.series.boxes.outline = false;
     let mut series = SeriesConfig::box_plot("a", "i", "records");
     theme.style_series(&mut series, 0);
-    let DataRenderType::BoxPlot { style, .. } = &series.render_type else {
+    let DataRenderType::BoxPlot(BoxSeries { style, .. }) = &series.render_type else {
         panic!("a box plot");
     };
     assert_eq!(style.gloss, 0.6);
@@ -782,7 +839,7 @@ fn the_range_bar_family_recolours_directions_and_states() {
         SeriesConfig::range_bars("a", "i", "start", "end")
             .color(ink)
             .style_range_bars(|parts| {
-                *parts.color_by = RangeColor::Direction {
+                parts.color_by = RangeColor::Direction {
                     up: ink,
                     down: ink,
                     total: Some(RangeTotal {
@@ -790,11 +847,11 @@ fn the_range_bar_family_recolours_directions_and_states() {
                         color: ink,
                     }),
                 };
-                *parts.connector = Some(RangeConnector {
+                parts.connector = Some(RangeConnector {
                     color: ink,
                     width: 1.0,
                 });
-                *parts.whiskers = Some(RangeWhiskers {
+                parts.whiskers = Some(RangeWhiskers {
                     low: "low".into(),
                     high: "high".into(),
                     width: 1.0,
@@ -806,13 +863,13 @@ fn the_range_bar_family_recolours_directions_and_states() {
     let range = &theme.series.range_bars;
     let mut series = directed();
     theme.style_series(&mut series, 0);
-    let DataRenderType::RangeBars {
+    let DataRenderType::RangeBars(RangeBarSeries {
         style,
         color_by,
         connector,
         whiskers,
         ..
-    } = &series.render_type
+    }) = &series.render_type
     else {
         panic!("range bars");
     };
@@ -832,7 +889,7 @@ fn the_range_bar_family_recolours_directions_and_states() {
     // The default theme names no direction colour.
     let mut series = directed();
     named(ChartKind::RangeBars, "default").style_series(&mut series, 0);
-    let DataRenderType::RangeBars { color_by, .. } = &series.render_type else {
+    let DataRenderType::RangeBars(RangeBarSeries { color_by, .. }) = &series.render_type else {
         panic!("range bars");
     };
     assert!(matches!(
@@ -846,21 +903,21 @@ fn the_range_bar_family_recolours_directions_and_states() {
     let mut series = SeriesConfig::range_bars("a", "i", "start", "end")
         .color(ink)
         .style_range_bars(|parts| {
-            *parts.color_by = RangeColor::State {
+            parts.color_by = RangeColor::State {
                 column: "state".into(),
                 styles: vec![RangeStateStyle { color: ink }; states.len() + 1],
             };
-            *parts.progress = Some(RangeProgress {
+            parts.progress = Some(RangeProgress {
                 column: "progress".into(),
                 remaining_opacity: 1.0,
             });
         });
     theme.style_series(&mut series, 0);
-    let DataRenderType::RangeBars {
+    let DataRenderType::RangeBars(RangeBarSeries {
         color_by: RangeColor::State { styles, .. },
         progress,
         ..
-    } = &series.render_type
+    }) = &series.render_type
     else {
         panic!("range bars by state");
     };
@@ -868,6 +925,71 @@ fn the_range_bar_family_recolours_directions_and_states() {
         assert_eq!(style.color, states[k % states.len()]);
     }
     assert_eq!(progress.as_ref().unwrap().remaining_opacity, 0.35);
+}
+
+// A series coloured by row (#357) takes the palette as its row colours,
+// every family and the documented look alike; the colouring stays by row.
+#[test]
+fn a_series_coloured_by_row_takes_the_palette() {
+    for theme in themes(ChartKind::RangeBars) {
+        let mut series =
+            SeriesConfig::range_bars("a", "i", "start", "end").range_colors(RangeColor::ByRow {
+                colors: vec![Color::BLACK],
+            });
+        theme.style_series(&mut series, 0);
+        let DataRenderType::RangeBars(RangeBarSeries {
+            color_by: RangeColor::ByRow { colors },
+            ..
+        }) = &series.render_type
+        else {
+            panic!("the colouring stays by row");
+        };
+        assert_eq!(colors, &theme.series.palette);
+    }
+}
+
+// A range bar theme draws no gridlines along a categorical position axis
+// (they would cross the bars' middles) and keeps the value gridlines; a
+// numeric position axis (a candlestick's time) keeps its gridlines.
+#[test]
+fn range_bar_themes_keep_only_the_value_gridlines_on_a_category_axis() {
+    use crate::data_config::{BarGroups, CategoryBarDirection};
+    let horizontal = BarGroups {
+        direction: CategoryBarDirection::Horizontal,
+        ..crate::defaults::bar_groups()
+    };
+    for theme in themes(ChartKind::RangeBars) {
+        // A timeline: rows on `left_y`.
+        let mut config = Config::default();
+        config.bar_groups = Some(horizontal);
+        config.left_y.categories = categorical().bottom_x.categories;
+        let mut series = [SeriesConfig::range_bars("a", "i", "start", "end")];
+        theme
+            .apply(&mut config, &mut series, ThemeScope::All)
+            .unwrap();
+        assert!(!config.grid.show_major_y && !config.grid.show_minor_y);
+        assert_eq!(config.grid.show_major_x, theme.chrome.grid.major_x.show);
+        // A waterfall: steps on `bottom_x`.
+        let mut config = categorical();
+        theme
+            .apply(&mut config, &mut series, ThemeScope::All)
+            .unwrap();
+        assert!(!config.grid.show_major_x && !config.grid.show_minor_x);
+        assert_eq!(config.grid.show_major_y, theme.chrome.grid.major_y.show);
+        // Candles on a time axis keep the theme's grid.
+        let mut config = Config::default();
+        let mut candles = [SeriesConfig::range_bars("a", "i", "start", "end")
+            .style_range_bars(|bars| bars.slot_width = Some(1.0))];
+        theme
+            .apply(&mut config, &mut candles, ThemeScope::All)
+            .unwrap();
+        assert_eq!(config.grid.show_major_x, theme.chrome.grid.major_x.show);
+        assert_eq!(config.grid.show_major_y, theme.chrome.grid.major_y.show);
+    }
+    // The gallery's range bars: the open frame without tick marks.
+    let theme = named(ChartKind::RangeBars, "gallery");
+    assert_eq!(theme.chrome.axis_preset, AxisPreset::OpenOutward);
+    assert!(!theme.chrome.ticks);
 }
 
 // The document base: a transparent background, an open frame without tick
@@ -1096,7 +1218,7 @@ fn the_vector_family_takes_widths_and_heads() {
         .pivot(VectorPivot::Middle)
         .vector_scale(VectorScale::Pixels { px_per_unit: 16.0 });
     theme.style_series(&mut series, 0);
-    let DataRenderType::Vector { style, .. } = &series.render_type else {
+    let DataRenderType::Vector(VectorSeries { style, .. }) = &series.render_type else {
         panic!("vectors");
     };
     assert_eq!(style.color, palette_color(&theme, 0));
@@ -1115,7 +1237,7 @@ fn the_vector_family_takes_widths_and_heads() {
 fn the_radar_part_keeps_what_it_does_not_name() {
     let own = || {
         let mut series = SeriesConfig::radar("a", "i", "v");
-        if let DataRenderType::Radar { style, .. } = &mut series.render_type {
+        if let DataRenderType::Radar(RadarPolygonSeries { style, .. }) = &mut series.render_type {
             style.line_width_px = Some(1.5);
             style.fill_opacity = Some(0.1);
         }
@@ -1131,7 +1253,7 @@ fn the_radar_part_keeps_what_it_does_not_name() {
     let theme = named(ChartKind::Radar, "gallery");
     let mut series = own();
     theme.style_series(&mut series, 3);
-    let DataRenderType::Radar { color, style, .. } = &series.render_type else {
+    let DataRenderType::Radar(RadarPolygonSeries { color, style, .. }) = &series.render_type else {
         panic!("a radar series");
     };
     assert_eq!(*color, palette_color(&theme, 3));
@@ -1166,17 +1288,17 @@ fn the_ternary_part_colours_regions_and_frames_the_third_axis() {
             "a",
             "p",
             "q",
-            DataRenderType::Ternary {
+            DataRenderType::Ternary(TernarySeries {
                 c_column: "r".into(),
                 scatter: None,
                 line: Some(Default::default()),
                 region: Some(TernaryRegionStyle::default()),
-            },
+            }),
         )
     };
     let mut series = region();
     theme.style_series(&mut series, 13);
-    let DataRenderType::Ternary { line, region, .. } = &series.render_type else {
+    let DataRenderType::Ternary(TernarySeries { line, region, .. }) = &series.render_type else {
         panic!("a ternary series");
     };
     let region = region.as_ref().unwrap();
@@ -1187,7 +1309,7 @@ fn the_ternary_part_colours_regions_and_frames_the_third_axis() {
 
     let mut series = SeriesConfig::ternary("a", "p", "q", "r").with_line(1.0);
     theme.style_series(&mut series, 1);
-    let DataRenderType::Ternary { line, scatter, .. } = &series.render_type else {
+    let DataRenderType::Ternary(TernarySeries { line, scatter, .. }) = &series.render_type else {
         panic!("a ternary series");
     };
     let line = line.as_ref().unwrap();
@@ -1248,12 +1370,31 @@ fn a_parallel_chart_frames_its_axes_and_sizes_their_names() {
     assert_eq!(config.bottom_x.tick, TickVisibility::None);
     assert!(config.bottom_x.label_style.label_visible);
     assert_eq!(config.bottom_x.label_style.font_size, 20.0);
-    let DataRenderType::Parallel { line, .. } = &series[0].render_type else {
+    let DataRenderType::Parallel(ParallelSeries { line, .. }) = &series[0].render_type else {
         panic!("a parallel series");
     };
-    assert_eq!(line.line_color, palette_color(&theme, 0));
+    // The rows at half opacity, each tick label on a box of the paper
+    // colour, a colourbar long enough to read (#357).
+    assert_eq!(
+        line.line_color,
+        Color {
+            a: 0.5,
+            ..palette_color(&theme, 0)
+        }
+    );
     assert_eq!(line.line_width, 1.2);
+    let paper = theme.chrome.background.unwrap();
+    assert_eq!(
+        config.parallel().unwrap().label_backdrop,
+        Some(Color { a: 0.8, ..paper })
+    );
+    assert_eq!(theme.chrome.colorbar.length, 0.6);
     valid_on(&config, &series);
+    for family in ["gallery", "cool-slate", "warm-paper"] {
+        let part = named(ChartKind::Parallel, family).series.parallel;
+        assert_eq!(part.line_opacity, Some(0.5), "{family}");
+        assert!(part.label_backdrop.is_some(), "{family}");
+    }
 
     // The documented look changes nothing on a default parallel chart.
     let mut config = categorical();
@@ -1291,12 +1432,14 @@ fn a_colourbar_takes_the_field_part_s_map() {
 
 fn override_colors(series: &SeriesConfig) -> Vec<(String, Option<Color>)> {
     match &series.render_type {
-        DataRenderType::BoxPlot { overrides, .. } => (overrides.iter().flatten())
+        DataRenderType::BoxPlot(BoxSeries { overrides, .. }) => (overrides.iter().flatten())
             .map(|o| (o.target.category_id.clone(), o.color))
             .collect(),
-        DataRenderType::CategoryBars { overrides, .. } => (overrides.iter().flatten())
-            .map(|o| (o.target.category_id.clone(), o.color))
-            .collect(),
+        DataRenderType::CategoryBars(CategoryBarSeries { overrides, .. }) => {
+            (overrides.iter().flatten())
+                .map(|o| (o.target.category_id.clone(), o.color))
+                .collect()
+        }
         _ => panic!("boxes or category bars"),
     }
 }
@@ -1429,6 +1572,7 @@ fn the_grotrian_theme_writes_the_diagram_s_texts_and_continuum() {
         label_offset: [0.0; 2],
         value: None,
         x_offset: 0.0,
+        color: None,
         wavelength: Some(500.0),
         wavelength_uncertainty: None,
         intensity: String::new(),
@@ -1731,8 +1875,26 @@ fn the_radial_themes_write_the_view_shape_and_ring_tints() {
         children: vec![slice("child")],
         ..slice("root")
     }];
-    ThemeFamily::Gallery.radial().apply(&mut chart);
+    let midnight = ThemeFamily::Midnight.radial();
+    assert_eq!(midnight.child_tint, None);
+    midnight.apply(&mut chart);
     assert_eq!(chart.slices[0].children[0].color, Color::BLACK);
+    // The gallery's children follow their branch's colour, paler (#357):
+    // a recoloured branch no longer keeps children in the host's colours.
+    let mut chart = crate::defaults::radial_chart();
+    chart.slices = vec![RadialSlice {
+        children: vec![slice("child")],
+        ..slice("root")
+    }];
+    let gallery = ThemeFamily::Gallery.radial();
+    gallery.apply(&mut chart);
+    let (root, child) = (chart.slices[0].color, chart.slices[0].children[0].color);
+    assert_eq!(root, gallery.palette[0]);
+    assert!(light(child) > light(root));
+    assert!(
+        child.b > child.r,
+        "the child keeps the branch's hue: {child:?}"
+    );
     // A sunburst draws flat, so it keeps its top view under a tilted theme
     // and stays a valid document under every theme.
     for (name, theme) in radial_themes() {
@@ -1983,7 +2145,7 @@ fn a_family_themes_subplots_of_mixed_kinds_each_in_its_kind_s_member() {
             "{family}"
         );
         let histogram = family.theme(ChartKind::Histogram);
-        let DataRenderType::Histogram { bar } = &series[3].render_type else {
+        let DataRenderType::Histogram(HistogramSeries { bar }) = &series[3].render_type else {
             panic!("a histogram");
         };
         assert_eq!(
@@ -2644,6 +2806,76 @@ fn a_theme_applies_to_the_charts_of_its_kind() {
     assert_eq!((&config, &series), (&declared, &declared_series));
 }
 
+// A contour without a fill is drawn on the plot background, so the
+// gallery's field theme inks its isolines and labels dark there and keeps
+// the white ink over a fill (#357). A mesh without a fill takes the dark
+// isolines too. The designed field themes draw labels without a plate; the
+// documented look puts a translucent plate behind its black labels.
+#[test]
+fn an_unfilled_contour_takes_the_themes_ink_for_the_paper() {
+    use crate::data_config::ContourLabelConfig;
+    let contours = |filled: bool| {
+        let series = SeriesConfig::contours("a", "x", "y", grid("z"), vec![0.25, 0.5])
+            .contour_labels(ContourLabelConfig::default());
+        if filled { series.filled() } else { series }
+    };
+    let theme = named(ChartKind::Field, "gallery");
+    let fields = &theme.series.fields;
+    assert_eq!(fields.contour_label_background, None);
+    let (mut filled, mut lines) = (contours(true), contours(false));
+    theme.style_series(&mut filled, 0);
+    theme.style_series(&mut lines, 0);
+    let (filled, lines) = (field_contour(&filled), field_contour(&lines));
+    assert_eq!(Some(filled.line.line_color), fields.contour_color);
+    assert_eq!(filled.labels.as_ref().unwrap().color, Color::WHITE);
+    assert_eq!(filled.labels.as_ref().unwrap().bg_color, None);
+    let dark = fields.unfilled_contour_color.expect("a dark isoline ink");
+    assert_eq!(lines.line.line_color, dark);
+    assert!(dark.r < 0.2 && dark.g < 0.2 && dark.b < 0.3 && dark.a > 0.5);
+    let label = lines.labels.as_ref().unwrap();
+    assert_eq!(Some(label.color), fields.unfilled_contour_label_color);
+    assert_eq!(label.bg_color, None);
+    assert_eq!(lines.line.line_width, filled.line.line_width);
+
+    // A theme without an unfilled ink inks both alike.
+    let midnight = named(ChartKind::Field, "midnight");
+    let (mut filled, mut lines) = (contours(true), contours(false));
+    midnight.style_series(&mut filled, 0);
+    midnight.style_series(&mut lines, 0);
+    assert_eq!(field_contour(&filled), field_contour(&lines));
+
+    // The gallery's mesh: white isolines over a fill, dark ones without.
+    let mesh_theme = named(ChartKind::TriMesh, "gallery");
+    let mesh_fields = &mesh_theme.series.fields;
+    assert!(mesh_fields.unfilled_contour_color.is_some());
+    assert_eq!(mesh_fields.contour_color, None);
+
+    // Every designed field theme draws its labels without a plate.
+    for kind in [
+        ChartKind::Field,
+        ChartKind::Polar,
+        ChartKind::TriMesh,
+        ChartKind::Surface3d,
+    ] {
+        for family in ThemeFamily::ALL {
+            let theme = family.theme(kind);
+            assert_eq!(
+                theme.series.fields.contour_label_background, None,
+                "{family:?} {kind}"
+            );
+        }
+    }
+
+    // The documented look: black labels on the default translucent plate.
+    let documented = named(ChartKind::Field, "default");
+    let mut lines = contours(false);
+    documented.style_series(&mut lines, 0);
+    assert_eq!(
+        field_contour(&lines).labels,
+        Some(ContourLabelConfig::default())
+    );
+}
+
 // A theme and its parts serialize behind the `serde` feature, for a host
 // that edits a theme as JSON (the browser's `theme(name)`): every member
 // and the documented looks read back equal. A kind serializes as its name.
@@ -2666,6 +2898,26 @@ fn a_theme_round_trips_through_json() {
         let back: RadialTheme = serde_json::from_str(&json).unwrap();
         assert_eq!(back, theme, "radial {name}");
     }
+}
+
+// #357: an energy-level theme saved before the arrowhead fields reads them
+// as `None`, so it keeps each series' own arrowheads as it did.
+#[cfg(feature = "serde")]
+#[test]
+fn an_energy_level_theme_without_arrowheads_keeps_the_series_own() {
+    let member = ThemeFamily::Gallery.theme(ChartKind::EnergyLevels);
+    let mut json = serde_json::to_value(&member).unwrap();
+    let energy = json["series"]["energy_levels"].as_object_mut().unwrap();
+    assert!(energy.remove("head_length").is_some() && energy.remove("head_width").is_some());
+    let back: Theme = serde_json::from_value(json).unwrap();
+    assert_eq!(back.series.energy_levels.head_length, None);
+    assert_eq!(back.series.energy_levels.head_width, None);
+    let documented = serde_json::to_value(named(ChartKind::EnergyLevels, "default")).unwrap();
+    assert!(
+        documented["series"]["energy_levels"]
+            .get("head_length")
+            .is_none()
+    );
 }
 
 // A theme object saved before a field was added still parses: every field
@@ -2712,4 +2964,86 @@ fn a_theme_missing_fields_parses() {
         serde_json::from_str::<RadialTheme>("{}").unwrap(),
         RadialTheme::documented()
     );
+}
+
+/// Whether `palette` holds no colour twice.
+fn all_distinct(palette: &[Color]) -> bool {
+    palette
+        .iter()
+        .enumerate()
+        .all(|(i, a)| palette[i + 1..].iter().all(|b| a != b))
+}
+
+#[test]
+fn every_member_palette_has_eight_distinct_colours() {
+    // #357: no colour repeats within a chart of up to eight series, states
+    // or regions. An empty palette keeps the series' own colours.
+    for kind in ChartKind::ALL {
+        for (i, theme) in themes(kind).into_iter().enumerate() {
+            for (part, palette) in [
+                ("palette", &theme.series.palette),
+                ("states", &theme.series.range_bars.states),
+                ("regions", &theme.series.ternary.regions),
+            ] {
+                if palette.is_empty() && part != "palette" {
+                    continue;
+                }
+                assert!(
+                    palette.len() >= 8,
+                    "{kind:?} theme {i} {part} has {} colours",
+                    palette.len()
+                );
+                assert!(all_distinct(palette), "{kind:?} theme {i} {part} repeats");
+            }
+        }
+    }
+    for (name, theme) in radial_themes() {
+        if name == "default" {
+            // The documented radial look keeps every slice's own colour.
+            assert!(theme.palette.is_empty());
+            continue;
+        }
+        assert!(theme.palette.len() >= 8, "{name} radial palette is short");
+        assert!(
+            all_distinct(&theme.palette),
+            "{name} radial palette repeats"
+        );
+    }
+}
+
+#[test]
+fn filled_palettes_keep_the_designed_colours_first() {
+    // The Gallery line chart was designed with three colours: they keep
+    // their places, so one to three series look as they did.
+    let line = ThemeFamily::Gallery.theme(ChartKind::Line);
+    let designed = [
+        Color::from_rgb8(34, 104, 198),
+        Color::from_rgb8(225, 81, 79),
+        Color::from_rgb8(224, 123, 38),
+    ];
+    assert_eq!(&line.series.palette[..3], &designed);
+    let error_bars = ThemeFamily::Gallery.theme(ChartKind::ErrorBars);
+    assert_eq!(&error_bars.series.palette[..2], &[designed[0], designed[2]]);
+}
+
+#[test]
+fn with_palette_selects_a_preset() {
+    for cycle in crate::preset::ColorCycle::PRESETS {
+        let theme = ThemeFamily::Gallery
+            .theme(ChartKind::Line)
+            .with_palette(cycle);
+        assert_eq!(theme.series.palette, cycle.colors());
+        let mut series = [
+            SeriesConfig::line("a", "x", "y"),
+            SeriesConfig::line("b", "x", "y"),
+        ];
+        let mut config = crate::defaults::config();
+        theme
+            .apply(&mut config, &mut series, ThemeScope::All)
+            .unwrap();
+        let DataRenderType::Xy(xy) = &series[1].render_type else {
+            panic!("a line series");
+        };
+        assert_eq!(xy.line.as_ref().unwrap().line_color, cycle.color(1));
+    }
 }

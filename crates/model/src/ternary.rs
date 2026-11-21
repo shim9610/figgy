@@ -27,7 +27,7 @@
 
 use crate::Color;
 use crate::config::{AxisOptions, AxisScale, Config};
-use crate::data_config::{DataRenderType, LineInterpolation, SeriesConfig};
+use crate::data_config::{DataRenderType, LineInterpolation, SeriesConfig, TernarySeries};
 use crate::layout::{Side, TitlePlacement};
 use crate::text::TextExtents;
 
@@ -175,7 +175,8 @@ fn edge_band(axis: &AxisOptions) -> (f32, f32) {
 }
 
 /// The axis component `k` is read on: 0 `bottom_x`, 1 `left_y`, 2
-/// `right_y`.
+/// `right_y`. A 3D box reads its x, y and z directions on the same slots
+/// ([`crate::view3d::box_axis`]).
 pub fn ternary_axis(config: &Config, k: usize) -> &AxisOptions {
     match k {
         0 => &config.bottom_x,
@@ -325,17 +326,18 @@ impl Config {
     /// line is linear (no step modes) and has no fill.
     pub fn validate_ternary_series(&self, series: &[SeriesConfig]) -> Result<(), crate::RuleKind> {
         for item in series {
-            match (&item.render_type, self.ternary().is_some()) {
-                (DataRenderType::Ternary { .. }, false) => {
+            let chart = self.series_chart(&item.series_id);
+            match (&item.render_type, chart.ternary().is_some()) {
+                (DataRenderType::Ternary(_), false) => {
                     return Err(crate::RuleKind::TernarySeriesNotTernary);
                 }
                 (
-                    DataRenderType::Ternary {
+                    DataRenderType::Ternary(TernarySeries {
                         c_column,
                         scatter,
                         line,
                         region,
-                    },
+                    }),
                     true,
                 ) => {
                     if item.x_column.is_empty()
@@ -443,12 +445,55 @@ mod tests {
         scatter: Option<DataScatterStyleConfig>,
         line: Option<DataLineStyleConfig>,
     ) -> DataRenderType {
-        DataRenderType::Ternary {
+        DataRenderType::Ternary(TernarySeries {
             c_column: "c".into(),
             scatter,
             line,
             region: None,
-        }
+        })
+    }
+
+    /// A Cartesian root chart whose one subplot is `cell`, drawing `ids`
+    /// (#325).
+    fn root_with_subplot(mut cell: Config, ids: &[&str]) -> Config {
+        let mut root = crate::defaults::config();
+        cell.chart_area = root.chart_area.clone();
+        root.subplots.push(crate::layer::Subplot {
+            config: cell,
+            series: ids.iter().map(|id| id.to_string()).collect(),
+            ..crate::defaults::subplot()
+        });
+        root
+    }
+
+    #[test]
+    fn a_subplot_draws_ternary_series_on_its_own_ternary_chart() {
+        let root = root_with_subplot(chart(), &["t"]);
+        let t = series("t", ternary(Some(scatter()), None));
+        assert_eq!(
+            root.validate_ternary_series(std::slice::from_ref(&t)),
+            Ok(())
+        );
+        assert_eq!(root.validate_series(&[t]), Ok(()));
+        // The rectangular root still refuses a ternary series of its own,
+        // and the ternary subplot a plain one.
+        assert_eq!(
+            root.validate_ternary_series(&[series("u", ternary(Some(scatter()), None))]),
+            Err(crate::RuleKind::TernarySeriesNotTernary)
+        );
+        let plain = series(
+            "t",
+            DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(scatter()),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
+        );
+        assert_eq!(
+            root.validate_ternary_series(&[plain]),
+            Err(crate::RuleKind::TernaryChartSeriesKind)
+        );
     }
 
     #[test]
@@ -558,7 +603,7 @@ mod tests {
             crate::RuleKind::TernaryNothingDrawn
         ));
         let mut filled_region = ternary(None, None);
-        if let DataRenderType::Ternary { region, .. } = &mut filled_region {
+        if let DataRenderType::Ternary(TernarySeries { region, .. }) = &mut filled_region {
             *region = Some(crate::defaults::ternary_region_style());
         }
         assert_eq!(
@@ -566,7 +611,7 @@ mod tests {
             Ok(()),
             "a region alone draws"
         );
-        if let DataRenderType::Ternary { region, .. } = &mut filled_region {
+        if let DataRenderType::Ternary(TernarySeries { region, .. }) = &mut filled_region {
             *region = Some(TernaryRegionStyle {
                 opacity: 2.0,
                 ..crate::defaults::ternary_region_style()
@@ -676,7 +721,7 @@ mod tests {
         assert!(!json.contains("\"region\""), "unset, omitted: {json}");
         // A region fill round-trips and reads with every field defaulted.
         let mut filled = ternary(None, None);
-        if let DataRenderType::Ternary { region, .. } = &mut filled {
+        if let DataRenderType::Ternary(TernarySeries { region, .. }) = &mut filled {
             *region = Some(TernaryRegionStyle {
                 color: Color::new(0.1, 0.2, 0.3, 1.0),
                 opacity: 0.5,

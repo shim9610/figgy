@@ -209,11 +209,6 @@ impl RadialKind {
     }
 }
 
-/// The former sector material enum, now the shared [`Material`]. Sectors
-/// accept every variant.
-#[deprecated(since = "0.13.0", note = "use Material")]
-pub type RadialMaterial = crate::Material;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RadialLabels {
@@ -399,6 +394,71 @@ impl RadialStyle {
             texture_angle_degrees,
         }
     }
+
+    /// The flat sunburst look of web sunburst charts (#357): a top view
+    /// without depth, gap or rounded corners, every node outlined along its
+    /// rim and its two radial edges in a 1 px white line, so the segments
+    /// of one branch colour and its rings stay apart. Hosts on another
+    /// background set `outline.color` to it. It is the host default
+    /// (`RadialStyle::default()`, `RadialChart::default()` with the
+    /// `helpers` feature); the serde default a document reads when it
+    /// omits the style keeps no outline, so stored documents draw as
+    /// before.
+    pub fn sunburst() -> Self {
+        // Every field is named (#46): the preset sets the flat outlined
+        // look and keeps the documented default for the rest.
+        let Self {
+            material: _,
+            tilt_degrees: _,
+            depth: _,
+            bevel,
+            gap_degrees: _,
+            roughness,
+            texture_strength,
+            texture_scale,
+            light,
+            shadow: _,
+            inner_corner: _,
+            outer_corner: _,
+            outline,
+            hover_lift,
+            hover_brightness,
+            gloss,
+            texture_angle_degrees,
+        } = crate::defaults::radial_style();
+        let RadialOutline {
+            rim: _,
+            separators: _,
+            emphasis,
+            width: _,
+            color: _,
+        } = outline;
+        Self {
+            material: Material::Flat,
+            tilt_degrees: 0.0,
+            depth: 0.0,
+            bevel,
+            gap_degrees: 0.0,
+            roughness,
+            texture_strength,
+            texture_scale,
+            light,
+            shadow: false,
+            inner_corner: 0.0,
+            outer_corner: 0.0,
+            outline: RadialOutline {
+                rim: true,
+                separators: true,
+                emphasis,
+                width: 1.0,
+                color: Color::WHITE,
+            },
+            hover_lift,
+            hover_brightness,
+            gloss,
+            texture_angle_degrees,
+        }
+    }
 }
 
 impl RadialStyle {
@@ -568,6 +628,37 @@ pub struct RadialChart {
     pub font_size: f32,
     pub label_color: Color,
     pub background: Color,
+    /// What a sunburst does with an inside label on an inner ring that
+    /// cannot be drawn at the readable minimum (#357). Outermost-ring, pie
+    /// and donut labels always move outside with a leader; this governs
+    /// only the inner rings, whose leaders would cross the outer rings.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "InnerLabelFallback::is_hide")
+    )]
+    pub inner_label_fallback: InnerLabelFallback,
+}
+
+/// What a sunburst does with an inside label on an inner ring too small to
+/// read (#357, [`RadialChart::inner_label_fallback`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum InnerLabelFallback {
+    /// Not drawn and not hit (the default).
+    #[default]
+    Hide,
+    /// Drawn outside the circle with the outermost ring's outside labels,
+    /// its leader running from the node's own rim across the outer rings
+    /// to the elbow beside the circle. It is an outside label in every
+    /// respect: hover, selection, its outline, drag and export.
+    Outside,
+}
+
+impl InnerLabelFallback {
+    /// Whether this is the default, [`Self::Hide`].
+    pub fn is_hide(&self) -> bool {
+        *self == Self::Hide
+    }
 }
 
 /// The document form a [`RadialChart`] is read from: its own fields, and
@@ -609,6 +700,8 @@ mod radial_wire {
         font_size: f32,
         label_color: Color,
         background: Color,
+        #[serde(default)]
+        inner_label_fallback: InnerLabelFallback,
     }
 
     impl From<RadialChartWire> for RadialChart {
@@ -633,6 +726,7 @@ mod radial_wire {
                 font_size,
                 label_color,
                 background,
+                inner_label_fallback,
             } = wire;
             let mut chart = RadialChart {
                 decorations,
@@ -653,6 +747,7 @@ mod radial_wire {
                 font_size,
                 label_color,
                 background,
+                inner_label_fallback,
             };
             // The legacy title was drawn only without a rich one, in the
             // chart's font as the document set it.
@@ -1171,6 +1266,76 @@ mod tests {
             ..crate::defaults::radial_chart()
         }
     }
+    /// The sunburst preset (#357) is flat, so a sunburst takes it, and
+    /// outlines every node's rim and edges in white.
+    #[test]
+    fn the_sunburst_style_is_flat_and_outlined() {
+        let style = RadialStyle::sunburst();
+        assert_eq!((style.tilt_degrees, style.depth), (0.0, 0.0));
+        assert_eq!(style.material, Material::Flat);
+        assert!(style.outline.rim && style.outline.separators);
+        assert!(!style.outline.emphasis);
+        assert_eq!(
+            (style.outline.width, style.outline.color),
+            (1.0, Color::WHITE)
+        );
+        let mut c = chart();
+        c.slices[0].children = vec![RadialSlice::new("a", 50.0, Color::BLACK)];
+        c.style = style;
+        c.format_labels();
+        assert_eq!(c.validate(), Ok(()));
+        // The documented (serde) default keeps its look.
+        assert!(!crate::defaults::radial_style().outline.rim);
+    }
+
+    /// The host default (#357) draws white separators between segments
+    /// and rings; a document that omits the style or its outline reads the
+    /// serde default without them, so stored documents draw as before.
+    #[cfg(feature = "helpers")]
+    #[test]
+    fn the_host_default_separates_segments_and_rings() {
+        assert_eq!(RadialStyle::default(), RadialStyle::sunburst());
+        // The outline building block keeps the documented values: an
+        // outline a host switches on is drawn in the documented ink.
+        assert_eq!(RadialOutline::default(), crate::defaults::radial_outline());
+        let chart = RadialChart::default();
+        assert_eq!(chart.style, RadialStyle::sunburst());
+        assert_eq!(
+            RadialChart {
+                style: crate::defaults::radial_style(),
+                ..chart
+            },
+            crate::defaults::radial_chart()
+        );
+    }
+
+    /// The inner-ring fallback (#357) is omitted while `Hide` (the value a
+    /// document without it reads) and round-trips as `Outside`.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn the_inner_label_fallback_round_trips_and_is_omitted_while_hidden() {
+        let mut chart = crate::defaults::radial_chart();
+        let json = serde_json::to_value(&chart).unwrap();
+        assert!(json.get("inner_label_fallback").is_none());
+        let back: RadialChart = serde_json::from_value(json).unwrap();
+        assert_eq!(back.inner_label_fallback, InnerLabelFallback::Hide);
+        chart.inner_label_fallback = InnerLabelFallback::Outside;
+        let json = serde_json::to_string(&chart).unwrap();
+        assert!(json.contains(r#""inner_label_fallback":"Outside""#));
+        let back: RadialChart = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, chart);
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn a_document_without_an_outline_reads_no_outline() {
+        let json = serde_json::json!({"material": "Flat"});
+        let style: RadialStyle = serde_json::from_value(json).unwrap();
+        assert_eq!(style.outline, crate::defaults::radial_outline());
+        assert!(!style.outline.rim && !style.outline.separators);
+    }
+
     #[test]
     fn radial_step_selection_walks_every_slice_with_a_value_and_wraps() {
         let mut c = RadialChart {

@@ -71,6 +71,20 @@ fn default_config_json() -> Result<String, String> {
     serde_json::to_string(&renderer::default::default_config()).map_err(|e| e.to_string())
 }
 
+/// The JSON of [`renderer::default::config_for_series`] for the series
+/// list JSON `series_json`, what the `default_config_for_series` binding
+/// returns: the config alone, in the frame of the series' family. The
+/// series' palette colours are not returned; a browser chart colours its
+/// series as it adds them (`add_*_series`) or with `apply_color_cycle`.
+/// The error is the JSON parse error.
+#[cfg(any(target_arch = "wasm32", test))]
+fn default_config_for_series_json(series_json: &str) -> Result<String, String> {
+    let mut series: Vec<renderer::SeriesConfig> =
+        serde_json::from_str(series_json).map_err(|e| e.to_string())?;
+    serde_json::to_string(&renderer::default::config_for_series(&mut series))
+        .map_err(|e| e.to_string())
+}
+
 /// The normalized form of the config JSON `json`, what the
 /// `normalize_config` binding returns: the config read and written back, so
 /// every optional field it omits takes its documented default and every
@@ -82,6 +96,148 @@ fn default_config_json() -> Result<String, String> {
 fn normalize_config_json(json: &str) -> Result<String, String> {
     let config: renderer::Config = serde_json::from_str(json).map_err(|e| e.to_string())?;
     serde_json::to_string(&config).map_err(|e| e.to_string())
+}
+
+/// How far a pointer drag of `(dx, dy)` document pixels moves an exit of
+/// the range link series `series_id` along its predecessor (#357), in
+/// logical pixels toward the bar's end (`RangeLinkSeries::drag_link_exit`):
+/// the drag along the value axis of the series' layer (x for horizontal
+/// bars, y otherwise), signed by the way that axis runs on screen, so the
+/// exit follows the pointer on an inverted axis too. This is the `u` axis
+/// of `range_links.wgsl` for a successor drawn from its start to a larger
+/// end; the CPU holds no per-row values (rule 2), so a successor whose end
+/// is below its start, which reverses `u` there, still moves by the axis.
+#[cfg(any(target_arch = "wasm32", test))]
+fn range_link_drag_along(config: &renderer::Config, series_id: &str, dx: f32, dy: f32) -> f32 {
+    let layer = config.layer_of_series(series_id);
+    let overlay = match layer {
+        renderer::LayerRef::Overlay(index) | renderer::LayerRef::SubplotOverlay(_, index) => {
+            Some(index)
+        }
+        renderer::LayerRef::Base
+        | renderer::LayerRef::Subplot(_)
+        | renderer::LayerRef::Annotations => None,
+    };
+    let (x, y) = config.series_chart(series_id).scaling_axes(overlay);
+    let horizontal = config.bar_groups_of(layer).direction
+        == renderer::data_config::CategoryBarDirection::Horizontal;
+    // A value axis that is not inverted grows rightward (x) and upward (y,
+    // against the screen's y).
+    let (along, axis) = if horizontal { (dx, x) } else { (-dy, y) };
+    if axis.inverted { -along } else { along }
+}
+
+/// A scoped fit's scope as `FiggyChart.fit_config_scoped` reads it (#334):
+/// [`renderer::FitScope`] with the kept axes it borrows.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Debug, PartialEq)]
+struct FitScopeJson {
+    layer: renderer::LayerRef,
+    axes: renderer::FitAxes,
+    linked: renderer::LinkedFitData,
+    keep: Vec<renderer::FitAxisRef>,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl FitScopeJson {
+    fn scope(&self) -> renderer::FitScope<'_> {
+        renderer::FitScope {
+            layer: self.layer,
+            axes: self.axes,
+            linked: self.linked,
+            keep: &self.keep,
+        }
+    }
+}
+
+/// Read a fit scope (#334): `{ "layer": <LayerRef>, "axes": ["x", "y",
+/// "z"], "linked": "group" | "target", "keep": [{ "layer": <LayerRef>,
+/// "axis": "x" | "y" | "z" }] }`. `linked` (default `"group"`) and `keep`
+/// (default none) may be left out; a `LayerRef` is written as in
+/// `set_active_layer` (`"Base"`, `{"Overlay": 0}`, `{"Subplot": 1}`,
+/// `{"SubplotOverlay": [1, 0]}`). An unknown field, axis name or `linked`
+/// value is refused. The error names what is wrong.
+#[cfg(any(target_arch = "wasm32", test))]
+fn fit_scope_from_json(json: &str) -> Result<FitScopeJson, String> {
+    use serde_json::Value;
+    fn object(
+        value: Value,
+        what: &str,
+        fields: &[&str],
+    ) -> Result<serde_json::Map<String, Value>, String> {
+        let Value::Object(object) = value else {
+            return Err(format!("{what} is not a JSON object"));
+        };
+        if let Some(field) = object.keys().find(|key| !fields.contains(&key.as_str())) {
+            return Err(format!("unknown {what} field {field:?}"));
+        }
+        Ok(object)
+    }
+    fn layer_of(value: Option<Value>, what: &str) -> Result<renderer::LayerRef, String> {
+        let value = value.ok_or_else(|| format!("{what} has no \"layer\""))?;
+        serde_json::from_value(value).map_err(|e| format!("{what} layer: {e}"))
+    }
+    fn axis_of(value: &Value) -> Result<renderer::FitAxis, String> {
+        match value.as_str() {
+            Some("x") => Ok(renderer::FitAxis::X),
+            Some("y") => Ok(renderer::FitAxis::Y),
+            Some("z") => Ok(renderer::FitAxis::Z),
+            _ => Err(format!(
+                "unknown fit axis {value}: expected \"x\", \"y\" or \"z\""
+            )),
+        }
+    }
+    let value: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let mut scope = object(value, "fit scope", &["layer", "axes", "linked", "keep"])?;
+    let layer = layer_of(scope.remove("layer"), "fit scope")?;
+    let Some(Value::Array(names)) = scope.remove("axes") else {
+        return Err("fit scope \"axes\" is not an array of axis names".to_owned());
+    };
+    let mut axes = renderer::FitAxes::default();
+    for name in &names {
+        match axis_of(name)? {
+            renderer::FitAxis::X => axes.x = true,
+            renderer::FitAxis::Y => axes.y = true,
+            renderer::FitAxis::Z => axes.z = true,
+        }
+    }
+    let linked = match scope.remove("linked") {
+        None => renderer::LinkedFitData::Group,
+        Some(value) => match value.as_str() {
+            Some("group") => renderer::LinkedFitData::Group,
+            Some("target") => renderer::LinkedFitData::Target,
+            _ => {
+                return Err(format!(
+                    "unknown fit scope linked {value}: expected \"group\" or \"target\""
+                ));
+            }
+        },
+    };
+    let keep = match scope.remove("keep") {
+        None => Vec::new(),
+        Some(Value::Array(entries)) => entries
+            .into_iter()
+            .map(|entry| {
+                let mut entry = object(entry, "fit scope keep entry", &["layer", "axis"])?;
+                let axis = axis_of(
+                    &entry
+                        .remove("axis")
+                        .ok_or("fit scope keep entry has no \"axis\"")?,
+                )?;
+                Ok(renderer::FitAxisRef {
+                    layer: layer_of(entry.remove("layer"), "fit scope keep entry")?,
+                    axis,
+                })
+            })
+            .collect::<Result<_, String>>()?,
+        Some(_) => return Err("fit scope \"keep\" is not an array".to_owned()),
+    };
+    Ok(FitScopeJson {
+        layer,
+        axes,
+        linked,
+        keep,
+    })
 }
 
 /// The JSON of one validation error of [`validate_config_json`].
@@ -161,13 +317,14 @@ fn validate_config_json(config: &str, series: Option<&str>) -> Result<String, St
     .map_err(|e| e.to_string())
 }
 
-/// Why a legacy document did not convert: its JSON, or a rule of the
-/// document's own `validate`.
+/// Why a legacy document did not convert: its JSON, a rule of the
+/// document's own `validate`, or the options passed with it (#334).
 #[cfg(any(target_arch = "wasm32", test))]
 #[derive(Debug)]
 enum DocumentError {
     Json(serde_json::Error),
     Rule(renderer::RuleKind),
+    Options(String),
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -176,6 +333,7 @@ impl std::fmt::Display for DocumentError {
         match self {
             Self::Json(e) => e.fmt(f),
             Self::Rule(kind) => kind.fmt(f),
+            Self::Options(why) => f.write_str(why),
         }
     }
 }
@@ -217,13 +375,14 @@ fn upload_descriptor_json(upload: &renderer::SeriesUpload<'_>) -> serde_json::Va
     }
 }
 
-/// The JSON a `convert_*_document` binding returns for a converted legacy
-/// document: `{config, series, uploads, columns, notes}`, the uploads as
-/// descriptors without their values ([`upload_descriptor_json`]), the
-/// columns and notes of its `ConversionReport`.
+/// The JSON a `convert_*_document` binding and a `set_*_document` call
+/// return for a converted legacy document: `{config, series, uploads,
+/// columns, notes}`, the uploads as descriptors without their values
+/// ([`upload_descriptor_json`]), the columns and notes of its
+/// `ConversionReport`. The one builder of both (#334).
 #[cfg(any(target_arch = "wasm32", test))]
 fn converted_document_json(
-    (config, series, uploads, report): renderer::ConvertedDocument<'_>,
+    (config, series, uploads, report): &renderer::ConvertedDocument<'_>,
 ) -> Result<String, DocumentError> {
     let uploads: Vec<_> = uploads.iter().map(upload_descriptor_json).collect();
     serde_json::to_string(&serde_json::json!({
@@ -236,36 +395,201 @@ fn converted_document_json(
     .map_err(DocumentError::Json)
 }
 
-/// What the `convert_categorical_document` binding returns for the legacy
-/// `CategoricalChart` JSON `json` (`Config::from_categorical_with_report`).
+/// A legacy document a `convert_*_document` binding and a
+/// `set_*_document` call read: parsed and held to its own `validate`, then
+/// converted by the one conversion both use (`Config::from_*_with_report_in`,
+/// #334).
 #[cfg(any(target_arch = "wasm32", test))]
-#[allow(deprecated)]
-fn convert_categorical_document_json(json: &str) -> Result<String, DocumentError> {
-    let document: renderer::CategoricalChart =
-        serde_json::from_str(json).map_err(DocumentError::Json)?;
-    document.validate().map_err(DocumentError::Rule)?;
-    converted_document_json(renderer::Config::from_categorical_with_report(&document))
+pub(crate) trait LegacyDocument: Sized {
+    /// The document of `json`, refused when it does not parse or breaks
+    /// one of its rules.
+    fn read(json: &str) -> Result<Self, DocumentError>;
+    /// The document converted on `chart_area` (`None`: the placeholder).
+    fn convert_in(
+        &self,
+        chart_area: Option<&renderer::layout::ChartArea>,
+    ) -> renderer::ConvertedDocument<'_>;
 }
 
-/// What the `convert_boxplot_document` binding returns for the legacy
-/// `BoxPlotChart` JSON `json` (`Config::from_boxplot_with_report`).
-#[cfg(any(target_arch = "wasm32", test))]
-#[allow(deprecated)]
-fn convert_boxplot_document_json(json: &str) -> Result<String, DocumentError> {
-    let document: renderer::BoxPlotChart =
-        serde_json::from_str(json).map_err(DocumentError::Json)?;
-    document.validate().map_err(DocumentError::Rule)?;
-    converted_document_json(renderer::Config::from_boxplot_with_report(&document))
+macro_rules! legacy_document {
+    ($document:ty, $convert:ident) => {
+        #[cfg(any(target_arch = "wasm32", test))]
+        impl LegacyDocument for $document {
+            fn read(json: &str) -> Result<Self, DocumentError> {
+                let document: Self = serde_json::from_str(json).map_err(DocumentError::Json)?;
+                document.validate().map_err(DocumentError::Rule)?;
+                Ok(document)
+            }
+
+            fn convert_in(
+                &self,
+                chart_area: Option<&renderer::layout::ChartArea>,
+            ) -> renderer::ConvertedDocument<'_> {
+                renderer::Config::$convert(self, chart_area)
+            }
+        }
+    };
 }
 
-/// What the `convert_radar_document` binding returns for the legacy
-/// `RadarChart` JSON `json` (`Config::from_radar_with_report`).
+legacy_document!(renderer::CategoricalChart, from_categorical_with_report_in);
+legacy_document!(renderer::BoxPlotChart, from_boxplot_with_report_in);
+legacy_document!(renderer::RadarChart, from_radar_with_report_in);
+
+/// The options JSON object of a document call (`None` or `null`: none),
+/// refused when it is not an object or names a field other than `allowed`.
 #[cfg(any(target_arch = "wasm32", test))]
-#[allow(deprecated)]
-fn convert_radar_document_json(json: &str) -> Result<String, DocumentError> {
-    let document: renderer::RadarChart = serde_json::from_str(json).map_err(DocumentError::Json)?;
-    document.validate().map_err(DocumentError::Rule)?;
-    converted_document_json(renderer::Config::from_radar_with_report(&document))
+fn document_options(
+    options: Option<&str>,
+    allowed: &str,
+) -> Result<serde_json::Map<String, serde_json::Value>, DocumentError> {
+    let invalid = |why: String| DocumentError::Options(format!("invalid options: {why}"));
+    let Some(text) = options else {
+        return Ok(serde_json::Map::new());
+    };
+    match serde_json::from_str::<serde_json::Value>(text).map_err(|e| invalid(e.to_string()))? {
+        serde_json::Value::Null => Ok(serde_json::Map::new()),
+        serde_json::Value::Object(fields) => match fields.keys().find(|k| *k != allowed) {
+            Some(unknown) => Err(invalid(format!(
+                "unknown field `{unknown}`; the only field is `{allowed}`"
+            ))),
+            None => Ok(fields),
+        },
+        _ => Err(invalid("the options are not a JSON object".into())),
+    }
+}
+
+/// The chart area of a `convert_*_document` options JSON
+/// (`{"chart_area"?: [x, y, width, height]}`, whole logical pixels, as the
+/// chart's `chart_area`); `None` when not given.
+#[cfg(any(target_arch = "wasm32", test))]
+fn convert_options_chart_area(
+    options: Option<&str>,
+) -> Result<Option<renderer::layout::ChartArea>, DocumentError> {
+    let fields = document_options(options, "chart_area")?;
+    let Some(value) = fields.get("chart_area") else {
+        return Ok(None);
+    };
+    let invalid = || {
+        DocumentError::Options(
+            "invalid options: `chart_area` is not `[x, y, width, height]` in whole logical pixels \
+             (each an integer from 0 to 4294967295)"
+                .into(),
+        )
+    };
+    let edges = value
+        .as_array()
+        .filter(|a| a.len() == 4)
+        .ok_or_else(invalid)?;
+    let edge = |i: usize| {
+        edges[i]
+            .as_u64()
+            .and_then(|v| u32::try_from(v).ok())
+            .ok_or_else(invalid)
+    };
+    Ok(Some(renderer::layout::ChartArea(renderer::layout::Rect {
+        x: edge(0)?,
+        y: edge(1)?,
+        width: edge(2)?,
+        height: edge(3)?,
+    })))
+}
+
+/// What a `set_*_document` call refuses to lose (#334), from its options
+/// JSON `{"refuse"?: ["path", ...] | "any"}`.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum LossPolicy {
+    /// No `refuse`: every note is accepted.
+    Accept,
+    /// `"any"`: any note refuses the document.
+    Any,
+    /// The listed document paths: a note on one of them, or under one
+    /// (`decorations.offsets` covers `decorations.offsets[2]`), refuses it.
+    Paths(Vec<String>),
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl LossPolicy {
+    /// The policy of a `set_*_document` options JSON (`None` or `null`:
+    /// [`LossPolicy::Accept`]). Refused when the options are not an
+    /// object, name another field, or `refuse` is neither `"any"` nor an
+    /// array of non-empty path strings.
+    pub(crate) fn parse(options: Option<&str>) -> Result<Self, DocumentError> {
+        let mut fields = document_options(options, "refuse")?;
+        let invalid = || {
+            DocumentError::Options(
+                "invalid options: `refuse` is neither \"any\" nor an array of document paths"
+                    .into(),
+            )
+        };
+        match fields.remove("refuse") {
+            None => Ok(Self::Accept),
+            Some(serde_json::Value::String(any)) if any == "any" => Ok(Self::Any),
+            Some(serde_json::Value::Array(paths)) => paths
+                .into_iter()
+                .map(|path| match path {
+                    serde_json::Value::String(path) if !path.is_empty() => Ok(path),
+                    _ => Err(invalid()),
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(Self::Paths),
+            Some(_) => Err(invalid()),
+        }
+    }
+
+    /// Whether this policy refuses a conversion that reports `note`.
+    pub(crate) fn refuses(&self, note: &renderer::ConversionNote) -> bool {
+        match self {
+            Self::Accept => false,
+            Self::Any => true,
+            Self::Paths(paths) => paths.iter().any(|path| {
+                note.path.strip_prefix(path.as_str()).is_some_and(|rest| {
+                    rest.is_empty() || rest.starts_with('.') || rest.starts_with('[')
+                })
+            }),
+        }
+    }
+}
+
+/// What a `set_*_document` call installs, checked against its loss
+/// policy before anything is installed (#334): the report JSON it returns
+/// ([`converted_document_json`] of the same conversion), or, when the
+/// policy refuses a note, the JSON array of the refused notes.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) enum DocumentApply {
+    Report(String),
+    Refused(String),
+}
+
+/// The report of `converted`, the conversion a `set_*_document` call is
+/// about to install, under `policy` ([`DocumentApply`]).
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn document_apply(
+    converted: &renderer::ConvertedDocument<'_>,
+    policy: &LossPolicy,
+) -> Result<DocumentApply, DocumentError> {
+    let notes = &converted.3.notes;
+    if notes.iter().any(|note| policy.refuses(note)) {
+        let refused: Vec<&renderer::ConversionNote> =
+            notes.iter().filter(|note| policy.refuses(note)).collect();
+        return serde_json::to_string(&refused)
+            .map(DocumentApply::Refused)
+            .map_err(DocumentError::Json);
+    }
+    converted_document_json(converted).map(DocumentApply::Report)
+}
+
+/// What a `convert_*_document` binding returns for the legacy document
+/// JSON `json` and its options JSON (`{"chart_area"?: [x, y, w, h]}`):
+/// the document converted on that chart area, or on the placeholder.
+#[cfg(any(target_arch = "wasm32", test))]
+fn convert_document_json<D: LegacyDocument>(
+    json: &str,
+    options: Option<&str>,
+) -> Result<String, DocumentError> {
+    let chart_area = convert_options_chart_area(options)?;
+    let document = D::read(json)?;
+    converted_document_json(&document.convert_in(chart_area.as_ref()))
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -299,6 +623,34 @@ fn picked_point_json_string(picked: &renderer::PickedPoint) -> serde_json::Resul
         "series_id": &picked.series_id,
         "point_index": picked.point_index,
         "distance_px": picked.distance_px,
+    }))
+}
+
+/// A registered chart's pick as `pick_point` reports it (#381): the point
+/// fields of the hit, and `nearest`, every pickable series' datum nearest to
+/// the cursor with its layer (in the form `active_layer` answers) and screen
+/// distance. A miss (`picked` is `None`) has the same keys with the point
+/// fields `null` and still carries `nearest`.
+#[cfg(any(target_arch = "wasm32", test))]
+fn picked_point_with_nearest_json_string(
+    picked: Option<&renderer::PickedPoint>,
+    nearest: &[renderer::NearestDatum],
+) -> serde_json::Result<String> {
+    serde_json::to_string(&serde_json::json!({
+        "source_id": picked.and_then(|picked| picked.source_id.as_ref()),
+        "series_id": picked.map(|picked| &picked.series_id),
+        "point_index": picked.map(|picked| picked.point_index),
+        "distance_px": picked.map(|picked| picked.distance_px),
+        "nearest": nearest
+            .iter()
+            .map(|datum| serde_json::json!({
+                "layer": datum.layer,
+                "source_id": datum.source_id.as_ref(),
+                "series_id": &datum.series_id,
+                "point_index": datum.point_index,
+                "distance_px": datum.distance_px,
+            }))
+            .collect::<Vec<_>>(),
     }))
 }
 
@@ -341,6 +693,7 @@ fn picked_data_json_string(picked: &renderer::PickedData) -> serde_json::Result<
             series_id,
             bin_index,
             half,
+            extent_px,
             distance_px,
         } => {
             let mut json = serde_json::json!({
@@ -353,6 +706,11 @@ fn picked_data_json_string(picked: &renderer::PickedData) -> serde_json::Result<
             // A split violin's half, as `PickedDataRef` serializes it.
             if let Some(half) = half {
                 json["half"] = serde_json::json!(half);
+            }
+            // A range bar's or range link's drawn length in canvas pixels:
+            // `press_range_link` takes a link's as its drag limit.
+            if let Some(extent) = extent_px {
+                json["extent_px"] = serde_json::json!(extent);
             }
             json
         }
@@ -566,7 +924,11 @@ fn prepare_demo_declarations(
     color_seq: usize,
 ) -> Result<PreparedDemoDeclarations, String> {
     use renderer::line::LineStylePreset;
-    use renderer::{DataLineStyleConfig, DataRenderType, SeriesConfig};
+    use renderer::{
+        BoxSeries, CategoryBarSeries, DataLineStyleConfig, DataRenderType, HistogramSeries,
+        ParallelSeries, RadarPolygonSeries, RangeBarSeries, SeriesConfig, StreamlineSeries,
+        TernarySeries, VectorSeries,
+    };
 
     let mut config = current_config.clone();
     let mut series = Vec::new();
@@ -592,11 +954,12 @@ fn prepare_demo_declarations(
                     ..
                 }) => line.line_color,
                 DataRenderType::Xy(_) => cycle.color(index),
-                DataRenderType::Histogram { bar } => bar.fill_color,
-                DataRenderType::CategoryBars { color, .. } => *color,
-                DataRenderType::BoxPlot { color, .. } => *color,
-                DataRenderType::RangeBars { color, .. } => *color,
-                DataRenderType::Radar { color, .. } => *color,
+                DataRenderType::Histogram(HistogramSeries { bar }) => bar.fill_color,
+                DataRenderType::CategoryBars(CategoryBarSeries { color, .. }) => *color,
+                DataRenderType::BoxPlot(BoxSeries { color, .. }) => *color,
+                DataRenderType::RangeBars(RangeBarSeries { color, .. }) => *color,
+                DataRenderType::RangeLinks(links) => links.color,
+                DataRenderType::Radar(RadarPolygonSeries { color, .. }) => *color,
                 DataRenderType::Field(renderer::data_config::FieldSeries {
                     contour: Some(contour),
                     ..
@@ -614,14 +977,14 @@ fn prepare_demo_declarations(
                     contour: None,
                     ..
                 })
-                | DataRenderType::RgbImage { .. } => cycle.color(index),
-                DataRenderType::Vector { style, .. } => style.color,
+                | DataRenderType::RgbImage(_) => cycle.color(index),
+                DataRenderType::Vector(VectorSeries { style, .. }) => style.color,
                 DataRenderType::EnergyLevels(levels) => levels.style.level.color,
                 DataRenderType::Feynman(diagram) => diagram.style.color,
-                DataRenderType::Streamlines { line, .. }
-                | DataRenderType::Parallel { line, .. } => line.line_color,
+                DataRenderType::Streamlines(StreamlineSeries { line, .. })
+                | DataRenderType::Parallel(ParallelSeries { line, .. }) => line.line_color,
                 DataRenderType::MonotonicLine(series) => series.line.line_color,
-                DataRenderType::Ternary { scatter, line, .. } => scatter
+                DataRenderType::Ternary(TernarySeries { scatter, line, .. }) => scatter
                     .as_ref()
                     .map(|s| s.point_color)
                     .or(line.as_ref().map(|l| l.line_color))
@@ -968,20 +1331,163 @@ impl ShownDocument<'_> {
     }
 }
 
-/// An annotation preview's shape as JSON: `{ shape, points | rect, bounds }`
-/// with `shape` one of `line`, `span`, `text`, `arrow`, `polygon`.
+/// Why a layout query (`inspect_document_layout`, `inspect_config_layout`)
+/// was refused: the error's `code` and its message (#312, #334).
 #[cfg(any(target_arch = "wasm32", test))]
-fn annotation_preview_json(preview: &renderer::AnnotationPreview) -> serde_json::Value {
+#[derive(Debug, PartialEq)]
+struct LayoutQueryError {
+    code: &'static str,
+    message: String,
+}
+
+/// A candidate `Config` JSON for a layout query, read and checked the way
+/// `set_config` lays it out: code `config_json` for JSON that is not a
+/// `Config`, `layout` for overlays, subplots or line offset members that
+/// cannot be laid out.
+#[cfg(any(target_arch = "wasm32", test))]
+fn layout_candidate(json: &str) -> Result<renderer::Config, LayoutQueryError> {
+    let candidate: renderer::Config =
+        serde_json::from_str(json).map_err(|error| LayoutQueryError {
+            code: "config_json",
+            message: format!("config is not a Config JSON value: {error}"),
+        })?;
+    if !candidate.overlays.is_empty()
+        || !candidate.subplots.is_empty()
+        || candidate.has_offset_members()
+    {
+        candidate.expand().map_err(|error| LayoutQueryError {
+            code: "layout",
+            message: format!("the candidate's panels cannot be laid out ({error:?})"),
+        })?;
+    }
+    Ok(candidate)
+}
+
+/// One physical surface dimension given to a layout query, refused with
+/// code `invalid_size` unless it is a whole number of pixels from 1 that
+/// fits a `u32` (#334).
+#[cfg(any(target_arch = "wasm32", test))]
+fn layout_dimension(name: &str, value: f64) -> Result<u32, LayoutQueryError> {
+    if value.is_finite() && value >= 1.0 && value.fract() == 0.0 && value <= f64::from(u32::MAX) {
+        Ok(value as u32)
+    } else {
+        Err(LayoutQueryError {
+            code: "invalid_size",
+            message: format!("{name} must be a whole number of pixels from 1, got {value}"),
+        })
+    }
+}
+
+/// A physical surface size given to a layout query: both dimensions or
+/// neither (`None`), each checked by [`layout_dimension`]. One alone is
+/// refused with code `invalid_size`.
+#[cfg(any(target_arch = "wasm32", test))]
+fn layout_surface(
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<Option<(u32, u32)>, LayoutQueryError> {
+    match (width, height) {
+        (None, None) => Ok(None),
+        (Some(width), Some(height)) => Ok(Some((
+            layout_dimension("surface width", width)?,
+            layout_dimension("surface height", height)?,
+        ))),
+        _ => Err(LayoutQueryError {
+            code: "invalid_size",
+            message: "give both surface dimensions or neither".to_owned(),
+        }),
+    }
+}
+
+/// The layout JSON of `logical` fitted to a `surface` of physical pixels
+/// the way the canvas places a document (`display_config_for_surface`):
+/// what `ShownDocument::layout_json` reports for a canvas of that size
+/// showing `logical`. The installed document read at its own size, an
+/// installed document at other dimensions, a candidate on the canvas and
+/// a candidate without a chart all go through it (#334).
+#[cfg(any(target_arch = "wasm32", test))]
+fn fitted_layout_json(logical: &renderer::Config, surface: (u32, u32)) -> serde_json::Value {
+    let (placed, _, scale) = renderer::display_config_for_surface(logical, surface);
+    ShownDocument {
+        logical,
+        placed: &placed,
+        scale,
+    }
+    .layout_json(surface)
+}
+
+/// `inspect_config_layout` without a chart (#334): the candidate `json`
+/// laid out on a `width` x `height` physical surface, as
+/// `FiggyChart.inspect_document_layout` reports it on a canvas of that
+/// size: a canvas places its document by its surface size alone.
+#[cfg(any(target_arch = "wasm32", test))]
+fn config_layout_json(
+    json: &str,
+    width: f64,
+    height: f64,
+) -> Result<serde_json::Value, LayoutQueryError> {
+    let surface = (
+        layout_dimension("surface width", width)?,
+        layout_dimension("surface height", height)?,
+    );
+    let candidate = layout_candidate(json)?;
+    Ok(fitted_layout_json(&candidate, surface))
+}
+
+/// An annotation preview's shape as JSON: `{ shape, points | rect, bounds }`
+/// with `shape` one of `line`, `span`, `text`, `arrow`, `polygon`, every
+/// coordinate multiplied by `scale` (1 keeps the preview's own pixels; the
+/// radial chart's canvas is its logical placement times the display scale,
+/// #334).
+#[cfg(any(target_arch = "wasm32", test))]
+fn annotation_preview_json(preview: &renderer::AnnotationPreview, scale: f32) -> serde_json::Value {
     use renderer::annotation::AnnotationGeometry as G;
-    let mut value = match &preview.geometry {
-        G::Line { a, b } => serde_json::json!({ "shape": "line", "points": [a, b] }),
-        G::Span(rect) => serde_json::json!({ "shape": "span", "rect": rect_f_json(*rect) }),
-        G::Text(rect) => serde_json::json!({ "shape": "text", "rect": rect_f_json(*rect) }),
-        G::Arrow { from, to } => serde_json::json!({ "shape": "arrow", "points": [from, to] }),
-        G::Polygon(points) => serde_json::json!({ "shape": "polygon", "points": points }),
+    let point = |[x, y]: [f32; 2]| [x * scale, y * scale];
+    let rect = |r: renderer::layout::RectF| {
+        rect_f_json(renderer::layout::RectF {
+            x: r.x * scale,
+            y: r.y * scale,
+            width: r.width * scale,
+            height: r.height * scale,
+        })
     };
-    value["bounds"] = rect_f_json(preview.bounds);
+    let mut value = match &preview.geometry {
+        G::Line { a, b } => {
+            serde_json::json!({ "shape": "line", "points": [point(*a), point(*b)] })
+        }
+        G::Span(r) => serde_json::json!({ "shape": "span", "rect": rect(*r) }),
+        G::Text(r) => serde_json::json!({ "shape": "text", "rect": rect(*r) }),
+        G::Arrow { from, to } => {
+            serde_json::json!({ "shape": "arrow", "points": [point(*from), point(*to)] })
+        }
+        G::Polygon(points) => serde_json::json!({
+            "shape": "polygon",
+            "points": points.iter().map(|p| point(*p)).collect::<serde_json::Value>(),
+        }),
+    };
+    value["bounds"] = rect(preview.bounds);
     value
+}
+
+/// Where `item` (in document logical pixels) would be drawn on a radial
+/// chart's annotation layer (#334), as the `(canvas, document)` JSON shapes
+/// of [`annotation_preview_json`]: placed by the raster's own placement
+/// (`renderer::preview_annotation`) in the frame's anchor space `space`
+/// (logical pixels) with the text measured at the display `scale` and the
+/// font policy the radial raster uses. The radial raster paints that one
+/// placement at `scale`, so the canvas shape is the document shape times
+/// `scale`. `Err` is the raster's skip reason.
+#[cfg(any(target_arch = "wasm32", test))]
+fn radial_annotation_preview(
+    item: &renderer::Annotation,
+    space: renderer::annotation::PixelSpace,
+    scale: f32,
+) -> Result<(serde_json::Value, serde_json::Value), renderer::AnnotationSkip> {
+    let placed = renderer::preview_annotation(item, space, scale, renderer::FontPolicy::Standard)?;
+    Ok((
+        annotation_preview_json(&placed, scale),
+        annotation_preview_json(&placed, 1.0),
+    ))
 }
 
 /// One `RenderWarning` as JSON (#312): `kind` (the variant name), the
@@ -1060,10 +1566,13 @@ mod tests {
     use super::{
         ColumnRegistryAction, FrameDecision, consume_successful_frame, frame_decision,
         picked_data_json_string, picked_label_json_string, picked_point_json_string,
-        prepare_demo_declarations, set_chart_title_label, validate_column_batch,
-        validate_column_data_len, validate_column_registry_action,
+        picked_point_with_nearest_json_string, prepare_demo_declarations, set_chart_title_label,
+        validate_column_batch, validate_column_data_len, validate_column_registry_action,
     };
-    use super::{ShownDocument, annotation_preview_json, render_warning_json};
+    use super::{
+        ShownDocument, annotation_preview_json, radial_annotation_preview, render_warning_json,
+    };
+    use super::{config_layout_json, fitted_layout_json, layout_candidate, layout_surface};
 
     fn scatter_style() -> DataScatterStyleConfig {
         DataScatterStyleConfig {
@@ -1390,6 +1899,206 @@ mod tests {
     }
 
     #[test]
+    fn default_config_for_series_json_frames_each_family() {
+        let config = |series: &[renderer::SeriesConfig]| -> renderer::Config {
+            let json =
+                super::default_config_for_series_json(&serde_json::to_string(series).unwrap())
+                    .unwrap();
+            serde_json::from_str(&json).unwrap()
+        };
+        // The default config as a new chart's: its layout kept fitted (#357).
+        let unframed = || renderer::Config {
+            layout_state: renderer::LayoutState::Fitted,
+            ..renderer::default::default_config()
+        };
+        let framed = |preset| {
+            let mut config = unframed();
+            config.apply_axis_preset(preset);
+            config
+        };
+        let feynman =
+            renderer::SeriesConfig::feynman("d", renderer::feynman::FeynmanSeries::default());
+        let levels = renderer::SeriesConfig::energy_levels(
+            "e",
+            renderer::energy_levels::EnergyLevelSeries::default(),
+        );
+        assert_eq!(config(&[feynman]), framed(renderer::AxisPreset::Hidden));
+        assert_eq!(config(&[levels]), framed(renderer::AxisPreset::Grotrian));
+        assert_eq!(config(&[]), unframed());
+        assert_eq!(
+            config(&[renderer::SeriesConfig::line("l", "x", "y")]),
+            unframed()
+        );
+        assert!(super::default_config_for_series_json("{").is_err());
+        // The returned config is a valid document.
+        let json = super::default_config_for_series_json("[]").unwrap();
+        let report: serde_json::Value =
+            serde_json::from_str(&super::validate_config_json(&json, None).unwrap()).unwrap();
+        assert_eq!(report["valid"], true);
+    }
+
+    /// The timeline look (#357) reaches the browser as document JSON: the
+    /// timeline config with its row bands and a timeline series with its
+    /// inside-or-beside labels in contrast ink validate, normalize
+    /// unchanged, and a refused band fill or ink names its rule.
+    #[test]
+    fn timeline_documents_validate_and_normalize() {
+        let mut config = renderer::default::default_timeline_config();
+        config.left_y.categories = Some(vec![
+            renderer::Category::new("a", "A"),
+            renderer::Category::new("b", "B"),
+        ]);
+        let series = [
+            renderer::SeriesConfig::timeline_bars("t", "pos", "start", "end").with_progress("done"),
+        ];
+        let config_json = serde_json::to_string(&config).unwrap();
+        let series_json = serde_json::to_string(&series).unwrap();
+        assert!(config_json.contains("category_bands"));
+        assert!(series_json.contains("contrast_ink") && series_json.contains("InsideOrBeside"));
+        let report: serde_json::Value = serde_json::from_str(
+            &super::validate_config_json(&config_json, Some(&series_json)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["valid"], true, "{report}");
+        assert_eq!(
+            super::normalize_config_json(&config_json).unwrap(),
+            config_json
+        );
+        let mut refused = config.clone();
+        if let Some(bands) = refused.left_y.category_bands.as_mut() {
+            bands.fill.r = 2.0;
+        }
+        let report: serde_json::Value = serde_json::from_str(
+            &super::validate_config_json(&serde_json::to_string(&refused).unwrap(), None).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["valid"], false);
+        assert!(report.to_string().contains("CategoryBandsFill"), "{report}");
+    }
+
+    /// The calendar header (#357, item 14 B) reaches the browser as
+    /// document JSON: the calendar timeline validates and normalizes
+    /// unchanged, and a relative label without a step names its rule.
+    #[test]
+    fn calendar_formats_validate_and_normalize() {
+        let config = renderer::default::default_calendar_timeline_config();
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"step\"") && json.contains("period_labels"));
+        let report: serde_json::Value =
+            serde_json::from_str(&super::validate_config_json(&json, None).unwrap()).unwrap();
+        assert_eq!(report["valid"], true, "{report}");
+        assert_eq!(super::normalize_config_json(&json).unwrap(), json);
+        let mut refused = config.clone();
+        if let renderer::format::LabelFormat::Timestamp(format) =
+            &mut refused.bottom_x.label_style.format
+        {
+            format.step = None;
+            format.label = renderer::format::TimestampLabelMode::Relative {
+                origin: 0,
+                prefix: "Week ".into(),
+            };
+        }
+        let report: serde_json::Value = serde_json::from_str(
+            &super::validate_config_json(&serde_json::to_string(&refused).unwrap(), None).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["valid"], false);
+        assert!(
+            report.to_string().contains("TimestampStepRequired"),
+            "{report}"
+        );
+    }
+    /// Dependency links (#357, item 14 D) reach the browser as series
+    /// JSON: links naming the timeline bars validate, and links naming no
+    /// range bar series name their rule.
+    #[test]
+    fn range_links_validate_in_the_browser() {
+        let mut config = renderer::default::default_timeline_config();
+        config.left_y.categories = Some(vec![
+            renderer::Category::new("a", "A"),
+            renderer::Category::new("b", "B"),
+        ]);
+        let config_json = serde_json::to_string(&config).unwrap();
+        let report = |series: &[renderer::SeriesConfig]| -> serde_json::Value {
+            let series_json = serde_json::to_string(series).unwrap();
+            serde_json::from_str(
+                &super::validate_config_json(&config_json, Some(&series_json)).unwrap(),
+            )
+            .unwrap()
+        };
+        let bars = renderer::SeriesConfig::timeline_bars("t", "pos", "start", "end");
+        let links = renderer::SeriesConfig::range_links("deps", "t", [(0, 1)]);
+        let ok = report(&[bars, links.clone()]);
+        assert_eq!(ok["valid"], true, "{ok}");
+        let refused = report(std::slice::from_ref(&links));
+        assert_eq!(refused["valid"], false);
+        assert!(refused.to_string().contains("RangeLinkBars"), "{refused}");
+        // A dragged exit is SSOT: it validates and normalizes unchanged; a
+        // negative one names its rule.
+        let mut dragged = links;
+        dragged
+            .render_type
+            .range_links_mut()
+            .unwrap()
+            .set_link_exit_offset(0, Some(24.0));
+        let bars = renderer::SeriesConfig::timeline_bars("t", "pos", "start", "end");
+        let ok = report(&[bars.clone(), dragged.clone()]);
+        assert_eq!(ok["valid"], true, "{ok}");
+        let json = serde_json::to_string(&dragged).unwrap();
+        assert!(json.contains("\"exit_offset\":24.0"), "{json}");
+        if let Some(l) = dragged.render_type.range_links_mut() {
+            l.links[0].exit_offset = Some(-1.0);
+        }
+        let negative = report(&[bars, dragged]);
+        assert!(
+            negative.to_string().contains("RangeLinkStyle"),
+            "{negative}"
+        );
+    }
+
+    /// A link exit drag follows the pointer (#357): along the value axis,
+    /// x for horizontal bars and y (up) for vertical ones, reversed when
+    /// that axis is inverted, on the base layer and on a subplot.
+    #[test]
+    fn range_link_drags_follow_the_value_axis_on_screen() {
+        use renderer::data_config::{BarGroups, CategoryBarDirection};
+        let along = super::range_link_drag_along;
+        let groups = |direction| {
+            Some(BarGroups {
+                direction,
+                ..renderer::default::default_config().effective_bar_groups()
+            })
+        };
+        let mut config = renderer::default::default_config();
+        config.bar_groups = groups(CategoryBarDirection::Horizontal);
+        assert_eq!(along(&config, "deps", 5.0, 3.0), 5.0);
+        config.bottom_x.inverted = true;
+        assert_eq!(along(&config, "deps", 5.0, 3.0), -5.0);
+        // An inverted y axis does not move a horizontal bar's exit.
+        config.bottom_x.inverted = false;
+        config.left_y.inverted = true;
+        assert_eq!(along(&config, "deps", 5.0, 3.0), 5.0);
+        config.bar_groups = groups(CategoryBarDirection::Vertical);
+        assert_eq!(along(&config, "deps", 5.0, 3.0), 3.0);
+        config.left_y.inverted = false;
+        assert_eq!(along(&config, "deps", 5.0, 3.0), -3.0);
+        // A subplot's links read the subplot's own direction and axes.
+        let mut sub = renderer::default::default_config();
+        sub.bar_groups = groups(CategoryBarDirection::Horizontal);
+        sub.bottom_x.inverted = true;
+        config.subplots.push(renderer::Subplot {
+            config: sub,
+            series: vec!["deps".into()],
+            link_x: None,
+            link_y: None,
+            marker: None,
+            text_scale: Default::default(),
+        });
+        assert_eq!(along(&config, "deps", 5.0, 3.0), -5.0);
+        assert_eq!(along(&config, "other", 5.0, 3.0), -3.0);
+    }
+
+    #[test]
     fn validate_config_json_names_the_refused_field() {
         let report = |config: &str, series: Option<&str>| -> serde_json::Value {
             serde_json::from_str(&super::validate_config_json(config, series).unwrap()).unwrap()
@@ -1445,6 +2154,76 @@ mod tests {
     }
 
     #[test]
+    fn fit_scope_from_json_reads_every_field_and_refuses_unknown_ones() {
+        use renderer::{FitAxes, FitAxis, FitAxisRef, LayerRef, LinkedFitData};
+        let scope = super::fit_scope_from_json(
+            r#"{"layer": {"Subplot": 1}, "axes": ["x", "z"], "linked": "target",
+                "keep": [{"layer": "Base", "axis": "x"},
+                         {"layer": {"SubplotOverlay": [1, 0]}, "axis": "y"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(scope.layer, LayerRef::Subplot(1));
+        assert_eq!(
+            scope.axes,
+            FitAxes {
+                x: true,
+                y: false,
+                z: true
+            }
+        );
+        assert_eq!(scope.linked, LinkedFitData::Target);
+        assert_eq!(
+            scope.keep,
+            [
+                FitAxisRef {
+                    layer: LayerRef::Base,
+                    axis: FitAxis::X
+                },
+                FitAxisRef {
+                    layer: LayerRef::SubplotOverlay(1, 0),
+                    axis: FitAxis::Y
+                },
+            ]
+        );
+        let view = scope.scope();
+        assert_eq!(view.keep.len(), 2);
+        assert_eq!(view.layer, LayerRef::Subplot(1));
+
+        // `linked` and `keep` default to the group and nothing kept.
+        let scope =
+            super::fit_scope_from_json(r#"{"layer": {"Overlay": 0}, "axes": ["y"]}"#).unwrap();
+        assert_eq!(scope.linked, LinkedFitData::Group);
+        assert!(scope.keep.is_empty());
+        assert_eq!(
+            scope.axes,
+            FitAxes {
+                y: true,
+                ..FitAxes::default()
+            }
+        );
+
+        for refused in [
+            "not json",
+            "[]",
+            r#"{"axes": ["x"]}"#,
+            r#"{"layer": "Base"}"#,
+            r#"{"layer": "Base", "axes": "x"}"#,
+            r#"{"layer": "Base", "axes": ["w"]}"#,
+            r#"{"layer": "Base", "axes": ["X"]}"#,
+            r#"{"layer": "Nowhere", "axes": ["x"]}"#,
+            r#"{"layer": "Base", "axes": ["x"], "linked": "all"}"#,
+            r#"{"layer": "Base", "axes": ["x"], "extra": 1}"#,
+            r#"{"layer": "Base", "axes": ["x"], "keep": {"layer": "Base", "axis": "x"}}"#,
+            r#"{"layer": "Base", "axes": ["x"], "keep": [{"layer": "Base"}]}"#,
+            r#"{"layer": "Base", "axes": ["x"], "keep": [{"axis": "x"}]}"#,
+            r#"{"layer": "Base", "axes": ["x"], "keep": [{"layer": "Base", "axis": "q"}]}"#,
+            r#"{"layer": "Base", "axes": ["x"], "keep": [{"layer": "Base", "axis": "x", "z": 1}]}"#,
+        ] {
+            assert!(super::fit_scope_from_json(refused).is_err(), "{refused}");
+        }
+    }
+
+    #[test]
     fn normalize_config_json_is_idempotent_and_keeps_every_bit() {
         let mut config = renderer::default::default_config();
         config.left_y.min = 0.1 + 0.2;
@@ -1484,8 +2263,10 @@ mod tests {
             "decorations": {"data_area": {"x": 10, "y": 10, "width": 300, "height": 200},
                             "offsets": [], "selected": null}
         }"#;
-        let out: serde_json::Value =
-            serde_json::from_str(&super::convert_radar_document_json(document).unwrap()).unwrap();
+        let out: serde_json::Value = serde_json::from_str(
+            &super::convert_document_json::<renderer::RadarChart>(document, None).unwrap(),
+        )
+        .unwrap();
         let config: renderer::Config = serde_json::from_value(out["config"].clone()).unwrap();
         assert!(config.polar().is_some());
         let series: Vec<renderer::SeriesConfig> =
@@ -1520,7 +2301,7 @@ mod tests {
         );
 
         assert!(matches!(
-            super::convert_radar_document_json("{\"series\": 1}"),
+            super::convert_document_json::<renderer::RadarChart>("{\"series\": 1}", None),
             Err(super::DocumentError::Json(_))
         ));
     }
@@ -1533,8 +2314,10 @@ mod tests {
                         "values": [{"whisker_low": 1, "q1": 2, "median": 3, "q3": 4, "whisker_high": 5,
                                     "outliers": [9, 10]}, null]}]
         }"#;
-        let out: serde_json::Value =
-            serde_json::from_str(&super::convert_boxplot_document_json(document).unwrap()).unwrap();
+        let out: serde_json::Value = serde_json::from_str(
+            &super::convert_document_json::<renderer::BoxPlotChart>(document, None).unwrap(),
+        )
+        .unwrap();
         assert_eq!(out["uploads"][1]["role"], "box_record");
         assert_eq!(out["uploads"][1]["rows"], 2);
         assert_eq!(out["uploads"][1]["fields"].as_array().unwrap().len(), 9);
@@ -1554,17 +2337,276 @@ mod tests {
                         "color": {"r": 0.2, "g": 0.4, "b": 0.6, "a": 1.0}}],
             "hovered": {"category_id": "a", "series_id": "s"}
         }"#;
-        let out: serde_json::Value =
-            serde_json::from_str(&super::convert_categorical_document_json(document).unwrap())
-                .unwrap();
+        let out: serde_json::Value = serde_json::from_str(
+            &super::convert_document_json::<renderer::CategoricalChart>(document, None).unwrap(),
+        )
+        .unwrap();
         assert_eq!(out["notes"][0]["path"], "hovered");
         assert_eq!(out["uploads"][1]["len"], 1);
 
         // A group width outside 0.1..0.95 breaks the document's own rule.
         let refused = document.replace("\"hovered\"", "\"group_width\": 2.0, \"hovered\"");
-        match super::convert_categorical_document_json(&refused) {
+        match super::convert_document_json::<renderer::CategoricalChart>(&refused, None) {
             Err(super::DocumentError::Rule(_)) => {}
             other => panic!("expected a rule refusal, got {other:?}"),
+        }
+    }
+
+    /// The setter's conversion of a document on a chart area (#334): what
+    /// `set_*_document` runs before it installs anything.
+    fn setter_report<D: super::LegacyDocument>(
+        json: &str,
+        chart_area: &renderer::layout::ChartArea,
+        policy: &super::LossPolicy,
+    ) -> Result<super::DocumentApply, super::DocumentError> {
+        let document = D::read(json)?;
+        super::document_apply(&document.convert_in(Some(chart_area)), policy)
+    }
+
+    /// A preview converted with the live chart area (`convert_*_document`
+    /// with `{chart_area}`) is the report the setter returns, notes
+    /// included, for each family (#334); the loss policy refuses exactly
+    /// the listed paths (and the paths under them), or any note.
+    #[test]
+    fn a_preview_on_the_chart_area_is_the_setters_report() {
+        let color = r#"{"r": 0.2, "g": 0.4, "b": 0.6, "a": 1.0}"#;
+        // A black background (dropped), and a data area the 1000 x 800
+        // placeholder holds but a 640 x 480 chart area does not.
+        let extra = r#""background": {"r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0},
+            "decorations": {"data_area": {"x": 500, "y": 300, "width": 400, "height": 300},
+                            "offsets": [], "selected": null}"#;
+        let categorical = format!(
+            r#"{{"categories": [{{"id": "a", "label": "A"}}],
+                "series": [{{"id": "s", "label": "S", "values": [2], "color": {color}}}], {extra}}}"#
+        );
+        let boxplot = format!(
+            r#"{{"categories": [{{"id": "a", "label": "A"}}],
+                "series": [{{"id": "s", "label": "S", "color": {color}, "values": [
+                    {{"whisker_low": 1, "q1": 2, "median": 3, "q3": 4, "whisker_high": 5}}]}}], {extra}}}"#
+        );
+        let radar = format!(
+            r#"{{"categories": [{{"id": "a", "label": "A"}}, {{"id": "b", "label": "B"}},
+                               {{"id": "c", "label": "C"}}],
+                "series": [{{"id": "s", "label": "S", "values": [1, 2, 3], "color": {color}}}], {extra}}}"#
+        );
+        type Convert = fn(&str, Option<&str>) -> Result<String, super::DocumentError>;
+        type Setter = fn(
+            &str,
+            &renderer::layout::ChartArea,
+            &super::LossPolicy,
+        ) -> Result<super::DocumentApply, super::DocumentError>;
+        let families: [(&str, Convert, Setter); 3] = [
+            (
+                &categorical,
+                super::convert_document_json::<renderer::CategoricalChart>,
+                setter_report::<renderer::CategoricalChart>,
+            ),
+            (
+                &boxplot,
+                super::convert_document_json::<renderer::BoxPlotChart>,
+                setter_report::<renderer::BoxPlotChart>,
+            ),
+            (
+                &radar,
+                super::convert_document_json::<renderer::RadarChart>,
+                setter_report::<renderer::RadarChart>,
+            ),
+        ];
+        let area = renderer::layout::ChartArea(renderer::layout::Rect {
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 480,
+        });
+        let paths = |json: &str| -> Vec<String> {
+            let value: serde_json::Value = serde_json::from_str(json).unwrap();
+            let notes = if value.is_array() {
+                &value
+            } else {
+                &value["notes"]
+            };
+            notes
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|n| n["path"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        for (document, convert, setter) in families {
+            let placeholder = convert(document, None).unwrap();
+            assert_eq!(paths(&placeholder), ["background"]);
+            let preview = convert(document, Some(r#"{"chart_area": [0, 0, 640, 480]}"#)).unwrap();
+            assert_eq!(paths(&preview), ["background", "decorations.data_area"]);
+            match setter(document, &area, &super::LossPolicy::Accept).unwrap() {
+                super::DocumentApply::Report(report) => assert_eq!(report, preview),
+                super::DocumentApply::Refused(notes) => panic!("refused: {notes}"),
+            }
+            // `null` options are no options.
+            assert_eq!(convert(document, Some("null")).unwrap(), placeholder);
+
+            let policy = |options: &str| super::LossPolicy::parse(Some(options)).unwrap();
+            for (options, refused) in [
+                (r#"{"refuse": ["background"]}"#, vec!["background"]),
+                (
+                    r#"{"refuse": ["decorations"]}"#,
+                    vec!["decorations.data_area"],
+                ),
+                (
+                    r#"{"refuse": "any"}"#,
+                    vec!["background", "decorations.data_area"],
+                ),
+            ] {
+                match setter(document, &area, &policy(options)).unwrap() {
+                    super::DocumentApply::Refused(notes) => {
+                        assert_eq!(paths(&notes), refused, "{options}");
+                        let notes: serde_json::Value = serde_json::from_str(&notes).unwrap();
+                        assert_eq!(notes[0]["kind"], "dropped");
+                        assert!(notes[0]["reason"].is_string());
+                    }
+                    super::DocumentApply::Report(_) => panic!("{options} accepted"),
+                }
+            }
+            for options in [
+                r#"{"refuse": ["title", "background.r", "decorations.data"]}"#,
+                r#"{"refuse": []}"#,
+                "{}",
+            ] {
+                match setter(document, &area, &policy(options)).unwrap() {
+                    super::DocumentApply::Report(report) => assert_eq!(report, preview),
+                    super::DocumentApply::Refused(notes) => panic!("{options} refused {notes}"),
+                }
+            }
+        }
+    }
+
+    /// The options of `convert_*_document` and `set_*_document` (#334):
+    /// what each accepts, and every field or shape it refuses.
+    #[test]
+    fn document_options_are_parsed_strictly() {
+        use super::LossPolicy;
+        assert_eq!(LossPolicy::parse(None).unwrap(), LossPolicy::Accept);
+        assert_eq!(LossPolicy::parse(Some("null")).unwrap(), LossPolicy::Accept);
+        assert_eq!(LossPolicy::parse(Some("{}")).unwrap(), LossPolicy::Accept);
+        assert_eq!(
+            LossPolicy::parse(Some(r#"{"refuse": "any"}"#)).unwrap(),
+            LossPolicy::Any
+        );
+        assert_eq!(
+            LossPolicy::parse(Some(r#"{"refuse": ["background", "overrides[0]"]}"#)).unwrap(),
+            LossPolicy::Paths(vec!["background".into(), "overrides[0]".into()])
+        );
+        for options in [
+            "not json",
+            "[]",
+            r#""any""#,
+            r#"{"refuse": "all"}"#,
+            r#"{"refuse": [1]}"#,
+            r#"{"refuse": [""]}"#,
+            r#"{"refuse": null}"#,
+            r#"{"refuse": "any", "strict": true}"#,
+            r#"{"chart_area": [0, 0, 640, 480]}"#,
+        ] {
+            assert!(
+                matches!(
+                    LossPolicy::parse(Some(options)),
+                    Err(super::DocumentError::Options(_))
+                ),
+                "{options}"
+            );
+        }
+
+        let area = |options: &str| super::convert_options_chart_area(Some(options));
+        assert_eq!(super::convert_options_chart_area(None).unwrap(), None);
+        assert_eq!(area("{}").unwrap(), None);
+        assert_eq!(
+            area(r#"{"chart_area": [1, 2, 640, 480]}"#).unwrap(),
+            Some(renderer::layout::ChartArea(renderer::layout::Rect {
+                x: 1,
+                y: 2,
+                width: 640,
+                height: 480,
+            }))
+        );
+        for options in [
+            r#"{"chart_area": [0, 0, 640]}"#,
+            r#"{"chart_area": [0, 0, 640, 480, 1]}"#,
+            r#"{"chart_area": [-1, 0, 640, 480]}"#,
+            r#"{"chart_area": [0.5, 0, 640, 480]}"#,
+            r#"{"chart_area": [0, 0, 4294967296, 480]}"#,
+            r#"{"chart_area": {"x": 0, "y": 0, "width": 640, "height": 480}}"#,
+            r#"{"refuse": "any"}"#,
+            "true",
+        ] {
+            assert!(
+                matches!(area(options), Err(super::DocumentError::Options(_))),
+                "{options}"
+            );
+        }
+        // A bad option refuses the call before the document is read.
+        assert!(matches!(
+            super::convert_document_json::<renderer::RadarChart>("{", Some("[]")),
+            Err(super::DocumentError::Options(_))
+        ));
+    }
+
+    /// An explicit data area reaches the converted config of each family
+    /// (#334): the issue's rectangle is its data area with no note, and one
+    /// the converted layout cannot hold is noted as dropped with a reason.
+    #[test]
+    fn the_converters_carry_an_explicit_data_area() {
+        let color = r#"{"r": 0.2, "g": 0.4, "b": 0.6, "a": 1.0}"#;
+        let categorical = format!(
+            r#"{{"categories": [{{"id": "a", "label": "A"}}],
+                "series": [{{"id": "s", "label": "S", "values": [2], "color": {color}}}]}}"#
+        );
+        let boxplot = format!(
+            r#"{{"categories": [{{"id": "a", "label": "A"}}],
+                "series": [{{"id": "s", "label": "S", "color": {color}, "values": [
+                    {{"whisker_low": 1, "q1": 2, "median": 3, "q3": 4, "whisker_high": 5}}]}}]}}"#
+        );
+        let radar = format!(
+            r#"{{"categories": [{{"id": "a", "label": "A"}}, {{"id": "b", "label": "B"}},
+                               {{"id": "c", "label": "C"}}],
+                "series": [{{"id": "s", "label": "S", "values": [1, 2, 3], "color": {color}}}]}}"#
+        );
+        let families: [(&str, fn(&str) -> Result<String, super::DocumentError>); 3] = [
+            (&categorical, |j| {
+                super::convert_document_json::<renderer::CategoricalChart>(j, None)
+            }),
+            (&boxplot, |j| {
+                super::convert_document_json::<renderer::BoxPlotChart>(j, None)
+            }),
+            (&radar, |j| {
+                super::convert_document_json::<renderer::RadarChart>(j, None)
+            }),
+        ];
+        let with_area = |document: &str, area: &str| {
+            let mut value: serde_json::Value = serde_json::from_str(document).unwrap();
+            value["decorations"] = serde_json::json!({
+                "data_area": serde_json::from_str::<serde_json::Value>(area).unwrap(),
+                "offsets": [],
+                "selected": null,
+            });
+            value.to_string()
+        };
+        for (document, convert) in families {
+            let issue = with_area(
+                document,
+                r#"{"x": 80, "y": 70, "width": 420, "height": 260}"#,
+            );
+            let out: serde_json::Value = serde_json::from_str(&convert(&issue).unwrap()).unwrap();
+            assert_eq!(out["notes"], serde_json::json!([]), "{document}");
+            let config: renderer::Config = serde_json::from_value(out["config"].clone()).unwrap();
+            assert_eq!(config.data_area().unwrap().0, area(80, 70, 420, 260).0);
+
+            let outside = with_area(
+                document,
+                r#"{"x": 900, "y": 700, "width": 300, "height": 200}"#,
+            );
+            let out: serde_json::Value = serde_json::from_str(&convert(&outside).unwrap()).unwrap();
+            assert_eq!(out["notes"][0]["path"], "decorations.data_area");
+            assert_eq!(out["notes"][0]["kind"], "dropped");
+            assert!(!out["notes"][0]["reason"].as_str().unwrap().is_empty());
         }
     }
 
@@ -1720,6 +2762,100 @@ mod tests {
         );
         assert_eq!(display.chart_area.0.width, 500);
         assert!((display.bottom_x.label_style.font_size - 9.0).abs() < 1e-6);
+    }
+
+    /// A registered chart's hit carries every series' nearest datum with
+    /// its layer in the form `active_layer` answers (#381).
+    #[test]
+    fn picked_point_with_nearest_json_matches_public_contract() {
+        let picked = renderer::PickedPoint {
+            source_id: None,
+            series_id: "series-a".into(),
+            point_index: 7,
+            distance_px: 0.5,
+        };
+        let nearest = [
+            renderer::NearestDatum {
+                layer: renderer::LayerRef::Base,
+                source_id: None,
+                series_id: "series-a".into(),
+                point_index: 7,
+                distance_px: 0.5,
+            },
+            renderer::NearestDatum {
+                layer: renderer::LayerRef::Overlay(0),
+                source_id: Some("src".into()),
+                series_id: "series-b".into(),
+                point_index: 2,
+                distance_px: 12.0,
+            },
+        ];
+        let json: serde_json::Value = serde_json::from_str(
+            &picked_point_with_nearest_json_string(Some(&picked), &nearest).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "source_id": null,
+                "series_id": "series-a",
+                "point_index": 7,
+                "distance_px": 0.5,
+                "nearest": [
+                    {
+                        "layer": serde_json::to_value(renderer::LayerRef::Base).unwrap(),
+                        "source_id": null,
+                        "series_id": "series-a",
+                        "point_index": 7,
+                        "distance_px": 0.5,
+                    },
+                    {
+                        "layer": serde_json::to_value(renderer::LayerRef::Overlay(0)).unwrap(),
+                        "source_id": "src",
+                        "series_id": "series-b",
+                        "point_index": 2,
+                        "distance_px": 12.0,
+                    },
+                ],
+            })
+        );
+    }
+
+    /// A miss keeps the hit's keys with null point fields and still
+    /// carries every series' nearest datum (#381).
+    #[test]
+    fn a_missed_pick_json_carries_the_nearest_data() {
+        let nearest = [renderer::NearestDatum {
+            layer: renderer::LayerRef::Base,
+            source_id: Some("src".into()),
+            series_id: "series-a".into(),
+            point_index: 3,
+            distance_px: 40.0,
+        }];
+        let json: serde_json::Value =
+            serde_json::from_str(&picked_point_with_nearest_json_string(None, &nearest).unwrap())
+                .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "source_id": null,
+                "series_id": null,
+                "point_index": null,
+                "distance_px": null,
+                "nearest": [{
+                    "layer": serde_json::to_value(renderer::LayerRef::Base).unwrap(),
+                    "source_id": "src",
+                    "series_id": "series-a",
+                    "point_index": 3,
+                    "distance_px": 40.0,
+                }],
+            })
+        );
+        let empty: serde_json::Value =
+            serde_json::from_str(&picked_point_with_nearest_json_string(None, &[]).unwrap())
+                .unwrap();
+        assert_eq!(empty["nearest"], serde_json::json!([]));
+        assert!(empty["series_id"].is_null());
     }
 
     #[test]
@@ -2367,6 +3503,135 @@ mod tests {
         assert!(shown.layout_json((4, 4))["panels"][0]["data_area"].is_null());
     }
 
+    /// The chart-less layout query is the canvas's layout for the same
+    /// candidate and surface: the same JSON a `ShownDocument` of the placed
+    /// document reports (#334).
+    #[test]
+    fn config_layout_is_the_canvas_layout_at_that_surface() {
+        let logical = layered_document();
+        let json = serde_json::to_string(&logical).unwrap();
+        for surface in [(600, 300), (1200, 600), (900, 450)] {
+            let (placed, _, scale) = renderer::display_config_for_surface(&logical, surface);
+            let shown = ShownDocument {
+                logical: &logical,
+                placed: &placed,
+                scale,
+            };
+            let expected = shown.layout_json(surface);
+            let free =
+                config_layout_json(&json, f64::from(surface.0), f64::from(surface.1)).unwrap();
+            assert_eq!(free, expected);
+            assert_eq!(fitted_layout_json(&logical, surface), expected);
+        }
+    }
+
+    /// Surface dimensions scale every canvas rect with the fit and leave
+    /// the document rects; a surface wider than the document's aspect
+    /// centres it (#334).
+    #[test]
+    fn config_layout_follows_the_surface_dimensions() {
+        let json = serde_json::to_string(&layered_document()).unwrap();
+        let at = |w: f64, h: f64| config_layout_json(&json, w, h).unwrap();
+        let (one, two) = (at(600.0, 300.0), at(1200.0, 600.0));
+        assert_eq!(one["scale"], serde_json::json!(1.0));
+        assert_eq!(two["scale"], serde_json::json!(2.0));
+        assert_eq!(two["surface"], serde_json::json!([1200, 600]));
+        let doubled = |r: renderer::layout::Rect| renderer::layout::Rect {
+            x: r.x * 2,
+            y: r.y * 2,
+            width: r.width * 2,
+            height: r.height * 2,
+        };
+        assert_eq!(
+            rect_of(&two["document_area"]["canvas"]),
+            doubled(rect_of(&one["document_area"]["canvas"]))
+        );
+        let (p1, p2) = (
+            one["panels"].as_array().unwrap(),
+            two["panels"].as_array().unwrap(),
+        );
+        assert_eq!(p1.len(), 3);
+        for (a, b) in p1.iter().zip(p2) {
+            assert_eq!(a["layer"], b["layer"]);
+            assert_eq!(a["frame"]["document"], b["frame"]["document"]);
+            assert_eq!(a["data_area"]["document"], b["data_area"]["document"]);
+            assert_eq!(
+                rect_of(&b["frame"]["canvas"]),
+                doubled(rect_of(&a["frame"]["canvas"]))
+            );
+            // The data area is laid out from margins in placed pixels, so it
+            // follows the frame within a pixel of rounding.
+            let (da, db) = (
+                rect_of(&a["data_area"]["canvas"]),
+                rect_of(&b["data_area"]["canvas"]),
+            );
+            let near = |x: u32, y: u32| x.abs_diff(y * 2) <= 2;
+            assert!(near(db.x, da.x) && near(db.y, da.y), "{da:?} {db:?}");
+            assert!(near(db.width, da.width) && near(db.height, da.height));
+        }
+        let wide = at(1200.0, 300.0);
+        assert_eq!(wide["scale"], serde_json::json!(1.0));
+        assert_eq!(
+            rect_of(&wide["document_area"]["canvas"]),
+            renderer::layout::Rect {
+                x: 300,
+                y: 0,
+                width: 600,
+                height: 300,
+            }
+        );
+    }
+
+    /// Layout queries refuse a size that is not a whole number of pixels
+    /// from 1 and a lone dimension with `invalid_size`, and a candidate as
+    /// before (#334).
+    #[test]
+    fn layout_queries_refuse_bad_sizes_and_candidates() {
+        let json = serde_json::to_string(&layered_document()).unwrap();
+        let code =
+            |result: Result<serde_json::Value, super::LayoutQueryError>| result.unwrap_err().code;
+        for bad in [
+            0.0,
+            -1.0,
+            0.5,
+            1.5,
+            f64::NAN,
+            f64::INFINITY,
+            f64::from(u32::MAX) + 1.0,
+        ] {
+            assert_eq!(code(config_layout_json(&json, bad, 300.0)), "invalid_size");
+            assert_eq!(code(config_layout_json(&json, 600.0, bad)), "invalid_size");
+            assert_eq!(
+                layout_surface(Some(bad), Some(300.0)).unwrap_err().code,
+                "invalid_size"
+            );
+        }
+        assert_eq!(layout_surface(None, None), Ok(None));
+        assert_eq!(
+            layout_surface(Some(640.0), Some(480.0)),
+            Ok(Some((640, 480)))
+        );
+        assert_eq!(
+            layout_surface(Some(640.0), None).unwrap_err().code,
+            "invalid_size"
+        );
+        assert_eq!(
+            layout_surface(None, Some(480.0)).unwrap_err().code,
+            "invalid_size"
+        );
+        assert_eq!(code(config_layout_json("{", 600.0, 300.0)), "config_json");
+        assert_eq!(layout_candidate("{").unwrap_err().code, "config_json");
+        let mut infeasible = layered_document();
+        infeasible.overlays[0].series = vec!["a".into()];
+        infeasible.overlays.push(infeasible.overlays[0].clone());
+        let infeasible = serde_json::to_string(&infeasible).unwrap();
+        assert_eq!(
+            code(config_layout_json(&infeasible, 600.0, 300.0)),
+            "layout"
+        );
+        assert_eq!(layout_candidate(&infeasible).unwrap_err().code, "layout");
+    }
+
     /// A preview is placed in both spaces: the canvas shape is the document
     /// shape scaled and placed, and an item the raster skips reports why.
     /// Anchor conversion keeps the drawn position (#312).
@@ -2396,8 +3661,8 @@ mod tests {
             let (canvas, document) = shown.annotation_preview(&arrow).unwrap();
             let document = document.unwrap();
             let (canvas, document) = (
-                annotation_preview_json(&canvas),
-                annotation_preview_json(&document),
+                annotation_preview_json(&canvas, 1.0),
+                annotation_preview_json(&document, 1.0),
             );
             assert_eq!(canvas["shape"], "arrow");
             for i in 0..2 {
@@ -2428,6 +3693,93 @@ mod tests {
             assert_eq!(
                 shown.annotation_preview(&outside).err(),
                 Some(renderer::AnnotationSkip::OutOfRange)
+            );
+        }
+    }
+
+    /// The radial preview (#334) places the item once in the frame's
+    /// logical anchor space: the canvas shape is that shape times the display
+    /// scale, and an item the radial raster skips reports why.
+    #[test]
+    fn radial_annotation_preview_scales_the_logical_placement() {
+        use renderer::annotation::{AxisSpace, PixelSpace};
+        use renderer::layout::RectF;
+        use renderer::{Anchor, Annotation, AnnotationKind, AnnotationSkip};
+        let canvas = RectF {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 300.0,
+        };
+        let space = PixelSpace {
+            panel: canvas,
+            plot: canvas,
+            x: AxisSpace::NONE,
+            y: AxisSpace::NONE,
+        };
+        let note = |anchor, text: &str| {
+            Annotation::new(AnnotationKind::Text {
+                anchor,
+                text: renderer::text::RichText::plain(text, renderer::Color::BLACK, 12.0, ""),
+                box_style: Some(Default::default()),
+                align: Default::default(),
+            })
+        };
+        let text = note(Anchor::Ratio { x: 0.25, y: 0.75 }, "peak");
+        let shape = Annotation::new(AnnotationKind::Rect {
+            from: Anchor::Ratio { x: 0.5, y: 0.5 },
+            to: Anchor::Ratio { x: 0.75, y: 0.25 },
+            style: Default::default(),
+        });
+        let rect = |value: &serde_json::Value| -> Vec<f64> {
+            (0..4).map(|i| value[i].as_f64().unwrap()).collect()
+        };
+        for scale in [1.0f32, 2.0] {
+            for (item, shape_name) in [(&text, "text"), (&shape, "polygon")] {
+                let (canvas, document) = radial_annotation_preview(item, space, scale).unwrap();
+                assert_eq!(canvas["shape"], shape_name);
+                assert_eq!(document["shape"], shape_name);
+                let (c, d) = (rect(&canvas["bounds"]), rect(&document["bounds"]));
+                for (c, d) in c.iter().zip(&d) {
+                    assert!(
+                        (c - d * f64::from(scale)).abs() < 1e-3,
+                        "{scale}: {c} vs {d}"
+                    );
+                }
+                assert!(d[2] > 0.0 && d[3] > 0.0, "{d:?}");
+            }
+            // The polygon's corners scale with the bounds.
+            let (canvas, document) = radial_annotation_preview(&shape, space, scale).unwrap();
+            let corners = document["points"].as_array().unwrap();
+            assert_eq!(corners.len(), canvas["points"].as_array().unwrap().len());
+            for (i, corner) in corners.iter().enumerate() {
+                for axis in 0..2 {
+                    let d = corner[axis].as_f64().unwrap();
+                    let c = canvas["points"][i][axis].as_f64().unwrap();
+                    assert!((c - d * f64::from(scale)).abs() < 1e-3);
+                }
+            }
+            // The radial chart has no value axes.
+            let line = Annotation::new(AnnotationKind::ReferenceLine {
+                axis: renderer::AnnotationAxis::X,
+                value: 1.0,
+                style: Default::default(),
+                label: None,
+            });
+            for item in [line, note(Anchor::Data { x: 1.0, y: 1.0 }, "peak")] {
+                assert_eq!(
+                    radial_annotation_preview(&item, space, scale).err(),
+                    Some(AnnotationSkip::NoValueAxis)
+                );
+            }
+            assert_eq!(
+                radial_annotation_preview(
+                    &note(Anchor::Ratio { x: 0.5, y: 0.5 }, ""),
+                    space,
+                    scale
+                )
+                .err(),
+                Some(AnnotationSkip::EmptyText)
             );
         }
     }
@@ -2501,10 +3853,11 @@ mod web {
     use renderer::{
         Chart, ChartId, ChartRenderStamp, ChartView, Color, ColumnSource, CpuTextMeasure,
         DataLineStyleConfig, DataRenderType, DefragPolicy, FitExtent, HiLoColumnSource, HitId,
-        HitMap, LayerHit, RegisteredChartDrawItem, Renderer, ResizeHandle as ModelResizeHandle,
-        SeriesConfig, StreamColumn, StreamEncoding, StreamRangeSourceBinding, StreamReplay,
-        StreamSourceBinding, StreamStatistics, StreamingChartOptions, StreamingLimits,
-        WindowedRenderer,
+        HitMap, LayerHit, ParallelSeries, RegisteredChartDrawItem, Renderer,
+        ResizeHandle as ModelResizeHandle, RgbImageSeries, SeriesConfig, StreamColumn,
+        StreamEncoding, StreamRangeSourceBinding, StreamReplay, StreamSourceBinding,
+        StreamStatistics, StreamingChartOptions, StreamingLimits, StreamlineSeries, TernarySeries,
+        VectorSeries, WindowedRenderer,
     };
 
     use renderer::data_render::{AllocError, GrowthPolicy};
@@ -2534,14 +3887,15 @@ mod web {
     pub(crate) mod convert;
     pub use convert::{ColorCycle, color_cycle_css};
     use convert::{
-        check_subplot, coded_error, column_registration_error, js_err, js_names, js_safe_u64,
-        theme_error, theme_from_js, theme_to_js,
+        check_subplot, coded_error, column_registration_error, document_error, js_err, js_names,
+        js_safe_u64, theme_error, theme_from_js, theme_to_js,
     };
     mod decorations;
-    pub use decorations::AxisPreset;
     pub(crate) use decorations::vertex_handle_index;
+    pub use decorations::{AxisPreset, inspect_config_layout};
     pub(crate) use decorations::{
-        annotation_index_of, annotation_kind_name, annotation_warnings_json,
+        annotation_index_of, annotation_kind_name, annotation_preview_value,
+        annotation_warnings_json,
     };
     mod export;
     mod monotonic;
@@ -2813,7 +4167,11 @@ mod web {
                 RangeWhiskers, Shading, SizeScale, VectorColorMap, VectorComponents, VectorPivot,
                 VectorScale, VectorStyle, Violin, ViolinBody, ViolinHalf, ViolinStyle,
             };
-            use renderer::{Color, DataRenderType, SeriesConfig};
+            use renderer::{
+                BoxSeries, CategoryBarSeries, Color, DataRenderType, HistogramSeries,
+                ParallelSeries, RangeBarSeries, RgbImageSeries, SeriesConfig, TernarySeries,
+                VectorSeries,
+            };
 
             const AXES: usize = 20;
             let column = |id: &str, data: &[f64]| (id.to_string(), data.to_vec());
@@ -2863,6 +4221,7 @@ mod web {
                 head_width_px: 8.0,
                 min_length_px: 0.0,
                 color_map,
+                auto_scale: false,
             };
             let matrix = |ids: &[&str], grid_layout| MatrixRef {
                 columns: ids.iter().map(|id| id.to_string()).collect(),
@@ -2882,14 +4241,16 @@ mod web {
                 })
             };
             let bar_style = || CategoryBarStyle::default();
-            let box_plot = |violin| DataRenderType::BoxPlot {
-                color: Color::from_rgb8(40, 120, 200),
-                style: BoxPlotStyle::default(),
-                labels: BoxPlotSeriesLabels::default(),
-                outliers: None,
-                overrides: None,
-                violin,
-                points: None,
+            let box_plot = |violin| {
+                DataRenderType::BoxPlot(BoxSeries {
+                    color: Color::from_rgb8(40, 120, 200),
+                    style: BoxPlotStyle::default(),
+                    labels: BoxPlotSeriesLabels::default(),
+                    outliers: None,
+                    overrides: None,
+                    violin,
+                    points: None,
+                })
             };
             fn colorbar(config: &mut renderer::Config) {
                 config.colorbar = Some(renderer::default::default_colorbar_options());
@@ -2925,6 +4286,8 @@ mod web {
                 config.left_y.max = 1.0;
                 config.left_y.categories = None;
                 config.set_parallel(Some(ParallelOptions {
+                    names_on_top: false,
+                    label_backdrop: None,
                     axes: (0..AXES).map(|_| ParallelAxis::new(0.0, 10.0)).collect(),
                 }));
             }
@@ -3013,14 +4376,14 @@ mod web {
                         "arrows",
                         "vx",
                         "vy",
-                        DataRenderType::Vector {
+                        DataRenderType::Vector(VectorSeries {
                             components: VectorComponents::Points {
                                 u: "vu".into(),
                                 v: "vv".into(),
                                 w: None,
                             },
                             style: vector_style(Some(VectorColorMap::Column("vc".into()))),
-                        },
+                        }),
                     ),
                     pick: point("arrows", 1),
                     keys: keys(&["x", "y", "u", "v", "color_value"]),
@@ -3046,14 +4409,14 @@ mod web {
                             "arrows3d",
                             "ax",
                             "ay",
-                            DataRenderType::Vector {
+                            DataRenderType::Vector(VectorSeries {
                                 components: VectorComponents::Points {
                                     u: "au".into(),
                                     v: "av".into(),
                                     w: Some("aw".into()),
                                 },
                                 style: vector_style(None),
-                            },
+                            }),
                         )
                     },
                     pick: point("arrows3d", 1),
@@ -3069,11 +4432,11 @@ mod web {
                         "rows",
                         &parallel_columns[0],
                         &parallel_columns[1],
-                        DataRenderType::Parallel {
+                        DataRenderType::Parallel(ParallelSeries {
                             columns: parallel_columns.clone(),
                             line: parallel_line,
                             color_column: Some("pcol".into()),
-                        },
+                        }),
                     ),
                     pick: point("rows", 1),
                     keys: keys(&["x", "y", "values", "color_value"]),
@@ -3091,7 +4454,7 @@ mod web {
                         "hist",
                         "edges",
                         "heights",
-                        DataRenderType::Histogram {
+                        DataRenderType::Histogram(HistogramSeries {
                             bar: DataBarStyleConfig {
                                 fill_color: Color::BLACK,
                                 border_color: Color::BLACK,
@@ -3102,7 +4465,7 @@ mod web {
                                 orientation: BarOrientation::Vertical,
                                 bar_style_overrides: None,
                             },
-                        },
+                        }),
                     ),
                     pick: bin("hist", 1),
                     keys: keys(&["bin_start", "bin_end", "value", "orientation"]),
@@ -3120,13 +4483,13 @@ mod web {
                         "bars",
                         "cpos",
                         "cval",
-                        DataRenderType::CategoryBars {
+                        DataRenderType::CategoryBars(CategoryBarSeries {
                             color: Color::from_rgb8(40, 120, 200),
                             style: bar_style(),
                             labels: CategoryBarSeriesLabels::default(),
                             label_format: CategoryBarLabelFormat::Value,
                             overrides: None,
-                        },
+                        }),
                     ),
                     pick: bin("bars", 1),
                     keys: keys(&["category_id", "value", "direction", "mode"]),
@@ -3149,7 +4512,7 @@ mod web {
                         "ranges",
                         "rpos",
                         "rend",
-                        DataRenderType::RangeBars {
+                        DataRenderType::RangeBars(RangeBarSeries {
                             color: Color::from_rgb8(40, 120, 200),
                             style: bar_style(),
                             start: "rstart".into(),
@@ -3177,7 +4540,7 @@ mod web {
                             connector: None,
                             slot_width: None,
                             labels: CategoryBarSeriesLabels::default(),
-                        },
+                        }),
                     ),
                     pick: bin("ranges", 1),
                     keys: keys(&[
@@ -3190,6 +4553,40 @@ mod web {
                         "progress",
                         "category_id",
                     ]),
+                },
+                SelectionScene {
+                    name: "row-coloured range bars",
+                    columns: vec![
+                        column("rpos", &[0.0, 1.0, 2.0]),
+                        column("rend", &[4.0, 5.0, 6.0]),
+                        column("rstart", &[1.0, 2.0, 3.0]),
+                    ],
+                    record: None,
+                    ragged: vec![],
+                    edit: three_categories,
+                    series: series(
+                        "rows",
+                        "rpos",
+                        "rend",
+                        DataRenderType::RangeBars(RangeBarSeries {
+                            color: Color::from_rgb8(40, 120, 200),
+                            style: bar_style(),
+                            start: "rstart".into(),
+                            whiskers: None,
+                            color_by: RangeColor::ByRow {
+                                colors: vec![
+                                    Color::from_rgb8(40, 120, 200),
+                                    Color::from_rgb8(200, 80, 40),
+                                ],
+                            },
+                            progress: None,
+                            connector: None,
+                            slot_width: None,
+                            labels: CategoryBarSeriesLabels::default(),
+                        }),
+                    ),
+                    pick: bin("rows", 2),
+                    keys: keys(&["position", "end", "start", "category_id"]),
                 },
                 SelectionScene {
                     name: "box record with every field",
@@ -3303,7 +4700,7 @@ mod web {
                         "grid",
                         "gx",
                         "gy",
-                        DataRenderType::Vector {
+                        DataRenderType::Vector(VectorSeries {
                             components: VectorComponents::Grid {
                                 u: matrix(&["gu0", "gu1"], GridLayout::Centers),
                                 v: matrix(&["gv0", "gv1"], GridLayout::Centers),
@@ -3312,7 +4709,7 @@ mod web {
                                 &["gc0", "gc1"],
                                 GridLayout::Centers,
                             )))),
-                        },
+                        }),
                     ),
                     pick: cell("grid", 1, 2),
                     keys: keys(&["x", "y", "u", "v", "color_value"]),
@@ -3331,12 +4728,12 @@ mod web {
                         "mix",
                         "ta",
                         "tb",
-                        DataRenderType::Ternary {
+                        DataRenderType::Ternary(TernarySeries {
                             c_column: "tc".into(),
                             scatter: Some(scatter(None, None)),
                             line: None,
                             region: None,
-                        },
+                        }),
                     ),
                     pick: point("mix", 2),
                     keys: keys(&["x", "y", "c"]),
@@ -3360,14 +4757,14 @@ mod web {
                         "image",
                         "ix",
                         "iy",
-                        DataRenderType::RgbImage {
+                        DataRenderType::RgbImage(RgbImageSeries {
                             red: matrix(&["r0", "r1"], GridLayout::Centers),
                             green: matrix(&["g0", "g1"], GridLayout::Centers),
                             blue: matrix(&["b0", "b1"], GridLayout::Centers),
                             range: [0.0, 1.0],
                             shading: Shading::Flat,
                             opacity: 1.0,
-                        },
+                        }),
                     ),
                     pick: cell("image", 1, 2),
                     keys: keys(&["x", "y", "red", "green", "blue"]),
@@ -3508,6 +4905,15 @@ mod web {
                         ("progress", 0.5),
                     ] {
                         assert_eq!(details[role], value, "{role}");
+                    }
+                }
+                // Colour by row (#357) reads no column: no colour role.
+                if scene.name.starts_with("row-coloured") {
+                    for (role, value) in [("position", 2.0), ("end", 6.0), ("start", 3.0)] {
+                        assert_eq!(details[role], value, "{role}");
+                    }
+                    for absent in ["state", "total"] {
+                        assert!(details.get(absent).is_none(), "{absent}");
                     }
                 }
                 if scene.name.starts_with("parallel") {
@@ -3666,15 +5072,15 @@ mod web {
             }
 
             chart
-                .set_categorical_document(CATEGORICAL_DOCUMENT)
+                .set_categorical_document(CATEGORICAL_DOCUMENT, None)
                 .unwrap();
-            assert!(chart.set_categorical_document("{").is_err());
+            assert!(chart.set_categorical_document("{", None).is_err());
             remove_every_column(&mut chart, "categorical document");
-            chart.set_boxplot_document(BOXPLOT_DOCUMENT).unwrap();
-            assert!(chart.set_boxplot_document("{").is_err());
+            chart.set_boxplot_document(BOXPLOT_DOCUMENT, None).unwrap();
+            assert!(chart.set_boxplot_document("{", None).is_err());
             remove_every_column(&mut chart, "box plot document");
-            chart.set_radar_document(RADAR_DOCUMENT).unwrap();
-            assert!(chart.set_radar_document("{").is_err());
+            chart.set_radar_document(RADAR_DOCUMENT, None).unwrap();
+            assert!(chart.set_radar_document("{", None).is_err());
             remove_every_column(&mut chart, "radar document");
             assert!(!chart.remove_column("missing").unwrap());
 

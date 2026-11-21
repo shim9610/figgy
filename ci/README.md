@@ -276,8 +276,14 @@ fails with "A valid external Instance reference no longer exists". Pass the Vulk
 SwiftShader flags through `BROWSER_ARGS`:
 
 ```sh
-export BROWSER_ARGS='--enable-features=Vulkan --use-angle=vulkan --enable-unsafe-swiftshader'
+export BROWSER_ARGS='--enable-features=Vulkan --use-angle=vulkan --enable-unsafe-swiftshader --ignore-gpu-blocklist'
 ```
+
+The canvas then needs a Vulkan driver for ANGLE (Mesa's lavapipe, from the
+`mesa-vulkan-drivers` package listed under [Run locally](#run-locally)). With
+lavapipe installed, Chromium blocklists that CPU driver and reports no WebGPU
+adapter unless `--ignore-gpu-blocklist` is passed; WebGPU still runs on
+SwiftShader. `ci/shader_compile.cjs` reads the same `BROWSER_ARGS`.
 
 The test runs real window initialization and full prewarm, checks that a second
 prewarm creates nothing, renders automatic contour labels, and decodes the exported

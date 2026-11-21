@@ -33,7 +33,8 @@ pub enum Slot {
     Above,
 }
 
-/// The text of a placed block: a single-style string or a rich text.
+/// The text of a placed block: a single-style string, a rich text, or a
+/// rich text drawn at `scale` times its stored sizes.
 #[derive(Clone, Copy, Debug)]
 pub enum TextRef<'a> {
     Plain {
@@ -43,6 +44,28 @@ pub enum TextRef<'a> {
         color: Color,
     },
     Rich(&'a RichText),
+    /// A rich text drawn `scale` times as large as it is stored: its size
+    /// and every segment's own size multiplied, an appearance choice of the
+    /// element that places it (a Feynman series' `style.label_scale`). The
+    /// stored text keeps its sizes; the extents of the [`PlacedText`] are
+    /// the scaled ones, and a sink draws it as the rich text with its sizes
+    /// multiplied by `scale`.
+    ScaledRich {
+        text: &'a RichText,
+        scale: f32,
+    },
+}
+
+impl<'a> TextRef<'a> {
+    /// The rich text and the factor it is drawn at: `1` for
+    /// [`Self::Rich`], `None` for [`Self::Plain`].
+    pub fn rich(&self) -> Option<(&'a RichText, f32)> {
+        match *self {
+            Self::Plain { .. } => None,
+            Self::Rich(text) => Some((text, 1.0)),
+            Self::ScaledRich { text, scale } => Some((text, scale)),
+        }
+    }
 }
 
 /// One placed block of text: its text, the baseline origin of its first
@@ -54,6 +77,19 @@ pub struct PlacedText<'a> {
     pub origin: (f32, f32),
     pub extents: TextExtents,
     pub rotation: Option<(f32, (f32, f32))>,
+    /// A stroke around every glyph and rule of the block, drawn under its
+    /// fill (#357); `None` draws none. Decided per draw, never stored. The
+    /// extents and [`Self::rect`] do not include it, so hit boxes stay
+    /// those of the text.
+    pub outline: Option<TextOutline>,
+}
+
+/// The outline of a [`PlacedText`] (#357): its colour and how far it
+/// reaches past the glyphs' edges, logical pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextOutline {
+    pub color: Color,
+    pub width: f32,
 }
 
 impl PlacedText<'_> {

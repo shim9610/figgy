@@ -16,6 +16,7 @@ mod vector_style_tests {
             head_width_px: 6.0,
             min_length_px: 0.0,
             color_map: None,
+            auto_scale: false,
         }
     }
 
@@ -63,6 +64,47 @@ mod vector_style_tests {
         assert!(!data.fit_scale_3d((-1.0, 1.0), (0.0, 1.0), (f64::NAN, 1.0), 1.0));
         assert!(!data.fit_scale_3d((-1.0, 1.0), (0.0, 1.0), (0.0, 1.0), -1.0));
         assert_eq!(data.scale, VectorScale::Data { factor: 2.0 });
+    }
+
+    // The auto-scale target is the mean spacing between the arrows over
+    // the data area, a little short of it, never shorter than the head
+    // (#357); an explicit fit turns auto-scaling off.
+    #[test]
+    fn auto_scale_targets_the_arrow_spacing() {
+        let mut style = style(VectorScale::Pixels { px_per_unit: 1.0 });
+        style.auto_scale = true;
+        // 25 x 17 arrows on a 650 x 450 area: about 26.2 px apart.
+        let target = style.auto_scale_target_px(25 * 17, 650.0, 450.0).unwrap();
+        let spacing = (650.0f64 * 450.0 / 425.0).sqrt();
+        assert!((target - spacing * VectorStyle::AUTO_SCALE_SPACING).abs() < 1e-9);
+        // Dense arrows still get a head's length.
+        let dense = style.auto_scale_target_px(1_000_000, 100.0, 100.0).unwrap();
+        assert_eq!(dense, f64::from(style.head_length_px));
+        assert_eq!(style.auto_scale_target_px(0, 100.0, 100.0), None);
+        assert_eq!(style.auto_scale_target_px(4, 0.0, 100.0), None);
+        assert_eq!(style.auto_scale_target_px(4, f64::NAN, 100.0), None);
+        assert!(style.fit_scale((-1.0, 1.0), (0.0, 1.0), target));
+        assert!(!style.auto_scale, "an explicit fit fixes the scale");
+        let mut style = self::style(VectorScale::Pixels { px_per_unit: 1.0 });
+        style.auto_scale = true;
+        assert!(style.fit_scale_3d((-1.0, 1.0), (0.0, 1.0), (0.0, 1.0), 10.0));
+        assert!(!style.auto_scale);
+    }
+
+    // A document written before `auto_scale` reads it off, and it is only
+    // written when on (#357).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn auto_scale_is_optional_on_the_wire() {
+        let off = style(VectorScale::Pixels { px_per_unit: 1.0 });
+        let json = serde_json::to_string(&off).unwrap();
+        assert!(!json.contains("auto_scale"), "{json}");
+        assert_eq!(serde_json::from_str::<VectorStyle>(&json).unwrap(), off);
+        let mut on = off.clone();
+        on.auto_scale = true;
+        let json = serde_json::to_string(&on).unwrap();
+        assert!(json.contains("\"auto_scale\":true"), "{json}");
+        assert_eq!(serde_json::from_str::<VectorStyle>(&json).unwrap(), on);
     }
 
     #[test]
@@ -221,9 +263,9 @@ mod serde_tests {
     use super::{
         DataBarStyleConfig, DataErrorBarPointStyleConfig, DataErrorBarPointStyleOverride,
         DataErrorBarStyleConfig, DataRenderType, DataScatterPointStyleConfig,
-        DataScatterPointStyleOverride, DataScatterStyleConfig, GridLayout, MatrixOrientation,
-        MatrixRef, PointColorMap, ScatterShape, SeriesConfig, SizeScale, VectorColorMap,
-        VectorComponents, VectorPivot, VectorScale, VectorStyle,
+        DataScatterPointStyleOverride, DataScatterStyleConfig, GridLayout, HistogramSeries,
+        MatrixOrientation, MatrixRef, PointColorMap, ScatterShape, SeriesConfig, SizeScale,
+        VectorColorMap, VectorComponents, VectorPivot, VectorScale, VectorSeries, VectorStyle,
     };
     use crate::color::Color;
 
@@ -497,6 +539,7 @@ mod serde_tests {
             head_width_px: 6.0,
             min_length_px: 2.0,
             color_map: Some(VectorColorMap::Column("speed".into())),
+            auto_scale: false,
         };
         let points = SeriesConfig {
             series_id: "flow".into(),
@@ -505,14 +548,14 @@ mod serde_tests {
             x_column: "x".into(),
             y_column: "y".into(),
             z_column: None,
-            render_type: DataRenderType::Vector {
+            render_type: DataRenderType::Vector(VectorSeries {
                 components: VectorComponents::Points {
                     u: "u".into(),
                     v: "v".into(),
                     w: None,
                 },
                 style: style.clone(),
-            },
+            }),
         };
         let json = serde_json::to_string(&points).unwrap();
         assert!(json.contains("\"Vector\""));
@@ -527,7 +570,7 @@ mod serde_tests {
             grid_layout: GridLayout::Centers,
         };
         let gridded = SeriesConfig {
-            render_type: DataRenderType::Vector {
+            render_type: DataRenderType::Vector(VectorSeries {
                 components: VectorComponents::Grid {
                     u: grid(&["u0", "u1"]),
                     v: grid(&["v0", "v1"]),
@@ -535,9 +578,10 @@ mod serde_tests {
                 style: VectorStyle {
                     scale: VectorScale::Data { factor: 0.5 },
                     color_map: Some(VectorColorMap::Grid(grid(&["m0", "m1"]))),
+                    auto_scale: false,
                     ..style
                 },
-            },
+            }),
             ..points
         };
         let json = serde_json::to_string(&gridded).unwrap();
@@ -552,7 +596,7 @@ mod serde_tests {
         // length is zero and omitted, and there is no colour map.
         let minimal = r#"{"series_id":"q","source_id":null,"label":null,"x_column":"x","y_column":"y","render_type":{"Vector":{"components":{"Points":{"u":"u","v":"v"}},"style":{"color":{"r":0.0,"g":0.0,"b":0.0,"a":1.0},"width_px":1.0,"scale":{"Pixels":{"px_per_unit":1.0}},"head_length_px":6.0,"head_width_px":4.0}}}}"#;
         let parsed: SeriesConfig = serde_json::from_str(minimal).unwrap();
-        let DataRenderType::Vector { style, .. } = &parsed.render_type else {
+        let DataRenderType::Vector(VectorSeries { style, .. }) = &parsed.render_type else {
             panic!("expected a vector series");
         };
         assert_eq!(style.pivot, VectorPivot::Tail);
@@ -566,7 +610,7 @@ mod serde_tests {
         // A 2D document has no `w` (#211) and re-serializes without one; a
         // 3D vector writes it and reads it back.
         assert!(!again.contains("\"w\""));
-        let DataRenderType::Vector { components, .. } = &parsed.render_type else {
+        let DataRenderType::Vector(VectorSeries { components, .. }) = &parsed.render_type else {
             unreachable!()
         };
         assert!(matches!(
@@ -574,10 +618,10 @@ mod serde_tests {
             VectorComponents::Points { w: None, .. }
         ));
         let mut with_w = parsed.clone();
-        if let DataRenderType::Vector {
+        if let DataRenderType::Vector(VectorSeries {
             components: VectorComponents::Points { w, .. },
             ..
-        } = &mut with_w.render_type
+        }) = &mut with_w.render_type
         {
             *w = Some("w".into());
         }
@@ -655,7 +699,7 @@ mod serde_tests {
             }),
         };
         let cases = [
-            DataRenderType::Histogram {
+            DataRenderType::Histogram(HistogramSeries {
                 bar: DataBarStyleConfig {
                     fill_color: Color::from_rgb8(70, 130, 180),
                     border_color: Color::BLACK,
@@ -675,7 +719,7 @@ mod serde_tests {
                         },
                     }]),
                 },
-            },
+            }),
             DataRenderType::Field(crate::data_config::FieldSeries {
                 matrix: matrix.clone(),
                 fill: Some(fill.clone()),
@@ -786,6 +830,7 @@ mod serde_tests {
         super::radar_tests::radar_series_round_trip_and_omit_their_defaults();
         super::streamline_tests::streamlines_round_trip();
         super::range_bar_tests::range_bars_round_trip_and_omit_unset_options();
+        super::range_bar_tests::range_links_round_trip();
         a_hexagonal_grid_round_trips_and_counts_a_cell_per_coordinate();
         an_image_parses_with_its_defaults_and_round_trips();
     }
@@ -794,7 +839,7 @@ mod serde_tests {
     /// (`[0, 1]`, `Flat`, `1`), writes them only when they differ, and round
     /// trips either way.
     fn an_image_parses_with_its_defaults_and_round_trips() {
-        use super::{DataRenderType, Shading};
+        use super::{DataRenderType, RgbImageSeries, Shading};
         let matrix = |ch: &str| {
             serde_json::json!({
                 "columns": [format!("{ch}0"), format!("{ch}1")],
@@ -807,14 +852,14 @@ mod serde_tests {
             "RgbImage": { "red": matrix("r"), "green": matrix("g"), "blue": matrix("b") }
         });
         let parsed: SeriesConfig = serde_json::from_value(json).unwrap();
-        let DataRenderType::RgbImage {
+        let DataRenderType::RgbImage(RgbImageSeries {
             red,
             green,
             blue,
             range,
             shading,
             opacity,
-        } = &parsed.render_type
+        }) = &parsed.render_type
         else {
             panic!("expected an image");
         };
@@ -1241,13 +1286,13 @@ mod category_bar_tests {
             x_column: "positions".into(),
             y_column: format!("{id}.values"),
             z_column: None,
-            render_type: DataRenderType::CategoryBars {
+            render_type: DataRenderType::CategoryBars(CategoryBarSeries {
                 color: Color::from_rgb8(40, 120, 200),
                 style: crate::defaults::category_bar_style(),
                 labels: crate::defaults::category_bar_series_labels(),
                 label_format: CategoryBarLabelFormat::Value,
                 overrides: None,
-            },
+            }),
         }
     }
 
@@ -1258,21 +1303,27 @@ mod category_bar_tests {
     }
 
     fn edit(series: &mut SeriesConfig, f: impl FnOnce(&mut CategoryBarStyle, &mut Color)) {
-        let DataRenderType::CategoryBars { style, color, .. } = &mut series.render_type else {
+        let DataRenderType::CategoryBars(CategoryBarSeries { style, color, .. }) =
+            &mut series.render_type
+        else {
             unreachable!()
         };
         f(style, color);
     }
 
     fn overrides(series: &mut SeriesConfig) -> &mut Vec<CategoryBarOverride> {
-        let DataRenderType::CategoryBars { overrides, .. } = &mut series.render_type else {
+        let DataRenderType::CategoryBars(CategoryBarSeries { overrides, .. }) =
+            &mut series.render_type
+        else {
             unreachable!()
         };
         overrides.get_or_insert_with(Vec::new)
     }
 
     fn labels(series: &mut SeriesConfig) -> &mut CategoryBarSeriesLabels {
-        let DataRenderType::CategoryBars { labels, .. } = &mut series.render_type else {
+        let DataRenderType::CategoryBars(CategoryBarSeries { labels, .. }) =
+            &mut series.render_type
+        else {
             unreachable!()
         };
         labels
@@ -1590,13 +1641,14 @@ mod category_bar_tests {
             assert!(validate_category_bar_series(&series, &cats).is_err());
         }
         let mut boxes = box_plot_tests::boxes("b");
-        let DataRenderType::BoxPlot { labels: l, .. } = &mut boxes.render_type else {
+        let DataRenderType::BoxPlot(BoxSeries { labels: l, .. }) = &mut boxes.render_type else {
             unreachable!()
         };
         l.offsets = vec![[0.0, 0.0]; 2];
         assert!(validate_box_plot_series(&boxes, &cats).is_err());
         let mut radar = radar_tests::radar("r");
-        let DataRenderType::Radar { labels: l, .. } = &mut radar.render_type else {
+        let DataRenderType::Radar(RadarPolygonSeries { labels: l, .. }) = &mut radar.render_type
+        else {
             unreachable!()
         };
         l.offsets = vec![[f32::NAN, 0.0]; 3];
@@ -1651,7 +1703,9 @@ mod category_bar_tests {
         assert_eq!(labels(&mut series[1]).text, ["3", "0", "-1"]);
 
         let set = |s: &mut SeriesConfig, f: CategoryBarLabelFormat| {
-            let DataRenderType::CategoryBars { label_format, .. } = &mut s.render_type else {
+            let DataRenderType::CategoryBars(CategoryBarSeries { label_format, .. }) =
+                &mut s.render_type
+            else {
                 unreachable!()
             };
             *label_format = f;
@@ -1717,9 +1771,9 @@ mod category_bar_tests {
         });
         let parsed: SeriesConfig = serde_json::from_value(minimal).unwrap();
         let bars = parsed.render_type.category_bars().unwrap();
-        assert_eq!(bars.style, &crate::defaults::category_bar_style());
-        assert_eq!(bars.labels, &crate::defaults::category_bar_series_labels());
-        assert!(bars.overrides.is_empty());
+        assert_eq!(bars.style, crate::defaults::category_bar_style());
+        assert_eq!(bars.labels, crate::defaults::category_bar_series_labels());
+        assert!(bars.overrides.is_none());
         let written = serde_json::to_value(&parsed).unwrap();
         let fields = &written["render_type"]["CategoryBars"];
         assert!(fields.get("overrides").is_none());
@@ -1834,7 +1888,7 @@ mod box_plot_tests {
             x_column: "positions".into(),
             y_column: format!("{id}.record"),
             z_column: None,
-            render_type: DataRenderType::BoxPlot {
+            render_type: DataRenderType::BoxPlot(BoxSeries {
                 color: Color::from_rgb8(40, 120, 200),
                 style: crate::defaults::box_plot_style(),
                 labels: crate::defaults::box_plot_series_labels(),
@@ -1842,7 +1896,7 @@ mod box_plot_tests {
                 overrides: None,
                 violin: None,
                 points: None,
-            },
+            }),
         }
     }
 
@@ -1857,21 +1911,21 @@ mod box_plot_tests {
     }
 
     fn style(series: &mut SeriesConfig) -> &mut BoxPlotStyle {
-        let DataRenderType::BoxPlot { style, .. } = render(series) else {
+        let DataRenderType::BoxPlot(BoxSeries { style, .. }) = render(series) else {
             unreachable!()
         };
         style
     }
 
     fn overrides(series: &mut SeriesConfig) -> &mut Vec<BoxPlotOverride> {
-        let DataRenderType::BoxPlot { overrides, .. } = render(series) else {
+        let DataRenderType::BoxPlot(BoxSeries { overrides, .. }) = render(series) else {
             unreachable!()
         };
         overrides.get_or_insert_with(Vec::new)
     }
 
     fn labels(series: &mut SeriesConfig) -> &mut BoxPlotSeriesLabels {
-        let DataRenderType::BoxPlot { labels, .. } = render(series) else {
+        let DataRenderType::BoxPlot(BoxSeries { labels, .. }) = render(series) else {
             unreachable!()
         };
         labels
@@ -1964,13 +2018,13 @@ mod box_plot_tests {
     fn a_layer_draws_category_bars_or_box_plots() {
         let config = chart(3);
         let bars = SeriesConfig {
-            render_type: DataRenderType::CategoryBars {
+            render_type: DataRenderType::CategoryBars(CategoryBarSeries {
                 color: Color::from_rgb8(1, 2, 3),
                 style: crate::defaults::category_bar_style(),
                 labels: crate::defaults::category_bar_series_labels(),
                 label_format: CategoryBarLabelFormat::Value,
                 overrides: None,
-            },
+            }),
             ..boxes("bars")
         };
         assert_eq!(
@@ -2042,7 +2096,7 @@ mod box_plot_tests {
             );
         }
         let mut s = boxes("a");
-        let DataRenderType::BoxPlot { color, .. } = render(&mut s) else {
+        let DataRenderType::BoxPlot(BoxSeries { color, .. }) = render(&mut s) else {
             unreachable!()
         };
         color.a = 0.5;
@@ -2064,7 +2118,7 @@ mod box_plot_tests {
         s.y_column.clear();
         assert!(validate_box_plot_series(&s, &cats).is_err());
         let mut s = boxes("a");
-        let DataRenderType::BoxPlot { outliers, .. } = render(&mut s) else {
+        let DataRenderType::BoxPlot(BoxSeries { outliers, .. }) = render(&mut s) else {
             unreachable!()
         };
         *outliers = Some(String::new());
@@ -2129,11 +2183,11 @@ mod box_plot_tests {
         let back: SeriesConfig = serde_json::from_value(json).unwrap();
         assert_eq!(back, plain);
         let mut full = boxes("a");
-        let DataRenderType::BoxPlot {
+        let DataRenderType::BoxPlot(BoxSeries {
             outliers,
             labels: l,
             ..
-        } = render(&mut full)
+        }) = render(&mut full)
         else {
             unreachable!()
         };
@@ -2154,7 +2208,7 @@ mod box_plot_tests {
         .unwrap();
         assert_eq!(
             minimal.render_type.box_plot().unwrap().style,
-            &crate::defaults::box_plot_style()
+            crate::defaults::box_plot_style()
         );
     }
 
@@ -2168,14 +2222,14 @@ mod box_plot_tests {
     }
 
     fn violin(series: &mut SeriesConfig, body: ViolinBody) {
-        let DataRenderType::BoxPlot { violin, .. } = render(series) else {
+        let DataRenderType::BoxPlot(BoxSeries { violin, .. }) = render(series) else {
             unreachable!()
         };
         *violin = Some(Violin::new(body));
     }
 
     fn points(series: &mut SeriesConfig) -> &mut BoxPoints {
-        let DataRenderType::BoxPlot { points, .. } = render(series) else {
+        let DataRenderType::BoxPlot(BoxSeries { points, .. }) = render(series) else {
             unreachable!()
         };
         points.get_or_insert_with(|| BoxPoints {
@@ -2280,9 +2334,9 @@ mod box_plot_tests {
         assert!(bad_points(|p| p.style.offset = -1.5));
         let mut wide = boxes("w");
         violin(&mut wide, ViolinBody::Symmetric(half("curve")));
-        let DataRenderType::BoxPlot {
+        let DataRenderType::BoxPlot(BoxSeries {
             violin: Some(v), ..
-        } = render(&mut wide)
+        }) = render(&mut wide)
         else {
             unreachable!()
         };
@@ -2316,7 +2370,7 @@ mod box_plot_tests {
             },
         );
         points(&mut s);
-        let DataRenderType::BoxPlot { outliers, .. } = render(&mut s) else {
+        let DataRenderType::BoxPlot(BoxSeries { outliers, .. }) = render(&mut s) else {
             unreachable!()
         };
         *outliers = Some("out".into());
@@ -2448,11 +2502,11 @@ mod radar_tests {
             x_column: "positions".into(),
             y_column: format!("values.{id}"),
             z_column: None,
-            render_type: DataRenderType::Radar {
+            render_type: DataRenderType::Radar(RadarPolygonSeries {
                 color: Color::from_rgb8(40, 120, 200),
                 style: crate::defaults::radar_series_style(),
                 labels: crate::defaults::radar_series_labels(),
-            },
+            }),
         }
     }
 
@@ -2465,14 +2519,14 @@ mod radar_tests {
 
     fn style_mut(series: &mut SeriesConfig) -> &mut RadarSeriesStyle {
         match &mut series.render_type {
-            DataRenderType::Radar { style, .. } => style,
+            DataRenderType::Radar(RadarPolygonSeries { style, .. }) => style,
             _ => unreachable!(),
         }
     }
 
     fn labels_mut(series: &mut SeriesConfig) -> &mut RadarSeriesLabels {
         match &mut series.render_type {
-            DataRenderType::Radar { labels, .. } => labels,
+            DataRenderType::Radar(RadarPolygonSeries { labels, .. }) => labels,
             _ => unreachable!(),
         }
     }
@@ -2588,11 +2642,11 @@ mod radar_tests {
         labels_mut(&mut series).text = vec!["1".into(), "".into(), "3".into()];
         assert_eq!(check(series), Ok(()));
         let mut series = radar("a");
-        series.render_type = DataRenderType::Radar {
+        series.render_type = DataRenderType::Radar(RadarPolygonSeries {
             color: Color::new(0.0, 0.0, 1.5, 1.0),
             style: crate::defaults::radar_series_style(),
             labels: crate::defaults::radar_series_labels(),
-        };
+        });
         assert!(check(series).is_err());
         let mut series = radar("a");
         series.y_column.clear();
@@ -2600,7 +2654,6 @@ mod radar_tests {
     }
 
     #[test]
-    #[allow(deprecated)] // reads the legacy radar document's style
     fn unset_style_fields_take_the_defaults() {
         let style = crate::defaults::radar_series_style();
         let color = Color::from_rgba(0.2, 0.4, 0.6, 0.8);
@@ -2722,11 +2775,11 @@ mod radar_tests {
         .unwrap();
         assert_eq!(
             minimal.radar().unwrap().style,
-            &crate::defaults::radar_series_style()
+            crate::defaults::radar_series_style()
         );
         assert_eq!(
             minimal.radar().unwrap().labels,
-            &crate::defaults::radar_series_labels()
+            crate::defaults::radar_series_labels()
         );
         *style_mut(&mut series) = RadarSeriesStyle {
             line_width_px: Some(3.0),
@@ -2787,7 +2840,7 @@ mod step_selection_tests {
     }
 
     fn histogram(orientation: BarOrientation) -> DataRenderType {
-        DataRenderType::Histogram {
+        DataRenderType::Histogram(HistogramSeries {
             bar: DataBarStyleConfig {
                 fill_color: Color::BLACK,
                 border_color: Color::BLACK,
@@ -2798,21 +2851,21 @@ mod step_selection_tests {
                 orientation,
                 bar_style_overrides: None,
             },
-        }
+        })
     }
 
     fn bars() -> DataRenderType {
-        DataRenderType::CategoryBars {
+        DataRenderType::CategoryBars(CategoryBarSeries {
             color: Color::BLACK,
             style: crate::defaults::category_bar_style(),
             labels: crate::defaults::category_bar_series_labels(),
             label_format: crate::defaults::category_bar_label_format(),
             overrides: None,
-        }
+        })
     }
 
     fn boxes() -> DataRenderType {
-        DataRenderType::BoxPlot {
+        DataRenderType::BoxPlot(BoxSeries {
             color: Color::BLACK,
             style: crate::defaults::box_plot_style(),
             labels: crate::defaults::box_plot_series_labels(),
@@ -2820,7 +2873,7 @@ mod step_selection_tests {
             overrides: None,
             violin: None,
             points: None,
-        }
+        })
     }
 
     fn matrix(columns: &[&str], orientation: MatrixOrientation, layout: GridLayout) -> MatrixRef {
@@ -2832,7 +2885,7 @@ mod step_selection_tests {
     }
 
     fn vector(components: VectorComponents) -> DataRenderType {
-        DataRenderType::Vector {
+        DataRenderType::Vector(VectorSeries {
             components,
             style: VectorStyle {
                 color: Color::BLACK,
@@ -2843,8 +2896,9 @@ mod step_selection_tests {
                 head_width_px: 4.0,
                 min_length_px: 0.0,
                 color_map: None,
+                auto_scale: false,
             },
-        }
+        })
     }
 
     fn selected(reference: PickedDataRef) -> Config {
@@ -3131,13 +3185,13 @@ mod step_selection_tests {
     /// included, and across to the other point-drawing series.
     #[test]
     fn step_selection_walks_streamline_vertices() {
-        let streamlines = DataRenderType::Streamlines {
+        let streamlines = DataRenderType::Streamlines(StreamlineSeries {
             line: crate::defaults::data_line_style_config(),
             arrows: Some(crate::defaults::streamline_arrows()),
             color_map: Some(PointColorMap {
                 column: "speed".into(),
             }),
-        };
+        });
         let series = [
             entry("a", "x", "ya", line()),
             entry("flow", "sx", "sy", streamlines),
@@ -3287,7 +3341,7 @@ mod streamline_tests {
             x_column: "x".into(),
             y_column: "y".into(),
             z_column: None,
-            render_type: DataRenderType::Streamlines {
+            render_type: DataRenderType::Streamlines(StreamlineSeries {
                 line: DataLineStyleConfig {
                     line_width: 1.5,
                     ..crate::defaults::data_line_style_config()
@@ -3296,7 +3350,7 @@ mod streamline_tests {
                 color_map: color.map(|column| PointColorMap {
                     column: column.into(),
                 }),
-            },
+            }),
         }
     }
 
@@ -3307,7 +3361,9 @@ mod streamline_tests {
         assert_eq!(validate_streamline_series(&full), Ok(()));
         let edit = |f: fn(&mut DataLineStyleConfig)| {
             let mut series = full.clone();
-            let DataRenderType::Streamlines { line, .. } = &mut series.render_type else {
+            let DataRenderType::Streamlines(StreamlineSeries { line, .. }) =
+                &mut series.render_type
+            else {
                 unreachable!()
             };
             f(line);
@@ -3365,11 +3421,11 @@ mod streamline_tests {
         let series = streamlines(Some(crate::defaults::streamline_arrows()), None);
         let flow = series.render_type.streamlines().unwrap();
         assert_eq!(flow.line.line_width, 1.5);
-        assert_eq!(flow.arrows, Some(&crate::defaults::streamline_arrows()));
+        assert_eq!(flow.arrows, Some(crate::defaults::streamline_arrows()));
         assert_eq!(flow.color_map, None);
         let mut cycled = series.clone();
         crate::preset::ColorCycle::Vivid.apply_to_series(&mut cycled, 1);
-        let DataRenderType::Streamlines { line, .. } = &cycled.render_type else {
+        let DataRenderType::Streamlines(StreamlineSeries { line, .. }) = &cycled.render_type else {
             unreachable!()
         };
         assert_ne!(line.line_color, flow.line.line_color);
@@ -3406,7 +3462,7 @@ mod streamline_tests {
         let minimal = r#"{"series_id":"flow","label":null,"x_column":"x","y_column":"y","render_type":{"Streamlines":{"line":{"line_style":"Solid","line_color":{"r":0.0,"g":0.0,"b":0.0,"a":1.0},"line_width":1.0}}}}"#;
         let parsed: SeriesConfig = serde_json::from_str(minimal).unwrap();
         let flow = parsed.render_type.streamlines().unwrap();
-        assert_eq!((flow.arrows, flow.color_map), (None, None));
+        assert_eq!((&flow.arrows, &flow.color_map), (&None, &None));
         assert_eq!(serde_json::to_string(&parsed).unwrap(), minimal);
     }
 }
@@ -3425,7 +3481,7 @@ mod range_bar_tests {
             x_column: "pos".into(),
             y_column: format!("{id}.end"),
             z_column: None,
-            render_type: DataRenderType::RangeBars {
+            render_type: DataRenderType::RangeBars(RangeBarSeries {
                 color: Color::from_rgb8(40, 120, 200),
                 style: crate::defaults::category_bar_style(),
                 start: format!("{id}.start"),
@@ -3435,7 +3491,7 @@ mod range_bar_tests {
                 connector: None,
                 slot_width: None,
                 labels: crate::defaults::category_bar_series_labels(),
-            },
+            }),
         }
     }
 
@@ -3456,14 +3512,14 @@ mod range_bar_tests {
 
     fn every_option(series: &mut SeriesConfig) {
         let id = series.series_id.clone();
-        let DataRenderType::RangeBars {
+        let DataRenderType::RangeBars(RangeBarSeries {
             whiskers,
             color_by,
             progress,
             connector,
             labels,
             ..
-        } = edit(series)
+        }) = edit(series)
         else {
             unreachable!()
         };
@@ -3492,6 +3548,7 @@ mod range_bar_tests {
         labels.placement = CategoryBarLabels::Outside;
         labels.text = vec!["+1".into(), "-2".into(), "3".into()];
         labels.offsets = vec![[0.0, 0.0], [1.0, -2.0], [0.0, 0.0]];
+        labels.contrast_ink = Some([Color::from_rgb8(20, 20, 20), Color::WHITE]);
     }
 
     #[test]
@@ -3511,7 +3568,7 @@ mod range_bar_tests {
         let mut numeric = crate::defaults::config();
         assert!(numeric.validate_range_bars(&[ranges("t")]).is_err());
         let mut timed = ranges("t");
-        let DataRenderType::RangeBars { slot_width, .. } = edit(&mut timed) else {
+        let DataRenderType::RangeBars(RangeBarSeries { slot_width, .. }) = edit(&mut timed) else {
             unreachable!()
         };
         *slot_width = Some(86_400.0);
@@ -3553,17 +3610,17 @@ mod range_bar_tests {
         assert!(stacked.validate_range_bars(&[ranges("one")]).is_err());
         // A layer draws one kind of bars.
         let mut bars = ranges("bars");
-        bars.render_type = DataRenderType::CategoryBars {
+        bars.render_type = DataRenderType::CategoryBars(CategoryBarSeries {
             color: Color::BLACK,
             style: crate::defaults::category_bar_style(),
             labels: crate::defaults::category_bar_series_labels(),
             label_format: CategoryBarLabelFormat::Value,
             overrides: None,
-        };
+        });
         assert!(config.validate_range_bars(&[bars, ranges("one")]).is_err());
         // A connector needs its series alone in its layer.
         let mut joined = ranges("one");
-        let DataRenderType::RangeBars { connector, .. } = edit(&mut joined) else {
+        let DataRenderType::RangeBars(RangeBarSeries { connector, .. }) = edit(&mut joined) else {
             unreachable!()
         };
         *connector = Some(RangeConnector {
@@ -3625,9 +3682,9 @@ mod range_bar_tests {
         };
         let whiskers = |w: f32| {
             reject(&|rt| {
-                if let DataRenderType::RangeBars {
+                if let DataRenderType::RangeBars(RangeBarSeries {
                     whiskers: Some(x), ..
-                } = rt
+                }) = rt
                 {
                     x.width = w;
                 }
@@ -3638,9 +3695,9 @@ mod range_bar_tests {
         assert_eq!(whiskers(24.0), Ok(()));
         assert!(
             reject(&|rt| {
-                if let DataRenderType::RangeBars {
+                if let DataRenderType::RangeBars(RangeBarSeries {
                     connector: Some(c), ..
-                } = rt
+                }) = rt
                 {
                     c.width = -1.0;
                 }
@@ -3649,7 +3706,7 @@ mod range_bar_tests {
         );
         assert!(
             reject(&|rt| {
-                if let DataRenderType::RangeBars { color_by, .. } = rt {
+                if let DataRenderType::RangeBars(RangeBarSeries { color_by, .. }) = rt {
                     *color_by = RangeColor::State {
                         column: "one.state".into(),
                         styles: vec![RangeStateStyle {
@@ -3662,9 +3719,9 @@ mod range_bar_tests {
         );
         assert!(
             reject(&|rt| {
-                if let DataRenderType::RangeBars {
+                if let DataRenderType::RangeBars(RangeBarSeries {
                     progress: Some(p), ..
-                } = rt
+                }) = rt
                 {
                     p.remaining_opacity = 1.5;
                 }
@@ -3673,7 +3730,7 @@ mod range_bar_tests {
         );
         assert!(
             reject(&|rt| {
-                if let DataRenderType::RangeBars { slot_width, .. } = rt {
+                if let DataRenderType::RangeBars(RangeBarSeries { slot_width, .. }) = rt {
                     *slot_width = Some(0.0);
                 }
             })
@@ -3681,7 +3738,7 @@ mod range_bar_tests {
         );
         assert!(
             reject(&|rt| {
-                if let DataRenderType::RangeBars { labels, .. } = rt {
+                if let DataRenderType::RangeBars(RangeBarSeries { labels, .. }) = rt {
                     labels.offsets = vec![[0.0, 0.0]];
                 }
             })
@@ -3690,7 +3747,7 @@ mod range_bar_tests {
         );
         assert!(
             reject(&|rt| {
-                if let DataRenderType::RangeBars { labels, .. } = rt {
+                if let DataRenderType::RangeBars(RangeBarSeries { labels, .. }) = rt {
                     labels.text[0] = "two\nlines".into();
                 }
             })
@@ -3700,9 +3757,9 @@ mod range_bar_tests {
         // cap (rule 10).
         assert_eq!(
             reject(&|rt| {
-                if let DataRenderType::RangeBars {
+                if let DataRenderType::RangeBars(RangeBarSeries {
                     color_by, labels, ..
-                } = rt
+                }) = rt
                 {
                     *color_by = RangeColor::State {
                         column: "one.state".into(),
@@ -3750,6 +3807,310 @@ mod range_bar_tests {
         assert_eq!(config.picked_data.as_ref().unwrap().refs[0], pick("two", 3));
     }
 
+    /// Row colours (#357): opaque colours pass, a translucent one is
+    /// refused, any number of rows takes any number of colours (the list
+    /// cycles; nothing caps the rows), the mode reads no column, and the
+    /// selection walks the rows as it does in every other mode.
+    #[test]
+    fn row_colours_validate_read_no_column_and_step_by_row() {
+        use crate::config::{DataSelectionsConfig, PickedDataRef};
+        let mut config = chart();
+        let by_row = |colors: Vec<Color>| {
+            let mut s = ranges("one");
+            let DataRenderType::RangeBars(RangeBarSeries { color_by, .. }) = edit(&mut s) else {
+                unreachable!()
+            };
+            *color_by = RangeColor::ByRow { colors };
+            s
+        };
+        let rows = by_row(vec![Color::from_rgb8(1, 2, 3), Color::from_rgb8(4, 5, 6)]);
+        assert_eq!(
+            config.validate_range_bars(std::slice::from_ref(&rows)),
+            Ok(())
+        );
+        assert_eq!(config.validate_range_bars(&[by_row(Vec::new())]), Ok(()));
+        let many = by_row((0..1000).map(|k| Color::from_rgb8(k as u8, 0, 0)).collect());
+        assert_eq!(config.validate_range_bars(&[many]), Ok(()));
+        let translucent = by_row(vec![Color::new(1.0, 0.0, 0.0, 0.5)]);
+        assert_eq!(
+            config.validate_range_bars(&[translucent]),
+            Err(crate::RuleKind::RangeBarStateColors)
+        );
+        let bars = rows.render_type.range_bars().unwrap();
+        assert_eq!(bars.extra_columns().collect::<Vec<_>>(), ["one.start"]);
+        let pick = |row: usize| PickedDataRef::HistogramBin {
+            source_id: None,
+            series_id: "one".into(),
+            bin_index: row,
+            half: None,
+        };
+        config.picked_data = Some(DataSelectionsConfig {
+            refs: vec![pick(0)],
+            ..crate::defaults::data_selections_config()
+        });
+        let len = |c: &str| matches!(c, "pos" | "one.end" | "one.start").then_some(5);
+        assert_eq!(config.step_selection(&[rows], 4, 0, len), Ok(true));
+        assert_eq!(config.picked_data.as_ref().unwrap().refs[0], pick(4));
+    }
+
+    /// Contrast ink and the inside-or-beside placement (#357): opaque inks
+    /// on a range bar series validate, a translucent one is refused, and a
+    /// category bar series refuses contrast ink (only range bars draw it)
+    /// but takes the placement.
+    #[test]
+    fn contrast_ink_is_opaque_and_only_on_range_bars() {
+        let config = chart();
+        let with_ink = |inks: [Color; 2]| {
+            let mut s = ranges("one");
+            let DataRenderType::RangeBars(RangeBarSeries { labels, .. }) = edit(&mut s) else {
+                unreachable!()
+            };
+            labels.placement = CategoryBarLabels::InsideOrBeside;
+            labels.contrast_ink = Some(inks);
+            s
+        };
+        let ok = with_ink([Color::BLACK, Color::WHITE]);
+        assert_eq!(config.validate_range_bars(&[ok]), Ok(()));
+        let translucent = with_ink([Color::BLACK, Color::new(1.0, 1.0, 1.0, 0.5)]);
+        assert_eq!(
+            config.validate_range_bars(&[translucent]),
+            Err(crate::RuleKind::RangeBarContrastInk)
+        );
+        let cats = [Category::new("a", "A"), Category::new("b", "B")];
+        let mut bars_series = super::category_bar_tests::bars("a");
+        if let DataRenderType::CategoryBars(b) = &mut bars_series.render_type {
+            b.labels.placement = CategoryBarLabels::InsideOrBeside;
+        }
+        assert_eq!(validate_category_bar_series(&bars_series, &cats), Ok(()));
+        if let DataRenderType::CategoryBars(b) = &mut bars_series.render_type {
+            b.labels.contrast_ink = Some([Color::BLACK, Color::WHITE]);
+        }
+        assert_eq!(
+            validate_category_bar_series(&bars_series, &cats),
+            Err(crate::RuleKind::ContrastInkSeries)
+        );
+    }
+
+    fn links() -> SeriesConfig {
+        SeriesConfig {
+            series_id: "deps".into(),
+            source_id: None,
+            label: None,
+            x_column: String::new().into(),
+            y_column: String::new().into(),
+            z_column: None,
+            render_type: DataRenderType::RangeLinks(RangeLinkSeries {
+                bars: "one".into(),
+                color: Color::from_rgb8(212, 162, 76),
+                width: 1.5,
+                head: 6.0,
+                inset: 6.0,
+                // 3000 links: no cap (rule 10).
+                links: (0..3000u32).map(|i| RangeLink::new(i, i + 1)).collect(),
+            }),
+        }
+    }
+
+    fn style(l: &mut SeriesConfig) -> &mut RangeLinkSeries {
+        match &mut l.render_type {
+            DataRenderType::RangeLinks(links) => links,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Dependency links (#357): they name a range bar series in their own
+    /// layer, read two distinct row columns, keep their stroke, head and
+    /// exit inset in range, take any colour with channels in `0..=1` (a
+    /// translucent one too, as a connector does), and refuse polar axes.
+    #[test]
+    fn range_links_name_bars_in_their_layer_and_validate_their_style() {
+        let mut config = chart();
+        let series = [ranges("one"), links()];
+        assert_eq!(config.validate_range_links(&series), Ok(()));
+        let refused = |edit: fn(&mut SeriesConfig)| {
+            let mut l = links();
+            edit(&mut l);
+            chart().validate_range_links(&[ranges("one"), l])
+        };
+        assert_eq!(
+            refused(|l| style(l).bars = "missing".into()),
+            Err(crate::RuleKind::RangeLinkBars)
+        );
+        assert_eq!(
+            config.validate_range_links(&[links()]),
+            Err(crate::RuleKind::RangeLinkBars)
+        );
+        // DataLess: a link series names no column.
+        assert_eq!(
+            refused(|l| l.x_column = "from".into()),
+            Err(crate::RuleKind::RangeLinkColumns)
+        );
+        assert_eq!(
+            refused(|l| l.y_column = "to".into()),
+            Err(crate::RuleKind::RangeLinkColumns)
+        );
+        for edit in [
+            (|l: &mut SeriesConfig| style(l).width = -1.0) as fn(&mut SeriesConfig),
+            |l| style(l).width = f32::NAN,
+            |l| style(l).head = 33.0,
+            |l| style(l).inset = 65.0,
+            |l| style(l).links[3].exit_offset = Some(-1.0),
+            |l| style(l).links[3].exit_offset = Some(f32::INFINITY),
+            |l| style(l).color = Color::new(2.0, 0.0, 0.0, 1.0),
+        ] {
+            assert_eq!(refused(edit), Err(crate::RuleKind::RangeLinkStyle));
+        }
+        // The bars in an overlay and the links in the base layer differ.
+        config.overlays.push(OverlayLayer {
+            series: vec!["one".into()],
+            ..crate::defaults::overlay_layer()
+        });
+        assert_eq!(
+            config.validate_range_links(&series),
+            Err(crate::RuleKind::RangeLinkBars)
+        );
+        config.overlays[0].series.push("deps".into());
+        assert_eq!(config.validate_range_links(&series), Ok(()));
+        // A polar chart refuses them.
+        let mut polar = chart();
+        polar.coordinates =
+            crate::coordinates::Coordinates::Polar(crate::defaults::polar_options());
+        assert_eq!(
+            polar.validate_series_on_polar(&links()),
+            Err(crate::RuleKind::PolarRangeLinks)
+        );
+    }
+
+    /// Links step along their own rows, bounded by the shorter row column,
+    /// and stay in their series.
+    #[test]
+    fn step_selection_walks_range_links_by_row() {
+        use crate::config::{DataSelectionsConfig, PickedDataRef};
+        let mut config = chart();
+        let series = [ranges("one"), links()];
+        let pick = |row: usize| PickedDataRef::HistogramBin {
+            source_id: None,
+            series_id: "deps".into(),
+            bin_index: row,
+            half: None,
+        };
+        config.picked_data = Some(DataSelectionsConfig {
+            refs: vec![pick(0)],
+            ..crate::defaults::data_selections_config()
+        });
+        let len = |c: &str| matches!(c, "pos" | "one.end" | "one.start").then_some(5);
+        assert_eq!(config.step_selection(&series, 1, 0, len), Ok(true));
+        assert_eq!(config.picked_data.as_ref().unwrap().refs[0], pick(1));
+        assert_eq!(config.step_selection(&series, 0, 1, len), Ok(true));
+        assert_eq!(config.picked_data.as_ref().unwrap().refs[0], pick(2));
+        assert_eq!(config.step_selection(&series, 5000, 0, len), Ok(true));
+        assert_eq!(config.picked_data.as_ref().unwrap().refs[0], pick(2999));
+    }
+
+    /// The exit offset helpers (#357): `set_link_exit_offset` writes one
+    /// link's offset, clearing it for 0 or a non-finite value and refusing a
+    /// negative one or an index past the links; `drag_link_exit` moves the
+    /// exit of every link sharing the picked link's trunk, snaps to the
+    /// default within 3 px and stops half a pixel in from the bar's start.
+    #[test]
+    fn link_exit_offsets_set_drag_snap_and_share_their_trunk() {
+        let mut series = links();
+        let l = style(&mut series);
+        assert!(l.set_link_exit_offset(5, Some(20.0)));
+        assert_eq!(l.links[5].exit_offset, Some(20.0));
+        assert!(l.set_link_exit_offset(5, Some(0.0)));
+        assert_eq!(l.links[5].exit_offset, None);
+        assert!(l.set_link_exit_offset(5, Some(f32::NAN)));
+        assert_eq!(l.links[5].exit_offset, None);
+        assert!(!l.set_link_exit_offset(5, Some(-2.0)));
+        assert!(!l.set_link_exit_offset(3000, Some(2.0)));
+        // Two more links leave row 5's bar: one sharing its trunk, one moved.
+        l.links.push(RangeLink::new(5, 9));
+        l.links.push(RangeLink {
+            exit_offset: Some(40.0),
+            ..RangeLink::new(5, 8)
+        });
+        use crate::layout::NudgeResult;
+        assert_eq!(l.drag_link_exit(5, 14.0, None), NudgeResult::Moved);
+        assert_eq!(l.links[5].exit_offset, Some(20.0));
+        assert_eq!(l.links[3000].exit_offset, Some(20.0), "the shared trunk");
+        assert_eq!(l.links[3001].exit_offset, Some(40.0), "its own exit");
+        assert_eq!(l.links[4].exit_offset, None, "another bar's link");
+        // Back within 3 px of the default (6): the entries clear.
+        assert_eq!(l.drag_link_exit(5, -12.0, None), NudgeResult::Moved);
+        assert_eq!(l.links[5].exit_offset, None);
+        assert_eq!(l.links[3000].exit_offset, None);
+        // Before the bar's start: stops half a pixel in (0 is the default).
+        assert_eq!(l.drag_link_exit(3001, -100.0, None), NudgeResult::Moved);
+        assert_eq!(l.links[3001].exit_offset, Some(0.5));
+        assert_ne!(l.drag_link_exit(9999, 1.0, None), NudgeResult::Moved);
+        assert_ne!(l.drag_link_exit(5, f32::NAN, None), NudgeResult::Moved);
+    }
+
+    /// A link exit drag stops at the predecessor's drawn length (#357,
+    /// #381): dragged past the bar's end the stored offset is the length,
+    /// so dragging back moves the exit at once; an offset stored past the
+    /// bar before the clamp moves from the bar's end, and the trunk moves
+    /// as one.
+    #[test]
+    fn link_exit_drags_stop_at_the_predecessors_drawn_length() {
+        use crate::layout::NudgeResult;
+        let mut series = links();
+        let l = style(&mut series);
+        l.links.push(RangeLink::new(5, 9));
+        let trunk = l.links.len() - 1;
+        // Default inset 6, a 50 px bar: a drag of 200 px stops at 50.
+        assert_eq!(l.drag_link_exit(5, 200.0, Some(50.0)), NudgeResult::Moved);
+        assert_eq!(l.links[5].exit_offset, Some(50.0));
+        assert_eq!(l.links[trunk].exit_offset, Some(50.0), "the shared trunk");
+        // Further on: still the bar's end; back by 10: at once 40.
+        assert_eq!(l.drag_link_exit(5, 30.0, Some(50.0)), NudgeResult::Moved);
+        assert_eq!(l.links[5].exit_offset, Some(50.0));
+        assert_eq!(l.drag_link_exit(5, -10.0, Some(50.0)), NudgeResult::Moved);
+        assert_eq!(l.links[5].exit_offset, Some(40.0));
+        // An offset stored past the bar (an older drag, or a shorter bar now)
+        // moves from the bar's end.
+        assert!(l.set_link_exit_offset(5, Some(300.0)));
+        assert!(l.set_link_exit_offset(trunk, Some(300.0)));
+        assert_eq!(l.drag_link_exit(5, -5.0, Some(50.0)), NudgeResult::Moved);
+        assert_eq!(l.links[5].exit_offset, Some(45.0));
+        assert_eq!(l.links[trunk].exit_offset, Some(45.0));
+        // Without a length the offset is unclamped, as before.
+        assert_eq!(l.drag_link_exit(5, 500.0, None), NudgeResult::Moved);
+        assert_eq!(l.links[5].exit_offset, Some(545.0));
+        // A bar shorter than half a pixel still keeps an offset that is not 0.
+        assert_eq!(l.drag_link_exit(5, 1.0, Some(0.0)), NudgeResult::Moved);
+        assert_eq!(l.links[5].exit_offset, Some(0.5));
+    }
+
+    /// Run by `serde_tests`' one test.
+    #[cfg(feature = "serde")]
+    pub(super) fn range_links_round_trip() {
+        let mut original = links();
+        style(&mut original).links[1].exit_offset = Some(12.5);
+        let json = serde_json::to_value(&original).unwrap();
+        let fields = json["render_type"]["RangeLinks"].as_object().unwrap();
+        for key in ["bars", "color", "width", "head", "inset", "links"] {
+            assert!(fields.contains_key(key), "{key}");
+        }
+        // An unset offset is omitted; a set one is written.
+        assert!(fields["links"][0].get("exit_offset").is_none());
+        assert_eq!(fields["links"][1]["exit_offset"], 12.5);
+        // No links: the key is omitted and reads back empty.
+        let mut empty = links();
+        style(&mut empty).links.clear();
+        let bare = serde_json::to_value(&empty).unwrap();
+        assert!(bare["render_type"]["RangeLinks"].get("links").is_none());
+        assert_eq!(serde_json::from_value::<SeriesConfig>(bare).unwrap(), empty);
+        let parsed: SeriesConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, original);
+        let again = serde_json::to_string(&parsed).unwrap();
+        assert_eq!(
+            serde_json::from_str::<SeriesConfig>(&again).unwrap(),
+            original
+        );
+    }
+
     #[test]
     fn value_labels_drag_by_row() {
         let mut s = ranges("one");
@@ -3793,14 +4154,33 @@ mod range_bar_tests {
         });
         let parsed: SeriesConfig = serde_json::from_value(minimal).unwrap();
         let bars = parsed.render_type.range_bars().unwrap();
-        assert_eq!(bars.color_by, &RangeColor::Single);
-        assert_eq!(bars.style, &crate::defaults::category_bar_style());
+        assert_eq!(bars.color_by, RangeColor::Single);
+        assert_eq!(bars.style, crate::defaults::category_bar_style());
         assert!(bars.whiskers.is_none() && bars.progress.is_none() && bars.connector.is_none());
         let again = serde_json::to_string(&parsed).unwrap();
         assert_eq!(
             serde_json::from_str::<SeriesConfig>(&again).unwrap(),
             parsed
         );
+        // Row colours (#357) round-trip under their own tag.
+        let mut rows = ranges("one");
+        let DataRenderType::RangeBars(RangeBarSeries { color_by, .. }) = edit(&mut rows) else {
+            unreachable!()
+        };
+        *color_by = RangeColor::ByRow {
+            colors: vec![
+                Color::from_rgb8(31, 119, 180),
+                Color::from_rgb8(255, 127, 14),
+            ],
+        };
+        let json = serde_json::to_value(&rows).unwrap();
+        assert_eq!(
+            json["render_type"]["RangeBars"]["color_by"]["ByRow"]["colors"]
+                .as_array()
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(serde_json::from_value::<SeriesConfig>(json).unwrap(), rows);
     }
 }
 
@@ -3809,7 +4189,7 @@ mod hexagonal_tests {
     use super::{
         ContourConfig, DataLineStyleConfig, DataRenderType, FieldFillConfig, FillMode, GridLayout,
         LineInterpolation, MatrixOrientation, MatrixRef, SeriesConfig, Shading, VectorComponents,
-        VectorScale, VectorStyle,
+        VectorScale, VectorSeries, VectorStyle,
     };
     use crate::color::Color;
     use crate::config::AxisScale;
@@ -3907,7 +4287,7 @@ mod hexagonal_tests {
             Err(crate::RuleKind::HexagonalContours)
         );
         assert_eq!(
-            ok(&[series(DataRenderType::Vector {
+            ok(&[series(DataRenderType::Vector(VectorSeries {
                 components: VectorComponents::Grid {
                     u: matrix(GridLayout::Hexagonal),
                     v: matrix(GridLayout::Hexagonal),
@@ -3921,8 +4301,9 @@ mod hexagonal_tests {
                     pivot: crate::defaults::vector_pivot(),
                     min_length_px: 0.0,
                     color_map: None,
+                    auto_scale: false,
                 },
-            })]),
+            }))]),
             Err(crate::RuleKind::HexagonalGridVector)
         );
         let mut log = config.clone();
@@ -3970,7 +4351,10 @@ mod hexagonal_tests {
 
 #[cfg(test)]
 mod image_tests {
-    use super::{DataRenderType, GridLayout, MatrixOrientation, MatrixRef, SeriesConfig, Shading};
+    use super::{
+        DataRenderType, GridLayout, MatrixOrientation, MatrixRef, RgbImageSeries, SeriesConfig,
+        Shading,
+    };
 
     fn matrix(ch: &str, orientation: MatrixOrientation, layout: GridLayout) -> MatrixRef {
         MatrixRef {
@@ -3988,14 +4372,14 @@ mod image_tests {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
-            render_type: DataRenderType::RgbImage {
+            render_type: DataRenderType::RgbImage(RgbImageSeries {
                 red: matrix("r", MatrixOrientation::ColumnsAreX, GridLayout::Centers),
                 green: matrix("g", MatrixOrientation::ColumnsAreX, GridLayout::Centers),
                 blue: matrix("b", MatrixOrientation::ColumnsAreX, GridLayout::Centers),
                 range,
                 shading: Shading::Flat,
                 opacity,
-            },
+            }),
         }
     }
 
@@ -4013,17 +4397,17 @@ mod image_tests {
             "bytes, fully transparent"
         );
         let mut short = image([0.0, 1.0], 1.0);
-        if let DataRenderType::RgbImage { green, .. } = &mut short.render_type {
+        if let DataRenderType::RgbImage(RgbImageSeries { green, .. }) = &mut short.render_type {
             green.columns.pop();
         }
         assert_eq!(ok(&[short]), Err(crate::RuleKind::ImageChannelColumns));
         let mut turned = image([0.0, 1.0], 1.0);
-        if let DataRenderType::RgbImage { blue, .. } = &mut turned.render_type {
+        if let DataRenderType::RgbImage(RgbImageSeries { blue, .. }) = &mut turned.render_type {
             blue.orientation = MatrixOrientation::ColumnsAreY;
         }
         assert_eq!(ok(&[turned]), Err(crate::RuleKind::ImageChannelLattice));
         let mut edges = image([0.0, 1.0], 1.0);
-        if let DataRenderType::RgbImage { red, .. } = &mut edges.render_type {
+        if let DataRenderType::RgbImage(RgbImageSeries { red, .. }) = &mut edges.render_type {
             red.grid_layout = GridLayout::Edges;
         }
         assert_eq!(ok(&[edges]), Err(crate::RuleKind::ImageChannelLattice));

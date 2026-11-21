@@ -1,21 +1,14 @@
 //! Text, number and date formats, colour maps, materials and line styles.
 
-#![allow(unused_imports)]
 // Some sources are read only by `Default` (`crate::helpers`).
 #![cfg_attr(not(feature = "helpers"), allow(dead_code))]
 
-use super::*;
 use crate::colormap::*;
 use crate::format::*;
-use crate::format::*;
-use crate::layout::*;
-use crate::line::*;
 use crate::line::*;
 use crate::material::*;
 use crate::text::math::*;
 use crate::text::*;
-use crate::text::*;
-use crate::*;
 
 /// The documented default of [`ColorMap`]: the value a document that
 /// omits it takes.
@@ -56,6 +49,12 @@ pub(crate) fn plain_number_format() -> PlainNumberFormat {
     }
 }
 
+/// The documented default of [`AutoNumberFormat`]: the value a document
+/// that omits its fields takes (#357).
+pub(crate) fn auto_number_format() -> AutoNumberFormat {
+    AutoNumberFormat::DEFAULT
+}
+
 /// The documented default of [`TextAlign`]: the value a document that
 /// omits it takes.
 pub(crate) const fn text_align() -> TextAlign {
@@ -71,6 +70,8 @@ pub(crate) fn timestamp_label_format() -> TimestampLabelFormat {
         label: timestamp_label_mode(),
         fractional: fractional_second_digits(),
         tick_policy: timestamp_tick_policy(),
+        step: None,
+        period_labels: false,
     }
 }
 

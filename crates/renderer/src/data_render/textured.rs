@@ -162,6 +162,91 @@ pub(crate) fn multisample_state(sample_count: u32) -> wgpu::MultisampleState {
     }
 }
 
+/// A colour target blended with `blend` into `format`, every channel
+/// written: the target of every data draw.
+pub(crate) fn blended_target(
+    format: wgpu::TextureFormat,
+    blend: wgpu::BlendState,
+) -> wgpu::ColorTargetState {
+    wgpu::ColorTargetState {
+        format,
+        blend: Some(blend),
+        write_mask: wgpu::ColorWrites::ALL,
+    }
+}
+
+/// The parts of a render pipeline's descriptor that differ between the data
+/// pipelines (#341). Every other part is shared: one module for both stages
+/// with the default compilation options, triangles of `topology` without a
+/// strip index format, counter-clockwise and unculled, filled, one colour
+/// target, no multiview and no pipeline cache.
+pub(crate) struct RenderPipelineSpec<'a> {
+    pub(crate) label: &'a str,
+    pub(crate) layout: &'a wgpu::PipelineLayout,
+    pub(crate) shader: &'a wgpu::ShaderModule,
+    /// The vertex and fragment entry points.
+    pub(crate) entries: (&'a str, &'a str),
+    pub(crate) buffers: &'a [Option<wgpu::VertexBufferLayout<'a>>],
+    pub(crate) topology: wgpu::PrimitiveTopology,
+    pub(crate) depth_stencil: Option<wgpu::DepthStencilState>,
+    pub(crate) multisample: wgpu::MultisampleState,
+    pub(crate) target: wgpu::ColorTargetState,
+}
+
+impl RenderPipelineSpec<'_> {
+    /// The pipeline layout over `groups`, which a spec names.
+    pub(crate) fn layout(
+        device: &wgpu::Device,
+        label: &str,
+        groups: &[Option<&wgpu::BindGroupLayout>],
+    ) -> wgpu::PipelineLayout {
+        crate::gpu_compile::pipeline_layout(
+            device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some(label),
+                bind_group_layouts: groups,
+                immediate_size: 0,
+            },
+        )
+    }
+
+    /// Create the pipeline this spec describes.
+    pub(crate) fn create(self, device: &wgpu::Device) -> wgpu::RenderPipeline {
+        crate::gpu_compile::render_pipeline(
+            device,
+            &wgpu::RenderPipelineDescriptor {
+                label: Some(self.label),
+                layout: Some(self.layout),
+                vertex: wgpu::VertexState {
+                    module: self.shader,
+                    entry_point: Some(self.entries.0),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: self.buffers,
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: self.topology,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: self.depth_stencil,
+                multisample: self.multisample,
+                fragment: Some(wgpu::FragmentState {
+                    module: self.shader,
+                    entry_point: Some(self.entries.1),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(self.target)],
+                }),
+                multiview_mask: None,
+                cache: None,
+            },
+        )
+    }
+}
+
 /// One compiled module per WGSL file. Precise, mapped, pick-ring, and styled
 /// pipelines reuse these instead of re-running naga on the same source.
 #[derive(Clone)]
@@ -604,125 +689,26 @@ pub(crate) fn create_fullscreen_textured_pipeline_with_sample_count(
     target_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
-    let pipeline_layout = crate::gpu_compile::pipeline_layout(
-        &device,
-        &wgpu::PipelineLayoutDescriptor {
-            label: Some("figgy fullscreen textured pipeline layout"),
-            bind_group_layouts: &[Some(bind_group_layout)],
-            immediate_size: 0,
-        },
+    let layout = RenderPipelineSpec::layout(
+        device,
+        "figgy fullscreen textured pipeline layout",
+        &[Some(bind_group_layout)],
     );
-
-    crate::gpu_compile::render_pipeline(
-        &device,
-        &wgpu::RenderPipelineDescriptor {
-            label: Some("figgy fullscreen textured pipeline"),
-            layout: Some(&pipeline_layout),
-
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-
-            depth_stencil: None,
-
-            multisample: multisample_state(sample_count),
-
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-
-            multiview_mask: None,
-            cache: None,
-        },
-    )
-}
-
-/// Clear with `clear_color` and draw a fullscreen textured quad on top.
-pub fn render_textured(
-    surface: &wgpu::Surface<'_>,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    pipeline: &wgpu::RenderPipeline,
-    bind_group: &wgpu::BindGroup,
-    clear_color: wgpu::Color,
-) -> RenderOutcome {
-    let frame = match acquire_surface_frame(surface) {
-        Ok(t) => t,
-        Err(outcome) => return outcome,
-    };
-
-    let view = frame
-        .texture
-        .create_view(&wgpu::TextureViewDescriptor::default());
-
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("figgy textured encoder"),
-    });
-
-    {
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("figgy textured pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(clear_color),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-
-        pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, bind_group, &[]);
-        pass.draw(0..3, 0..1);
+    RenderPipelineSpec {
+        label: "figgy fullscreen textured pipeline",
+        layout: &layout,
+        shader,
+        entries: ("vs_main", "fs_main"),
+        buffers: &[],
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        depth_stencil: None,
+        multisample: multisample_state(sample_count),
+        target: blended_target(
+            target_format,
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        ),
     }
-
-    queue.submit(std::iter::once(encoder.finish()));
-    queue.present(frame);
-
-    RenderOutcome::Rendered
-}
-
-/// Test-only UV gradient: R = u, G = v (top→bottom), B = 0. Useful as a
-/// visual smoke test for UV/NDC orientation: top-left black, top-right red,
-/// bottom-left green, bottom-right yellow.
-pub fn make_uv_gradient(width: u32, height: u32) -> Vec<u8> {
-    let mut buf = Vec::with_capacity((width as usize) * (height as usize) * 4);
-    for y in 0..height {
-        let v = y as f32 / (height - 1).max(1) as f32; // 0 at top, 1 at bottom
-        let g = (v * 255.0).round() as u8;
-        for x in 0..width {
-            let u = x as f32 / (width - 1).max(1) as f32; // 0 at left, 1 at right
-            let r = (u * 255.0).round() as u8;
-            buf.extend_from_slice(&[r, g, 0, 255]);
-        }
-    }
-    buf
+    .create(device)
 }
 
 pub fn create_unit_centered_quad_vertex_buffer(device: &wgpu::Device) -> wgpu::Buffer {

@@ -8,26 +8,10 @@ use super::*;
 pub(in crate::renderer) struct TargetPipelines {
     pub(in crate::renderer) shaders: data_render::ShaderModules,
     pub(in crate::renderer) axis: wgpu::RenderPipeline,
-    pub(in crate::renderer) line: Option<wgpu::RenderPipeline>,
-    /// The colour-mapped stroke (`vs_main_mapped` / `fs_main_mapped`) of a
-    /// streamline series with a colour column: the line slots plus the value
-    /// column, group 3 the point value map.
-    pub(in crate::renderer) line_mapped: Option<wgpu::RenderPipeline>,
-    /// The rows of a parallel coordinates series (`vs_parallel` /
-    /// `fs_parallel`, #141): no vertex slots, group 3 the series' parallel
-    /// data.
-    pub(in crate::renderer) line_parallel: Option<wgpu::RenderPipeline>,
-    /// The picked row's redraw over the same layout
-    /// (`vs_parallel_selected`).
-    pub(in crate::renderer) line_parallel_selection: Option<wgpu::RenderPipeline>,
-    /// The line shader's `vs_area` / `fs_area` fill, compiled when a line
-    /// series declares a fill. Used in every draw style: the fill is a flat
-    /// precise primitive under whatever the style draws for the line.
-    pub(in crate::renderer) area: Option<wgpu::RenderPipeline>,
-    pub(in crate::renderer) scatter: Option<wgpu::RenderPipeline>,
-    pub(in crate::renderer) scatter_mapped: Option<wgpu::RenderPipeline>,
-    pub(in crate::renderer) pick_ring: Option<wgpu::RenderPipeline>,
-    pub(in crate::renderer) pick_ring_mapped: Option<wgpu::RenderPipeline>,
+    /// The precise (unstyled) pipelines, indexed by [`PrecisePipeline`]
+    /// (#341): each created by the first frame that needs it
+    /// ([`create_precise_pipeline`]), or by the prewarm.
+    pub(in crate::renderer) precise: [Option<wgpu::RenderPipeline>; PRECISE_PIPELINES],
     /// A ternary chart's entries (`Config.ternary`), indexed by
     /// [`TernaryPipeline`]: the stroke (`vs_ternary`), the markers
     /// (`vs_ternary`, `vs_ternary_mapped`) and the picked ring
@@ -72,73 +56,68 @@ pub(in crate::renderer) struct TargetPipelines {
     /// same module.
     pub(in crate::renderer) ternary_region_scan:
         Option<std::sync::Arc<data_render::ternary_region::RingScanPipelines>>,
-    pub(in crate::renderer) errorbar: Option<wgpu::RenderPipeline>,
-    pub(in crate::renderer) errorbar_mapped: Option<wgpu::RenderPipeline>,
-    /// The precise stem draw (#206): `vs_stem` into `fs_stem`.
-    pub(in crate::renderer) errorbar_stem: Option<wgpu::RenderPipeline>,
-    pub(in crate::renderer) bar: Option<wgpu::RenderPipeline>,
+    /// The histogram envelope's fill and scan, created with the first
+    /// precise or mapped histogram.
     pub(in crate::renderer) bar_envelope: Option<data_render::bar_envelope::Pipelines>,
-    pub(in crate::renderer) bar_mapped: Option<wgpu::RenderPipeline>,
-    pub(in crate::renderer) bar_selection: Option<wgpu::RenderPipeline>,
-    /// The selected bin's outline over the `bar_mapped` layout: group 2 is
-    /// the series' bar style map, so the outline resolves the bin's overrides
-    /// as the mapped draw does (`vs_bar_selection_mapped`).
-    pub(in crate::renderer) bar_selection_mapped: Option<wgpu::RenderPipeline>,
-    /// The category bar draw (`vs_category_bars` / `fs_category_bars`).
-    pub(in crate::renderer) bar_category: Option<wgpu::RenderPipeline>,
-    /// The picked category bar's highlight over the same layout.
-    pub(in crate::renderer) bar_category_selection: Option<wgpu::RenderPipeline>,
-    /// The box plot draw (`vs_box_plot` / `fs_box_plot`) over the category
-    /// bar layout.
-    pub(in crate::renderer) bar_box_plot: Option<wgpu::RenderPipeline>,
-    /// The picked box's highlight over the same layout.
-    pub(in crate::renderer) bar_box_plot_selection: Option<wgpu::RenderPipeline>,
-    /// The range bar draw (`vs_range_bars` / `fs_range_bars`) over the
-    /// category bar layout.
-    pub(in crate::renderer) bar_range: Option<wgpu::RenderPipeline>,
-    /// The picked range bar's highlight over the same layout.
-    pub(in crate::renderer) bar_range_selection: Option<wgpu::RenderPipeline>,
-    /// A box plot's violin bodies (`vs_violin` / `fs_violin`) over the
-    /// category bar layout.
-    pub(in crate::renderer) bar_violin: Option<wgpu::RenderPipeline>,
-    /// The picked violin's highlight over the same layout.
-    pub(in crate::renderer) bar_violin_selection: Option<wgpu::RenderPipeline>,
-    /// A box plot's raw points (`vs_box_points` / `fs_box_points`) over the
-    /// category bar layout.
-    pub(in crate::renderer) bar_box_points: Option<wgpu::RenderPipeline>,
-    /// The picked raw point's ring over the same layout.
-    pub(in crate::renderer) bar_box_point_selection: Option<wgpu::RenderPipeline>,
-    /// The value labels of category bar, box plot and radar series
-    /// (`vs_value_label` / `fs_value_label`), group 1 the series' value
-    /// label group.
-    pub(in crate::renderer) bar_value_label: Option<wgpu::RenderPipeline>,
-    /// The selected value label's box over the same layout.
-    pub(in crate::renderer) bar_value_label_selection: Option<wgpu::RenderPipeline>,
-    pub(in crate::renderer) field: Option<wgpu::RenderPipeline>,
-    pub(in crate::renderer) field_selection: Option<wgpu::RenderPipeline>,
-    /// The selected contour level's highlight for a labelled contour, with
-    /// group 3 bound to its label gaps (`fs_data_selection_labelled`).
-    pub(in crate::renderer) field_selection_labelled: Option<wgpu::RenderPipeline>,
-    /// The field quad through `fs_contour` — the isolines. Same module and same
-    /// layouts as `field`, one entry point apart.
-    pub(in crate::renderer) contour: Option<wgpu::RenderPipeline>,
-    /// The same contour pass with group 3 bound to selected label anchors, so
-    /// the stroke is omitted under the label quads.
-    pub(in crate::renderer) contour_labelled: Option<wgpu::RenderPipeline>,
-    /// The contour label draw. Compiled from `Renderer::contour_label_pipelines`,
-    /// which owns the module and the group-1 layout.
-    pub(in crate::renderer) contour_label: Option<wgpu::RenderPipeline>,
-    /// The assembled vector pipelines, one per input form (`vector.rs`).
-    pub(in crate::renderer) vector_points: Option<wgpu::RenderPipeline>,
-    pub(in crate::renderer) vector_grid: Option<wgpu::RenderPipeline>,
-    /// The streamline arrowheads (`VectorInput::Path`), drawn indirect over
-    /// the arc slots.
-    pub(in crate::renderer) vector_path: Option<wgpu::RenderPipeline>,
     pub(in crate::renderer) sample_count: u32,
     pub(in crate::renderer) styled: HashMap<StyleKey, StyleSet>,
 }
 
 impl TargetPipelines {
+    /// The precise pipeline `kind`, when it has been created.
+    pub(in crate::renderer) fn precise(
+        &self,
+        kind: PrecisePipeline,
+    ) -> Option<&wgpu::RenderPipeline> {
+        self.precise[kind as usize].as_ref()
+    }
+
+    /// Create the precise pipeline `kind` when it is missing and `layouts`
+    /// can build it (#341).
+    pub(in crate::renderer) fn ensure_precise(
+        &mut self,
+        kind: PrecisePipeline,
+        layouts: &PreciseLayouts<'_>,
+    ) {
+        if self.precise[kind as usize].is_none() {
+            self.precise[kind as usize] =
+                create_precise_pipeline(kind, layouts, &self.shaders, self.sample_count);
+        }
+    }
+
+    /// Create the histogram envelope's pipelines when they are missing.
+    pub(in crate::renderer) fn ensure_bar_envelope(&mut self, layouts: &PreciseLayouts<'_>) {
+        if self.bar_envelope.is_none() {
+            self.bar_envelope = Some(data_render::bar_envelope::Pipelines::new(
+                layouts.device,
+                &self.shaders.bar,
+                layouts.transform_bgl,
+                layouts.style_bgl,
+                layouts.per_point_style_map_bgl,
+                layouts.surface_format,
+                self.sample_count,
+            ));
+        }
+    }
+
+    /// Create the ternary entry `kind` when it is missing.
+    pub(in crate::renderer) fn ensure_ternary(
+        &mut self,
+        kind: TernaryPipeline,
+        layouts: &PreciseLayouts<'_>,
+    ) {
+        if self.ternary[kind as usize].is_none() {
+            self.ternary[kind as usize] = Some(create_ternary_pipeline(
+                kind,
+                layouts.device,
+                &self.shaders,
+                layouts.ternary(),
+                layouts.surface_format,
+                self.sample_count,
+            ));
+        }
+    }
+
     /// Prepare-phase ensure (`&mut`): compile and cache the pipeline set of
     /// every style that `items` draw with and the cache doesn't hold yet.
     /// Run before pass recording so the draw phase (`&self`) only looks up.

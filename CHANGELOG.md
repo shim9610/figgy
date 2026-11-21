@@ -13,11 +13,12 @@ at the time. The first crates.io publication is recorded below.
 
 <a id="unreleased"></a>
 
-## 0.19.0-beta.1 — renderer 0.19.0-beta.1 / model 0.13.0-beta.1 / figgy 0.16.0-beta.1
+## 0.19.0-beta.2 — renderer 0.19.0-beta.2 / model 0.13.0-beta.2 / figgy 0.16.0-beta.2
 
-A beta of 0.19 on `master` for feedback, not published to crates.io (the
-latest crates.io release stays renderer 0.18.1 / model 0.12.1). The 0.19.0
-release entry replaces this section.
+The second beta of 0.19 on `master` for feedback, not published to crates.io
+(the latest crates.io release stays renderer 0.18.1 / model 0.12.1). It
+replaces 0.19.0-beta.1 (f18bdd5); the entries below cover both betas. The
+0.19.0 release entry replaces this section.
 Every breaking change below carries its migration. Serialized documents
 written by model 0.12 and earlier parse, read back as the same value after a
 save and export the same image before and after it. A document that stored
@@ -36,19 +37,731 @@ chart's `plot_background`, the xy series' `stem`, the `TriMesh` series
 kind and the `mesh_triangle` selection, the axes' `category_window`, the
 breaks' `sizing`, the energy-level `bands` and `band` style, a
 subplot's `marker`, the energy-level `wavelength_labels`, a text
-annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
-`MonotonicLine` series kind, a subplot's `text_scale` and a radial slice's
-`text_generated`) are additive.
+annotation's `align`, the tick labels' `clearance`, the axes' `unit` and `category_bands`, the range bar labels' `contrast_ink`, the `RangeLinks` series kind, the
+`MonotonicLine` series kind, a subplot's `text_scale`, a radial slice's
+`text_generated`, the chart's `layout_state` and the categorical, box plot
+and radar documents' `text_sizes`) are additive.
+
+- **Range link fixes and playground picks**
+  ([#357](https://github.com/shim9610/figgy/issues/357),
+  [#381](https://github.com/shim9610/figgy/issues/381)). Appearance and
+  interaction only: no value or wire form changes. Two Rust signatures
+  gain a field or argument (the migration is below).
+  - A range link's route lengths follow the export scale: the gap before
+    the chevron's tip (1.5 px), the least last leg that moves a tight
+    link's exit back (4 px) and the same-row test (0.5 px) are logical
+    pixels, scaled like the stroke, head, inset and corner. A link whose
+    successor starts soon after its predecessor exported at 2x is now the
+    1x link scaled; at 1x nothing moves. Test:
+    `a_tight_link_at_2x_is_the_1x_link_scaled`.
+  - Browser product: dragging a link's exit follows the pointer on an
+    inverted value axis (`bottom_x.inverted` for horizontal bars,
+    `left_y.inverted` for vertical ones, or the overlay's or subplot's own
+    axis). Test: `range_link_drags_follow_the_value_axis_on_screen`.
+  - A link exit drag stops at the predecessor's drawn end, so dragging back
+    responds at once (before, the stored offset grew past the bar unseen).
+    The CPU holds no row values, so the length comes from the pick: a
+    range bar hit carries its drawn length and a range link hit its
+    predecessor's, in display pixels, in the new
+    `PickedData::HistogramBin::extent_px: Option<f32>` (`None` for every
+    other bin). It is read in the existing typed pick kernels
+    (`pick_range_bar`, `pick_range_links`) and returned in their existing
+    result, so there is no new readback. It is a display parameter, not data.
+    `RangeLinkSeries::drag_link_exit(index, along, limit)` takes the length
+    in logical pixels (`extent_px` divided by the display scale) and clamps
+    the stored offset to it; `None` keeps the previous unclamped drag.
+    Browser product: `pick_data`'s `histogram_bin` hit carries
+    `extent_px`, and `press_range_link(series_id, index, extent_px)` takes
+    it as the drag's limit (left out, only the draw stops the exit). Tests:
+    `link_exit_drags_stop_at_the_predecessors_drawn_length`,
+    `link_picks_report_the_predecessors_drawn_length_and_the_drag_stops_there`.
+    **Migration:** a `PickedData::HistogramBin { .. }` literal adds
+    `extent_px: None`, and a pattern that names every field adds
+    `extent_px` or `..`; `drag_link_exit(index, along)` becomes
+    `drag_link_exit(index, along, None)`, or passes the hit's length to
+    clamp. JavaScript callers of `press_range_link(series_id, index)` keep
+    working; pass `hit.extent_px` as the third argument to clamp.
+  - Playground: a Cartesian scene draws its registered chart through
+    `prepare_registered` / `prepare_monotonic` into a viewport texture at
+    the chart's display placement, so the ink masks a pick reads are
+    recorded and point picks hit again (they always missed since #381).
+    The selftest picks a point on a general and a monotonic scene.
+- **Grotrian transition colours and label knockout**
+  ([#357](https://github.com/shim9610/figgy/issues/357)). Appearance only:
+  no value is rewritten.
+  - New `Transition.color: Option<Color>`, an arrow colour set by the host.
+  - New `TransitionArrowStyle.color_by_wavelength: Option<SpectralColors>`
+    with `SpectralColors { unit: WavelengthUnit, ultraviolet, infrared }`
+    and `WavelengthUnit { Nm, Angstrom, Um }`. Inside 380–750 nm (after
+    converting from `unit`) an arrow takes the spectral colour of its
+    `wavelength`: the standard piecewise approximation, gamma 0.8, falling
+    off over 380–420 and 700–750 nm. Outside the band it takes the UV or
+    IR colour. `SpectralColors::default()` (`helpers`) is nanometres, a
+    violet-grey UV and a warm-grey IR. `wavelength` is never rewritten.
+  - **Precedence:** `Transition.color`, then the wavelength, then
+    `color_by_value`, then `TransitionArrowStyle.color`.
+  - A label formatted from `wavelength_labels` takes its arrow's own colour
+    (from the host or the wavelength) as it is. When that colour reads
+    below 4.5:1 against the chart side its ink implies, the label is drawn
+    with a 1 px glyph outline (near-black on a light chart, near-white on a
+    dark one), so the hue stays true and the edge carries the contrast. A
+    label that passes stays plain, and a host `label` keeps its colour.
+  - **Glyph outlines** (new text path, approved on #357). New
+    `PlacedText.outline: Option<TextOutline { color, width }>` (logical px,
+    draw-time only, never serialized). The raster strokes each glyph with
+    zeno under the fill, with the stroke width in the glyph-mask cache key;
+    SVG writes `stroke`, `stroke-width` and `paint-order="stroke"` on the
+    glyph; PDF strokes the glyph's path before filling it. Extents and hit
+    boxes do not include the outline. A Rust `PlacedText { .. }` literal
+    adds `outline: None`.
+  - New `TransitionArrowStyle.label_knockout: bool`: every shaft is broken
+    where it passes under a drawn transition label's glyph ink, each
+    glyph's tight box grown by 1.5 px (a gap, not a halo); a shaft that
+    only crosses a label's empty corners or spaces stays whole. The boxes
+    come from the new `MeasureText::ink_boxes` (default: the block's
+    rectangle), which the renderer answers from the placement it draws.
+    Arrowheads are not cut. The pick keeps the whole arrow, so both sides
+    of a gap hit; the picked highlight, PNG, SVG and PDF draw the gap. A
+    document that omits it reads `false`; `EnergyLevelSeries::default()`
+    (`helpers`) starts with it on.
+  - All three fields are omitted while unset, so older documents read back
+    byte for byte.
+  - **Migration:** an exhaustive `Transition { .. }` literal adds
+    `color: None`, and an exhaustive `TransitionArrowStyle { .. }` literal
+    adds `label_knockout: false, color_by_wavelength: None`. A
+    `MeasureText` implementor needs no change (`ink_boxes` has a default).
+  - Tests: `transition_colours_follow_their_precedence_and_labels_knock_out_shafts`
+    (`energy_levels_render.rs`), `wavelengths_map_to_spectral_colours`,
+    `a_shaft_is_cut_where_it_crosses_each_box`,
+    `a_stroked_glyph_has_its_own_wider_mask` (`text_render.rs`).
+- **Contour ink, sunburst separators and readable labels, Grotrian limit
+  labels** ([#357](https://github.com/shim9610/figgy/issues/357), round
+  2). Appearance only; no value, position or pick target moves, and
+  stored documents read back unchanged.
+  - **Contours without a theme.** `SeriesConfig::contours` draws its
+    isolines in a dark ink (`#262626`) instead of palette blue, which was
+    hard to see on a chart without a theme. `.color(c)` and the themes
+    recolour them as before.
+  - **Sunburst and radial default.** `RadialStyle::default()` and
+    `RadialChart::default()` (`helpers`) are now `RadialStyle::sunburst()`:
+    the documented flat look with a 1 px white rim and separators, so the
+    segments and rings of a chart without a theme stay apart.
+    `RadialOutline::default()` and every serde default are unchanged, so a
+    document that omits the style draws as before.
+  - **Inside labels are placed where they fit, with a readable
+    minimum.** An inside radial label slides along its arc (from the
+    bisector towards the top or bottom of a wide segment) and, on a flat
+    chart, reads upright (bottom to top) when that fits it larger. Before,
+    a horizontal label on the bisector of a wide segment at the side of a
+    thin ring was held to the ring's thickness ("Renewables 46%" on the
+    inner ring of a three-ring sunburst drew at about 12 px; it now draws
+    upright at its full size). A label is never drawn below 12 logical
+    pixels (or the chart's `font_size` when that is smaller). One that
+    would be moves outside with a leader when its slice is on the
+    outermost ring or on a pie or donut: the circle makes room for it, and
+    it is hit, selected, outlined and dragged as an outside label. On an
+    inner sunburst ring no leader reaches past the outer rings, so it is
+    hidden: not drawn, no hit region. Raster, SVG, PDF and the hit map
+    read one placement. Before, labels such as "Oil 8%" were drawn at
+    about 7 px. Documents written before draw their inside labels at the
+    new places and sizes.
+  - **Pulling inner-ring labels out of a sunburst.** New
+    `RadialChart::inner_label_fallback: InnerLabelFallback` (`Hide`, the
+    default, or `Outside`; omitted from JSON while `Hide`). With `Outside`,
+    an inner-ring inside label too small to read is drawn outside instead
+    of hidden: its leader crosses the outer rings, and it stacks with the
+    outermost ring's outside labels in angle order without meeting them.
+    It is a normal outside label for hover, selection, its outline, drag,
+    export, serde and WASM. Migration: an exhaustive Rust literal of
+    `RadialChart` names the field (or uses `..Default::default()`).
+  - **Grotrian ionisation-limit labels.** A limit's label sits above its
+    line, right-aligned. When that would leave the plot (a limit near the
+    top of the energy range), it is placed just below the line, so it is
+    not clipped. The level and transition labels keep clear of it as they
+    do of a stroke. The host's `label_offset` still moves it from there.
+  - **Grotrian transition labels stay inside the plot.** A wavelength
+    label takes a spot the plot's edge would clip only when every spot
+    along both sides of its arrow would be clipped; before, "728.1" in the
+    He I diagram at 800 × 600 was cut at the left edge. Labels stay
+    horizontal, as they always were.
+  - **A crowded fan's wavelength labels stand in one aligned column.**
+    Where every spot along a fan of transitions lies on another arrow or
+    label (the Ar I 1s4/1s5 → 2p fan), the labels move out of the fan
+    into one column beside it: one x, left-aligned, evenly spaced, in the
+    order of their arrows from the top. Each label is joined to the middle
+    of its own arrow by a thin leader in the arrow's colour. Before, the
+    labels sat at different stops along the steep arrows and read as a
+    slanted staircase on the arrows' ink. The column takes the side of
+    the fan, and the height within it, where it and its leaders lie on
+    the fewest strokes, labels and arrows, and only when that beats the
+    labels' places along the arrows. The leader is part of its label: the
+    label hits, selects and drags as before, and the leader follows it.
+    A dragged label keeps its place in the column, moved by its offset.
+    PNG, SVG and PDF draw the leader. No serialized field: a document
+    draws its labels at the new places and reads back unchanged.
+  - **Grotrian arrows spread along their levels and run parallel.** The
+    transitions between the same two columns (a bundle) are ordered by
+    where they lie across the bundle's mean direction, and each arrow
+    takes the same offset from its level's centre at both ends. A
+    bundle's arrows therefore keep one order at both ends, never cross,
+    and run near-parallel, as in a textbook Grotrian diagram. Before, the
+    ends meeting one level were spread only among themselves, so a bundle
+    fanned out from a few points (the Ar I 2p → 1s4/1s5 fan). The ends
+    stand `12` px apart, or an arrowhead plus one and a half shafts when
+    that is wider, and are spread evenly over a stroke too short for that.
+    Another bundle's ends on the same level are kept that far apart, and
+    every end stays on its stroke. With the arrows apart, most wavelength
+    labels find a free spot beside their own arrow, and the aligned column
+    becomes the fallback it was meant to be. Appearance only: levels,
+    labels and picks are unchanged, and each arrow is still picked as
+    drawn.
+  - Tests: `bundled_arrows_spread_along_their_levels_without_crossing`
+    (`energy_levels_render.rs`), `contours_draw_in_dark_ink` (`helpers/series.rs`),
+    `the_host_default_separates_segments_and_rings`,
+    `a_document_without_an_outline_reads_no_outline` (`radial.rs`),
+    `a_limit_label_stays_inside_the_plot` (`energy_levels/mod.rs`),
+    `transition_labels_stay_inside_the_plot_and_off_other_labels` (He, Ar
+    and Cu at their own size and at 800 × 600 in the Gallery theme, 1x and
+    2x), `a_crowded_fan_sets_its_labels_in_a_column_with_leaders`
+    (`tests/energy_levels_render.rs`) and
+    `crowded_radial_labels_prepare_and_remain_in_the_hit_map` (crowded
+    inside labels move outside and stay hit and draggable at 1x and 2x)
+    `inner_sunburst_labels_read_upright_or_hide`,
+    `pulled_out_inner_labels_are_full_outside_labels`
+    (`tests/radial_label_layout.rs`) and
+    `the_inner_label_fallback_round_trips_and_is_omitted_while_hidden`
+    (`radial.rs`).
+  - **Migration:** a host that relied on `RadialChart::default()` drawing
+    no outline sets `style.outline = RadialOutline::default()`.
+- **One palette method on the SSOT, and one-time renderer fits**
+  ([#357](https://github.com/shim9610/figgy/issues/357)). With no theme,
+  every series of a multi-series chart drew in the same colour (palette
+  blue; black before), because a constructor cannot know its index and
+  nothing in the default flow coloured the list. Quiver charts built
+  through the default flow drew 2 px specks, because only an explicit
+  `fit_vector_scales` or `commit_auto_fit_all` wrote the auto scale.
+  - **New:** `Config::apply_palette(&mut series, palette: &[Color])`.
+    Series `i` takes `palette[i % len]` in every part its kind draws in a
+    palette colour: the x-y line, markers, error bars and stems, the
+    histogram fill, the series colour of category bars, box plots, range
+    bars and radar series, vectors, ternary series, streamlines, parallel
+    rows and monotonic channels. A field or mesh, an RGB image, an
+    energy-level diagram and a Feynman diagram keep their colours and
+    still take their index. The legends derived from the series (the base
+    chart's, each overlay's and each subplot's) redraw their symbols. The
+    layout is not touched, and an empty palette changes nothing.
+  - `default::config_for_series` takes `&mut [SeriesConfig]` and applies
+    `ColorCycle::DEFAULT`. The browser `apply_color_cycle(cycle)` goes
+    through the same method, so its legend refresh now also covers
+    overlays and subplots, and it leaves the kinds above in their colours.
+  - **Removed:** `ColorCycle::color_unset` (added earlier in this beta,
+    never released). Its rule, "only series still in the starting
+    colour", could not tell an unset colour from a chosen one.
+  - **One-time fits.** `Renderer::register_chart` with a new chart's
+    config (`LayoutState::Fitted`: `Chart::sized`, `Chart::placed`,
+    `default::config_for_series`, the family presets) fits once:
+    1. the axis ranges, by the `fit_ranges` path;
+    2. the layout;
+    3. the scale of every auto-scaled vector series;
+    4. the stroke share of every energy-level series' column slots
+       (`LevelStrokeStyle::slot_fraction`).
+
+    The results are stored in the chart's config and series, and nothing
+    refits them on its own. A `Fixed` config, such as every stored
+    document, is registered exactly as given, as before. A new chart over
+    a streamed source cannot be fitted (rule 8): it is refused with
+    `ColumnNotResident`.
+  - **Opt-outs:** `Renderer::register_chart_as_given(config, series)`
+    registers any config without the fit, and `Chart::as_given(config)`
+    creates a chart object without the layout fit of `Chart::new`.
+  - `Renderer::fit_ranges(&mut chart, &mut series)` also fits the scale of
+    every auto-scaled vector series from the fitted data area, so the
+    default flow (`fit_ranges`, then export) draws visible arrows. The
+    browser `fit_ranges()` stores the rescaled series.
+  - **Grotrian slots.** The fit narrows an energy-level series'
+    `style.level.slot_fraction`, never below 0.35 and never wider than
+    stored, so its level labels fit their own column's lane instead of
+    moving into the neighbour's. It lays the labels out at the stored
+    share and at each twentieth below it, down to the share that leaves
+    the widest fitting label room before the next column's strokes. It
+    keeps the share with the fewest labels on (or within a label gap of)
+    another column's ink, on a limit line or on another label, then the
+    fewest labels moved to the other side or onto a leader, then the
+    widest. A second fit keeps the result. He I (0.65 at its own size, 0.5
+    at 800 × 600 with the Gallery sizes) and Cu I at its own size (0.5)
+    draw every level label beside its own stroke with room before the next
+    one; Cu I at 800 × 600 keeps 0.7, where its widest ²P° labels do not
+    fit the gap at any share and a narrower one draws more labels on
+    other ink. A `Fixed` document
+    and `register_chart_as_given` keep the stored share, and
+    `fit_ranges` applies the same fit.
+  - `VectorStyle::auto_scale` is consumed by the first fit.
+    `fit_vector_scales`, and through it `register_chart`, `fit_ranges` and
+    `commit_auto_fit_all`, turns it off after writing the scale, so the
+    stored scale stays through later fits. A field of zero vectors keeps
+    the flag. Before, the flag stayed on and every whole-chart fit
+    rewrote the scale.
+  - Documents written before this change parse, read back and draw the
+    same. No serialized field is added.
+  - **Migration:**
+    - `ColorCycle::DEFAULT.color_unset(&mut series)` becomes
+      `config.apply_palette(&mut series, ColorCycle::DEFAULT.colors())`.
+      Unlike `color_unset`, it colours every palette-coloured series. Set
+      a host colour after it.
+    - `default::config_for_series(&series)` becomes
+      `config_for_series(&mut series)`.
+    - `renderer.fit_ranges(&mut chart, &series)` becomes
+      `fit_ranges(&mut chart, &mut series)`.
+    - A host that sets ranges on a `Chart::sized` chart and then registers
+      it calls `register_chart_as_given`, or the registration fits the
+      ranges to the data. A streamed chart built from `Chart::sized` is
+      also registered with `register_chart_as_given`.
+    - A host that relied on `auto_scale` staying on calls
+      `style.auto_scale = true` before the next fit.
+  - Tests: `apply_palette_gives_series_i_colour_i_and_redraws_the_legend`
+    (`helpers/series.rs`), `the_series_take_the_default_palette_in_order`
+    (`helpers/default.rs`), `registration_fits_a_new_chart_once`,
+    `fit_vector_scales_sizes_auto_scaled_arrows_to_their_spacing`,
+    `the_installed_auto_fit_sizes_auto_scaled_arrows`
+    (`tests/candidate_fit.rs`), `fit_ranges_sizes_auto_scaled_arrows`
+    (`tests/helpers.rs`), `registration_fits_the_level_slots_once`
+    (`tests/energy_levels_render.rs`), and `palette_presets.rs` through the
+    default flow.
+- **Parallel coordinates and sunburst defaults** ([#357](https://github.com/shim9610/figgy/issues/357),
+  items 8 and 9). Appearance only; no value, position or pick moves.
+  - `ParallelOptions` gains `names_on_top` (the axis names above the plot)
+    and `label_backdrop` (a box behind every parallel tick label). Both are
+    additive keys, omitted while `false`/`None`, so older documents read
+    back and draw unchanged. Migration: a Rust struct literal of
+    `ParallelOptions` adds `names_on_top: false, label_backdrop: None` (or
+    `..Default::default()`).
+  - New preset `default::default_parallel_config()`: names on top, white
+    label backdrops, light axes with outward major ticks and no minor
+    ticks, no grid and no frame. It is `LayoutState::Fitted`, so the chart
+    made from it is created with room for the names.
+  - `ParallelTheme` gains `label_backdrop` and `line_opacity` (serde
+    defaults `None`). The family members set the backdrop to their paper at
+    0.8 and the rows to 0.5 opacity, and their colourbar grows to 0.6 of
+    the plot at 14 px. Palette contents are unchanged.
+  - New preset `RadialStyle::sunburst()`: flat, with a 1 px white rim and
+    separators between every node and ring. The Gallery radial member
+    tints descendants from their branch (`child_tint` 0.22), as cool
+    slate does.
+  - Fix: an inside radial label is fitted in its sector's own frame (along
+    and across the bisector, corners inside the rim) instead of bounding
+    both sides by the smaller of the arc and the ring thickness. Labels at
+    the top and bottom of thin sunburst rings keep their size, and labels
+    that ran past the rim now fit inside it.
+- **A new chart is created with its layout fitted**
+  ([#357](https://github.com/shim9610/figgy/issues/357)). A chart drawn
+  without `fit_layout()` kept the default margins, so an 800 × 600 line
+  chart with axis titles drew its y title over `-0.600` tick labels.
+  `Config` has `layout_state` (`LayoutState`): `Fixed` (the default and the
+  value of every document without the key, drawn exactly as stored) and
+  `Fitted` (the chart keeps the layout fitted to what it holds). The
+  layout is fitted when a chart object is created and when a chart edit
+  changes what it holds, never when it is drawn or exported:
+  - `Chart::sized`, `Chart::placed`, `default::config_for_series`,
+    `default::default_parallel_config` and a categorical, box plot or radar
+    document converted with `text_sizes` and no explicit data area are
+    `Fitted`. `Chart::new(config)`, `Renderer::register_chart` and the WASM
+    kernel fit a `Fitted` config when they create the chart
+    (`layout::auto_layout` with `CpuTextMeasure`); a `Fixed` one is kept as
+    given, and `Config::default()` stays `Fixed`.
+  - The chart methods that edit it (`with_title`, the axis titles, ranges
+    and fits, legend, overlays, units, `set_area`, themes,
+    `with_axis_range_change`, `with_decoration_change`), the registered
+    chart's config edits (`set_chart_config`, view and range fits) and the
+    kernel's setters fit a `Fitted` layout again as part of the edit. An
+    edit through `Chart::config_mut()` is not fitted: call `fit_layout()`
+    after it.
+  - A successful `Config::nudge` (every decoration drag and plot-area drag
+    or resize) and `Config::fit_to_data_area` set `Fixed`, so no later edit
+    undoes the user's layout. Monotonic charts are registered and kept
+    `Fixed` (M4).
+  - Draws (`prepare`, `prepare_registered`, `WindowedRenderer::draw*`, the
+    kernel's `frame()`) and exports draw the stored config as it is and
+    write nothing; they take `&Chart` as before.
+  Documents written before the key draw and export the same image.
+  Migration: an exhaustive `Config { .. }` pattern or literal names
+  `layout_state`; a host that sets margins of its own on a `Fitted` chart
+  sets `layout_state = LayoutState::Fixed` with them, or the next chart
+  edit fits them again.
+- **Documents built in Rust draw the Cartesian text sizes**
+  ([#357](https://github.com/shim9610/figgy/issues/357)). The categorical,
+  box plot and radar readers drew every text at their one `font_size` (14 px)
+  and the title at 1.5 × it (21/14/14/14 px against the Cartesian 28/22/18/14):
+  a preset difference of the converters, not of the rendering. The three
+  documents have `text_sizes: Option<DocumentTextSizes>` (title, axis
+  title, tick label, legend). Without it (the key absent, every document
+  written before) the converters draw as before; the Rust `Default` sets
+  `DocumentTextSizes::CARTESIAN`, and a converted document with
+  `text_sizes` and no explicit data area is `LayoutState::Fitted`: its
+  chart is created with its layout fitted. `font_size` keeps its serde default of 14. The Gallery theme's
+  document chrome (category bars, box plot, radar) takes the gallery sizes
+  26/18/16 and the documented 14 px legend instead of 27/18/18/18.
+  Migration: an exhaustive literal of `CategoricalChart`, `BoxPlotChart`
+  or `RadarChart` names `text_sizes` (`None` keeps the former sizes).
+
+- **Text looks the same at every scale** ([#357](https://github.com/shim9610/figgy/issues/357)).
+  A 2x (or any scale) export or display is the 1x drawing scaled; before,
+  text was hinted or not by its pixel size, and the layout read the
+  hinted outlines, so the same label sat and snapped differently at 1x
+  and 2x. Appearance only; no value, data position or pick moves.
+  - Glyphs are hinted only in a 1x drawing: base text up to 32 px there,
+    and never a glyph at a script position (a superscript or subscript
+    segment, a Unicode script character, a math leaf in script style).
+    Every other display or export scale draws unhinted outlines: grid
+    fitting snaps a glyph differently on each pixel grid, so hinting at
+    two scales could not keep 2x the 1x drawing scaled. One decision
+    (`glyph_hinting`) serves the canvas, SVG and PDF.
+  - The layout measures unhinted outlines (advances, ascent, descent and
+    ink extents), so label, title and band positions do not depend on the
+    scale; hinting changes pixels only.
+  - The math layout keeps script shifts and fraction, radical, operator
+    and limit offsets fractional instead of rounding them to device
+    pixels.
+  - The segment font sizes of category labels and group headers now scale
+    with an export or display scale, as every other rich text does.
+  - What moves in pixels, documents written by earlier releases included:
+    text in displays and exports at other scales than 1x is drawn
+    unhinted (before, up to 32 drawn pixels was hinted), scripts render
+    slightly softer (on the affected labels a mean
+    colour difference over the inked pixels of at most 25 of 255, the 99th
+    percentile at most 186, the script edges moving within a pixel), and
+    labels whose position follows their ink extents move by a fraction of
+    a pixel. A stored layout is drawn as stored; a layout fitted again
+    (`fit_layout`, a `Fitted` chart's edit) may take a pixel more where a
+    band holds unhinted ink (the default chart's x bands are 11 and 26 px
+    instead of 10 and 25 px).
+- **One layout fit is a fixed point** ([#357](https://github.com/shim9610/figgy/issues/357)).
+  `layout::auto_layout` (and so `fit_layout`, a theme and every fit of a
+  `Fitted` chart) now repeats laying out each chart and lining up the
+  subplot grid until a round changes nothing, at most the 8 rounds its
+  chart passes take. Before, the grid alignment ran once after the charts
+  were laid out: a band it raised changed a plot's size and so the labels
+  that chart holds, and fitting the result again could move a band or an
+  axis title by a pixel (applying the `cool-slate` theme twice to a chart
+  with broken axes did). Fitting twice now gives what fitting once gives,
+  at every scale. A stored layout is drawn as stored; a layout fitted again
+  may differ from the old fit by a pixel where the old one had not settled.
+- **Grotrian (energy-level) default look** ([#357](https://github.com/shim9610/figgy/issues/357) item 10).
+  Appearance only; values, positions and picks are unchanged, and a saved
+  document draws as it did.
+  - `AxisPreset::Grotrian` frames the energy axis alone, as NIST ASD and
+    textbook term diagrams do: `left_y` keeps its line, outward ticks and
+    labels; `bottom_x` keeps the term-column labels without a line or
+    ticks; `top_x` and `right_y` draw nothing, unless `right_y` has a
+    `unit` (a second energy unit such as cm<sup>-1</sup>), which then takes the
+    energy axis' frame. It used to draw the boxed frame with outward ticks
+    on the bottom and left. Migration: a host that wants the old frame
+    applies `AxisPreset::BoxedOutward` and switches the grid off itself.
+  - `EnergyLevelSeries::default()`, `EnergyLevelStyle::default()`,
+    `LevelStrokeStyle::default()` and `TransitionArrowStyle::default()`
+    (`helpers`) start with 3 px level strokes, a 2 px limit line and
+    transition arrows with a 2.25 px shaft and a 13 × 10 px head (from
+    2 px, 1.5 px, 1.5 px and 9 × 7 px). A series built from them writes
+    its `style` in full. The serde defaults are unchanged: a document that
+    omits `style` reads the earlier look. `WavelengthLabels::default()`
+    writes its labels at 16 px (from 11); no document reads it.
+  - `EnergyLevelTheme` gains `head_length` and `head_width`
+    (`Option<f32>`, omitted when `None`): set, a theme writes the
+    transition arrowheads; `None`, which a theme saved earlier reads,
+    keeps each series' own. Every family's energy-level member draws
+    3 px levels, a 2 px limit and 2.2 px arrows with 13 × 10 px heads, and
+    sets one text scale: axis title 22, energy ticks 20, term-column
+    labels 24, group headers 21, level labels 20, band and limit labels 19
+    and wavelength labels 18 px (from 20/18/20/19/16/16/15). Migration: a
+    Rust literal of `EnergyLevelTheme` adds the two fields.
+  - The Grotrian examples (`nist_grotrian`, `nist_grotrian_gallery` and
+    the playground's energy-level scenes, `support/grotrian_sets.rs`)
+    write physics notation as host text: term symbols with a raised
+    multiplicity, configurations with raised occupancies and J as a
+    subscript, built from rich-text script segments (TeX `^{}` and `_{}`
+    spans), never from Unicode super- or subscript characters, which
+    figgy's own examples, presets and docs do not use (#357; #353's
+    mapping stays for hosts that pass them). They derive each axis break
+    from their own levels (`derived_break`: the widest empty energy
+    range), as the item 13 decision keeps breaks the host's job.
+- **Palette presets and a default colour cycle** ([#357](https://github.com/shim9610/figgy/issues/357)).
+  `ColorCycle` gains five categorical presets from public palettes:
+  `Tableau10` (d3-scale-chromatic, ISC), `Set2` and `Dark2` (ColorBrewer,
+  Apache-2.0; this product includes color specifications and designs
+  developed by Cynthia Brewer, http://colorbrewer.org/), `Plotly` and
+  `HighContrast` (plotly.py `Plotly` and `Dark24`, MIT), beside `Balanced`
+  (D3 category10 / matplotlib tab10) and `ColorblindSafe` (Okabe–Ito). New:
+  `ColorCycle::DEFAULT` (`Balanced`), `ColorCycle::ALL`, `PRESETS`,
+  `name()`, `from_name()`, and
+  `Theme::with_palette(cycle)` / `RadialTheme::with_palette(cycle)`;
+  `colors()` and `color()` are `const`. The browser `ColorCycle` enum has
+  the same variants, `FiggyChart.theme_with_palette(name, cycle)` and
+  `FiggyBoundedChart.apply_theme_with_palette(name, cycle)` select a preset
+  through the themes, and `<figgy-chart>` forwards `theme_with_palette`.
+  [USAGE.md](crates/renderer/USAGE.md#palette-presets) lists every source
+  and licence.
+  - **Default cycle.** The series constructors (`SeriesConfig::line`,
+    `scatter`, `histogram`, `category_bars`, `box_plot`, `vectors`, ...)
+    start a series in `ColorCycle::DEFAULT.color(0)` instead of black, and
+    `Config::apply_palette` (above) gives series `i` the cycle's colour
+    `i`. In the
+    browser a new chart's cycle is `Balanced` instead of `Classic`, so
+    `add_line_series` gives new series its colours in order. The colour is
+    written into the series where it is created; the model has no unset
+    colour, and loading or drawing a document never recolours it. Stored
+    documents therefore read back and draw the same, black series included.
+  - **Theme palettes.** Every family member's palette, range-bar state list
+    and ternary region list holds eight or more distinct colours: a member
+    designed with fewer (the Gallery line chart had 3, error bars 2,
+    histogram 1, distribution 3, vector field 1, parallel 1) keeps its
+    colours first and is filled from the presets, skipping colours close to
+    one already in. Charts with up to the designed number of series look as
+    before; further series no longer repeat colours.
+  - **Migration.** A host that relied on constructors drawing black sets it:
+    `.color(Color::BLACK)`. A browser host that relied on `Classic` calls
+    `apply_color_cycle(ColorCycle.Classic)` first. A host that matched on
+    `ColorCycle` exhaustively handles the five new variants. A test that
+    compared a themed palette with its designed list compares the first
+    entries. Tests: `presets_have_eight_distinct_colours_and_names`,
+    `preset_values_match_their_sources` (`preset.rs`),
+    `constructors_start_in_the_default_cycle` (`helpers/series.rs`), `every_member_palette_has_eight_distinct_colours`,
+    `filled_palettes_keep_the_designed_colours_first`,
+    `with_palette_selects_a_preset` (`helpers/theme/tests.rs`).
+- **Removed unused and duplicate API** ([#341](https://github.com/shim9610/figgy/issues/341)).
+  Public items with no caller, aliases and one-line twins of another entry,
+  and builders only tests used are removed; serialized documents are
+  unchanged (every field still parses and saves the same). Migration, by
+  crate (removed name → replacement):
+  - `figgy-model`:
+    - `RadialMaterial`, `CategoryBarMaterial`, `BoxPlotMaterial` (also
+      re-exported by the renderer) → `Material`.
+    - `CategoricalChart`, `BarSeries`, `BoxPlotChart`, `BoxSummary`,
+      `BoxPlotDirection`, `BoxPlotSeries`, `RadarChart`, `RadarTarget`,
+      `RadarGridShape`, `RadarStyle` and `RadarSeries` lose their
+      `#[deprecated]` attributes: they stay as the readers for documents
+      written before 0.13, with no removal planned. An
+      `#[allow(deprecated)]` that served them can go.
+    - `Config::from_categorical_with_report(c)`,
+      `from_boxplot_with_report(c)`, `from_radar_with_report(c)` →
+      `Config::from_categorical_with_report_in(c, None)` (likewise
+      `from_boxplot_with_report_in`, `from_radar_with_report_in`).
+    - `FitStrategy::ProportionalScale` and `FitStrategy::Absorb(side)` →
+      `FitStrategy::PreserveTitles`, the strategy every product path uses.
+      An exhaustive `match` on `FitStrategy` has one arm.
+    - `Config::resize_chart_area(area)` → set `config.chart_area` and check
+      `config.data_area()`; `Config::resize_chart_area_scaled`,
+      `Config::set_side_margin` and `Config::set_margins` →
+      `Config::fit_to_data_area(target, FitStrategy::PreserveTitles)` with
+      the data area the margins give.
+    - `AxisOptions::data_value(shown)` → `axis.effective_unit()` and
+      `unit.value(shown)`.
+    - `Coordinates::from_options` and `Coordinates::is_cartesian` → build
+      the variant and `matches!(c, Coordinates::Cartesian)`;
+      `Config::ternary_mut` → `match &mut config.coordinates`.
+    - `Config::nudge_x(e, m, dx)` / `nudge_y(e, m, dy)` →
+      `Config::nudge(e, m, dx, 0.0)` / `nudge(e, m, 0.0, dy)`.
+    - `resize::ALL_HANDLES` → list the eight `ResizeHandle` variants.
+    - `MonotonicEnvelope::append_monotonic_ref` → `append_monotonic` on the
+      typed source; `MonotonicEnvelope::aligned_mapping` → `mapping()` (the
+      columns are aligned after every full call: `is_grid_aligned()`).
+    - `MonotonicConfig::set_plot_background` and
+      `MonotonicAxis::{set_major_spacing, set_minor_count, set_tick_lengths,
+      set_line}` → edit the field on a `Config` copy and
+      `MonotonicConfig::assign` it (refused when the mapping would move).
+    - `default::{default_chart_title_options, default_axis_title_options,
+      default_label_style_x, default_label_style_y,
+      default_axis_options_colorbar, default_grid_options,
+      default_chart_area}` → the field of `default::default_config()` (or
+      of `default_colorbar_options().axis`, `default_config().chart_area`).
+  - `figgy-renderer`:
+    - `data_render::{create_line_columnar_pipeline,
+      create_scatter_columnar_pipeline,
+      create_scatter_columnar_mapped_pipeline,
+      create_errorbar_columnar_pipeline,
+      create_errorbar_columnar_mapped_pipeline,
+      create_bar_columnar_pipeline, create_bar_columnar_mapped_pipeline,
+      create_field_columnar_pipeline, create_vector_pipeline,
+      create_scatter_style_map_bind_group_layout,
+      create_errorbar_style_map, create_bar_style_map,
+      create_point_value_map_bind_group, render_textured, make_uv_gradient,
+      update_style, line_strip_vertex_count, MESH_TABLE_HEIGHTS}` and
+      `data_render::line_arc::{create_arc_scan_pipelines,
+      create_arc_scan_pipelines_observed,
+      create_arc_scan_pipelines_observed_async}`: no replacement. The
+      renderer builds its pipelines from its own shader set; a host draws
+      through `Renderer`. `create_per_point_style_map_bind_group_layout`,
+      `create_scatter_style_map` and `create_bar_style_map_with_slots(device,
+      layout, &[], overrides)` stay. The bar shader's `vs_main` and
+      `vs_mapped` entries, which only the removed builders compiled, are
+      removed with them, and `shader_pipeline_contract.json` is regenerated.
+    - `Renderer::{texture_bind_group_layout, transform_bind_group_layout,
+      style_bind_group_layout, line_pipeline, scatter_pipeline,
+      errorbar_pipeline, bar_pipeline, bar_mapped_pipeline,
+      quad_vertex_buffer}`: no replacement (renderer internals).
+    - `GpuLedger::{end_submission, reset_peak}`,
+      `GpuMemoryUsage::{external_bytes, total_creations}` and
+      `gpu_memory::texture_desc_bytes` are test support now →
+      `Renderer::end_gpu_frame`; `total_bytes() - pool_bytes()`; the sum of
+      `creations_of(kind)`.
+    - `Renderer::try_new_observed` → `Renderer::try_new`.
+    - `WindowedRenderer::for_window_async_observed` /
+      `for_window_blocking_observed` → `Renderer::for_window_async_observed`
+      / `Renderer::for_window_blocking_observed`;
+      `Renderer::for_window_minimal_async_observed(t, s, p, o)` →
+      `Renderer::for_window_with_shader_set_async_observed(t, s, p,
+      ShaderSet::Basic, o)`.
+    - `WindowedRenderer::warm_up` / `warm_up_blocking` →
+      `first_frame_ready` / `first_frame_ready_blocking`.
+    - `axis_render::{try_raster_chart_to_rgba(c),
+      try_raster_chart_layer_to_rgba(c, layer),
+      try_raster_chart_layer_to_rgba_with_selection(c, layer, sel)}` →
+      `try_raster_chart_layer_to_rgba_with_selection_at(c, layer, sel,
+      scale)` with `AxisLayerKind::All`, `&[]` and `1.0` for the omitted
+      arguments; `axis_render::draw_axes` → `draw_grid_layer` then
+      `draw_decoration_layer`.
+    - `PickedData::into_point` → match `PickedData::Point { .. }`;
+      `Canvas::blit_mask` → no replacement (crate text path);
+      `Chart::invalidate` → no replacement (the renderer tracks column
+      changes itself).
+    - The retained iced 0.14 / wgpu 27 integration source
+      (`unsupported/iced_embed_wgpu27.rs`) is removed; USAGE.md states the
+      status.
+  - `figgy` (browser): `FiggyChart.warm_up()` and the element's `warm_up()`
+    → `first_frame_ready()`; `FiggyChart.begin_stream_pick_point`,
+    `begin_stream_pick_data`, `finish_stream_pick_point` and
+    `finish_stream_pick_data` (which always rejected) are removed: stream
+    picking stays disabled. The six `*-probe.html` pages are removed, and
+    the unused `serde` dev-dependency.
+
+- **Every `DataRenderType` variant wraps a struct** ([#341](https://github.com/shim9610/figgy/issues/341)).
+  The ten kinds whose fields were written inline in the enum now wrap a
+  named struct, as `Xy`, `Field`, `EnergyLevels`, `TriMesh`, `Feynman` and
+  `MonotonicLine` already did. The fields, their docs and their defaults
+  are unchanged, and the wire form is unchanged: `{"BoxPlot": {...}}` and
+  the rest parse and re-serialize byte for byte. Breaking for Rust
+  literals and patterns. Migration (old → new; every new struct is in
+  `figgy_model::data_config` and re-exported at the crate roots):
+  - `DataRenderType::Histogram { bar }` → `Histogram(HistogramSeries { bar })`.
+  - `RgbImage { red, green, blue, range, shading, opacity }` →
+    `RgbImage(RgbImageSeries { .. })`.
+  - `Vector { components, style }` → `Vector(VectorSeries { .. })`.
+  - `CategoryBars { color, style, labels, label_format, overrides }` →
+    `CategoryBars(CategoryBarSeries { .. })`.
+  - `BoxPlot { color, style, labels, outliers, overrides, violin, points }`
+    → `BoxPlot(BoxSeries { .. })` (`BoxPlotSeries` stays the pre-0.13
+    document reader).
+  - `RangeBars { color, style, start, whiskers, color_by, progress,
+    connector, slot_width, labels }` → `RangeBars(RangeBarSeries { .. })`.
+  - `Radar { color, style, labels }` → `Radar(RadarPolygonSeries { .. })`
+    (`RadarSeries` stays the pre-0.13 document reader).
+  - `Ternary { c_column, scatter, line, region }` →
+    `Ternary(TernarySeries { .. })`.
+  - `Streamlines { line, arrows, color_map }` →
+    `Streamlines(StreamlineSeries { .. })`.
+  - `Parallel { columns, line, color_column }` →
+    `Parallel(ParallelSeries { .. })`.
+  - A pattern `DataRenderType::BoxPlot { .. }` → `DataRenderType::BoxPlot(_)`.
+  - The borrowed views are removed; each accessor returns the struct:
+    `render_type.category_bars()` → `Option<&CategoryBarSeries>` (was
+    `CategoryBarsRef`), `box_plot()` → `Option<&BoxSeries>` (`BoxPlotRef`),
+    `range_bars()` → `Option<&RangeBarSeries>` (`RangeBarsRef`), `radar()`
+    → `Option<&RadarPolygonSeries>` (`RadarRef`), `streamlines()` →
+    `Option<&StreamlineSeries>` (`StreamlinesRef`) and `parallel()` →
+    `Option<&ParallelSeries>` (`ParallelRef`). The views' fields read the
+    struct's own fields: an `Option<&T>` field is now `Option<T>` (use
+    `.as_ref()` or `.as_deref()`), `overrides` is the stored
+    `Option<Vec<_>>` (use `.as_deref().unwrap_or_default()` for the slice
+    the view gave), and `style`, `labels`, `start` and `line` are fields,
+    not references. `RadarRef::{line_style, scatter_style}`,
+    `RangeBarsRef::extra_columns` and `BoxPlotRef::{ragged_columns,
+    plain_columns, draws_boxes}` are methods of the structs.
+  - With the `helpers` feature, `helpers::RangeBarsParts` and
+    `helpers::BoxPlotParts` are removed: `SeriesConfig::style_range_bars`
+    and `style_box_plot` hand the closure `&mut RangeBarSeries` /
+    `&mut BoxSeries`, so `*parts.slot_width = w` becomes
+    `parts.slot_width = w`.
 
 <a id="unreleased-model"></a>
 
 ### Model (`figgy-model` 0.13.0)
 
-- **Legacy conversions report what they drop** ([#314](https://github.com/shim9610/figgy/issues/314)). `Config::from_categorical_with_report`, `Config::from_boxplot_with_report` and `Config::from_radar_with_report` return what `from_categorical`, `from_boxplot` and `from_radar` return plus a `ConversionReport`: `columns`, one `ConvertedColumn { series_id, role, column }` per upload in upload order (`ConvertedColumnRole::Positions`, `Values`, `BoxRecord`, `BoxOutliers`; `series_id` is `None` for the positions), and `notes`, one `ConversionNote { path, kind, reason }` per field the document set that the chart does not carry as set. `path` is the field's JSON path (`decorations.offsets[2]`); `kind` is `ConversionNoteKind::Dropped` or `Changed`. A field counts as set when it is present or differs from its documented default. The notes cover `hovered`, `background`, `decorations.data_area`, `decorations.selected`, a legacy `title` that `chart_title` hides, an overlay or subplot `active_layer` (changed to the base layer), a selection naming a category the document does not hold (or, for a radar document, a whole series), each decoration offset without a counterpart or whose value label offset is refused, each override naming no series and the radar `style.emphasis_brightness`. The return type is `ConvertedDocument<'a>`. The report types derive `Serialize` with the `serde` feature. The plain converters are unchanged and build no report. Tests: `a_categorical_document_reports_every_field_it_drops`, `a_box_plot_document_reports_every_field_it_drops`, `a_radar_document_reports_every_field_it_drops` (`bounded_sources.rs`).
+- **Dependency links for range bars** ([#357](https://github.com/shim9610/figgy/issues/357), item 14 D). New DataLess series kind `DataRenderType::RangeLinks(RangeLinkSeries { bars, color, width, head, inset, links })`. Each `RangeLink { from, to, exit_offset }` joins the bar of row `from` to the bar of row `to` of the range bar series `bars`, finish to start. The links are SSOT, like annotations: the series reads no column, `links` is omitted when empty and `exit_offset` when unset. Nothing caps the links. `RangeLinkSeries::set_link_exit_offset(index, offset)` sets a link's exit (`Some(0)`, `None` and non-finite values restore the default). `drag_link_exit(index, along)` drags it along the predecessor's edge, moving every link on a shared trunk and snapping to the default within 3 px (`RANGE_LINK_EXIT_SNAP`). New helper `SeriesConfig::range_links(id, bars, [(from, to), …])` in the web Gantt look: amber `#D4A24C`, 1.5 px, a 6 px open chevron, leaving 6 px from the predecessor's start. List links before their bars so the bars cover the link ends. Rules: `RangeLinkBars` (the bars must be a range bar series in the link series' layer), `RangeLinkColumns` (the series names no column), `RangeLinkStyle` (width `0..=24`, head `0..=32`, inset `0..=64`, colour channels in `0..=1`, exit offsets finite and not negative), `PolarRangeLinks` and `StreamedRangeLinks`. `step_selection` moves a picked link along `links` by `dx + dy`; a theme keeps a link's own look (its waterfall connector colour is too dark and thin for a dependency); the legend draws them as a line. The key is additive. `DataRenderType` gains a variant: an exhaustive `match` on it adds a `DataRenderType::RangeLinks(_)` arm. Tests: `range_links_name_bars_in_their_layer_and_validate_their_style`, `step_selection_walks_range_links_by_row` (3000 links), `link_exit_offsets_set_drag_snap_and_share_their_trunk`, `range_links_round_trip`.
+
+- **Calendar header for time axes** ([#357](https://github.com/shim9610/figgy/issues/357), item 14 B). `TimestampLabelFormat` gains two serde-defaulted fields, omitted when unset:
+  - `step: Option<CalendarStep>`: `Day`, `Week { start: Weekday }`, `Month`, `Quarter` or `Year`. The ticks fall at every boundary of the unit at local midnight in the format's time zone. `tick_policy` and `major_spacing` are not read, and a range of more than 1000 periods draws no ticks, as the planner's.
+  - `period_labels: bool`: each label is centred on its period's part of the range, with the partial periods at both ends included. A label wider than that part (a month cut to its last days at the range's edge) is not drawn. Ticks and gridlines stay on the boundaries.
+
+  `TimestampLabelMode` gains `Relative { origin: i64, prefix }` (`"{prefix}{n}"`, where `n` counts whole periods from the one holding `origin`, negative before it) and `Custom { origin: i64, labels }` (`labels[n]`; a period with no string draws no label, keeps its tick, and is not an error). Custom labels have no count limit.
+
+  `Pattern` gains `%b`, the English three-letter month name. A pattern that held a literal `%b` now prints the month.
+
+  New `TimestampLabelFormat::validate` and rules:
+  - relative, custom and period labels need a step (`RuleKind::TimestampStepRequired`);
+  - a prefix is one line of at most 24 characters (`TimestampRelativePrefix`);
+  - a custom string is one line of at most 160 characters (`TimestampCustomLabel`).
+
+  `validate_chart` applies them on every axis. New helper `default::default_calendar_timeline_config()`: the timeline with Monday weeks on `bottom_x` (`%d`) and a month header on `top_x` (`%b %Y`, period labels) for Unix seconds in UTC. `default_timeline_config` keeps number-neutral axes.
+
+  Migration: a `TimestampLabelFormat { .. }` literal that lists every field adds `step: None, period_labels: false`, and an exhaustive `match` on `TimestampLabelMode` adds the two variants. Documents written before parse, read back and draw the same.
+
+  Tests (`chrome/time.rs`): `a_month_step_ticks_every_first_and_centres_its_periods`, `every_step_walks_its_local_boundaries`, `relative_and_custom_labels_count_periods_from_the_origin`, `custom_labels_have_no_count_limit`, `b_prints_the_month_name`, `relative_custom_and_period_labels_need_a_step`, `calendar_formats_round_trip_and_older_ones_read_unchanged`.
+
+- **Timeline look, round 2** ([#357](https://github.com/shim9610/figgy/issues/357), item 14). The timeline helpers now draw in the look of the web Gantt charts. `default_timeline_config()`:
+  - bars over 0.6 of a row (was 0.8);
+  - a faint band behind every other row;
+  - no `left_y` or `bottom_x` axis line;
+  - task names in dark slate and time labels in muted grey;
+  - pale time gridlines and a light top rule.
+
+  `SeriesConfig::timeline_bars()`:
+  - colours each row from the muted `default::TIMELINE_COLORS` (was `ColorCycle::Balanced`);
+  - rounds corners by 4 px (was 3);
+  - places labels with `CategoryBarLabels::InsideOrBeside`, in `default::TIMELINE_LABEL_INK` contrast ink.
+
+  New:
+  - `AxisOptions::category_bands: Option<CategoryBands { fill, every: CategoryBandEvery::Alternate }>`, a fill across the plot behind every other category of a categorical `bottom_x` or `left_y`, under the grid, for any number of categories. A fill channel outside `0..=1` is refused (`RuleKind::CategoryBandsFill`).
+  - `CategoryBarLabels::InsideOrBeside`: inside the bar when the label fits with the bar padding, else beside its end.
+  - `CategoryBarSeriesLabels::contrast_ink: Option<[Color; 2]>` (dark, light). Each range bar label pixel takes the ink that contrasts more with what lies under it. The colours are opaque (`RuleKind::RangeBarContrastInk`), and a category bar series refuses the field (`RuleKind::ContrastInkSeries`).
+  - `SeriesConfig::with_progress(column)`: `RangeProgress` at `default::TIMELINE_REMAINING_OPACITY` (0.4).
+
+  The new fields are serde-defaulted and omitted when unset. Documents written before parse, read back and draw the same. `range_bars`, `default_config` and every serde default are unchanged.
+
+  Migration: an `AxisOptions { .. }` or `CategoryBarSeriesLabels { .. }` struct literal that lists every field adds `category_bands: None` or `contrast_ink: None`. An exhaustive `match` on `CategoryBarLabels` adds an `InsideOrBeside` arm.
+
+  Tests: `every_other_row_gets_a_band_across_the_plot`, `bands_cover_every_category_with_no_limit`, `bands_round_trip_and_older_documents_have_none`, `a_band_fill_outside_the_colour_range_is_refused` (`chrome/grid.rs`); `contrast_ink_is_opaque_and_only_on_range_bars`; the updated `timeline_bars_colour_each_row_and_draw_flat` and `the_timeline_config_puts_the_first_row_on_top_with_a_light_frame`.
+
+- **Clean tick labels by default** ([#357](https://github.com/shim9610/figgy/issues/357)). A new chart labelled its ticks `0.800`, `-3.00` and `10.0` beside a bare `0`: the helpers gave every linear axis `LabelFormat::Decimal`, whose decimals follow the significant digits. New: `LabelFormat::Auto(AutoNumberFormat { uniform_decimals, notation, exponent_low, exponent_high })` chooses the decimals from the major spacing, the fewest that write the step exactly (at most two past its first digit), the same on every tick of the axis: `0.0`, `0.2` … `1.0`; `0.00`, `0.25`, `0.50`; `-3` … `3`; `0`, `2000` … `10000`. `uniform_decimals: false` trims each tick instead (`0`, `0.5`, `1`). An axis whose largest end has an order of magnitude at most `exponent_low` (-5) or at least `exponent_high` (6), the limits of matplotlib's `ScalarFormatter`, writes each tick with its own exponent in `notation`: `ExponentNotation::Power` (`2×10⁹`, `8×10⁻⁶`, the default), `Scientific` (`2e9`) or `Engineering` (`20e-6`). A logarithmic axis rounds each tick to `significant_digits` in the same window, and a probability axis writes as `Decimal` with each tail's digits (#209). `AutoNumberFormat::DEFAULT` and `default::default_label_format()` give the default; `chrome::format_tick_auto` and `format_tick_auto_power` write a tick. Every numeric tick label goes through it: Cartesian and overlay axes, the colourbar, polar, ternary, parallel, 3D box and probability axes, in drawing, hit testing, auto layout and the PNG / SVG / PDF exports. Contour level labels, which carry their own format, are unchanged.
+  - **What gets it.** The helpers: `Config::default()`, `default::default_config()`, `default_axis_options_x` / `_y`, `default_colorbar_options`, `ColorBarOptions::default()`, `AxisOptions::overlay_x` / `overlay_y` and so `Chart::sized` / `placed`, and the browser `default_config`. The renderer's range and fit helpers (`set_x_range`, `auto_fit_*`, `fit_ranges` and the rest) now reset a linear axis to `Auto` where they reset it to `Decimal`; an axis already on `Auto` keeps its options, and `Timestamp` is kept as before.
+  - **What does not.** The serde defaults are unchanged: `LabelStyle::format` has no default, and the documented defaults in `crate::defaults` keep `Decimal`, so a stored document parses, reads back as the same value and draws the same image. `{"Auto":{}}` is additive (keys at their default are omitted); figgy-model 0.12.1 and earlier refuse it.
+  - **Migration.** A host that wants the old labels sets `label_style.format = LabelFormat::Decimal` after the range helpers (or `Chart::with_label_format(LabelFormat::Decimal)`). An exhaustive `match` on `LabelFormat` adds `LabelFormat::Auto(_)`. A test that pinned the helpers' tick label text (`"0.800"`) expects the new text (`"0.8"`).
+  Tests: `auto_linear_ticks_print_the_decimals_the_step_needs`, `auto_linear_switches_to_an_exponent_outside_the_window`, `auto_log_ticks_use_significant_digits_and_the_window`, `auto_power_ticks_typeset_the_exponent`, `auto_format_serde_writes_only_what_differs_from_the_default` (`src/format.rs`).
+
+- **Timeline look for range bars** ([#357](https://github.com/shim9610/figgy/issues/357), item 14). `RangeColor::ByRow { colors }` colours row `i` of a range bar series with `colors[i % colors.len()]` (no colours draw the series colour); it reads no column and the list cycles, so every row draws. Its colours must be opaque (`RuleKind::RangeBarStateColors`, whose message now names row colours too). New helpers: `SeriesConfig::timeline_bars(id, positions, start, end)` (row colours from `ColorCycle::Balanced`, the cycle's first as the series colour, flat bars with 3 px corners) and `default::default_timeline_config()` (horizontal bars over 0.8 of a row, `left_y.inverted` so the first row is at the top, value gridlines only, the open frame in light grey without tick marks, and `LayoutState::Fitted` so the chart made from it is created with its layout fitted to the row labels). A theme recolours a row-coloured series from its palette, and a `RangeBars` theme no longer draws gridlines along a categorical position axis; the gallery's range bars take the open frame without tick marks. `SeriesConfig::range_bars`, `default_config` and every serde default are unchanged, and documents written before parse, read back and draw the same. `RangeColor` gains a variant: an exhaustive `match` on it adds a `RangeColor::ByRow { .. }` arm. Tests: `row_colours_validate_read_no_column_and_step_by_row`, `timeline_bars_colour_each_row_and_draw_flat`, `the_timeline_config_puts_the_first_row_on_top_with_a_light_frame`, `a_series_coloured_by_row_takes_the_palette`, `range_bar_themes_keep_only_the_value_gridlines_on_a_category_axis`.
+
+- **Legend line marks take their series' stroke width** ([#357](https://github.com/shim9610/figgy/issues/357), item 11). A legend rule was always 0.09 em thick (about 1 px at the 14 px legend), so a 3 px Gallery series showed a 1 px sample. New: `RichSegment::rule_thickness_em: Option<f32>`, the rule's bar thickness in em (× effective font size), with the builder `RichSegment::with_rule_thickness` and the constant `text::RULE_THICKNESS_EM` (0.09), the thickness drawn when the field is `None`. `series_symbol_segments` stores the series' stroke width at the nominal 14 px legend (`width / 14` em, as dash patterns are stored), never thinner than 0.09 em, so a 1 px series keeps the mark it had and a 3 px series gets a 3 px mark. Every line-drawn mark takes it: xy lines (with or without markers), contours, meshes, energy levels, Feynman diagrams, monotonic lines, streamlines, parallel and ternary lines, radar outlines and vector shafts. `RichText::within_limits` holds the field to 0.01..4 em. The mark's length is unchanged: `SYMBOL_FIELD_EM` stays 2.0 em, matplotlib's default `handlelength`. Older documents keep their stored legend: a segment without the key parses as `None` and draws and re-serializes exactly as before, and the legacy converters (`Config::from_categorical`, `from_boxplot`, `from_radar`) store `None` too. The thickness changes only when a legend symbol is rebuilt from its series (`with_legend_from`, applying a theme, the browser's automatic legend updates). Migration: a `RichSegment { .. }` struct literal that lists every field adds `rule_thickness_em: None`.
+
+- **A default config in the frame of its series** ([#357](https://github.com/shim9610/figgy/issues/357)). New: `default::config_for_series(&series) -> Config` returns `default_config()` with the frame the series' family draws by default: `AxisPreset::Hidden` (no axes, ticks, tick labels or grid) for a chart that draws a Feynman series, `AxisPreset::Grotrian` for one that draws an energy-level series, and `default_config()` unchanged otherwise. The first Feynman or energy-level series decides, as a theme's frame does; the theme code now shares that choice (`Theme::family_frame`). The frame is written into the returned document when the chart is made, never decided at draw time, so a host that applies another preset keeps it. Additive. Tests: `a_chart_takes_the_frame_of_its_family`, `the_axes_turn_back_on_explicitly`, `the_framed_config_round_trips` (`helpers/default.rs`).
+
+- **Feynman diagrams look right by default.** `FeynmanStyle`'s defaults are sized for a chart of a few hundred pixels: width 1.5 → 2.6, wave `{4, 12}` → `{7, 24}`, coil `{5, 9}` → `{8, 13}`, arrowheads 9 × 7 → 12 × 9, dots 3 → 4 and loops 18 → 24 logical pixels. New field `FeynmanStyle::label_scale` (`0.25..=4`, default `1.5`): every vertex, propagator and momentum label is measured, placed, drawn, picked, boxed when picked, dragged and exported at that many times its stored `RichText` size; the stored labels keep their sizes. It is serde-defaulted and written only when it differs from the default, and a value out of range is refused with `RuleKind::FeynmanSizes`. New variant `TextRef::ScaledRich { text, scale }` carries such a label to a sink without copying it, and `TextRef::rich()` returns a rich text with its factor. `FeynmanTheme` gains `label_scale`, and the four families' Feynman members scale up with the default (width 2.2 → 3.0, wave `{8, 26}`, coil `{9, 14}`, arrowheads 13 × 10, dots 4.5, labels stored at 15/14 px (gallery 13/12 px) and drawn at 1.5×, so they read about as large as before). Appearance only: a document without a style, or with the default style, draws in the new look; its data and JSON are unchanged. Migration: a `match` over `TextRef` needs an arm for `ScaledRich` (draw it as `Rich` with every size multiplied by `scale`), and a `FeynmanStyle` or `FeynmanTheme` struct literal needs `label_scale` (or `..Default::default()`). Tests: `the_label_scale_round_trips_and_defaults_when_omitted`, `the_label_scale_is_validated`, `labels_are_measured_drawn_and_picked_at_the_label_scale` (`feynman/tests.rs`).
+
+- **Readable field defaults** ([#357](https://github.com/shim9610/figgy/issues/357)). Appearance only; stored documents read back and draw unchanged.
+  - **Vector arrows fit their spacing.** New `VectorStyle::auto_scale: bool`: a whole-chart fit may rewrite `scale` so the longest vector the component columns' statistics allow draws about as long as the spacing between arrows, `VectorStyle::auto_scale_target_px(arrows, width, height)` (`sqrt(width × height / arrows) × VectorStyle::AUTO_SCALE_SPACING`, 0.9, and at least `head_length_px`). The arrows always draw at the stored `scale`; the flag only says a fit may write it. The series constructors (`VectorStyle::default()`) turn it on, so a 25 × 17 grid of unit vectors on an 800 × 600 chart draws about 23 px arrows after the fit instead of 1 px specks; an explicit scale (`fit_scale`, `fit_scale_3d`, the `vector_scale` builder) turns it off. Only a `Pixels` scale auto-fits. On the wire the field is omitted while `false`, so a document written before it reads `false` and re-serializes byte for byte.
+  - **Contour labels on a plate.** `ContourLabelConfig::default()` puts a translucent white plate behind its black text (`bg_color: Some(white at 0.75)`), so labels read on the dark end of a map. A document that omits `bg_color` still reads `None`.
+  - **Theme field inks.** `FieldTheme` gains `contour_label_background` (the label plate; the documented look's is the default plate, the designed field themes draw labels without one), `unfilled_contour_color` and `unfilled_contour_label_color` (the ink of contour lines and labels on a field or mesh without a fill, drawn on the plot background; `None` takes the filled ink). The Gallery field theme keeps white isolines and labels over a fill and draws a line-only contour in its navy ink, so it no longer vanishes into the white paper; the Gallery mesh theme does the same for its isolines.
+  - **Migration:** an exhaustive `VectorStyle { .. }` literal adds `auto_scale: false` (the earlier behaviour) and an exhaustive pattern names the field; an exhaustive `FieldTheme { .. }` literal adds the three fields. A host that builds labels with `ContourLabelConfig { .., ..Default::default() }` and wants the text alone sets `bg_color: None`.
+
+- **The Unicode script table is public** ([#353](https://github.com/shim9610/figgy/issues/353)). New, additive: `text::unicode_script_char(c) -> Option<(char, UnicodeScript)>` returns the base character and position (`UnicodeScript::Superscript` or `Subscript`) of a Unicode superscript or subscript character, `None` for any other. It is the one table `rich_segments_from_text` and `rich_segments_from_label` split strings with and the renderer draws segments with; their output is unchanged.
+
+- **Legacy conversions on a host chart area** ([#334](https://github.com/shim9610/figgy/issues/334)). `Config::from_categorical_with_report_in`, `from_boxplot_with_report_in` and `from_radar_with_report_in` take `Option<&ChartArea>`: the converted config takes that chart area once the rest of the conversion is done and an explicit `decorations.data_area` is fitted to it (noted as dropped when it cannot hold it). `None` is the existing `_with_report` conversion on the placeholder chart area. Additive.
+- **The legacy converters carry an explicit data area** ([#334](https://github.com/shim9610/figgy/issues/334)). `Config::from_categorical`, `from_boxplot` and `from_radar` (and their `_with_report` variants) used to drop a document's `decorations.data_area` and keep the automatic layout. They now carry it: the converted chart's data area is the rectangle, set through the margins with `Config::fit_to_data_area` and `FitStrategy::PreserveTitles` on the converted config's chart area, so the chart title and tick marks keep their room and each axis band takes the rest. The legacy rectangle is `f32` and a data area whole pixels: each edge is rounded to the nearest pixel (`round(x)`, `round(x + width)`, likewise vertically). A document without the field converts exactly as before. A rectangle the converted layout cannot hold (outside the chart area, empty after rounding, or tighter than the title and tick bands) keeps the automatic layout and is still reported as `dropped`, now with the reason, and its note comes after the other notes. New: `Config::fit_legacy_data_area(&RectF)` places a legacy rectangle on a config, unchanged on refusal; a host that sets another chart area on a converted config calls it on a config converted without the field.
+- **A subplot's series are validated against that subplot** ([#325](https://github.com/shim9610/figgy/issues/325)). Energy-level, ternary and parallel series drawn by a subplot (or one of its overlays) are now held to the subplot's own coordinates: its categorical `bottom_x`, `ternary` or `parallel` options, and for a parallel colour column its `colorbar`. Before, they were held to the root chart's, so a subplot with the right configuration was refused under an ordinary Cartesian root (`set_chart_state`, `register_chart`, the browser `set_config`). A series the root draws is still held to the root. New: `Config::series_chart(series_id)` returns the config a series is drawn on.
+
+- **Legacy conversions report what they drop** ([#314](https://github.com/shim9610/figgy/issues/314)). `Config::from_categorical_with_report`, `Config::from_boxplot_with_report` and `Config::from_radar_with_report` return what `from_categorical`, `from_boxplot` and `from_radar` return plus a `ConversionReport`: `columns`, one `ConvertedColumn { series_id, role, column }` per upload in upload order (`ConvertedColumnRole::Positions`, `Values`, `BoxRecord`, `BoxOutliers`; `series_id` is `None` for the positions), and `notes`, one `ConversionNote { path, kind, reason }` per field the document set that the chart does not carry as set. `path` is the field's JSON path (`decorations.offsets[2]`); `kind` is `ConversionNoteKind::Dropped` or `Changed`. A field counts as set when it is present or differs from its documented default. The notes cover `hovered`, `background`, a `decorations.data_area` the converted layout cannot hold (#334), `decorations.selected`, a legacy `title` that `chart_title` hides, an overlay or subplot `active_layer` (changed to the base layer), a selection naming a category the document does not hold (or, for a radar document, a whole series), each decoration offset without a counterpart or whose value label offset is refused, each override naming no series and the radar `style.emphasis_brightness`. The return type is `ConvertedDocument<'a>`. The report types derive `Serialize` with the `serde` feature. The plain converters are unchanged and build no report. Tests: `a_categorical_document_reports_every_field_it_drops`, `a_box_plot_document_reports_every_field_it_drops`, `a_radar_document_reports_every_field_it_drops` (`bounded_sources.rs`).
 
 - **JSON numbers round-trip bit for bit** ([#314](https://github.com/shim9610/figgy/issues/314)). The model's tests and the web package build `serde_json` with `float_roundtrip`, so every finite `f64` reads back as the bits it was written from; a native host that parses documents with its own `serde_json` enables the feature there. JSON has no NaN or infinity: a non-finite `f64` is written as `null`, which a plain `f64` field refuses to read, while an optional value (`Option<f64>`) reads `null` as missing. Tests: `every_finite_f64_round_trips_bit_for_bit`, `a_non_finite_value_is_written_as_null_and_refused_by_a_plain_f64`.
 
 - **Rules for the editor fits** ([#312](https://github.com/shim9610/figgy/issues/312)). `RuleKind` gains `LayerSeriesUnknown` (a candidate's overlay or subplot names a series the chart has not registered), `PointSizeFitNoMap`, `PointSizeFitExtent`, `VectorFitNotVector`, `VectorFitTarget` and `VectorFitExtent`, the refusals of the renderer's candidate and style domain fits. `RuleKind` is `#[non_exhaustive]`, so this is additive.
+
+- **Rule for scoped fits** ([#334](https://github.com/shim9610/figgy/issues/334)). `RuleKind::FitScopeLayer` ("a fit scope names a layer the chart does not have"): a scoped candidate fit's target layer or kept layer names an overlay or subplot the candidate does not have.
 
 - **Editor helpers for annotations and the legend** ([#312](https://github.com/shim9610/figgy/issues/312)). `Annotation::converted_anchors(space, kind)` returns the item with every anchor (a text box's anchor, an arrow's or a box shape's two ends, a polygon's vertices) converted to `AnchorKind::Data` or `Ratio` at the screen position it has in `space`, or `None` when one has no position there; reference lines and spans are returned unchanged. `Annotation::validate()` is now public: the rules `AnnotationLayer::validate` checks for one item. `legend::series_legend_entry(cfg, colormap)` (also `config::series_legend_entry`) is the one legend row the auto legend appends for a series: its symbol naming the series, a space, the `'\t'` separator and its label. Tests: `converted_anchors_keep_every_drawn_position` (`annotation.rs`), `series_legend_entry_is_the_auto_row` (`legend.rs`).
 
@@ -114,7 +827,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
     - `parallel` (`ParallelTheme`): `name_size`;
     - `surfaces` (`SurfaceTheme`): `material`, `gloss`, `wireframe`, `wireframe_color`, `wireframe_width`;
     - `energy_levels` (`EnergyLevelTheme`): `axis_preset`, `level_width`, `limit_color`, `limit_width`, `transition_color`, `transition_width`, `band_fill`, the label looks `level_labels`, `transition_labels`, `limit_labels`, `band_labels`, `group_headers` and `column_labels` (`Option<TextLook { color, size }>`), and `continuum_fill`;
-    - `feynman` (`FeynmanTheme`): `axis_preset`, `width`, `wave`, `coil`, `head_length`, `head_width`, `dot_radius`, the particle colours `photon`, `gluon`, `boson` and `scalar`, and the label looks `vertex_labels` and `line_labels`.
+    - `feynman` (`FeynmanTheme`): `axis_preset`, `width`, `wave`, `coil`, `head_length`, `head_width`, `dot_radius`, `label_scale`, the particle colours `photon`, `gluon`, `boson` and `scalar`, and the label looks `vertex_labels` and `line_labels` (the stored label size, drawn `label_scale` times as large).
   - **Per-category colours.** With `bars.color_by_category` or `boxes.color_by_category`, a chart that draws exactly one category-bar series, or exactly one box plot series, takes one palette colour per category in reading order, written as the series' per-category overrides by `Theme::apply`.
   - **Contour shading.** `fields.contour_shade: Some(factor)` colours every contour level in the colourbar's colour at that level multiplied by `factor`; only `Theme::apply` writes it, to a chart that has a colourbar.
   - **Energy-level continua.** `energy_levels.continuum_fill` fills the continuum spans of the energy-level series in scope, found by `EnergyLevelSeries::is_continuum_id(series_id, annotation_id)` (new).
@@ -320,12 +1033,12 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
   `RichText`. Migration: a `MeasureText` implementation drops its `emit`;
   one whose plain-text measurement differs from its rich-text one
   overrides `measure_plain`.
-- **The deprecated readers' companion types are deprecated too** ([#160](https://github.com/shim9610/figgy/issues/160)).
+- **The readers' companion types** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `BarSeries`, `BoxSummary`, `BoxPlotDirection`, `BoxPlotSeries`,
   `RadarTarget`, `RadarGridShape`, `RadarStyle` and `RadarSeries` exist only
-  inside `CategoricalChart`, `BoxPlotChart` and `RadarChart`, deprecated
-  since 0.13.0, and leave with them. Code that reads a legacy document
-  through them adds `#[allow(deprecated)]`, as for the readers.
+  inside `CategoricalChart`, `BoxPlotChart` and `RadarChart`, the readers for
+  documents written before 0.13 ([#341](https://github.com/shim9610/figgy/issues/341)
+  dropped their `#[deprecated]` attributes).
 - **Unused items removed** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `DataConfig` (a lone `data_id`), `DataCell` (a bundle of columns nothing
   built), `default::default_rich_text` (an empty black 12 px `RichText`) and
@@ -1021,11 +1734,11 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
   - Per-family defaults are unchanged (bars Flat, boxes Matte, sectors
     Flat). Serialized documents are unchanged: the variant names are the
     strings the three old enums wrote.
-  - Migration: `RadialMaterial`, `CategoryBarMaterial` and `BoxPlotMaterial`
-    are deprecated aliases of `Material`; replace the name, the sets are
-    the same. `BoxPlotMaterial::default()` is now `Flat` (the enum default);
+  - Migration: replace `RadialMaterial`, `CategoryBarMaterial` and
+    `BoxPlotMaterial` with `Material` (the aliases are removed, #341); the
+    sets are the same. `Material::default()` is `Flat`;
     `BoxPlotStyle::default()` still uses `Matte`. An exhaustive `match` on
-    `CategoryBarMaterial` or `BoxPlotMaterial` needs the new variants.
+    the former bar or box enum needs the new variants.
 - **The polar label band scales with the chart**
   ([#47](https://github.com/shim9610/figgy/issues/47)). `Config::polar_geometry`
   reserved a fixed 6 px beside the tick length and the label line (2 px
@@ -1048,7 +1761,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
   configuration alone. Category bars and box plots are Cartesian series kinds and radar
   series a polar one, their per-point data entering through `ColumnSource`.
   `CategoricalChart`, `BoxPlotChart` and `RadarChart` stay only as
-  deprecated readers of the documents of releases up to 0.12, and every
+  readers of the documents of releases up to 0.12, and every
   document model 0.12.1 wrote still reads. Every migration is under
   [Migrating from the bounded group](#unreleased-bounded-migration).
   - **The radial chart is the DataLess chart**
@@ -1282,11 +1995,10 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
     hosts. `PickedDataRef::ValueLabel { source_id, series_id, category_index }`
     is a selected label (`{"kind":"value_label", …}` in `picked_data`). The
     readers carry a legacy document's `DataLabel` offsets into `labels.offsets`.
-  - **Readers deprecated, their dead helpers removed**.
-    `CategoricalChart`, `BoxPlotChart` and `RadarChart` are
-    `#[deprecated(since = "0.13.0")]`, each message naming its reader
-    (`Config::from_categorical`, `Config::from_boxplot`, `Config::from_radar`);
-    they are removed in the next milestone. The helpers of the removed
+  - **Readers kept, their dead helpers removed**.
+    `CategoricalChart`, `BoxPlotChart` and `RadarChart` are the readers for
+    documents written before 0.13, opened with `Config::from_categorical`,
+    `Config::from_boxplot` and `Config::from_radar`. The helpers of the removed
     renderers and editors that no reader needs are gone:
     `CategoricalChart::bar_override`, the three types' `reorder_categories`,
     `set_active_layer` and `normalize_title`, and `RadarChart::is_emphasized`
@@ -1535,13 +2247,62 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Nearest-datum pick** ([#381](https://github.com/shim9610/figgy/issues/381), phase 1 of the picking redesign). New `Renderer::pick_chart_nearest(id, request)` and `MonotonicChart::pick_nearest(request)` return a `NearestPickTicket` that resolves to a `NearestPick`: every series' datum nearest to the cursor (`NearestDatum`: layer, source and series ids, logical index, screen distance), in drawing order, and the nearest of them. There is no pick reach (`request.max_distance_px` is not used) and no style is read: each datum is placed with the projection its panel draws it with and measured to its centre. One pick covers every pickable layer at the cursor (the base layer and its overlays, or the subplot under the cursor and its overlays), each series on its own axes, line offset members on their own panels and 3D charts through their camera; an exact tie between layers goes to the active layer, then to the series drawn later. One compute kernel per column kind (`gpu_pick/nearest_entry.wgsl`, the xy kind) is assembled with one placement fragment per projection (`nearest_project_2d.wgsl`, `nearest_project_3d.wgsl`, which splices the shared `common/project_3d.wgsl`), and runs in the point picker's registry slots and per-series reduction: two pipelines per shader set, whatever the styles, and no render target. A monotonic series answers the logical sample index of the kept point through its envelope. A streamed source is refused (`ColumnNotResident`). `Renderer::pick_chart`, the typed data picks and the DataLess picks are unchanged in this step. Tests: `tests/nearest_pick.rs` (`one_pick_covers_every_layer_with_its_own_axes`, `an_exact_tie_between_layers_goes_to_the_active_layer`, `there_is_no_pick_reach`, `a_subplot_under_the_cursor_is_picked_on_its_own_axes`, `a_3d_chart_is_picked_through_its_camera`, `a_monotonic_chart_answers_the_logical_sample_index`, `a_streamed_source_is_refused`; 1x and 2x) and `gpu_pick::nearest::tests` (`a_series_past_the_direct_scan_size_answers_its_original_index`, past the exact pass's direct-scan size over a 2D dispatch, rule 10; `unplaced_data_never_answer_and_ties_go_on_top`).
+
+- **A registered chart's pick hits drawn ink and answers the nearest datum** ([#381](https://github.com/shim9610/figgy/issues/381), phase 2 of the picking redesign). `Renderer::pick_chart` (and `WindowedRenderer::pick_chart_at` and `MonotonicChart::pick`) now runs the nearest-datum pick of phase 1 and decides the hit from what is drawn: the cursor hits when the chart's data layer has ink (a texel above 1/255 in any channel) within `request.max_distance_px` canvas pixels of it, and the hit is then the nearest datum of every pickable layer. The ink is read from a renderer-owned **ink mask** per panel and layer: `R8Unorm`, one sample, panel-sized at the display scale, coverage only. The chart's on-screen prepare (`prepare_registered`, `prepare_monotonic`, `draw_registered`) draws it again only when the panel's data layer changes (the resident display's key), for every draw style (Precise, Sketch, Milkyway, Constellation), overlays, subplots and line offset members; an export never touches it, and a pick reads a (2r+1)² window of it and redraws nothing. It is keyed by the chart and panel, not by the view: a chart shown in several views at once has the mask of its most recent on-screen prepare. It costs one byte per panel pixel, charged to the device ledger as a panel texture, and goes with its chart (`remove_chart`) and with `release_unused_pool_memory`. New `GpuPickTicket::resolve_full` (with `resolve_full_blocking` and `try_resolve_full`) resolves to a `PickResult`: the hit and every series' `NearestDatum`, whether or not the cursor hits; `resolve` answers the hit alone. In the browser, `pick_point`'s JSON adds `nearest` (each series' nearest datum with its layer in the form `active_layer` answers), and the async pick compile compiles the nearest-datum kernel. A streamed display's pick (`pick_chart_view_cache_at`) is unchanged; the typed data pick follows in phase 4 (below). A box plot's or violin's raw points are now placed by the nearest-datum pick where they are drawn, jittered in their slot, the module splicing the exact marker pick's fragments for the jitter placement (`pick_category_jitter_px`).
+  - **Migration:** `GpuPickRequest::max_distance_px` keeps its field and type and changes meaning for `pick_chart`: it was the reach around the picked marker or line, and is now the reach around drawn ink; the answer is the nearest datum, whose `distance_px` may exceed it (the distance to the datum, not to the ink). A pick before the chart's first on-screen prepare, or after `release_unused_pool_memory` until the next one, hits nothing (`resolve` returns `None`) and still answers each series' nearest datum through `resolve_full`. A host that picks a chart it never draws reads `resolve_full().nearest` instead. Code that matched on `GpuPickTicket`'s resolved types is unchanged; `PickResult` is new.
+
+- **The typed data pick answers the nearest datum and the typed hit separately** ([#381](https://github.com/shim9610/figgy/issues/381), phase 4 of the picking redesign). `Renderer::pick_chart_data` (and `pick_chart_data_at`, `MonotonicChart::pick_data`) no longer runs an exact point query, and a datum no longer competes with a body, bar or cell by distance. Its new `GpuDataPickTicket::resolve_full` (with `resolve_full_blocking` and `try_resolve_full`) answers a `DataPickResult`: `point`, the registered chart's pick (`PickResult`: the ink hit and every series' nearest datum), `data`, the typed hit (bin, body, bar, cell, contour level, value label, DataLess element) exactly as before, and `picked`, the element selected: the nearest datum (as `PickedData::Point`) when the cursor hits drawn ink and the chart has a series with point data, the typed hit otherwise. `resolve` answers `picked`. On a violin with raw points a click on a point selects that point and a click on the body selects the nearest point, the body staying the typed hit; a violin without points, a bar chart or a heatmap selects as before. The registered chart's exact point pass (`pick_with_arcs` and its arc and ring inputs) is now test support for the exact kernels the streamed pick dispatches, and the browser's warm-up of a chart's exact keys (#363) is removed with its compile-queue pick entries and `tests/pick_warmup_browser.rs`. In the browser, `pick_point` reads a value label or DataLess element from the typed hit.
+  - **Migration:** `pick_chart_data(...).resolve()` returns the selection above: where a point series is drawn, the nearest datum replaces a body, bar or fill hit that used to win by distance. Read `resolve_full().data` for the typed hit itself (a value label, a violin body, a bar). A fill under the cursor now selects the nearest datum: the area fill is not a typed hit.
+
+- **The exact pick variant table is removed** ([#381](https://github.com/shim9610/figgy/issues/381), phase 3 of the picking redesign). With a registered chart's pick on the nearest-datum kernel, the table of every exact pick pipeline a chart could reach (`crates/renderer/tests/support/pick_variants.csv`), its static check (`ci/test_pick_variants.py`), its lib test and the `--pick-variants` mode of `ci/shader_compile.cjs` are gone; an exact module's WGSL change no longer fails `verify.py static`. The exact query stays for streamed displays, and its modules are measured with every other module in the shader capture. The raw-point jitter placement (`pick_category_jitter_px`) moves from `gpu_pick/marker.wgsl` into the shared fragment `gpu_pick/category_place.wgsl`, spliced by the exact marker modules and the nearest-datum module, which no longer splices the marker pick's fragments.
+
+- **A drawn chart's first pick compiles nothing on the page's thread** ([#381](https://github.com/shim9610/figgy/issues/381), follow-up to [#363](https://github.com/shim9610/figgy/issues/363)). In a browser, a chart a screen frame draws now queues on the renderer's compile queue, ahead of the waiting draw compiles, what its first pick needs and the picker has not created: the picker's gate and reduce pipelines while picking is off, the nearest-datum kernel of the chart's projection (flat, or 3D for a 3D chart), and the typed data pick kernels of its series' families (`data_pick_kernels_of_chart`). It is scheduled once per config and series revision and shader set, so an edit that changes the needed set schedules what is new; the frames that follow create each pipeline in the picker's cache as its compile resolves, which stays the only store (no copy, no second compile; unused typed kernels still go only with `release_unused_pool_memory`). `enable_gpu_picking_async`, `compile_pick_pipelines_async` and `compile_data_pick_pipelines_async` wait for a scheduled compile instead of starting their own. These compiles stay out of the screen's counts, waits and failures. No exact variant is warmed, and a monotonic chart or a chart with a streamed series is not warmed (rule 8). Natively nothing changes. Tests: `a_drawn_charts_first_pick_compiles_each_pipeline_once` (`compile_queue_browser`, replacing the exact-pipeline test that phase 4 left stale) and `a_pick_compile_goes_first_and_stays_out_of_the_screen_counts` (`compile_schedule`).
+
+- **A registered chart shown at a display scale draws its vectors at that scale** ([#381](https://github.com/shim9610/figgy/issues/381)). The on-screen prepare built every vector series' scratch (point vectors, grid vectors and streamline arrowheads) at scale 1 whatever the display scale, so a registered chart shown at 2x drew its arrows with 1x pixel sizes (a test scene inked 191 pixels where its 2x export inks 768). Each vector series is now built at the display scale its style was built at, as its pick already was; the screen and the export draw the same arrows at 1x and 2x (`point_vectors_draw_alike_on_screen_and_in_an_export`). Exports are unchanged.
+
+- **Violin, box, range bar, category bar and value label picks compile much faster on SwiftShader** ([#363](https://github.com/shim9610/figgy/issues/363)). Their shared placement helpers (`box_slot`, `box_along`, `category_bar`, the range bar's ends, the violin's curve ends, the value label's radar spoke and member search) call the projection once inside short loops instead of inlining it per branch and per end. Calls and arguments are unchanged, so picks and drawn pixels are the same. With the full shader set the violin pick kernel fell from 53.1 s to 1.6 s and the value label kernel from 12.2 s to 4.0 s ([`ci/shader-compilation.md`](ci/shader-compilation.md#data-pick-kernel-compile-times-363)).
+
+- **Releasing unused GPU memory also drops unused typed data pick kernels** ([#363](https://github.com/shim9610/figgy/issues/363)). `release_unused_pool_memory` (and its blocking form, which the web wrapper's `release_unused_gpu_memory` calls) drops each typed data pick kernel that no registered chart can dispatch, over every layer a pick can reach. Removing a chart frees nothing by itself, so the same or a similar chart registered again reuses its kernels without compiling; a live chart's are never dropped, and while any chart draws from a stream every kernel is kept.
+
+- **Dependency links for range bars** ([#357](https://github.com/shim9610/figgy/issues/357), item 14 D). The bar module splices a new input fragment, `common/range_links.wgsl` (approved on #357), after `range_bars.wgsl`. A link series binds the group 3 of the range bar series it names, with a lane-table head (the count, and the width, head and inset in render pixels) followed by three entries per SSOT link (`from`, `to`, exit offset), written into the mapped buffer when the series is prepared, so a link always meets the bars as they are drawn and takes no pool column. Each link is routed on every draw in the web Gantt convention: out of the predecessor's edge facing the successor, a small inset from its start, across to the successor's centre line through one rounded corner, and into its start with an open chevron. When the successor starts first, the exit moves back, so a route never turns back through a bar. Links from one bar share their trunk. One quad per link covers the route by distance, and nothing per link is stored. Two new precise pipelines (`RangeLink`, `RangeLinkSelection`) and a pick kernel (`pick_range_links`) answer `PickedData::HistogramBin` for the link's own series and row. The picked highlight redraws the route wider in the selection colour (the bar selection layer now carries its vertex count). Links draw on overlays and subplots and export to PNG at any scale and to SVG and PDF. A streamed source is refused. The `timeline` scene of `examples/range_bars.rs` draws its links with this series in place of `Arrow` elbows, and the `gantt` scene and `gallery-gantt.png` gain dependency links. Tests (`range_bars_render.rs`): `range_links_route_between_their_bars_and_keep_every_interaction` (routes, pick, highlight, `step_selection`, 1x and 2x, SVG, PDF, serde), `range_links_draw_on_overlays_and_subplots`, `dragged_link_exits_move_the_trunk_and_snap_back` (a registered chart edited in place, 1x and 2x, the pick at the moved trunk, the snap back to the default image, serde) and `three_thousand_links_draw_and_pick` (3749 links; `series_draw_info` reports a link past its bars as `truncated`); the `range links` row of `streamed_series_are_rejected_per_family`.
+
+- **Calendar headers** ([#357](https://github.com/shim9610/figgy/issues/357), item 14 B). The tick-label emit places a timestamp axis' labels at the plan's label positions, so period labels and the host's relative or custom strings draw, hit, select and drag as the axis' tick-label element, in PNG at any scale and in SVG and PDF. No shader or new path changes. The `timeline` scene of `examples/range_bars.rs` uses the calendar header. Tests (`tests/calendar_axis.rs`): `the_month_header_centres_each_month_and_the_weeks_start_on_monday`, `period_labels_hit_select_and_drag_as_tick_labels`, `relative_and_custom_labels_follow_the_origin` (10 000 custom strings), `the_header_draws_at_1x_and_2x_and_round_trips`.
+
+- **Row bands and contrast-ink labels for timelines** ([#357](https://github.com/shim9610/figgy/issues/357), item 14).
+  - **Category bands.** The grid emitter draws `category_bands` as plot-wide rectangles under the grid lines, in the same sink, so PNG at any scale, SVG, PDF, subplots and the hit-free chrome all follow.
+  - **Inside-or-beside placement.** The value label shader places `InsideOrBeside` labels with the bar rule (the same fit test as `Auto`), and the draw, the selection box and the pick share that placement.
+  - **Contrast ink.** For a range bar series with contrast ink, the atlas is baked in white (alpha as coverage). `fs_value_label` paints each pixel in whichever ink has the higher WCAG contrast with what lies under it, computed on every draw from the bar's rect, `range_fill` and the progress split; nothing per label is stored. The value label uniform grows from 128 to 192 B (`ink_dark`, `ink_light`, `ink_back`, `ink_base`).
+  - **Example.** `examples/range_bars.rs` gains a `timeline` scene: the default look with progress, `DiamondFilled` milestones, a today `ReferenceLine` and its dependency links.
+  - Tests: `inside_or_beside_labels_take_contrast_ink_and_keep_every_interaction` (placement, per-pixel ink across a progress split, pick, outline and drag at 1x and 2x, SVG, PDF, serde round trip), `contrast_labels_draw_on_every_row` (3000 rows), `the_timeline_look_bands_every_other_row_under_the_bars` (1x, 2x, pick over a band, a subplot, serde), and the `category_bands` cases of the SSOT invalidation table.
+
+- **Range bars coloured by row** ([#357](https://github.com/shim9610/figgy/issues/357), item 14). The range bar shader draws `RangeColor::ByRow`: a fourth colour mode (`RANGE_COLOR_ROW`) whose row colours fill the state style slots, written straight into the mapped slot buffer, and `range_fill` takes slot `row % count` on every draw. Picks, the picked highlight, `step_selection`, the legend swatch (the series colour), PNG at any scale and the SVG and PDF exports work as for the other colour modes. No other pixel changes. Test: `rows_take_their_colours_and_keep_every_interaction` (`range_bars_render.rs`); `overlays_and_subplots_draw_their_own_range_groups` and `three_thousand_rows_draw_pick_and_highlight` now colour by row.
+
+- **Feynman labels drawn at the style's label scale.** The canvas, SVG and PDF sinks draw a `TextRef::ScaledRich` label at its scale times the export scale, so a Feynman series' `style.label_scale` (default `1.5`, see the model entry) applies on screen, in PNG export at any scale and in vector export. Diagrams without a style draw with the new, larger default look. Tests: `labels_draw_pick_drag_and_export_at_the_label_scale`, `a_document_with_a_label_scale_round_trips_and_draws_the_same` (`feynman_render.rs`).
+
+- **Vector scales fit with the chart** ([#357](https://github.com/shim9610/figgy/issues/357)). New `Renderer::fit_vector_scales(&config, &mut series)`: every vector series with `VectorStyle::auto_scale` on and a `Pixels` scale gets the scale `fit_vector_scale` writes for the target `auto_scale_target_px` chooses from its arrow count (the `u` columns' registered length) and the config's data area, and keeps `auto_scale` on. It reads column statistics only, refuses streamed (`ColumnNotResident`) and unknown (`UnknownColumn`) columns before any write, and skips a field of zero vectors. `commit_auto_fit_all` (the browser `auto_fit_all`) runs it on the installed series and writes the result into the chart's series, so the SSOT states the drawn length; a host that fits with `fit_ranges` calls it with the fitted config. Tests: `fit_vector_scales_sizes_auto_scaled_arrows_to_their_spacing`, `the_installed_auto_fit_sizes_auto_scaled_arrows` (`tests/candidate_fit.rs`).
+
+- **Unicode superscript and subscript characters always draw as styled base characters** ([#353](https://github.com/shim9610/figgy/issues/353)). A `RichSegment` whose `text` is a Unicode superscript or subscript character (`⁰`–`⁹`, `⁺`, `⁻`, `⁽`, `⁾`, `ⁿ`, `ᵗ`, `₀`–`₉`, `₊`, `₋`, `₍`, `₎`) now draws as its base character at the superscript or subscript position, the same pixels as a base-character segment with the `superscript` or `subscript` flag, whatever fonts are installed. Before, it drew the character from the font: the bundled faces have no U+207A or U+207B, so in the browser a Feynman label written `e⁻` or `μ⁺` as literal segments showed a .notdef box on the canvas and in PNG, and a native host drew whatever face it had installed. The mapping is the table the string conversions already used, now public as `text::unicode_script_char` (with `text::UnicodeScript`), applied where segments are measured, drawn and exported (canvas, label rasters, SVG, PDF and math formula leaves), so the pen after a mapped character sits where measurement ends it and selection boxes follow. A character in a segment that is already a script combines with its flags (a `⁻` in a superscript segment is raised once; superscript wins over subscript). In a TeX formula such a character is a script of an empty base, as `{}^-`. The stored segments and the serialized document are unchanged. Tests: `unicode_script_characters_draw_as_styled_base_characters`, `drawn_char_maps_every_unicode_script_character` (`text_render.rs`), `unicode_script_characters_in_a_formula_are_scripts` (`math_layout.rs`), `literal_unicode_charges_draw_as_superscript_signs` (`tests/feynman_render.rs`, PNG at 1x and 2x, SVG and PDF), `literal_unicode_charges_draw_without_the_notdef_box` (`crates/web/tests/feynman_browser.rs`, canvas and PNG).
+
+- **Faster radial shading** ([#349](https://github.com/shim9610/figgy/issues/349)). A 3D radial chart shaded every sector that became the nearest so far, in each of a pixel's four antialiasing samples, and took each sector's ray-march normal inside the march loop. It now shades only the nearest sector, takes the normal once after the march, and supersamples coverage only: each sample still finds the slice it hits (or the background) and that slice's outline at its own position, while the lit material is evaluated once per surface a pixel's samples hit (one slice, one normal), and the floor shadow once per pixel. Edges, slice geometry, labels, picks and the Flat fast path are unchanged, and Flat charts without a shadow draw the same bytes; a material chart's pixels move by a mean of at most about 0.2 and at most 14 levels of 255 inside a textured face. No API or wire change. Test: `shading_once_per_surface_stays_within_the_pinned_difference` (`radial.rs`).
+
+- **`RendererDevice::request_async` and figgy-owned devices** ([#322](https://github.com/shim9610/figgy/issues/322)). New, additive: `RendererDevice::request_async(&adapter)` requests a device with figgy's descriptor (`gpu::request_device_async`) and bundles it as `RendererDevice::new` does, recording that figgy owns the device; the windowed and headless constructors build their bundles this way. In the browser, the drop of the last holder of such a bundle (a renderer, a radial renderer, a clone or a pending ticket) destroys the device after its submitted work (see the browser entry for the Chromium deadlock this avoids). Behavior change for browser hosts that keep the raw `wgpu::Device` of a windowed or headless renderer (`device()`) after dropping every figgy holder of it: keep a `renderer_device()` clone as long as the device is used. `RendererDevice::new` and `RendererDevice::blocking` bundles stay the host's and are never destroyed. Native drops are unchanged.
+
+- **A typed data pick compiles only the kernels its chart dispatches** ([#327](https://github.com/shim9610/figgy/issues/327)). Enabling GPU picking (`enable_gpu_picking`, `enable_gpu_picking_async`, `prewarm_all` and the `Picking` preparation) created all 13 typed data pick kernels: histogram, field contour and cell, vector grid, category bar, box plot, range bar, violin, parallel, triangle mesh, value label and the two streamed-pick reducers. In a browser, the first pick of a small radar chart waited for every one of them; on SwiftShader that took minutes. The data pick bundle now holds only its layouts and placeholders. Each kernel is created by the first pick that dispatches it and kept by the renderer's picker (`DataPickKernels`, next to the exact point pipelines of [#299](https://github.com/shim9610/figgy/issues/299)); a pick of a kind whose kernel does not exist yet creates it, so a pick never fails for that reason. A radar or XY line pick creates none of them. New, browser only: `Renderer::compile_data_pick_pipelines_async` and `WindowedRenderer::compile_data_pick_pipelines_at` compile, through `createComputePipelineAsync`, only the kernels a typed pick of that chart at that position dispatches, then create them from the browser's cache; a streamed typed pick compiles its two reducers the same way. As with `compile_pick_pipelines_at`, a compile the browser rejects is left to the creation, which reports its error as before. `prewarm_all` and the `Picking` preparation no longer create the data kernels, matching the exact point pipelines. Native picks create the kernels they need when they run; a data pick returns the same results as before.
+- **A browser renderer prepares a chart's first pick before it happens** ([#363](https://github.com/shim9610/figgy/issues/363)). On each screen frame, a chart whose config or series revision moved since it was last warmed schedules the exact pick pipelines its picks can need, and, while the picker is not enabled, the picker's gate and reduce pipelines, on the renderer's existing compile queue, ahead of the waiting render compiles. Only the chart's own keys compile, read from its stored config and series; the variant-table test checks they are exactly what the pick needs. A later frame creates each pipeline once its compile has resolved, in the caches the pick already uses: it enables the picker when gate and reduce are ready and creates each ready exact key, so the result survives the browser dropping its compile cache. `enable_gpu_picking_async` and `compile_pick_pipelines_at` wait for a scheduled compile and then create as before, so a pick is never slower and never depends on the warm-up having worked. These compiles stay out of `pipeline_status`, `series_ready`, `pipelines_ready` and `pipeline_failures`. When a chart admits the full shaders, a browser renderer with a compile queue no longer re-creates a ready picker synchronously: the next frame's warm-up enables it again once the full set's gate and reduce pipelines compile, and an enable before that waits for them. **Migration:** a wasm Rust host on such a renderer calls `enable_gpu_picking_async` before picking after a shader-set switch, as `FiggyChart` already does; a synchronous pick right after the switch reports `PickerDisabled`. No cache or lock is added; a native renderer is unchanged. In headless Chromium with SwiftShader, a radar chart picked right after its first frame went from about 10–13 s to about 7 s, and picked 8 s or 20 s later from about 15 s and 26 s to about 10–40 ms ([`ci/shader-compilation.md`](ci/shader-compilation.md#exact-pick-warm-up-363)).
+- **The first radar pick compiles its exact pipeline about 3.6 times faster on SwiftShader** ([#363](https://github.com/shim9610/figgy/issues/363)). The first pick of a radar chart waited for `pick_exact_candidates`, whose compile time on Chromium's SwiftShader grew with every inlined copy of the projection and validity helpers and with long short-circuit `&&` chains. Those helpers are now called once inside short loops over the corners, ends, quads or axes, and the validity tests use the non-short-circuit `&` / `|`, in the picker and in the shared `sample_valid`, `area_segment_drawn`, `area_corner_ndc`, `axis_baseline_ndc` and `stem_end_ndc` fragments. Calls and arguments are unchanged, so picks and drawn pixels are the same. Measured alone, the radar variant fell from 9.8 s to 2.7 s and the slowest measured variant (a dashed, styled line with a fill) from 231 s to 0.8 s; [`ci/shader-compilation.md`](ci/shader-compilation.md#exact-point-picker-compilation-363) has the table. No pipeline, module or cache is added and the exact pipelines stay lazy. A generated table, `crates/renderer/tests/support/pick_variants.csv`, lists every exact pick pipeline a chart can reach with its measured SwiftShader compile time and a budget; `ci/shader_compile.cjs --pick-variants` measures it, and `verify.py static` fails when an exact pick module's WGSL changes until that module's rows are regenerated and re-measured; other WGSL changes do not touch the table.
+
 - **Candidate fits and style domain fits** ([#312](https://github.com/shim9610/figgy/issues/312)). `Renderer::fit_config(&config, &series, padding) -> Result<Config>` returns a candidate configuration with the ranges of every layer fitted as `fit_ranges` fits an installed chart, through the same code (`Chart::auto_fit_every_layer` now calls the shared pure fit), but with the padding given (finite, at least 0, else `FitPadding`) and without changing any chart. `Renderer::fit_y_axes_config` is the same fit with every X axis given back exactly as it came (`bottom_x`, `top_x`, each overlay's `x_axis`, in every subplot too); the Y axes, a 3D chart's z axis and parallel axes are fitted. A candidate whose overlays or subplots name a series that is not in `series` is refused (`LayerSeriesUnknown`), as are invalid overlays, subplots or line offsets, unregistered columns, streamed sources (`ColumnNotResident`, rule 8) and monotonic series. `Renderer::fit_point_size_domain(&mut series)` fits a scatter's `PointSizeMap` domain to its size column's cached statistics (`PointSizeMap::fit_domain`), and `Renderer::fit_vector_scale(&config, &mut series, target)` fits a vector series' scale so the longest vector the U/V columns' statistics allow draws `target` long (`VectorStyle::fit_scale`; a grid unions its columns, a point field drawn in 3D uses `fit_scale_3d`). Both change only that series' map or scale, read nothing back, and refuse an empty, non-finite or degenerate extent with the series unchanged.
+
+- **Scoped candidate fits** ([#334](https://github.com/shim9610/figgy/issues/334)). `Renderer::fit_config_scoped(&config, &series, padding, &scope) -> Result<Config>` is `fit_config` for one layer's chosen axes: `FitScope { layer, axes: FitAxes { x, y, z }, linked, keep }` moves only the selected axes of `layer` (`z` is a 3D chart's `right_y`; on a parallel chart the parallel axes are `y`), and every other axis of every layer comes back exactly as given. A moved linked axis moves its link group. `LinkedFitData::Group` (the default) reads every series drawn against the group, as `fit_config` does; `LinkedFitData::Target` reads only the series drawn in the target's panel (the parent chart or one subplot, its overlays included), and the group still shares the range. `keep: &[FitAxisRef { layer, axis: FitAxis }]` holds axes: a target axis linked to a kept one is not moved, since a link group has one range. Statistics only, as `fit_config`: error bar ends, heatmap cell half-widths and arrow tips are not included (`begin_series_fit_extent` measures drawn extents). The refusals are `fit_config`'s, plus a scope layer or kept layer the candidate does not have (`InvalidConfig { field: "fit_scope", kind: FitScopeLayer }`). The candidate and every installed chart are untouched. `Chart::auto_fit_layer_union`, `auto_fit_parallel_axes` and `auto_fit_view_3d_z` now call shared filtered fits; their behaviour is unchanged.
 
 - **Preview an annotation without a layer** ([#312](https://github.com/shim9610/figgy/issues/312)). `preview_annotation(item, space, scale, policy) -> Result<AnnotationPreview, AnnotationSkip>` places one `Annotation` the way the annotation raster places an item of a layer, measuring its text at `scale` with `policy`, and draws or registers nothing. `AnnotationPreview { geometry, bounds }` is the item's `AnnotationGeometry` and the union of everything the raster paints for it (the bounds its hit map entry gets once drawn); an item the raster would skip returns the `AnnotationSkip` it reports. The raster and the vector export now place each item through the same private function, so a preview cannot disagree with them. Test: `preview_matches_the_rasterized_item` (`annotation.rs`, 1x and 2x).
 
 - **A readiness handle that does not borrow the renderer** ([#315](https://github.com/shim9610/figgy/issues/315)). New, additive: `Renderer::pipeline_readiness()` returns a `PipelineReadiness` that holds the renderer's background compile queue weakly (allocation identity: it keeps nothing alive). Its `series_ready()` and `pipelines_ready()` wait like `Renderer::series_ready()` / `pipelines_ready()` for the queue's current shader set, waking on each compile's ending and never holding the queue or a `RefCell` borrow across an await; its `status()` returns a `ReadinessStatus` (`screen`, `all`, `renderer_dropped`). Once the renderer is dropped (or stops compiling in the background) a pending or later wait ends with `ReadinessError::RendererDropped`; a failed compile is `ReadinessError::Failed(PipelineFailure)`. A renderer without background compiles (native, or one that compiles as it draws) gives a handle whose waits resolve at once. The renderer's own waits are unchanged.
 
 - **Chunked resident column upload** ([#311](https://github.com/shim9610/figgy/issues/311)). `Renderer::begin_column_upload(id, len, encoding, expected_revision) -> ColumnUpload` creates one mapped staging buffer of the column's size, held to the device buffer limit and the memory budget (`FiggyError::Pool(AllocError::BudgetExceeded { .. })` and the other pool errors) and charged to the ledger while the upload is open. `ColumnUpload::write_range(start, StreamColumnSource)` writes one chunk through a `ColumnPairWriter` straight into the mapped range, so per-point data still enters only through a `ColumnSource` / `HiLoColumnSource` and the CPU keeps only the statistics; chunks arrive in index order, and an overlapping, gapped, empty, past-the-end or mistyped chunk is refused with the new `FiggyError::InvalidColumnUpload { id, reason }` without changing the upload. `Renderer::commit_column_upload(upload)` installs it as one failure-atomic upsert (`ColumnPool::begin_upsert_staged_column`, the upsert path with the staging step supplied), refusing an incomplete upload, a stale `expected_revision` (`column_revision`) or an upload begun on another renderer (`StaleStateToken`). A streamed or reserved id is refused at both ends. The pool type is `ColumnStaging` with `ColumnStagingError`. **Migration:** an exhaustive `match` on `FiggyError` adds an `InvalidColumnUpload` arm. Tests: `tests/column_upload_chunks.rs`.
+
+- **Several chunked uploads and a chart's state in one commit** ([#334](https://github.com/shim9610/figgy/issues/334)). `Renderer::commit_column_uploads(chart_id, uploads: Vec<ColumnUpload>, state: Option<(Config, Vec<SeriesConfig>)>)` installs every upload and, when given, the chart's next config and series in one `begin_replace_chart_sources` transaction: the pool, the chart and the picker publish together, or nothing changes. Each upload is the new `BatchSource::Staged(&ColumnUpload)` source, whose already written staging buffer the batch copies into the candidate pool (no value is written again, and its staging is not charged twice against the budget). Every upload is checked at commit as `commit_column_upload` checks one, through the new public `Renderer::check_column_upload(&upload)`: another renderer's upload or a revision that is no longer the column's is `StaleStateToken`, an incomplete one `InvalidColumnUpload`, a streamed or reserved id refused (rule 8), so one stale column refuses every column. Without a state the chart keeps its config and series, which are validated against the candidate pool (a kept hexagonal series refuses coordinates that are no longer uniform). The number of uploads is not limited. A batch that holds a staged upload and is dropped before its commit leaves the upload installable; its staging is unmapped only once the batch can no longer fail, and `ColumnUpload::write_range` on an unmapped staging is refused (`ColumnStagingError::Unmapped`) instead of reaching the device. **Migration:** an exhaustive `match` on `BatchSource` adds a `Staged` arm. Tests: `tests/column_upload_chunks.rs` (`staged_columns_and_the_chart_state_commit_together`, `a_stale_revision_on_one_column_refuses_every_column`, `a_budget_below_the_peak_refuses_the_staged_columns_at_commit`, `a_dropped_transaction_changes_nothing_and_leaves_its_uploads_usable`, `a_state_that_does_not_hold_against_the_staged_columns_changes_nothing`, `without_a_state_the_kept_series_must_hold_against_the_new_columns`, `a_column_transaction_stages_any_number_of_columns`).
 
 - **One transaction for columns, records, ragged columns, removals and a chart** ([#311](https://github.com/shim9610/figgy/issues/311)). New, additive: `Renderer::begin_replace_chart_sources(chart_id, uploads: &[(&str, BatchSource)], removals: &[&str], prepare_state) -> Result<ChartSourcesReplacement>` extends `begin_replace_chart_columns` to a runtime-length set of uploads, each a `BatchSource::Column(&dyn ColumnSource)`, `BatchSource::Record(RecordSource)` or `BatchSource::Ragged(RaggedSource)` inserted under its id or replacing what the id holds of the same kind, and a set of ids to remove (plain columns, records, ragged or triangle index columns). The pool side builds one complete candidate pool: survivors packed, then every upload, the record and ragged rules applied while their members are written (the checks, member ids and statistics are shared with `upsert_record` / `upsert_ragged`), single-lane columns staged compact and expanded on the GPU (#317). `prepare_state` fits from the candidate; the series are validated against it, the chart plan and the active picker prepared, and `ChartSourcesReplacement::commit` publishes everything at once. Every failure before the commit, a memory budget below the peak included (`AllocError::BudgetExceeded`, checked before any buffer is made), leaves the pool, the charts, the picker and the ledger's live bytes as they were. Streamed ids are refused in both lists (rule 8), as is removing an id another chart reads. Peak memory: the live slab, the uploads' staging and transient buffer, and a candidate slab of the live capacity (grown, under `GrowthPolicy::OnAllocFailure`, when the survivors and the uploads need more). `Renderer::require_shaders_for(&config)` admits the shader set a candidate config needs, as `set_chart_state` does when it stores one, so a host can call it before the transaction. **Behaviour change:** `begin_replace_chart_columns` keeps its signature and now runs on the same body, so (1) it grows the pool under `GrowthPolicy::OnAllocFailure` when the surviving and new columns do not fit the current capacity (before, such a batch failed with `AllocError::OutOfSpace`) and refuses a transaction whose peak exceeds the memory budget with `AllocError::BudgetExceeded` before any buffer is made (before, no budget check); and (2) it applies the same chart plan as `set_chart_state`: the active layer is normalized, subplot links are synced, and an element selection ends when the registration it was made in changes. Tests: `tests/column_upload_chunks.rs`.
 
@@ -3006,15 +3767,41 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
 
 ### Browser product (`figgy` 0.16.0)
 
+- **`pick_point` answers the nearest data on a miss** ([#381](https://github.com/shim9610/figgy/issues/381)). On a registered or monotonic chart, a pick with no drawn ink within `max_distance_px` used to resolve to `undefined` (`null` from `<figgy-chart>`). It now resolves to the hit's shape with the point fields `null` and `nearest` filled: `{ "source_id": null, "series_id": null, "point_index": null, "distance_px": null, "nearest": [{ "layer", "source_id", "series_id", "point_index", "distance_px" }, …] }`, `nearest` being every pickable series' datum nearest to the cursor, as a hit carries it; it is `[]` for a chart with no pickable series. A value label or DataLess hit keeps its own shape, and a streamed display's pick still resolves to `undefined` on a miss (rule 8). Test: `a_missed_pick_json_carries_the_nearest_data`.
+  - **Migration:** a host that read any resolved `pick_point` value as a hit (`if (hit)`) tests `hit?.series_id != null` (or `hit.series_id !== null` after a non-null check) instead.
+
+- **Dependency links** ([#357](https://github.com/shim9610/figgy/issues/357), item 14 D). A document may name a `"RangeLinks"` series with its `"links"`; `validate_config` reports its rules, `selection_details()` of a picked link reports `index`, `from`, `to` and `exit_offset` from the SSOT, `press_range_link(series_id, index)` starts a drag of the link's exit through `on_move` / `on_release`, and `set_link_exit_offset(series_id, index, offset)` sets it. Test: `range_links_validate_in_the_browser`.
+
+- **Calendar headers** ([#357](https://github.com/shim9610/figgy/issues/357), item 14 B). A `Timestamp` format may name `"step"`, `"period_labels"` and the `"Relative"` and `"Custom"` label modes; `validate_config` reports their rules. Test: `calendar_formats_validate_and_normalize`.
+
+- **Timeline documents** ([#357](https://github.com/shim9610/figgy/issues/357), item 14). A document may name `"category_bands"` on an axis and `"placement": "InsideOrBeside"` and `"contrast_ink"` in a range bar series' labels; `validate_config` and `normalize_config` take them, and `selection_details()` is unchanged. Test: `timeline_documents_validate_and_normalize`.
+
+- **Range bars coloured by row** ([#357](https://github.com/shim9610/figgy/issues/357), item 14). A document's range bar series may name `"color_by": { "ByRow": { "colors": [...] } }`; `selection_details()` of such a bar reports `position`, `end`, `start` and its category, with no colour role, since the mode reads no column. Test: the `row-coloured range bars` scene of `selection_details_answers_every_branch`.
+
+- **`default_config_for_series(seriesJson)`** ([#357](https://github.com/shim9610/figgy/issues/357)). A free function beside `default_config()`: the JSON of `default::config_for_series` for a series list, so an editor starts a Feynman chart without axes and an energy-level chart in the Grotrian frame. Throws for a series list that does not parse. Test: `default_config_for_series_json_frames_each_family`.
+
+- **One conversion for review and apply** ([#334](https://github.com/shim9610/figgy/issues/334)). `convert_categorical_document`, `convert_boxplot_document` and `convert_radar_document` take an optional options JSON `{ "chart_area"?: [x, y, w, h] }` (whole logical pixels, as the chart's `chart_area`): the conversion, including the explicit data-area fit, then uses that chart area, so it reports exactly what the setter installs on a chart of that area. `set_categorical_document`, `set_boxplot_document` and `set_radar_document` take an optional options JSON `{ "refuse"?: ["path", ...] | "any" }` and now return the report JSON `{ config, series, uploads, columns, notes }` (before: `undefined`), built by the same builder from the one conversion they install. When a note's path is a listed path or lies under one, or with `"any"` when there is any note, the setter throws an `Error` with `stage: "validate"`, `code: "conversion_loss"` and the refused notes as `notes`, before anything is installed. Options that are not such an object or name another field throw `code: "invalid_options"`. JS callers that pass one argument are unaffected; Rust callers of the wasm methods pass `None` for the new argument. Tests: `tests/edit_safety_browser.rs` (`a_previewed_loss_is_the_applied_loss_and_a_refused_one_changes_nothing`) and the native `lib.rs` tests `a_preview_on_the_chart_area_is_the_setters_report` and `document_options_are_parsed_strictly`.
+
+- **Legacy documents keep their explicit plot area** ([#334](https://github.com/shim9610/figgy/issues/334)). `set_categorical_document`, `set_boxplot_document` and `set_radar_document` fit a document's `decorations.data_area` (logical pixels) to the chart's own chart area, so `data_area_rect()` returns the rectangle in document pixels, the canvas shows it scaled at any DPR, and PNG export at any scale draws the plot there. A rectangle the chart area cannot hold keeps the automatic layout, as before. `convert_categorical_document`, `convert_boxplot_document` and `convert_radar_document` no longer report the field as dropped when the converted config (on its 1000 x 800 placeholder chart area) holds it; a note that remains carries the reason.
+
+- **Annotation preview on the radial chart** ([#334](https://github.com/shim9610/figgy/issues/334)). `FiggyBoundedChart.annotation_preview(itemJson)` has the contract and JSON of `FiggyChart.annotation_preview` (#312): it places an `Annotation` that is not in the document yet with the radial annotation layer's own placement and returns `{ kind, visible, drawn, canvas, document }`, or `drawn: false` with the `reason` `annotation_warnings` gives (a reference line, a span or a `Data` anchor reports `NoValueAxis`). `document` is in document logical pixels, the units of the radial `annotations()`, and `canvas` in physical canvas pixels, the document shape times the display scale. Malformed or invalid items are refused with the codes `annotation_json` and `annotation_invalid`. The document, the selection and the raster stay as they were. Test: `an_annotation_preview_is_where_the_layer_draws_the_item` (`tests/radial_editor_browser.rs`, DPR 1 and 2) and the native `radial_annotation_preview_scales_the_logical_placement` (`src/lib.rs`).
+- **The first data pick waits only for its own chart's kernels** ([#327](https://github.com/shim9610/figgy/issues/327)). `pick_data`, and a `pick_point` on a chart with value labels or DataLess series, used to wait for every typed pick kernel the renderer has: triangle mesh, parallel, category bars, box plots, range bars, violins, value labels and more. Before the first pick resolved, all of them were compiled, even for a small radar chart; on SwiftShader that took about 300 s. Now a pick compiles only the kernels its chart dispatches, through the browser's asynchronous compiler, before it submits. The others compile when a chart that needs them is first picked. A radar or line chart's pick compiles none of them.
+
+- **Layout at explicit surface dimensions** ([#334](https://github.com/shim9610/figgy/issues/334)). `FiggyChart.inspect_document_layout(config_json?, surface_width?, surface_height?)` takes optional physical surface dimensions: the installed document, or the candidate, is laid out as a canvas of that surface would show it, which is what the chart reports after `resize(width, height)`; the canvas and its GPU surface are not resized. Both dimensions or neither: one alone, or a dimension that is not a whole number of pixels from 1, is refused with the new code `invalid_size`. A call with only `config_json` behaves as before. The free function `inspect_config_layout(config_json, surface_width, surface_height)` returns the same JSON for a candidate without a chart (no renderer, GPU device or surface is created), with the same dimension checks; a canvas places its document by its surface size alone, so no display scale is passed. Refusals of the candidate are those of `inspect_document_layout` (`config_json`, `layout`). Every path, the installed document on the canvas included, reports through one layout function, so they cannot disagree. `<figgy-chart>` forwards the two dimensions. Tests: `config_layout_is_the_canvas_layout_at_that_surface`, `config_layout_follows_the_surface_dimensions`, `layout_queries_refuse_bad_sizes_and_candidates` (`src/lib.rs`) and `layout_at_a_surface_size_is_the_resized_canvas_layout` (`tests/editor_queries_browser.rs`, 1x and 2x).
+
 - **Model API for editors** ([#314](https://github.com/shim9610/figgy/issues/314)). Free functions of `pkg/figgy.js` that need no chart: `default_config()` returns the default config JSON; `validate_config(configJson, seriesJson?)` returns `{ valid, errors }` with `{ stage, path, field, series_id, series_index, code, message }` errors (`Config::validate_chart`, then `Config::validate_series`; a parse error has `code: "json"` with `line` and `column`); `normalize_config(configJson)` reads and writes the config back in the renderer's form; `convert_categorical_document(json)`, `convert_boxplot_document(json)` and `convert_radar_document(json)` return `{ config, series, uploads, columns, notes }` from `Config::from_*_with_report`, the uploads as descriptors without their values. A document that does not parse throws its message, one that breaks its rules an `Error` with the rule's `code`. `serde_json` is built with `float_roundtrip`, so the JSON the package reads and writes keeps every `f64` bit. See WASM.md, "Model API for editors". Tests: `tests/model_api_browser.rs` and the native `lib.rs` tests (`validate_config_json_names_the_refused_field` and siblings).
 
 - **Guard against an upstream Chromium WebGPU deadlock** ([#322](https://github.com/shim9610/figgy/issues/322)). Chromium 152 to 158 can deadlock the page's main thread when a `GPUDevice` is garbage collected while work submitted on it is still running (fixed upstream from Chromium 159). Freeing a chart (`free()`, `<figgy-chart>` disconnect) or a radial chart released its device at once, because a browser cannot wait for the GPU on drop. A dropped renderer now keeps its device and queue until `onSubmittedWorkDone` resolves and then releases them; a lost device is released at once. Native drops are unchanged: they already wait for the GPU.
+
+- **Destroy a device figgy owns when its last chart is freed** ([#322](https://github.com/shim9610/figgy/issues/322)). The guard above did not close the hang: on Chromium 152 to 158 a resolved `onSubmittedWorkDone` does not mean Dawn has delivered its per-submit callbacks, which run only when the device is destroyed, and a device destroyed by garbage collection delivers them inside the GPU reply handler's lock. Measured on Chromium 153 (six runs of `tests/edit_safety_browser.rs` each), the guard hung 6 of 6 runs and destroying the device first 0 of 6. A dropped renderer or radial renderer that is the last holder of a device figgy requested itself now calls `device.destroy()` while it still holds the device, waits for `onSubmittedWorkDone` and then releases it. figgy requested the device for `FiggyChart.create`, `FiggyBoundedChart.create`, `Renderer::for_window_*`, `Renderer::headless` and `RadialRenderer::headless`. A host-supplied device (`RendererDevice::new`, `RendererDevice::blocking`) is never destroyed, nor a device another chart, renderer, `RendererDevice` clone or pending pick or export still holds: a radial chart made with `FiggyBoundedChart.create_on` keeps drawing after its parent is freed, and the device is destroyed with the last of the two. Native drops are unchanged. Tests: `tests/device_release_browser.rs` (the freed rounds, a shared device freed in either order, a radial chart's own device, a host-supplied device) and the native `renderer::device::health` tests.
 
 - **Energy-level strokes and transitions in `selection_details`** ([#321](https://github.com/shim9610/figgy/issues/321)). On an energy-level series a `histogram_bin` selection (a level stroke) and a `point` selection (a transition) report `{ index, part: "level" | "transition", id, record }`, the row as configured; before, they took the histogram and point paths and were refused. A series that draws another's records through `source` reports that source's rows, for its labels too (#318). `renderer::energy_level_records` is now public: it resolves those records.
 
 - **Polar category labels in the browser** ([#309](https://github.com/shim9610/figgy/issues/309)). `hit_test` answers `category_label_<i>` on a polar chart's category label and a drag moves that label alone; `decoration_bounds` returns its `ring` (`{ center, radius }`), and a press on the ring while the label is selected drags every angle label along its spoke. The hit map is rebuilt when the number of polar category labels on the chart or any subplot changes.
 
 - **Editor fits** ([#312](https://github.com/shim9610/figgy/issues/312)). `FiggyChart.fit_config(config_json, padding)` returns the candidate config as JSON with every layer's ranges fitted from the chart's resident columns (`Renderer::fit_config`); the installed chart is untouched. `fit_y_axes_config(config_json, padding)` keeps every X axis as given. `fit_point_size_domain(series_id)` and `fit_vector_scale(series_id, target)` fit one series' size domain or vector scale from its columns' statistics, and a refusal throws with the style unchanged. `selection_details()` adds `mapped_radius_px` (logical pixels, `PointSizeMap::radius_px`; `null` for a non-finite value) and `size_hidden` for a point of a size-mapped series, from the size value it already reads. `<figgy-chart>` forwards the four calls.
+
+- **Scoped editor fits** ([#334](https://github.com/shim9610/figgy/issues/334)). `FiggyChart.fit_config_scoped(config_json, scope_json, padding)` returns the candidate config as JSON with only the axes the scope selects fitted (`Renderer::fit_config_scoped`); every other axis comes back as given and the installed chart is untouched. The scope is `{ "layer": <layer>, "axes": ["x", "y", "z"], "linked": "group" | "target", "keep": [{ "layer": <layer>, "axis": "x" | "y" | "z" }] }`, a layer written as for `set_active_layer`; `linked` defaults to `"group"` and `keep` to none. An unknown field, axis name or `linked` value throws, a scope or kept layer the candidate does not have throws `FitScopeLayer`, and the other refusals are `fit_config`'s. `<figgy-chart>` forwards the call.
 
 - **Editor queries on the raw `FiggyChart`** ([#312](https://github.com/shim9610/figgy/issues/312)). Read-only calls an editor needs from the renderer, none of which changes the document, the selection, the undo state or the raster:
   - `annotation_preview(json)`: where an annotation that is not added yet would be drawn, as `{ kind, visible, drawn, canvas, document }` with the shape (`line`, `span`, `text`, `arrow`, `polygon`) and its `bounds` in canvas and document pixels, or `drawn: false` with the skip `reason`.
@@ -3031,6 +3818,8 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
   - Annotations by their stable `id`: `annotation_ids()`, `annotation_index(id)` (`undefined` when no item has it; an empty or shared id throws) and `select_annotation_by_id(id)`, on `FiggyChart` and `FiggyBoundedChart`. WASM.md states how long an index stays valid.
   - The generated TypeScript declarations name each return form: `FiggyJson` (JSON text, a `string` to `JSON.parse`) for every method that returns JSON, `FiggyPipelineStatus`, `FiggyReadinessStatus`, `FiggyPipelineFailure[]` and `FiggyThemeObject` for objects, `string[]` for name lists and string unions such as `"basic" | "full"`, through `unchecked_return_type` and one `typescript_custom_section`. The doc comments copied into the `.d.ts` state each method's units (physical canvas pixels on `FiggyChart`, document logical pixels on `FiggyBoundedChart` and where a `FiggyChart` method says so).
   - `FiggyBoundedChart.supported_families()` returns `["radial"]`, and WASM.md has a migration section with one example per family that moved to a `FiggyChart` setter (categorical, box plot, radar). The Rust crate re-exports the class as `figgy::FiggyRadialChart`.
+
+- **Column transaction** ([#334](https://github.com/shim9610/figgy/issues/334)). Additive. `chart.begin_columns_transaction(max_chunk_bytes)` returns a `ColumnTransaction`: `stage(chart, id, length, "f32" | "f64", source_revision)` begins one column's chunked upload (the arguments and codes of `begin_column_upload`; an id staged twice throws `"registration_failed"`), `push(id, offset, typedArray)` writes a chunk into that column's mapped staging with the checks of `ColumnUploadHandle.push` (`"invalid_chunk"`), `set_state(config_json, series_json?)` stages the next Config and optionally the next Series (installed as `set_config` then `set_series` would, legend included; without series the chart keeps its own), and `commit(chart)` installs every column, the state and the picker together through `Renderer::commit_column_uploads`, or nothing; `cancel()`, `is_open()`, `written(id)`, `length(id)`, `staged_count()` and `has_state()` complete it. Every error carries `stage` (`"stage"`, `"push"`, `"state"`, `"commit"`), `column` (or `null`), the refusal's `code` (`"stale"` naming the column that changed, `"invalid_chunk"`, `"budget_exceeded"`, `"pool_space"`, `"device_limit"`, `"allocation_failed"`, the setters' validation codes, `"upload_closed"` once closed, `"monotonic_chart"` for a state on a shown monotonic chart) and, for a memory refusal, `requested` and `limit` bytes. A refusal anywhere leaves values, revisions, Config, Series, selection and pixels as they were. The number of staged columns is not limited. `<figgy-chart>` forwards it with its own chart: `stage(id, length, encoding, source_revision)` and `commit()`. Tests: `a_column_transaction_refuses_a_gapped_chunk_then_commits_columns_and_state_together`, `a_stale_column_or_a_state_that_does_not_hold_refuses_the_whole_commit`, `a_budget_that_cannot_hold_the_commit_refuses_it_and_cancel_releases_the_staging` (`crates/web/tests/edit_safety_browser.rs`).
 
 - **Edit safety for `FiggyChart`** ([#311](https://github.com/shim9610/figgy/issues/311)). All additive.
   - **`clear_selection()`** ends the decoration (`HitId`) and annotation selections, a value-label or Feynman drag, an element drag or handle resize, a pending plot-area resize proposal and a held subplot display, and redraws. The active layer, config, series and columns stay, and so does the data highlight (`picked_data`, a value label's typed selection included).
@@ -3473,10 +4262,8 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
 The migrations of the bounded group in one place; the model, renderer and browser
 entries above describe the changes.
 
-- **Readers.** `CategoricalChart`, `BoxPlotChart` and `RadarChart` are
-  deprecated document readers for this release and are removed in the next
-  milestone; code that names them compiles with a deprecation warning
-  (`#[allow(deprecated)]` silences it while they last). Open a document with
+- **Readers.** `CategoricalChart`, `BoxPlotChart` and `RadarChart` are the
+  readers for documents written before 0.13. Open a document with
   `Config::from_categorical`, `Config::from_boxplot` or `Config::from_radar`,
   which return the `Config`, its series and the `SeriesUpload`s that borrow
   the document's values. Upload them (the positions with
@@ -3579,6 +4366,12 @@ entries above describe the changes.
   the per-column statistics, so its columns may be uploaded in any batches.
 
 ### Tests and guards
+
+- **Two browser tests assert what they mean** ([#381](https://github.com/shim9610/figgy/issues/381)).
+  - `selection_details_browser::offset_lines_round_trip_hit_test_and_report_unshifted_values` expected `set_config` / `get_config` to return the sent config unchanged. Since the kernel's charts keep their layout fitted (`LayoutState::Fitted`, #364), `set_config` fits the margins to the new ranges' tick labels (a left `out_margin` of 49 for the `0..12` labels where the sent config had 39), as documented: the test now expects the sent config with `auto_layout` applied. It also drew one `frame()` before picking and placed its picks with the unfitted config; it now waits for `series_ready()` (a pick hits drawn ink, #389) and places them with the fitted one. Bisected over the first-parent merges: it passes at eaf7590 and fails from 65990ab (#364) on. No product change.
+  - `compile_queue_browser::a_dropped_chart_issues_no_more_compiles` counted every `create*PipelineAsync` on the page. A wasm test that panics does not drop its locals, so a chart an earlier failed test leaked keeps compiling its set on its own device, and its compiles were counted (28 and 51 in two runs). The test now counts the compiles issued on the device its own chart requested, and waits for that device's compiles in flight only, so it passes whether or not an earlier test leaked a chart (checked with the stale exact-pipeline test, since replaced, still failing before it). The dropped chart itself never issued a compile after the drop. No product change.
+
+- **The full shader set's prewarm runs on a page of its own** ([#381](https://github.com/shim9610/figgy/issues/381)). `a_renderer_with_a_broken_chart_prewarms_the_full_modules` moves from `tests/shader_prewarm_browser.rs` to `tests/shader_prewarm_full_browser.rs`. With both prewarms in one binary the page took 180 to 205 s on Chromium with SwiftShader, close enough to the browser runner's 240 s page budget (`ci/wasm_browser_test.cjs`) that a loaded machine timed it out. Most of it is the full set's prewarm: its synchronous creations keep the GPU process busy for about a minute after the asynchronous compiles of the same descriptors have finished, which keeping the asynchronous pipelines alive does not change. Apart, the pages took 34 s and 148 s. The tests are unchanged.
 
 - **Shader sets** ([#299](https://github.com/shim9610/figgy/issues/299)). `shader_assembly` tests hold the two assemblies of every module to the fragments of `SET_FRAGMENTS` alone (four pairs, and the field grid's fifth where the module splices `field_grid.wgsl`), hold each basic fragment's functions to its full twin's signatures (16 in all) and a type both declare to the same members, forbid any other fragment from reading a member of `AxisCuts` or calling a function only a full fragment has, and hold every draw function to one read of the whole `transform` uniform; every assembly of both sets parses, validates and passes the browser-constant scan. The compile coverage test (`shader_compile_tests`) builds a renderer of each set, requires every module of both to be compiled with every entry measured (the bar module's `vs_main` / `vs_mapped` are the public builders' and exist only in the full module's pipelines), and requires the prewarm contract to hold no entry keyed by a full source. `tests/axis_break_render.rs` holds, for an axis break, a probability axis and polar coordinates each: the feature on the base chart, an overlay, a subplot or a subplot's overlay (polar: the base chart or a subplot) moves the renderer to the full shaders through an export, a registration, `set_chart_config`, `set_chart_state` and a prepared frame, and the chart then picks, while a chart without it keeps the basic shaders through an export, a pick and a prepared frame; a chart with none of them exports and draws on screen the same pixels through the basic shaders and, after the feature came and went, through the full ones, at 1x and 2x, and the chart with the feature the same pixels as on a new renderer; picks of a plain chart answer the same through either set. For a break it also holds that picks answer on its pieces and nothing in the gap, that `fit_ranges` and the GPU auto-fit give the same ranges on either set, and that a streamed chart that gains a break is refused with `StreamedBreak`. `streaming_request_tests` holds an active stream draw whose chart gains a break: the job ends, a new one is refused with `StreamedBreak`, and the renderer is on the full shaders. `arc_mutation_tests` holds the refusal of a transform with cuts, a probability code or the polar flag by the arc scan on basic shaders. `tests/shader_set_scenes.rs` draws every Cartesian scene of the playground catalogue through the basic modules and through the full ones and holds the two exports to the same pixels at 1x and 2x: every channel, premultiplied by alpha, within one level, except where a pixel is partly covered in either export (the scenes with a break, a probability axis or polar coordinates select the full modules themselves and are held to that). The allowance comes from measurements on DX12 (WARP and DXC) and Metal: a scene drawn twice through one set is identical, while the two sets, as two shader programs, round a few edge pixels differently, by one level and, at 3D arrowhead tips, by up to 51 levels of alpha in partly covered pixels. The DXIL of the two sets shows why: DXC compiles with fast-math flags, which WGSL's reassociation rule allows, and orders the same arrow corner sum differently in each program ([#304](https://github.com/shim9610/figgy/pull/304)). Vulkan draws both identically. On a mismatch the test reports the largest channel difference, how many pixels differ by at most 1, 8 and 32 levels and where, and saves both exports under its `CARGO_TARGET_TMPDIR`. `shader_consistency` lists the functions each pair of fragments both define as assembled alternatives, as the vector and surface layers' are. `axis_break_render` also holds a renderer created on each set (`RendererDevice::with_shader_set`) to the same pixels as one that was upgraded, and `require_shader_set` to upgrade-only and idempotent. The browser test `shader_set_browser` (web crate) holds: a chart created without options creates and issues basic modules only; `require_shader_set("full")` issues the full twin of every pipeline `create` issued, once; `shaders: "full"` creates no basic module and issues no basic compile; and six invalid option values are refused with their messages before anything is created. The element's Node test holds the `shaders` attribute through to the create options, the property's round trip and upgrade, and the refusal of invalid values. The browser test `shader_prewarm_browser` holds a renderer that is handed a broken chart and prewarms every full module from its twin's contract entries.
 
@@ -3732,7 +4525,7 @@ entries above describe the changes.
   ([#40](https://github.com/shim9610/figgy/issues/40)). The guides, in
   English and Korean, describe the radial chart as the DataLess chart and
   `FiggyBoundedChart` as its host, and the three legacy documents as
-  deprecated readers:
+  readers:
   - `CATEGORICAL.md` describes the `CategoryBars` series on a `Config` with
     a categorical axis and `Config::from_categorical`;
   - `BOXPLOT.md` the `BoxPlot` series, its record and ragged sources, the

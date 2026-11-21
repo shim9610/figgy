@@ -89,3 +89,10 @@ pub enum BarOrientation {
     /// Bars extend along x: `y_column` is edges, `x_column` is counts.
     Horizontal,
 }
+
+/// The fields of a [`DataRenderType::Histogram`] series.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct HistogramSeries {
+    pub bar: DataBarStyleConfig,
+}

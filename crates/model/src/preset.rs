@@ -12,7 +12,11 @@
 
 use crate::color::Color;
 use crate::config::{AxisBreakStyle, AxisOptions, Config, PieceSizing, TickVisibility};
-use crate::data_config::{DataRenderType, SeriesConfig};
+use crate::data_config::{
+    BoxSeries, CategoryBarSeries, DataRenderType, HistogramSeries, ParallelSeries,
+    RadarPolygonSeries, RangeBarSeries, SeriesConfig, StreamlineSeries, TernarySeries,
+    VectorSeries,
+};
 
 const fn rgb8(r: u8, g: u8, b: u8) -> Color {
     Color::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
@@ -32,8 +36,8 @@ const fn rgb8(r: u8, g: u8, b: u8) -> Color {
 /// overlay's `x_axis` and `y_axis` are data axes and take the bottom/left
 /// style on the side they are drawn on (#283).
 /// `Hidden`, which shows none, and [`AxisPreset::Grotrian`] also switch the
-/// grid off, and `Grotrian` gives a continuous `left_y` break a thin lowest
-/// piece (#205).
+/// grid off, and `Grotrian` frames the energy axis alone and gives a
+/// continuous `left_y` break a thin lowest piece (#205, #357).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AxisPreset {
@@ -57,10 +61,17 @@ pub enum AxisPreset {
     /// one preset that also switches the grid off; titles stay as set.
     Hidden,
     /// A Grotrian (energy-level) diagram
-    /// ([#205](https://github.com/shim9610/figgy/issues/205)): the boxed
-    /// frame with outward ticks and labels on the bottom and left only, no
-    /// grid, and a thin ground-state strip: a `Continuous` break on `left_y`
-    /// shares the height `1 : 9 : …` between its lowest piece and the rest
+    /// ([#205](https://github.com/shim9610/figgy/issues/205),
+    /// [#357](https://github.com/shim9610/figgy/issues/357)), framed as
+    /// NIST ASD Grotrian diagrams and textbook term diagrams are: the
+    /// energy axis on the left alone carries a line, outward ticks and
+    /// labels; the term-column axis (`bottom_x`) keeps its labels, the term
+    /// symbols under each column, without a line or ticks, since its
+    /// position is no value; the top and right sides draw nothing, unless
+    /// `right_y` prints another unit (`unit` set, such as cm⁻¹ beside eV),
+    /// which then takes the energy axis' frame. No grid, and a thin
+    /// ground-state strip: a `Continuous` break on `left_y` shares the
+    /// height `1 : 9 : …` between its lowest piece and the rest
     /// (`PieceSizing::Weights`, one weight per piece). A `Panels` break or
     /// an unbroken axis keeps its sizing.
     Grotrian,
@@ -175,18 +186,36 @@ impl Config {
                     weights[0] = 1.0;
                     breaks.sizing = PieceSizing::Weights(weights);
                 }
-                (
+                // The energy axis alone is framed (#357): the column axis
+                // names its columns without a value frame, and the right
+                // side reads only when it prints a second unit.
+                let energy = SideStyle {
+                    line: true,
+                    tick: Outside,
+                    labels: true,
+                };
+                let bare = SideStyle {
+                    line: false,
+                    tick: NoTick,
+                    labels: false,
+                };
+                for overlay in &mut self.overlays {
+                    apply_side(&mut overlay.x_axis, energy.clone());
+                    apply_side(&mut overlay.y_axis, energy.clone());
+                }
+                let second_unit = self.right_y.unit.is_some();
+                apply_side(&mut self.left_y, energy.clone());
+                apply_side(
+                    &mut self.bottom_x,
                     SideStyle {
-                        line: true,
-                        tick: Outside,
+                        line: false,
+                        tick: NoTick,
                         labels: true,
                     },
-                    SideStyle {
-                        line: true,
-                        tick: NoTick,
-                        labels: false,
-                    },
-                )
+                );
+                apply_side(&mut self.top_x, bare.clone());
+                apply_side(&mut self.right_y, if second_unit { energy } else { bare });
+                return;
             }
         };
 
@@ -209,6 +238,13 @@ impl Config {
 
 /// Color rotation rules for multi-series plots. `color(i)` wraps around, so
 /// any number of series can be colored consistently.
+///
+/// The categorical presets (#357) come from established public palettes;
+/// each has eight or more colours, no two alike, and its source and licence
+/// are noted on its variant and in `crates/renderer/USAGE.md` ("Palette
+/// presets"). [`ColorCycle::DEFAULT`] is the cycle a series takes when the
+/// host does not colour it. `Classic`, `Vivid` and `Monochrome` are figgy's
+/// own rotations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorCycle {
     /// Strong primary rotation starting at black — the classic
@@ -217,14 +253,46 @@ pub enum ColorCycle {
     /// High-saturation, high-contrast rotation — the look of biostatistics
     /// plotting tools, optimized for telling few series apart at a glance.
     Vivid,
-    /// Ten balanced mid-saturation hues (the public "tab10" palette) — the
-    /// modern general-purpose default.
+    /// Ten balanced mid-saturation hues — the modern general-purpose
+    /// default ([`ColorCycle::DEFAULT`]). The values are D3's
+    /// `schemeCategory10`, which matplotlib ships as `tab10` and Vega as
+    /// `category10`. Source: d3-scale-chromatic,
+    /// <https://github.com/d3/d3-scale-chromatic> (ISC licence).
     Balanced,
     /// The Okabe–Ito eight-color palette, designed to stay distinguishable
-    /// under the common forms of color-vision deficiency.
+    /// under the common forms of color-vision deficiency. Source: M. Okabe
+    /// and K. Ito, "Color Universal Design (CUD)", 2002/2008,
+    /// <https://jfly.uni-koeln.de/color/>; published as a free
+    /// recommendation, no licence terms.
     ColorblindSafe,
-    /// Grayscale steps for print-safe single-ink figures.
+    /// Grayscale steps for print-safe single-ink figures. Not a categorical
+    /// preset: four steps, for one ink.
     Monochrome,
+    /// Tableau 10, the ten-colour palette Tableau introduced in 2016.
+    /// Source: d3-scale-chromatic `schemeTableau10`,
+    /// <https://github.com/d3/d3-scale-chromatic> (ISC licence).
+    Tableau10,
+    /// ColorBrewer Set2: eight soft qualitative colours. Source: Cynthia
+    /// Brewer, Mark Harrower and The Pennsylvania State University,
+    /// <https://colorbrewer2.org> (Apache-2.0 licence; this product
+    /// includes color specifications and designs developed by Cynthia
+    /// Brewer).
+    Set2,
+    /// ColorBrewer Dark2: eight dark qualitative colours that hold up on
+    /// white. Source: Cynthia Brewer, Mark Harrower and The Pennsylvania
+    /// State University, <https://colorbrewer2.org> (Apache-2.0 licence;
+    /// this product includes color specifications and designs developed by
+    /// Cynthia Brewer).
+    Dark2,
+    /// Plotly's default ten-colour qualitative sequence. Source: plotly.py
+    /// `plotly.colors.qualitative.Plotly`,
+    /// <https://github.com/plotly/plotly.py> (MIT licence).
+    Plotly,
+    /// A high-contrast set of 24 dark, saturated colours that stand off a
+    /// light background, for charts with many series. Source: plotly.py
+    /// `plotly.colors.qualitative.Dark24`,
+    /// <https://github.com/plotly/plotly.py> (MIT licence).
+    HighContrast,
 }
 
 const CLASSIC: &[Color] = &[
@@ -284,21 +352,160 @@ const MONOCHROME: &[Color] = &[
     rgb8(191, 191, 191),
 ];
 
+// Tableau 10 (d3-scale-chromatic `schemeTableau10`, ISC licence).
+const TABLEAU10: &[Color] = &[
+    rgb8(0x4e, 0x79, 0xa7),
+    rgb8(0xf2, 0x8e, 0x2c),
+    rgb8(0xe1, 0x57, 0x59),
+    rgb8(0x76, 0xb7, 0xb2),
+    rgb8(0x59, 0xa1, 0x4f),
+    rgb8(0xed, 0xc9, 0x49),
+    rgb8(0xaf, 0x7a, 0xa1),
+    rgb8(0xff, 0x9d, 0xa7),
+    rgb8(0x9c, 0x75, 0x5f),
+    rgb8(0xba, 0xb0, 0xab),
+];
+
+// ColorBrewer Set2. Apache-2.0: this product includes color specifications
+// and designs developed by Cynthia Brewer (http://colorbrewer.org/).
+const SET2: &[Color] = &[
+    rgb8(0x66, 0xc2, 0xa5),
+    rgb8(0xfc, 0x8d, 0x62),
+    rgb8(0x8d, 0xa0, 0xcb),
+    rgb8(0xe7, 0x8a, 0xc3),
+    rgb8(0xa6, 0xd8, 0x54),
+    rgb8(0xff, 0xd9, 0x2f),
+    rgb8(0xe5, 0xc4, 0x94),
+    rgb8(0xb3, 0xb3, 0xb3),
+];
+
+// ColorBrewer Dark2. Apache-2.0: this product includes color specifications
+// and designs developed by Cynthia Brewer (http://colorbrewer.org/).
+const DARK2: &[Color] = &[
+    rgb8(0x1b, 0x9e, 0x77),
+    rgb8(0xd9, 0x5f, 0x02),
+    rgb8(0x75, 0x70, 0xb3),
+    rgb8(0xe7, 0x29, 0x8a),
+    rgb8(0x66, 0xa6, 0x1e),
+    rgb8(0xe6, 0xab, 0x02),
+    rgb8(0xa6, 0x76, 0x1d),
+    rgb8(0x66, 0x66, 0x66),
+];
+
+// Plotly (plotly.py `qualitative.Plotly`, MIT licence).
+const PLOTLY: &[Color] = &[
+    rgb8(0x63, 0x6e, 0xfa),
+    rgb8(0xef, 0x55, 0x3b),
+    rgb8(0x00, 0xcc, 0x96),
+    rgb8(0xab, 0x63, 0xfa),
+    rgb8(0xff, 0xa1, 0x5a),
+    rgb8(0x19, 0xd3, 0xf3),
+    rgb8(0xff, 0x66, 0x92),
+    rgb8(0xb6, 0xe8, 0x80),
+    rgb8(0xff, 0x97, 0xff),
+    rgb8(0xfe, 0xcb, 0x52),
+];
+
+// High contrast (plotly.py `qualitative.Dark24`, MIT licence).
+const HIGH_CONTRAST: &[Color] = &[
+    rgb8(0x2e, 0x91, 0xe5),
+    rgb8(0xe1, 0x5f, 0x99),
+    rgb8(0x1c, 0xa7, 0x1c),
+    rgb8(0xfb, 0x0d, 0x0d),
+    rgb8(0xda, 0x16, 0xff),
+    rgb8(0x22, 0x2a, 0x2a),
+    rgb8(0xb6, 0x81, 0x00),
+    rgb8(0x75, 0x0d, 0x86),
+    rgb8(0xeb, 0x66, 0x3b),
+    rgb8(0x51, 0x1c, 0xfb),
+    rgb8(0x00, 0xa0, 0x8b),
+    rgb8(0xfb, 0x00, 0xd1),
+    rgb8(0xfc, 0x00, 0x80),
+    rgb8(0xb2, 0x82, 0x8d),
+    rgb8(0x6c, 0x7c, 0x32),
+    rgb8(0x77, 0x8a, 0xae),
+    rgb8(0x86, 0x2a, 0x16),
+    rgb8(0xa7, 0x77, 0xf1),
+    rgb8(0x62, 0x00, 0x42),
+    rgb8(0x16, 0x16, 0xa7),
+    rgb8(0xda, 0x60, 0xca),
+    rgb8(0x6c, 0x45, 0x16),
+    rgb8(0x0d, 0x2a, 0x63),
+    rgb8(0xaf, 0x00, 0x38),
+];
+
 impl ColorCycle {
+    /// The default palette (#357): the series constructors start in its
+    /// first colour, and the default flows apply it to the series list
+    /// ([`Config::apply_palette`]), so series `i` takes its colour `i`.
+    pub const DEFAULT: Self = Self::Balanced;
+
+    /// Every cycle, in declaration order.
+    pub const ALL: [Self; 10] = [
+        Self::Classic,
+        Self::Vivid,
+        Self::Balanced,
+        Self::ColorblindSafe,
+        Self::Monochrome,
+        Self::Tableau10,
+        Self::Set2,
+        Self::Dark2,
+        Self::Plotly,
+        Self::HighContrast,
+    ];
+
+    /// The categorical presets from public palettes (#357), each with eight
+    /// or more distinct colours.
+    pub const PRESETS: [Self; 7] = [
+        Self::Balanced,
+        Self::ColorblindSafe,
+        Self::Tableau10,
+        Self::Set2,
+        Self::Dark2,
+        Self::Plotly,
+        Self::HighContrast,
+    ];
+
+    /// The cycle's name, in kebab case (`"balanced"`, `"set2"`, ...).
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::Vivid => "vivid",
+            Self::Balanced => "balanced",
+            Self::ColorblindSafe => "colorblind-safe",
+            Self::Monochrome => "monochrome",
+            Self::Tableau10 => "tableau10",
+            Self::Set2 => "set2",
+            Self::Dark2 => "dark2",
+            Self::Plotly => "plotly",
+            Self::HighContrast => "high-contrast",
+        }
+    }
+
+    /// The cycle named `name` ([`Self::name`]), or `None`.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|cycle| cycle.name() == name)
+    }
+
     /// The full palette in rotation order.
-    pub fn colors(self) -> &'static [Color] {
+    pub const fn colors(self) -> &'static [Color] {
         match self {
             Self::Classic => CLASSIC,
             Self::Vivid => VIVID,
             Self::Balanced => BALANCED,
             Self::ColorblindSafe => COLORBLIND_SAFE,
             Self::Monochrome => MONOCHROME,
+            Self::Tableau10 => TABLEAU10,
+            Self::Set2 => SET2,
+            Self::Dark2 => DARK2,
+            Self::Plotly => PLOTLY,
+            Self::HighContrast => HIGH_CONTRAST,
         }
     }
 
     /// Color for the `index`-th series — wraps past the palette end, so it is
     /// total over any series count.
-    pub fn color(self, index: usize) -> Color {
+    pub const fn color(self, index: usize) -> Color {
         let palette = self.colors();
         palette[index % palette.len()]
     }
@@ -327,6 +534,78 @@ impl ColorCycle {
     }
 }
 
+impl Config {
+    /// Apply `palette` to this chart and `series`, its series list (#357):
+    /// series `i` takes `palette[i % palette.len()]` in every part its kind
+    /// draws in a palette colour (the parts [`ColorCycle::apply_to_series`]
+    /// writes), so a chart of many series draws each in its own colour. A
+    /// kind whose default ink is not a palette colour keeps its colours: a
+    /// field or mesh (its fill comes from the colour map and its contour
+    /// lines are dark ink), an RGB image, an energy-level diagram, a
+    /// Feynman diagram and dependency links (#357). Such a series still takes its index, so series `i`
+    /// always takes colour `i`.
+    ///
+    /// The colours are written into the series, so the document says what
+    /// is drawn: there is no unset colour and nothing is chosen at draw
+    /// time. The legends derived from the series (the base legend, each
+    /// overlay's and each subplot's) redraw their symbols from them
+    /// ([`crate::legend::update_legend_symbols_preserving_text`]); their
+    /// text, corner and offsets stay. Nothing else changes: the layout is
+    /// neither fitted nor marked. An empty palette changes nothing. The
+    /// default flows call it ([`crate::default::config_for_series`]); call
+    /// it again with another palette, such as [`ColorCycle::colors`] of a
+    /// preset, to recolour.
+    pub fn apply_palette(&mut self, series: &mut [SeriesConfig], palette: &[Color]) {
+        if palette.is_empty() {
+            return;
+        }
+        for (i, s) in series.iter_mut().enumerate() {
+            if takes_palette(s) {
+                recolor_series(s, palette[i % palette.len()]);
+            }
+        }
+        refresh_legend_symbols(self, series);
+    }
+}
+
+/// Whether [`Config::apply_palette`] colours `series`: every kind but the
+/// ones whose default ink is not a palette colour.
+fn takes_palette(series: &SeriesConfig) -> bool {
+    !matches!(
+        series.render_type,
+        DataRenderType::Field(_)
+            | DataRenderType::TriMesh(_)
+            | DataRenderType::RgbImage(_)
+            | DataRenderType::EnergyLevels(_)
+            | DataRenderType::Feynman(_)
+            // Dependency links keep their own accent (#357).
+            | DataRenderType::RangeLinks(_)
+    )
+}
+
+/// Redraw the symbols of every legend of `config` derived from `series`:
+/// the base legend, each overlay's and, recursively, each subplot's.
+fn refresh_legend_symbols(config: &mut Config, series: &[SeriesConfig]) {
+    let colormap = config.colorbar.as_ref().map(|bar| bar.colormap.clone());
+    crate::legend::update_legend_symbols_preserving_text(
+        &mut config.legend.content,
+        series,
+        colormap.as_ref(),
+    );
+    for overlay in &mut config.overlays {
+        if let Some(legend) = &mut overlay.legend {
+            crate::legend::update_legend_symbols_preserving_text(
+                &mut legend.content,
+                series,
+                colormap.as_ref(),
+            );
+        }
+    }
+    for subplot in &mut config.subplots {
+        refresh_legend_symbols(&mut subplot.config, series);
+    }
+}
+
 /// Give `series` the colour `c` where a palette colours it: the line,
 /// marker, error bar and stem colour of an x-y series, a histogram's fill,
 /// the series colour of a category, box, range or radar series, a contour
@@ -352,7 +631,7 @@ pub(crate) fn recolor_series(series: &mut SeriesConfig, c: Color) {
                 stem.color = c;
             }
         }
-        DataRenderType::Histogram { bar } => {
+        DataRenderType::Histogram(HistogramSeries { bar }) => {
             bar.fill_color = c;
         }
         // The level strokes take the cycle colour; the arrows keep theirs
@@ -383,31 +662,34 @@ pub(crate) fn recolor_series(series: &mut SeriesConfig, c: Color) {
         }
         DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. })
         | DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries { contour: None, .. })
-        | DataRenderType::RgbImage { .. } => {}
+        | DataRenderType::RgbImage(_) => {}
         // The arrow colour joins the cycle; a colour map, when set, still
         // draws from the colourbar.
-        DataRenderType::Vector { style, .. } => {
+        DataRenderType::Vector(VectorSeries { style, .. }) => {
             style.color = c;
         }
         // The bar fill joins the cycle; per-bar override colours stay.
-        DataRenderType::CategoryBars { color, .. } => {
+        DataRenderType::CategoryBars(CategoryBarSeries { color, .. }) => {
             *color = c;
         }
         // The box fill joins the cycle; per-box override colours stay.
-        DataRenderType::BoxPlot { color, .. } => {
+        DataRenderType::BoxPlot(BoxSeries { color, .. }) => {
             *color = c;
         }
         // The series fill joins the cycle; direction and state colours
         // stay, since they carry the bars' meaning.
-        DataRenderType::RangeBars { color, .. } => {
+        DataRenderType::RangeBars(RangeBarSeries { color, .. }) => {
             *color = c;
         }
+        // Dependency links keep their own accent (#357): a cycle colour
+        // would read as one more task series.
+        DataRenderType::RangeLinks(_) => {}
         // The outline and markers join the cycle, and the fill follows
         // them unless the style names its own.
-        DataRenderType::Radar { color, .. } => {
+        DataRenderType::Radar(RadarPolygonSeries { color, .. }) => {
             *color = c;
         }
-        DataRenderType::Ternary { scatter, line, .. } => {
+        DataRenderType::Ternary(TernarySeries { scatter, line, .. }) => {
             if let Some(scatter) = scatter {
                 scatter.point_color = c;
             }
@@ -417,12 +699,12 @@ pub(crate) fn recolor_series(series: &mut SeriesConfig, c: Color) {
         }
         // The line and its arrowheads join the cycle; a colour map, when
         // set, still draws from the colourbar.
-        DataRenderType::Streamlines { line, .. } => {
+        DataRenderType::Streamlines(StreamlineSeries { line, .. }) => {
             line.line_color = c;
         }
         // The rows join the cycle; a colour column, when set, still
         // draws from the colourbar.
-        DataRenderType::Parallel { line, .. } => {
+        DataRenderType::Parallel(ParallelSeries { line, .. }) => {
             line.line_color = c;
         }
         // Each channel of a monotonic group joins the cycle (#271).
@@ -477,12 +759,13 @@ mod tests {
         assert!(cfg.bottom_x.label_style.label_visible);
     }
 
-    // #205: the Grotrian preset keeps the boxed frame with labels and
-    // outward ticks on the bottom and left, drops the grid and the mirrored
-    // ticks, and gives a continuous `left_y` break a thin lowest piece; a
-    // `Panels` break or an unbroken axis keeps its sizing.
+    // #205, #357: the Grotrian preset frames the energy axis alone (line,
+    // outward ticks, labels), keeps the term columns' labels without a
+    // line or ticks, draws nothing on the top and right, drops the grid,
+    // and gives a continuous `left_y` break a thin lowest piece; a `Panels`
+    // break or an unbroken axis keeps its sizing.
     #[test]
-    fn grotrian_drops_the_grid_and_mirrored_ticks_and_thins_the_ground_strip() {
+    fn grotrian_frames_the_energy_axis_alone_and_thins_the_ground_strip() {
         use crate::config::{AxisBreak, AxisBreaks};
         let mut cfg = crate::defaults::config();
         cfg.left_y.min = 0.0;
@@ -492,13 +775,12 @@ mod tests {
             ..crate::defaults::axis_breaks()
         });
         cfg.apply_axis_preset(AxisPreset::Grotrian);
-        for axis in [&cfg.top_x, &cfg.bottom_x, &cfg.left_y, &cfg.right_y] {
-            assert!(axis.line_visible);
+        assert!(cfg.left_y.line_visible);
+        for axis in [&cfg.top_x, &cfg.bottom_x, &cfg.right_y] {
+            assert!(!axis.line_visible);
+            assert_eq!(axis.tick, TickVisibility::None);
         }
-        assert_eq!(cfg.bottom_x.tick, TickVisibility::Outside);
         assert_eq!(cfg.left_y.tick, TickVisibility::Outside);
-        assert_eq!(cfg.top_x.tick, TickVisibility::None);
-        assert_eq!(cfg.right_y.tick, TickVisibility::None);
         assert!(cfg.bottom_x.label_style.label_visible && cfg.left_y.label_style.label_visible);
         assert!(!cfg.top_x.label_style.label_visible && !cfg.right_y.label_style.label_visible);
         assert!(!cfg.grid.show_major_x && !cfg.grid.show_major_y);
@@ -521,6 +803,19 @@ mod tests {
         let mut plain = crate::defaults::config();
         plain.apply_axis_preset(AxisPreset::Grotrian);
         assert!(plain.left_y.breaks.is_none());
+    }
+
+    // #357: a right axis that prints a second unit (cm⁻¹ beside eV) takes
+    // the energy axis' frame; without a unit the right side draws nothing.
+    #[test]
+    fn grotrian_frames_a_right_axis_in_a_second_unit() {
+        use crate::config::AxisUnit;
+        let mut cfg = crate::defaults::config();
+        cfg.right_y.unit = Some(AxisUnit::new(8065.544, 0.0));
+        cfg.apply_axis_preset(AxisPreset::Grotrian);
+        assert!(cfg.right_y.line_visible && cfg.right_y.label_style.label_visible);
+        assert_eq!(cfg.right_y.tick, TickVisibility::Outside);
+        assert!(!cfg.top_x.line_visible && !cfg.top_x.label_style.label_visible);
     }
 
     #[test]
@@ -587,14 +882,45 @@ mod tests {
     }
 
     #[test]
+    fn presets_have_eight_distinct_colours_and_names() {
+        // #357: every categorical preset has eight or more colours, no two
+        // alike, and a name that reads back.
+        for cycle in ColorCycle::PRESETS {
+            let colors = cycle.colors();
+            assert!(colors.len() >= 8, "{cycle:?} has {}", colors.len());
+            for (i, a) in colors.iter().enumerate() {
+                assert!(
+                    colors[i + 1..].iter().all(|b| a != b),
+                    "{cycle:?} repeats a colour"
+                );
+                assert_eq!(a.a, 1.0);
+            }
+        }
+        for cycle in ColorCycle::ALL {
+            assert_eq!(ColorCycle::from_name(cycle.name()), Some(cycle));
+        }
+        assert_eq!(ColorCycle::from_name("nope"), None);
+        assert!(ColorCycle::PRESETS.contains(&ColorCycle::DEFAULT));
+    }
+
+    #[test]
+    fn preset_values_match_their_sources() {
+        // Spot checks against the published values: d3-scale-chromatic
+        // (category10, Tableau10, Set2, Dark2) and plotly.py (Plotly,
+        // Dark24).
+        assert_eq!(ColorCycle::Balanced.color(0), rgb8(0x1f, 0x77, 0xb4));
+        assert_eq!(ColorCycle::Tableau10.color(5), rgb8(0xed, 0xc9, 0x49));
+        assert_eq!(ColorCycle::Set2.color(7), rgb8(0xb3, 0xb3, 0xb3));
+        assert_eq!(ColorCycle::Dark2.color(0), rgb8(0x1b, 0x9e, 0x77));
+        assert_eq!(ColorCycle::Plotly.color(9), rgb8(0xfe, 0xcb, 0x52));
+        assert_eq!(ColorCycle::HighContrast.len(), 24);
+        assert_eq!(ColorCycle::HighContrast.color(23), rgb8(0xaf, 0x00, 0x38));
+        assert_eq!(ColorCycle::ColorblindSafe.color(0), rgb8(0xe6, 0x9f, 0x00));
+    }
+
+    #[test]
     fn cycle_color_wraps_around() {
-        for cycle in [
-            ColorCycle::Classic,
-            ColorCycle::Vivid,
-            ColorCycle::Balanced,
-            ColorCycle::ColorblindSafe,
-            ColorCycle::Monochrome,
-        ] {
+        for cycle in ColorCycle::ALL {
             let n = cycle.len();
             assert!(n >= 4, "{cycle:?} palette too small");
             assert_eq!(cycle.color(0), cycle.color(n));
@@ -743,7 +1069,7 @@ mod tests {
         };
         let expected = ColorCycle::Classic.color(2);
 
-        let mut histogram = series(DataRenderType::Histogram {
+        let mut histogram = series(DataRenderType::Histogram(HistogramSeries {
             bar: DataBarStyleConfig {
                 fill_color: Color::BLACK,
                 border_color: Color::BLACK,
@@ -754,9 +1080,9 @@ mod tests {
                 orientation: BarOrientation::Vertical,
                 bar_style_overrides: None,
             },
-        });
+        }));
         ColorCycle::Classic.apply_to_series(&mut histogram, 2);
-        let DataRenderType::Histogram { bar } = &histogram.render_type else {
+        let DataRenderType::Histogram(HistogramSeries { bar }) = &histogram.render_type else {
             unreachable!()
         };
         assert_eq!(bar.fill_color, expected);

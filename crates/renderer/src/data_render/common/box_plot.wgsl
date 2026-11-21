@@ -163,11 +163,12 @@ fn box_stats(row: u32) -> BoxStats {
 /// Value `v` on the value axis, in chart-area render pixels (x when the
 /// categories run along y, else y down).
 fn box_along(position: vec2<f32>, v: vec2<f32>) -> f32 {
-    let tf = transform;
-    if (category_params.horizontal != 0u) {
-        return category_px(data_to_ndc(tf, v, position)).x;
-    }
-    return category_px(data_to_ndc(tf, position, v)).y;
+    // One projection with its arguments chosen by the orientation, not one
+    // per branch: a software GPU compiler pays for every inlined copy of
+    // `data_to_ndc`, and the violin pick reads this per point (#363).
+    let horizontal = category_params.horizontal != 0u;
+    let px = category_px(data_to_ndc(transform, select(position, v, horizontal), select(v, position, horizontal)));
+    return select(px.y, px.x, horizontal);
 }
 
 /// Where the box sits across its category slot, in chart-area render pixels
@@ -186,7 +187,14 @@ struct BoxLayout {
 /// `group_width`, its boxes side by side `gap_px` apart in series order, as
 /// grouped category bars stand.
 fn box_layout(s: BoxStats, resolved: ResolvedBarStyle) -> BoxLayout {
-    var place = box_slot(s.position, s.q_low, resolved);
+    return box_narrowed(box_slot(s.position, s.q_low, resolved));
+}
+
+/// `slot`, the box's full place in its slot, as the box draws it: a
+/// violin narrows the box about its middle, or hides it. A caller that
+/// also needs the full place passes the one it computed (#363).
+fn box_narrowed(slot: BoxLayout) -> BoxLayout {
+    var place = slot;
     // A violin narrows the box about its middle, or hides it.
     let share = bitcast<f32>(box_lane(BOX_LANE_BOX_WIDTH));
     if (!(share > 0.0)) {
@@ -210,17 +218,17 @@ fn box_slot(position: vec2<f32>, at: vec2<f32>, resolved: ResolvedBarStyle) -> B
     var out: BoxLayout;
     out.valid = false;
     let horizontal = category_params.horizontal != 0u;
-    let low = category_slot_edge(position, -1.0);
-    let high = category_slot_edge(position, 1.0);
-    var slot_a: f32;
-    var slot_b: f32;
-    if (horizontal) {
-        slot_a = category_px(data_to_ndc(tf, at, low)).y;
-        slot_b = category_px(data_to_ndc(tf, at, high)).y;
-    } else {
-        slot_a = category_px(data_to_ndc(tf, low, at)).x;
-        slot_b = category_px(data_to_ndc(tf, high, at)).x;
+    // The slot's low and high edges, one projection inlined for both and
+    // for either orientation (#363): `data_to_ndc` is the costly helper to
+    // a software GPU compiler.
+    var slot = vec2<f32>(0.0);
+    for (var k = 0u; k < 2u; k = k + 1u) {
+        let edge = category_slot_edge(position, select(-1.0, 1.0, k == 1u));
+        let px = category_px(data_to_ndc(tf, select(edge, at, horizontal), select(at, edge, horizontal)));
+        slot[k] = select(px.x, px.y, horizontal);
     }
+    let slot_a = slot.x;
+    let slot_b = slot.y;
     let m = category_member(slot_a, slot_b, category_params.members, category_params.member, resolved.width_ratio, resolved.gap_px);
     if (m.x < 0.5) {
         return out;

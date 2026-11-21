@@ -229,6 +229,7 @@ fn heatmap_runtime_fit_and_pick_writer_failure_retire_before_tight_budget_retry(
         f.renderer.end_gpu_frame();
         f.renderer.wait_idle().unwrap();
         f.renderer.service_stream_requests();
+        crate::renderer::tests::settle_gpu_retirement(&mut f.renderer);
         let before = f.renderer.gpu_memory_usage().total_bytes();
         let headroom = if picking {
             crate::data_render::stream_field::STEP_BYTES
@@ -253,6 +254,7 @@ fn heatmap_runtime_fit_and_pick_writer_failure_retire_before_tight_budget_retry(
         ));
         f.renderer.wait_idle().unwrap();
         f.renderer.service_stream_requests();
+        crate::renderer::tests::settle_gpu_retirement(&mut f.renderer);
         assert_eq!(
             f.renderer.gpu_memory_usage().total_bytes(),
             before,

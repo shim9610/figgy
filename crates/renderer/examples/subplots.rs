@@ -54,7 +54,7 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
     let sensors = [
         ("temperature", "Temperature", "°C", 18., 7., -1.2, 2., 8.),
         ("humidity", "Humidity", "%", 55., 20., 1.9, 10., 30.),
-        ("co2", "CO₂", "ppm", 620., 260., 0.4, 60., 300.),
+        ("co2", "CO$_2$", "ppm", 620., 260., 0.4, 60., 300.),
         ("light", "Daylight", "lux", 400., 380., -1.4, 60., 0.),
     ];
     let mut specs = Vec::new();

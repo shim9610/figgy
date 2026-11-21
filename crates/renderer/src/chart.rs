@@ -15,7 +15,9 @@
 use crate::LayerRef;
 use crate::color::Color;
 use crate::config::{AxisOptions, AxisScale, Config, LegendEntryKind};
-use crate::data_config::{BarOrientation, DataRenderType, SeriesConfig};
+use crate::data_config::{
+    BarOrientation, DataRenderType, HistogramSeries, SeriesConfig, VectorSeries,
+};
 use crate::data_render::ColumnPool;
 use crate::error::{FiggyError, Result};
 use crate::format::LabelFormat;
@@ -52,10 +54,16 @@ pub(crate) fn apply_axis_range(
             axis.label_style.format = LabelFormat::Percent;
             axis.label_style.significant_digits = 1;
         }
+        // #357: a linear axis prints clean numbers (`0.8`, `-3`, `10`); an
+        // automatic format's own options and a timestamp format are kept.
         AxisScale::Linear => {
             axis.minor_count = 4;
-            if !matches!(axis.label_style.format, LabelFormat::Timestamp(_)) {
-                axis.label_style.format = LabelFormat::Decimal;
+            if !matches!(
+                axis.label_style.format,
+                LabelFormat::Timestamp(_) | LabelFormat::Auto(_)
+            ) {
+                axis.label_style.format =
+                    LabelFormat::Auto(crate::format::AutoNumberFormat::DEFAULT);
             }
             axis.label_style.significant_digits = 3;
         }
@@ -233,6 +241,69 @@ impl FitExtent {
             },
         }
     }
+}
+
+/// Which axes of one layer a scoped candidate fit moves
+/// (`Renderer::fit_config_scoped`, #334). `z` is the z axis of a 3D chart
+/// (its `right_y`); on a parallel chart the parallel axes are `y`. An axis
+/// not selected keeps the range it was given.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct FitAxes {
+    pub x: bool,
+    pub y: bool,
+    pub z: bool,
+}
+
+impl FitAxes {
+    /// Every axis: x, y and z.
+    pub const ALL: Self = Self {
+        x: true,
+        y: true,
+        z: true,
+    };
+}
+
+/// Which series a linked axis of a scoped candidate fit reads
+/// (`Renderer::fit_config_scoped`, #334).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum LinkedFitData {
+    /// A linked axis fits every series drawn against its link group, as
+    /// `Renderer::fit_config` fits it ([`Config::series_fit_roles`]).
+    #[default]
+    Group,
+    /// Only the series drawn in the target's panel (the parent chart or one
+    /// subplot cell, that cell's overlays included) are read; the link
+    /// group still shares the resulting range.
+    Target,
+}
+
+/// One axis of a layer, as a scoped fit names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FitAxis {
+    X,
+    Y,
+    /// The z axis of a 3D chart: its cell's `right_y`.
+    Z,
+}
+
+/// An axis a scoped fit holds: `axis` of layer `layer`
+/// (`FitScope::keep`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FitAxisRef {
+    pub layer: LayerRef,
+    pub axis: FitAxis,
+}
+
+/// What a scoped candidate fit moves (`Renderer::fit_config_scoped`,
+/// #334): the selected `axes` of `layer`, reading the series `linked`
+/// chooses, except the axes `keep` holds. A kept axis holds every axis
+/// linked to it, since a link group has one range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FitScope<'a> {
+    pub layer: LayerRef,
+    pub axes: FitAxes,
+    pub linked: LinkedFitData,
+    pub keep: &'a [FitAxisRef],
 }
 
 /// Validate the invariants required before a `Config` becomes renderer-owned.
@@ -486,8 +557,8 @@ pub fn range_bar_extents(
         return Ok((value, position, groups.direction));
     };
     value.union(&Chart::slot_extent(pool, &item.y_column)?);
-    value.union(&Chart::slot_extent(pool, bars.start)?);
-    if let Some(w) = bars.whiskers {
+    value.union(&Chart::slot_extent(pool, &bars.start)?);
+    if let Some(w) = &bars.whiskers {
         value.union(&Chart::slot_extent(pool, &w.low)?);
         value.union(&Chart::slot_extent(pool, &w.high)?);
     }
@@ -582,7 +653,7 @@ pub fn box_plot_value_extent(
             }
         }
         // The raw points' values.
-        if let Some(points) = boxes.points
+        if let Some(points) = &boxes.points
             && let Some(slot) = pool.slot(&points.values)
         {
             include(slot.min, slot.max);
@@ -654,7 +725,33 @@ fn issue_raster_stamp() -> Option<u64> {
 
 impl Chart {
     /// New chart. Both dirty flags start true so the first frame draws.
+    ///
+    /// A config whose layout the chart keeps fitted
+    /// ([`crate::LayoutState::Fitted`], #357: `Chart::sized`, the helpers'
+    /// `config_for_series` and default parallel config, a document
+    /// converted with its `text_sizes`) is fitted here, once, with the
+    /// font its draw style renders ([`crate::layout::auto_layout`]): the
+    /// chart is created with the layout it draws. A `Fixed` config is kept
+    /// exactly as given. No draw or export fits the layout.
     pub fn new(config: Config) -> Self {
+        let mut chart = Self::stored(config);
+        chart.refit_kept_layout();
+        chart
+    }
+
+    /// A chart holding `config` exactly as given, whatever its
+    /// [`crate::LayoutState`] (#357): the opt-out of the layout fit
+    /// [`Self::new`] makes for a `Fitted` config, so the chart draws the
+    /// SSOT it was handed. The renderer's own charts over a config it
+    /// already stores or derives (a registered chart's config, an export's
+    /// scaled copy, a streamed snapshot) are made this way. Edits through
+    /// the chart's methods still keep a `Fitted` layout fitted.
+    pub fn as_given(config: Config) -> Self {
+        Self::stored(config)
+    }
+
+    /// [`Self::as_given`], the name the renderer's own code uses.
+    pub(crate) fn stored(config: Config) -> Self {
         Self {
             config,
             data_dirty: true,
@@ -669,6 +766,35 @@ impl Chart {
     fn mark_raster(&mut self) {
         self.raster_dirty = true;
         self.raster_stamp = issue_raster_stamp();
+    }
+
+    /// The document was edited by a chart method: [`Self::mark_raster`],
+    /// and a layout the chart keeps fitted is fitted to what it holds now
+    /// ([`Self::refit_kept_layout`], #357).
+    fn mark_edited(&mut self) {
+        self.mark_raster();
+        self.refit_kept_layout();
+    }
+
+    /// Fit the layout when the chart keeps it fitted
+    /// ([`crate::LayoutState::Fitted`], #357): the fit
+    /// [`Self::fit_layout`] makes, written into the config. A `Fixed`
+    /// layout (a document drawn as saved, a layout the user moved or
+    /// placed) is left as it is, so a refit never undoes a drag. The chart
+    /// methods that edit the document call it as part of the edit; a host
+    /// that edits through [`Self::config_mut`] calls [`Self::fit_layout`]
+    /// itself.
+    pub(crate) fn refit_kept_layout(&mut self) {
+        if !self.config.layout_state.is_fitted() {
+            return;
+        }
+        let measure = CpuTextMeasure::for_style(&self.config.draw_style);
+        let fitted = crate::layout::auto_layout(&self.config, &measure);
+        if fitted != self.config {
+            self.config = fitted;
+            self.data_dirty = true;
+            self.mark_raster();
+        }
     }
 
     /// The stamp of the chart's current raster content; `None` when the
@@ -701,7 +827,7 @@ impl Chart {
     /// New chart with every pixel-based dimension multiplied by `scale`.
     /// Used for high-DPI export.
     pub fn scaled(&self, scale: f32) -> Self {
-        Self::new(self.config.scaled(scale))
+        Self::stored(self.config.scaled(scale))
     }
 
     /// General mutable access. Sets both dirty flags because the caller may
@@ -709,6 +835,11 @@ impl Chart {
     /// when the kind of change is known.
     /// Only the caller's assignments change the config: this accessor does
     /// not fit ranges, choose ticks or fit the title band.
+    ///
+    /// The layout is not fitted again here (#357): a host that edits what
+    /// a [`crate::LayoutState::Fitted`] layout holds calls
+    /// [`Self::fit_layout`] after its assignments, and assigns
+    /// `layout_state = LayoutState::Fixed` to keep margins it sets itself.
     pub fn config_mut(&mut self) -> &mut Config {
         self.data_dirty = true;
         self.mark_raster();
@@ -720,20 +851,26 @@ impl Chart {
     /// Change only `min` / `max` here to preserve tick spacing, minor count
     /// and label formatting. Unlike [`Self::set_x_range`] / [`Self::set_y_range`],
     /// this accessor performs no coupled config adjustments. Change both axes
-    /// of a pair explicitly when they should share the new range.
+    /// of a pair explicitly when they should share the new range. A layout
+    /// the chart keeps fitted ([`crate::LayoutState::Fitted`]) is fitted to
+    /// the new tick labels as part of the edit (#357).
     pub fn with_axis_range_change<F: FnOnce(&mut Config)>(&mut self, f: F) {
         f(&mut self.config);
         self.data_dirty = true;
-        self.mark_raster();
+        self.mark_edited();
     }
 
     /// Decoration-only change (titles, colors, margins, …): raster only.
-    /// Only the fields written by the closure change. In particular, assigning
-    /// title segments here keeps `top_margin`; [`Self::with_title`] also fits
-    /// that band. The caller still refreshes the view before preparing.
+    /// Only the fields written by the closure change, and the layout of a
+    /// chart that keeps it fitted ([`crate::LayoutState::Fitted`], #357),
+    /// which is fitted to the edit. In particular, assigning title segments
+    /// here keeps a `Fixed` chart's `top_margin`; [`Self::with_title`] also
+    /// fits that band. Assign `layout_state = LayoutState::Fixed` in the
+    /// closure to keep margins set there. The caller still refreshes the
+    /// view before preparing.
     pub fn with_decoration_change<F: FnOnce(&mut Config)>(&mut self, f: F) {
         f(&mut self.config);
-        self.mark_raster();
+        self.mark_edited();
     }
 
     // Dirty-flag interface.
@@ -757,12 +894,6 @@ impl Chart {
         was
     }
 
-    /// Manually flag the data as dirty — used when column data is mutated
-    /// outside this chart and there's no automatic detection path.
-    pub fn invalidate(&mut self) {
-        self.data_dirty = true;
-    }
-
     // Text builders (raster only). Each takes its text as a label, the way
     // matplotlib does: `$…$`, `\(…\)` and `$$…$$` spans are TeX, `\$` is a
     // dollar sign, and text whose TeX does not parse is shown as written
@@ -782,7 +913,7 @@ impl Chart {
     pub fn with_title(mut self, text: &str) -> Self {
         fill_label_segments(&mut self.config.chart_title.text, text);
         self.fit_chart_title_margin();
-        self.mark_raster();
+        self.mark_edited();
         self
     }
 
@@ -802,14 +933,14 @@ impl Chart {
     /// Set the bottom X axis title text, a label with `$…$` spans as TeX.
     pub fn with_x_title(mut self, text: &str) -> Self {
         fill_label_segments(&mut self.config.bottom_x.title_option.text, text);
-        self.mark_raster();
+        self.mark_edited();
         self
     }
 
     /// Set the left Y axis title text, a label with `$…$` spans as TeX.
     pub fn with_y_title(mut self, text: &str) -> Self {
         fill_label_segments(&mut self.config.left_y.title_option.text, text);
-        self.mark_raster();
+        self.mark_edited();
         self
     }
 
@@ -836,7 +967,7 @@ impl Chart {
             rich_segments_from_label(label),
         );
         self.config.legend.visible = true;
-        self.mark_raster();
+        self.mark_edited();
         self
     }
 
@@ -1313,7 +1444,7 @@ impl Chart {
                 let Some(subplot) = self.config.subplots.get(index) else {
                     return;
                 };
-                let mut inner = Chart::new(subplot.config.clone());
+                let mut inner = Chart::stored(subplot.config.clone());
                 if own_x {
                     inner.auto_fit_overlay_x_extent(overlay, x, padding_ratio);
                 }
@@ -1352,17 +1483,43 @@ impl Chart {
         series: &[SeriesConfig],
         padding_ratio: f64,
     ) -> Result<()> {
+        self.fit_layer_union_where(pool, layer, series, |_| true, FitAxes::ALL, padding_ratio)
+    }
+
+    /// [`Self::auto_fit_layer_union`] over the series `include` accepts,
+    /// moving only the selected `axes`: an axis not selected is fitted
+    /// with [`FitExtent::EMPTY`] (which leaves it as it is) and the z axis
+    /// is fitted only with `axes.z`. On a parallel chart the parallel axes
+    /// are `axes.y`. A series `include` refuses reads nothing. The scoped
+    /// candidate fit (`Renderer::fit_config_scoped`, #334) and the whole
+    /// layer fit (`include` accepting every series, every axis) share it.
+    pub(crate) fn fit_layer_union_where(
+        &mut self,
+        pool: &ColumnPool,
+        layer: LayerRef,
+        series: &[SeriesConfig],
+        include: impl Fn(&SeriesConfig) -> bool,
+        axes: FitAxes,
+        padding_ratio: f64,
+    ) -> Result<()> {
         // A parallel chart fits each of its axes to its columns (#141); the
         // categorical positions and the normalized band stay.
         if self.config.parallel().is_some()
             && matches!(layer, LayerRef::Base | LayerRef::Annotations)
         {
-            return self.auto_fit_parallel_axes(pool, series, padding_ratio);
+            if !axes.y {
+                return Ok(());
+            }
+            return self.fit_parallel_axes_where(pool, series, &include, padding_ratio);
         }
         let mut x = FitExtent::EMPTY;
         let mut y = FitExtent::EMPTY;
         for cfg in series {
+            if !include(cfg) {
+                continue;
+            }
             let (fit_x, fit_y) = self.config.series_fit_roles(layer, &cfg.series_id);
+            let (fit_x, fit_y) = (fit_x && axes.x, fit_y && axes.y);
             // A DataLess series reads no column (#203, #234). A Feynman
             // diagram fits its vertices' positions; an energy-level series
             // moves no axis.
@@ -1459,7 +1616,7 @@ impl Chart {
                     y.union(&member_y);
                 }
             }
-            if let DataRenderType::Histogram { bar } = &cfg.render_type {
+            if let DataRenderType::Histogram(HistogramSeries { bar }) = &cfg.render_type {
                 let baseline = FitExtent {
                     min: bar.baseline,
                     max: bar.baseline,
@@ -1472,8 +1629,12 @@ impl Chart {
                 }
             }
         }
-        self.auto_fit_layer_extent(layer, &x, &y, padding_ratio);
-        self.auto_fit_view_3d_z(pool, layer, series, padding_ratio)?;
+        if axes.x || axes.y {
+            self.auto_fit_layer_extent(layer, &x, &y, padding_ratio);
+        }
+        if axes.z {
+            self.fit_view_3d_z_where(pool, layer, series, &include, padding_ratio)?;
+        }
         Ok(())
     }
 
@@ -1509,7 +1670,7 @@ impl Chart {
         series: &[SeriesConfig],
         padding_ratio: f64,
     ) -> Result<Config> {
-        let mut fitted = Chart::new(config.clone());
+        let mut fitted = Chart::stored(config.clone());
         fitted.auto_fit_layer_union(pool, LayerRef::Base, series, padding_ratio)?;
         for overlay in 0..config.overlays.len() {
             fitted.auto_fit_layer_union(pool, LayerRef::Overlay(overlay), series, padding_ratio)?;
@@ -1528,6 +1689,26 @@ impl Chart {
         Ok(fitted.config)
     }
 
+    /// `config` with the selected `axes` of `layer` fitted as
+    /// [`Self::fit_layer_union_where`] fits them over the series `include`
+    /// accepts, returned without touching any chart: the fit path of
+    /// `Renderer::fit_config_scoped` (#334). The fit works on a copy of the
+    /// configuration (SSOT configuration only, rule 2) and reads the
+    /// columns' cached statistics only.
+    pub(crate) fn fitted_layer_where(
+        config: &Config,
+        pool: &ColumnPool,
+        layer: LayerRef,
+        series: &[SeriesConfig],
+        include: impl Fn(&SeriesConfig) -> bool,
+        axes: FitAxes,
+        padding_ratio: f64,
+    ) -> Result<Config> {
+        let mut fitted = Chart::stored(config.clone());
+        fitted.fit_layer_union_where(pool, layer, series, include, axes, padding_ratio)?;
+        Ok(fitted.config)
+    }
+
     /// On a parallel chart (`Config.parallel`, #141), fit each parallel
     /// axis's range to the union of the cached statistics of the column
     /// every parallel series names for it, padded by `padding_ratio` (a
@@ -1541,13 +1722,24 @@ impl Chart {
         series: &[SeriesConfig],
         padding_ratio: f64,
     ) -> Result<()> {
+        self.fit_parallel_axes_where(pool, series, |_| true, padding_ratio)
+    }
+
+    /// [`Self::auto_fit_parallel_axes`] over the series `include` accepts.
+    fn fit_parallel_axes_where(
+        &mut self,
+        pool: &ColumnPool,
+        series: &[SeriesConfig],
+        include: impl Fn(&SeriesConfig) -> bool,
+        padding_ratio: f64,
+    ) -> Result<()> {
         let axes = match self.config.parallel() {
             Some(parallel) => parallel.axes.len(),
             None => return Ok(()),
         };
         for i in 0..axes {
             let mut ext = FitExtent::EMPTY;
-            for cfg in series {
+            for cfg in series.iter().filter(|cfg| include(cfg)) {
                 if let Some(column) = cfg.render_type.parallel().and_then(|p| p.columns.get(i)) {
                     ext.union(&Self::slot_extent(pool, column)?);
                 }
@@ -1584,6 +1776,18 @@ impl Chart {
         series: &[SeriesConfig],
         padding_ratio: f64,
     ) -> Result<()> {
+        self.fit_view_3d_z_where(pool, layer, series, |_| true, padding_ratio)
+    }
+
+    /// [`Self::auto_fit_view_3d_z`] over the series `include` accepts.
+    fn fit_view_3d_z_where(
+        &mut self,
+        pool: &ColumnPool,
+        layer: LayerRef,
+        series: &[SeriesConfig],
+        include: impl Fn(&SeriesConfig) -> bool,
+        padding_ratio: f64,
+    ) -> Result<()> {
         let chart = match layer {
             LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
                 match self.config.subplots.get(index) {
@@ -1597,7 +1801,7 @@ impl Chart {
             return Ok(());
         }
         let mut z = FitExtent::EMPTY;
-        for cfg in series {
+        for cfg in series.iter().filter(|cfg| include(cfg)) {
             let (fit_x, fit_y) = self.config.series_fit_roles(layer, &cfg.series_id);
             if !(fit_x || fit_y) {
                 continue;
@@ -1649,10 +1853,10 @@ impl Chart {
         anchors: &FitExtent,
     ) -> Result<Option<FitExtent>> {
         use crate::data_config::{VectorComponents, VectorScale};
-        let DataRenderType::Vector {
+        let DataRenderType::Vector(VectorSeries {
             components: VectorComponents::Points { w: Some(w), .. },
             style,
-        } = &cfg.render_type
+        }) = &cfg.render_type
         else {
             return Ok(None);
         };
@@ -1798,6 +2002,29 @@ mod tests {
         assert_eq!(c.config().bottom_x.max, 100.0);
         assert_eq!(c.config().top_x.min, 0.0);
         assert_eq!(c.config().top_x.max, 100.0);
+    }
+
+    // #357: a range helper gives a linear axis the automatic label format,
+    // and keeps one the axis already has with its own options.
+    #[test]
+    fn range_helpers_give_linear_axes_the_automatic_label_format() {
+        use crate::format::{AutoNumberFormat, ExponentNotation};
+        let mut axis = dummy_config().bottom_x;
+        axis.label_style.format = LabelFormat::Scientific;
+        apply_axis_range(&mut axis, 0.0, 1.0, &AxisScale::Linear);
+        assert_eq!(
+            axis.label_style.format,
+            LabelFormat::Auto(AutoNumberFormat::DEFAULT)
+        );
+        let engineering = LabelFormat::Auto(AutoNumberFormat {
+            notation: ExponentNotation::Engineering,
+            ..AutoNumberFormat::DEFAULT
+        });
+        axis.label_style.format = engineering.clone();
+        apply_axis_range(&mut axis, 0.0, 2.0, &AxisScale::Linear);
+        assert_eq!(axis.label_style.format, engineering);
+        apply_axis_range(&mut axis, 1.0, 100.0, &AxisScale::Logarithmic);
+        assert_eq!(axis.label_style.format, LabelFormat::Power);
     }
 
     #[test]
@@ -1970,7 +2197,8 @@ mod tests {
             AxisScale::Linear => (
                 crate::tick::axis_major_spacing(&AxisScale::Linear, 1.0, 1000.0),
                 4,
-                LabelFormat::Decimal,
+                // #357: the range helpers give a linear axis clean labels.
+                LabelFormat::Auto(crate::format::AutoNumberFormat::DEFAULT),
             ),
             AxisScale::Logarithmic => (1.0, 8, LabelFormat::Power),
             AxisScale::Probability(_) => unreachable!("a linear and log sweep"),

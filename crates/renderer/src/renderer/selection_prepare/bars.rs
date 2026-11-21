@@ -51,17 +51,17 @@ impl PrepareContext<'_> {
         selected_bars.push(ColumnBarSelectionLayer {
             pipeline: match style_map {
                 Some(_) => pipelines
-                    .bar_selection_mapped
-                    .as_ref()
+                    .precise(PrecisePipeline::BarSelectionMapped)
                     .ok_or(FiggyError::internal(
                         "prepare ensured mapped histogram selection pipeline",
                     ))?,
-                None => pipelines
-                    .bar_selection
-                    .as_ref()
-                    .ok_or(FiggyError::internal(
-                        "prepare ensured histogram selection pipeline",
-                    ))?,
+                None => {
+                    pipelines
+                        .precise(PrecisePipeline::BarSelection)
+                        .ok_or(FiggyError::internal(
+                            "prepare ensured histogram selection pipeline",
+                        ))?
+                }
             },
             transform_bg: &view.transform_bg,
             style_bg,
@@ -72,6 +72,7 @@ impl PrepareContext<'_> {
             instance,
             instances: 1,
             category: None,
+            vertices: data_render::BAR_SELECTION_VERTICES,
         });
         Ok(())
     }
@@ -104,7 +105,7 @@ impl PrepareContext<'_> {
             "a box plot selection has a box plot config",
         ))?;
         let mut highlight =
-            PrimitiveStyle::from_box_plot(boxes.color, boxes.style, series.style.display_scale);
+            PrimitiveStyle::from_box_plot(boxes.color, &boxes.style, series.style.display_scale);
         highlight.color_premul =
             PrimitiveStyle::from_color(selection_cfg.highlight_color).color_premul;
         highlight.line_width_px = selection_cfg.outline_width_px;
@@ -123,12 +124,9 @@ impl PrepareContext<'_> {
             };
             let buffer = data_render::create_style_uniform_buffer(&self.device, &highlight);
             selected_bars.push(ColumnBarSelectionLayer {
-                pipeline: pipelines
-                    .bar_violin_selection
-                    .as_ref()
-                    .ok_or(FiggyError::internal(
-                        "prepare ensured violin selection pipeline",
-                    ))?,
+                pipeline: pipelines.precise(PrecisePipeline::ViolinSelection).ok_or(
+                    FiggyError::internal("prepare ensured violin selection pipeline"),
+                )?,
                 transform_bg: &view.transform_bg,
                 style_bg: data_render::create_style_bind_group(
                     &self.device,
@@ -142,18 +140,16 @@ impl PrepareContext<'_> {
                 instance: 0,
                 instances: segments,
                 category: Some(violin),
+                vertices: data_render::CATEGORY_BAR_VERTICES,
             });
         }
         if half.is_some_and(|half| half != ViolinSide::Both) {
             return Ok(());
         }
         selected_bars.push(ColumnBarSelectionLayer {
-            pipeline: pipelines
-                .bar_box_plot_selection
-                .as_ref()
-                .ok_or(FiggyError::internal(
-                    "prepare ensured box plot selection pipeline",
-                ))?,
+            pipeline: pipelines.precise(PrecisePipeline::BoxPlotSelection).ok_or(
+                FiggyError::internal("prepare ensured box plot selection pipeline"),
+            )?,
             transform_bg: &view.transform_bg,
             style_bg,
             style_map_bg: None,
@@ -163,6 +159,7 @@ impl PrepareContext<'_> {
             instance: row,
             instances: 1,
             category: Some(category),
+            vertices: data_render::CATEGORY_BAR_VERTICES,
         });
         Ok(())
     }
@@ -194,15 +191,14 @@ impl PrepareContext<'_> {
             "a box point selection has a box plot config",
         ))?;
         let mut highlight =
-            PrimitiveStyle::from_box_plot(boxes.color, boxes.style, series.style.display_scale);
+            PrimitiveStyle::from_box_plot(boxes.color, &boxes.style, series.style.display_scale);
         highlight.color_premul =
             PrimitiveStyle::from_color(selection_cfg.highlight_color).color_premul;
         highlight.line_width_px = selection_cfg.outline_width_px;
         let buffer = data_render::create_style_uniform_buffer(&self.device, &highlight);
         selected_bars.push(ColumnBarSelectionLayer {
             pipeline: pipelines
-                .bar_box_point_selection
-                .as_ref()
+                .precise(PrecisePipeline::BoxPointSelection)
                 .ok_or(FiggyError::internal(
                     "prepare ensured box point selection pipeline",
                 ))?,
@@ -215,6 +211,7 @@ impl PrepareContext<'_> {
             instance: index,
             instances: 1,
             category: Some(points),
+            vertices: data_render::CATEGORY_BAR_VERTICES,
         });
         Ok(())
     }
@@ -247,7 +244,7 @@ impl PrepareContext<'_> {
         ))?;
         let mut highlight = PrimitiveStyle::from_category_bars(
             ranges.color,
-            ranges.style,
+            &ranges.style,
             series.style.display_scale,
         );
         highlight.color_premul =
@@ -258,8 +255,7 @@ impl PrepareContext<'_> {
         let style_bg = data_render::create_style_bind_group(&self.device, &self.style_bgl, &buffer);
         selected_bars.push(ColumnBarSelectionLayer {
             pipeline: pipelines
-                .bar_range_selection
-                .as_ref()
+                .precise(PrecisePipeline::RangeBarSelection)
                 .ok_or(FiggyError::internal(
                     "prepare ensured range bar selection pipeline",
                 ))?,
@@ -272,6 +268,54 @@ impl PrepareContext<'_> {
             instance: row,
             instances: 1,
             category: Some(category),
+            vertices: data_render::CATEGORY_BAR_VERTICES,
+        });
+        Ok(())
+    }
+
+    /// A range link (#357): the picked link's route again, in the
+    /// selection's colour, widened by its outline width, from the same
+    /// group 3 as the draw.
+    pub(super) fn range_link_selection<'a>(
+        &'a self,
+        s: &SelectionInputs<'a, '_>,
+        selection_cfg: &crate::config::DataSelectionsConfig,
+        bin_index: &usize,
+        selected_bars: &mut Vec<ColumnBarSelectionLayer<'a>>,
+    ) -> Result<()> {
+        let SelectionInputs {
+            view,
+            pipelines,
+            columns,
+            column_buffer,
+            ..
+        } = *s;
+        let Some(category) = columns.category.clone() else {
+            return Ok(());
+        };
+        let Ok(row) = u32::try_from(*bin_index) else {
+            return Ok(());
+        };
+        let mut highlight = PrimitiveStyle::from_color(selection_cfg.highlight_color);
+        highlight.line_width_px = selection_cfg.outline_width_px;
+        let buffer = data_render::create_style_uniform_buffer(&self.device, &highlight);
+        let style_bg = data_render::create_style_bind_group(&self.device, &self.style_bgl, &buffer);
+        selected_bars.push(ColumnBarSelectionLayer {
+            pipeline: pipelines
+                .precise(PrecisePipeline::RangeLinkSelection)
+                .ok_or(FiggyError::internal(
+                    "prepare ensured range link selection pipeline",
+                ))?,
+            transform_bg: &view.transform_bg,
+            style_bg,
+            style_map_bg: None,
+            pool_buffer: column_buffer,
+            edges: columns.x,
+            values: columns.y,
+            instance: row,
+            instances: 1,
+            category: Some(category),
+            vertices: data_render::RANGE_LINK_VERTICES,
         });
         Ok(())
     }
@@ -303,7 +347,7 @@ impl PrepareContext<'_> {
             "a category bar selection has a category bar config",
         ))?;
         let mut highlight =
-            PrimitiveStyle::from_category_bars(bars.color, bars.style, series.style.display_scale);
+            PrimitiveStyle::from_category_bars(bars.color, &bars.style, series.style.display_scale);
         highlight.color_premul =
             PrimitiveStyle::from_color(selection_cfg.highlight_color).color_premul;
         highlight.line_width_px = selection_cfg.outline_width_px;
@@ -312,8 +356,7 @@ impl PrepareContext<'_> {
         let style_bg = data_render::create_style_bind_group(&self.device, &self.style_bgl, &buffer);
         selected_bars.push(ColumnBarSelectionLayer {
             pipeline: pipelines
-                .bar_category_selection
-                .as_ref()
+                .precise(PrecisePipeline::CategoryBarSelection)
                 .ok_or(FiggyError::internal(
                     "prepare ensured category bar selection pipeline",
                 ))?,
@@ -326,6 +369,7 @@ impl PrepareContext<'_> {
             instance: row,
             instances: 1,
             category: Some(category),
+            vertices: data_render::CATEGORY_BAR_VERTICES,
         });
         Ok(())
     }

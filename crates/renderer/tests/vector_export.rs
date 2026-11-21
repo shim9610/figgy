@@ -25,6 +25,8 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/pdf_structure.rs"]
 mod pdf_structure;
 #[path = "support/playground_scenes.rs"]
@@ -35,6 +37,7 @@ mod svg_parts;
 mod svg_raster;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::{SCALES, fresh_gpu as gpu};
 
 use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at};
 use renderer::config::{AxisOptions, DrawStyle, SketchOptions, TickVisibility};
@@ -50,7 +53,6 @@ use renderer::{
 use scenes::SceneKind;
 use svg_parts::{ReadPart, assert_parts_match};
 
-const SCALES: [f32; 2] = [1.0, 2.0];
 /// The large-data scene's points, as the decoration oracle builds it.
 const BIG_DATA_POINTS: usize = 100_000;
 const POOL_BYTES: u64 = 64 * 1024 * 1024;
@@ -61,11 +63,6 @@ const PDF_BUDGET: usize = 128 * 1024;
 const IMAGE_BUDGET: f64 = 1.05;
 /// Read-back tolerance in pixels: the writers round to 0.001.
 const TOLERANCE: f32 = 0.01;
-
-fn gpu() -> RendererDevice {
-    let (device, queue) = test_gpu::device();
-    RendererDevice::new(device, queue).expect("figgy poll thread")
-}
 
 fn renderer(gpu: &RendererDevice) -> Renderer {
     Renderer::try_new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm, POOL_BYTES).expect("renderer")
@@ -570,7 +567,9 @@ fn a_dataless_series_is_written_between_the_gpu_data_and_the_value_labels() {
     with_level.push(mid_level());
     let mut unlabelled = scene.series.clone();
     for series in &mut unlabelled {
-        if let renderer::DataRenderType::BoxPlot { labels, .. } = &mut series.render_type {
+        if let renderer::DataRenderType::BoxPlot(renderer::BoxSeries { labels, .. }) =
+            &mut series.render_type
+        {
             labels.placement = renderer::BoxPlotLabels::None;
         }
     }

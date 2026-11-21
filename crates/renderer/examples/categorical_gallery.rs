@@ -5,8 +5,6 @@
 //! category-bar member.
 //! Each case shows one finish: it varies the theme's bar material, and
 //! where the case has colours of its own its palette, before applying it.
-// Legacy documents are read through their deprecated reader types.
-#![allow(deprecated)]
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]
 mod gallery;

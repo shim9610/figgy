@@ -8,12 +8,12 @@ mod rect;
 pub use fit::FitStrategy;
 pub use geometry::{
     BreakKnot, BreakMap, LABEL_GAP, LEGEND_BORDER_WIDTH, LEGEND_INSET, LOG_RANGE_FALLBACK_MIN,
-    MeasuredTitle, PROBABILITY_RANGE_FALLBACK, TitleBand, TitlePlacement, auto_layout, axis_anchor,
-    axis_cross, axis_fraction, axis_offset, axis_title_offset_to_screen, axis_title_placement,
-    chart_title_placement, chart_title_placement_in, colorbar_rect, colorbar_title_placement,
-    fit_chart_title_margin, guarded_log_range, guarded_probability_range, label_origin, label_rect,
-    legend_rect, mirrored_breaks, point_on_rect_side, screen_offset_to_axis_title, span_fraction,
-    value_in_cut, visible_colorbar_rect,
+    MeasuredTitle, PROBABILITY_RANGE_FALLBACK, TICK_ROW_REFERENCE, TitleBand, TitlePlacement,
+    auto_layout, axis_anchor, axis_cross, axis_fraction, axis_offset, axis_title_offset_to_screen,
+    axis_title_placement, chart_title_placement, chart_title_placement_in, colorbar_rect,
+    colorbar_title_placement, fit_chart_title_margin, guarded_log_range, guarded_probability_range,
+    label_origin, label_rect, legend_rect, mirrored_breaks, point_on_rect_side,
+    screen_offset_to_axis_title, span_fraction, value_in_cut, visible_colorbar_rect,
 };
 pub use nudge::{Element, NudgeReject, NudgeResult};
 pub use rect::{ChartArea, DataArea, Rect, RectF, inset_paint_order, inset_parent};
@@ -31,7 +31,7 @@ pub struct Margins {
 }
 
 /// A chart edge. Serializable because `ColorBarOptions::side` is part of
-/// `Config`; the layout-internal uses (`FitStrategy::Absorb`, nudge) predate
+/// `Config`; the layout-internal uses (nudge) predate
 /// that and are unaffected.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -469,9 +469,10 @@ mod tests {
         bar.gap_px + bar.thickness_px + bar.axis.out_margin + bar.axis.major_tick_length
     }
 
-    // data_area() must be fully contained inside chart_area on success.
+    // data_area() must be fully contained inside chart_area on success, and
+    // all margin-contribution fields must be non-negative.
     #[test]
-    fn data_area_contained_in_chart_area() {
+    fn data_area_contained_in_chart_area_and_margins_non_negative() {
         let cfg = crate::defaults::config();
         let da = cfg.data_area().unwrap();
         let ca = &cfg.chart_area;
@@ -479,12 +480,7 @@ mod tests {
         assert!(da.y >= ca.y);
         assert!(da.x + da.width <= ca.x + ca.width);
         assert!(da.y + da.height <= ca.y + ca.height);
-    }
 
-    // All margin-contribution fields must be non-negative.
-    #[test]
-    fn margins_non_negative() {
-        let cfg = crate::defaults::config();
         let m = cfg.margins();
         assert!(m.top >= 0.0);
         assert!(m.bottom >= 0.0);
@@ -800,17 +796,20 @@ mod tests {
                 <= cfg.right_y.out_margin + cfg.right_y.major_tick_length + 1e-3
         );
 
-        let m = cfg.margins();
-        cfg.set_margins(
-            super::Margins { right: 40.0, ..m },
-            FitStrategy::PreserveTitles,
-        )
-        .unwrap();
-        assert!((cfg.margins().right - 40.0).abs() < 1e-3);
-        let target = cfg.data_area().unwrap();
-        cfg.fit_to_data_area(target.clone(), FitStrategy::Absorb(Side::Left))
+        let ca = cfg.chart_area.0;
+        let da = cfg.data_area().unwrap().0;
+        let target = super::DataArea(Rect {
+            width: ca.x + ca.width - 40 - da.x,
+            ..da
+        });
+        cfg.fit_to_data_area(target.clone(), FitStrategy::PreserveTitles)
             .unwrap();
+        assert!((cfg.margins().right - 40.0).abs() < 1e-3);
         assert_eq!(cfg.data_area().unwrap(), target);
+        assert!(
+            cfg.overlays[0].y_axis.out_margin + cfg.overlays[0].y_axis.major_tick_length
+                <= cfg.right_y.out_margin + cfg.right_y.major_tick_length + 1e-3
+        );
     }
 
     #[test]
@@ -836,7 +835,7 @@ mod tests {
 
     // The selection box of every chrome element is derived from `data_area()`,
     // so an interaction that left it erroring would drop the selection. Drive
-    // random edge drags, data-area moves, margin edits and resizes from random
+    // random edge drags, data-area moves and data-area fits from random
     // valid layouts: the layout must stay valid after each step, whether the
     // step was applied or refused, and the display copy must never trip the
     // origin or visible-strip guard.
@@ -891,27 +890,29 @@ mod tests {
                     2 => {
                         let _ = cfg.nudge(Element::DataArea, &LaysOut, dx, dy);
                     }
-                    3 => {
-                        let _ = cfg.set_side_margin(side, next() * 300.0);
-                    }
-                    4 => {
-                        let ca = cfg.chart_area.0;
-                        let _ = cfg.resize_chart_area_scaled(ChartArea(Rect {
-                            x: ca.x,
-                            y: ca.y,
-                            width: 20 + (next() * 4000.0) as u32,
-                            height: 20 + (next() * 4000.0) as u32,
-                        }));
+                    3 | 4 => {
+                        // A fit to a data area grown or shrunk on each side.
+                        let da = cfg.data_area().unwrap().0;
+                        let grow = |v: f32| (v - 0.5) * 120.0;
+                        let (l, t) = (grow(next()), grow(next()));
+                        let (r, b) = (grow(next()), grow(next()));
+                        let x = (da.x as f32 - l).max(0.0);
+                        let y = (da.y as f32 - t).max(0.0);
+                        let w = (da.x as f32 + da.width as f32 + r - x).max(0.0);
+                        let h = (da.y as f32 + da.height as f32 + b - y).max(0.0);
+                        let _ = cfg.fit_to_data_area(
+                            super::DataArea(Rect {
+                                x: x as u32,
+                                y: y as u32,
+                                width: w as u32,
+                                height: h as u32,
+                            }),
+                            FitStrategy::PreserveTitles,
+                        );
                     }
                     _ => {
-                        let m = cfg.margins();
-                        let _ = cfg.set_margins(
-                            super::Margins {
-                                top: m.top + dy,
-                                ..m
-                            },
-                            FitStrategy::ProportionalScale,
-                        );
+                        let _ =
+                            cfg.nudge(Element::DataAreaEdge(side), &LaysOut, dx * 4.0, dy * 4.0);
                     }
                 }
                 assert!(

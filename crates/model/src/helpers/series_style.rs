@@ -11,10 +11,11 @@
 use crate::color::Color;
 use crate::data::ColumnId;
 use crate::data_config::{
-    CategoryBarDirection, CategoryBarStyle, ContourLabelConfig, DataLineStyleConfig,
-    DataRenderType, DataScatterStyleConfig, FieldFillConfig, FieldSeries, LineFill,
-    LineInterpolation, MatrixRef, PointColorMap, PointSizeMap, SeriesConfig, Shading, Stem,
-    VectorComponents, VectorPivot, VectorStyle, XySeries,
+    CategoryBarDirection, CategoryBarSeries, CategoryBarStyle, ContourLabelConfig,
+    DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, FieldFillConfig, FieldSeries,
+    HistogramSeries, LineFill, LineInterpolation, MatrixRef, ParallelSeries, PointColorMap,
+    PointSizeMap, RangeBarSeries, RgbImageSeries, SeriesConfig, Shading, Stem, StreamlineSeries,
+    TernarySeries, VectorComponents, VectorPivot, VectorSeries, VectorStyle, XySeries,
 };
 
 impl SeriesConfig {
@@ -31,11 +32,12 @@ impl SeriesConfig {
             id,
             x,
             y,
-            DataRenderType::Vector {
+            DataRenderType::Vector(VectorSeries {
                 components: VectorComponents::Grid { u, v },
                 style: VectorStyle::default(),
-            },
+            }),
         )
+        .color(super::series::SERIES_INK)
     }
 
     /// Arrows in a 3D box: one per sample at `(x, y, z)` with the
@@ -53,16 +55,17 @@ impl SeriesConfig {
             id,
             x,
             y,
-            DataRenderType::Vector {
+            DataRenderType::Vector(VectorSeries {
                 components: VectorComponents::Points {
                     u: u.into(),
                     v: v.into(),
                     w: Some(w.into()),
                 },
                 style: VectorStyle::default(),
-            },
+            }),
         )
         .z(z)
+        .color(super::series::SERIES_INK)
     }
 
     // Lines.
@@ -99,7 +102,9 @@ impl SeriesConfig {
     pub fn with_line(mut self, width: f32) -> Self {
         let (scatter, line) = match &mut self.render_type {
             DataRenderType::Xy(xy) => (xy.scatter.as_ref(), &mut xy.line),
-            DataRenderType::Ternary { scatter, line, .. } => (scatter.as_ref(), line),
+            DataRenderType::Ternary(TernarySeries { scatter, line, .. }) => {
+                (scatter.as_ref(), line)
+            }
             _ => return self,
         };
         let color = scatter.map(|scatter| scatter.point_color);
@@ -177,7 +182,7 @@ impl SeriesConfig {
 
     /// A histogram bar's border.
     pub fn bar_border(mut self, color: Color, width: f32) -> Self {
-        if let DataRenderType::Histogram { bar } = &mut self.render_type {
+        if let DataRenderType::Histogram(HistogramSeries { bar }) = &mut self.render_type {
             bar.border_color = color;
             bar.border_width = width;
         }
@@ -186,7 +191,7 @@ impl SeriesConfig {
 
     /// The gap between histogram bars, in logical pixels.
     pub fn bar_gap(mut self, px: f32) -> Self {
-        if let DataRenderType::Histogram { bar } = &mut self.render_type {
+        if let DataRenderType::Histogram(HistogramSeries { bar }) = &mut self.render_type {
             bar.gap_px = px;
         }
         self
@@ -200,14 +205,17 @@ impl SeriesConfig {
     /// takes a colour grid through [`Self::style_vectors`]).
     pub fn color_by(mut self, column: impl Into<ColumnId>) -> Self {
         let column = column.into();
-        if let DataRenderType::Parallel { color_column, .. } = &mut self.render_type {
+        if let DataRenderType::Parallel(ParallelSeries { color_column, .. }) = &mut self.render_type
+        {
             *color_column = Some(column);
-        } else if let DataRenderType::Streamlines { color_map, .. } = &mut self.render_type {
+        } else if let DataRenderType::Streamlines(StreamlineSeries { color_map, .. }) =
+            &mut self.render_type
+        {
             *color_map = Some(PointColorMap { column });
-        } else if let DataRenderType::Vector {
+        } else if let DataRenderType::Vector(VectorSeries {
             components: VectorComponents::Points { .. },
             style,
-        } = &mut self.render_type
+        }) = &mut self.render_type
         {
             style.color_map = Some(crate::data_config::VectorColorMap::Column(column));
         } else if let Some(scatter) = self.markers() {
@@ -238,7 +246,7 @@ impl SeriesConfig {
     /// How a field, mesh or RGB image fills its cells: flat or
     /// interpolated.
     pub fn shading(mut self, shading: Shading) -> Self {
-        if let DataRenderType::RgbImage { shading: s, .. } = &mut self.render_type {
+        if let DataRenderType::RgbImage(RgbImageSeries { shading: s, .. }) = &mut self.render_type {
             *s = shading;
         } else if let Some(fill) = self.cell_fill() {
             fill.shading = shading;
@@ -248,7 +256,7 @@ impl SeriesConfig {
 
     /// The opacity of a field, mesh or RGB image fill, from 0 to 1.
     pub fn opacity(mut self, opacity: f32) -> Self {
-        if let DataRenderType::RgbImage { opacity: o, .. } = &mut self.render_type {
+        if let DataRenderType::RgbImage(RgbImageSeries { opacity: o, .. }) = &mut self.render_type {
             *o = opacity;
         } else if let Some(fill) = self.cell_fill() {
             fill.opacity = opacity;
@@ -290,14 +298,14 @@ impl SeriesConfig {
     /// series' heads, or a streamline series' arrows.
     pub fn arrow_head(mut self, length: f32, width: f32) -> Self {
         match &mut self.render_type {
-            DataRenderType::Vector { style, .. } => {
+            DataRenderType::Vector(VectorSeries { style, .. }) => {
                 style.head_length_px = length;
                 style.head_width_px = width;
             }
-            DataRenderType::Streamlines {
+            DataRenderType::Streamlines(StreamlineSeries {
                 arrows: Some(arrows),
                 ..
-            } => {
+            }) => {
                 arrows.head_length_px = length;
                 arrows.head_width_px = width;
             }
@@ -308,7 +316,7 @@ impl SeriesConfig {
 
     /// The point of each arrow that sits on its sample.
     pub fn pivot(mut self, pivot: VectorPivot) -> Self {
-        if let DataRenderType::Vector { style, .. } = &mut self.render_type {
+        if let DataRenderType::Vector(VectorSeries { style, .. }) = &mut self.render_type {
             style.pivot = pivot;
         }
         self
@@ -336,8 +344,8 @@ impl SeriesConfig {
     /// Edit the bar style of a category or range bar series (a histogram's
     /// bars take [`Self::bar_border`] and [`Self::bar_gap`]).
     pub fn style_bars(mut self, edit: impl FnOnce(&mut CategoryBarStyle)) -> Self {
-        if let DataRenderType::CategoryBars { style, .. }
-        | DataRenderType::RangeBars { style, .. } = &mut self.render_type
+        if let DataRenderType::CategoryBars(CategoryBarSeries { style, .. })
+        | DataRenderType::RangeBars(RangeBarSeries { style, .. }) = &mut self.render_type
         {
             edit(style);
         }
@@ -347,7 +355,7 @@ impl SeriesConfig {
     /// Edit the glyph style of a vector series: its scale, minimum length,
     /// colour map, head and line.
     pub fn style_vectors(mut self, edit: impl FnOnce(&mut VectorStyle)) -> Self {
-        if let DataRenderType::Vector { style, .. } = &mut self.render_type {
+        if let DataRenderType::Vector(VectorSeries { style, .. }) = &mut self.render_type {
             edit(style);
         }
         self
@@ -368,10 +376,10 @@ impl SeriesConfig {
                 scatter: Some(scatter),
                 ..
             })
-            | DataRenderType::Ternary {
+            | DataRenderType::Ternary(TernarySeries {
                 scatter: Some(scatter),
                 ..
-            } => Some(scatter),
+            }) => Some(scatter),
             _ => None,
         }
     }

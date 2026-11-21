@@ -4,7 +4,7 @@
 # `figgy_bg.wasm`, `figgy.d.ts`.
 [package]
 name = "figgy"
-version = "0.16.0-beta.1"
+version = "0.16.0-beta.2"
 edition = "2024"
 description = "figgy for the browser: the wasm-bindgen wrapper and <figgy-chart> element for the figgy Rust renderer."
 license = "MIT OR Apache-2.0"
@@ -26,7 +26,7 @@ default = []
 wasm-opt = false
 
 [dependencies]
-renderer = { package = "figgy-renderer", path = "../renderer", version = "=0.19.0-beta.1", features = ["serde"] }
+renderer = { package = "figgy-renderer", path = "../renderer", version = "=0.19.0-beta.2", features = ["serde"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 wgpu = "30"
 futures-channel = "0.3"
@@ -44,11 +44,6 @@ web-sys = { version = "0.3", features = [
     "Window",
 ] }
 console_error_panic_hook = "0.1"
-
-[dev-dependencies]
-# The cache-key mutation test compiles the renderer's serde walker
-# (`series_extent_mutation_tests.rs`).
-serde = { version = "1", features = ["derive"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"

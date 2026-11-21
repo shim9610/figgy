@@ -555,16 +555,15 @@ fn a_subplot_document_is_displayed_and_picked_as_one_document() {
     // Point 3 of `s1`: x = 0.7 of -0.5..1, y = 50 of 0..60.
     let px = area.x as f32 + (0.7 + 0.5) / 1.5 * area.width as f32;
     let py = (area.y + area.height) as f32 - 50.0 / 60.0 * area.height as f32;
+    let request = GpuPickRequest {
+        canvas_position_px: [px, py],
+        display_panel_px: fit_display_panel((320, 240), (320, 240)).1,
+        display_scale: scale,
+        max_distance_px: 6.0,
+    };
     let ticket = r
-        .pick_chart(
-            id,
-            GpuPickRequest {
-                canvas_position_px: [px, py],
-                display_panel_px: fit_display_panel((320, 240), (320, 240)).1,
-                display_scale: scale,
-                max_distance_px: 6.0,
-            },
-        )
+        .shown_for_pick(id, &request)
+        .pick_chart(id, request)
         .unwrap();
     let picked = crate::test_gpu::block_on(ticket.resolve())
         .unwrap()
@@ -905,6 +904,17 @@ fn subplot_members_draw_shifted_in_their_own_area() {
     active.set_active_layer(LayerRef::Subplot(0));
     r.enable_gpu_picking().unwrap();
     let id = r.register_chart(active.clone(), host(false)).unwrap();
+    // A registered chart's pick hits only drawn ink (#381): show it once,
+    // as stored, so its on-screen prepare draws the ink masks.
+    let (shown, rect, scale) = r.chart_display_config(id).unwrap();
+    let mut shown_view = r
+        .create_chart_view_at(&Chart::new(shown.into_owned()), rect, scale)
+        .unwrap();
+    r.prepare_registered(&mut [RegisteredChartDrawItem {
+        chart_id: id,
+        view: &mut shown_view,
+    }])
+    .unwrap();
     let panel = active.subplot_config(0).unwrap();
     let da = panel.data_area().unwrap().0;
     // Point 0 of `t1` (x 0.1 on the -0.5..1 axis, y 10) is drawn at 30 on

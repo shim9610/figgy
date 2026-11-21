@@ -46,16 +46,13 @@ fn axis_baseline_ndc(t: Transform, base: vec2<f32>, axis: u32) -> f32 {
         let data_t = select(1.0, 0.0, low == (range > 0.0));
         return fma(data_t, t.data_to_panel_scale[axis], t.data_to_panel_offset[axis]) * 2.0 - 1.0;
     }
-    if (axis == 0u) {
-        if (t.scale_log.x != 0.0 && !(value > 0.0)) {
-            return t.data_to_panel_offset.x * 2.0 - 1.0;
-        }
-        return data_to_ndc(t, base, one).x;
+    if (t.scale_log[axis] != 0.0 && !(value > 0.0)) {
+        return t.data_to_panel_offset[axis] * 2.0 - 1.0;
     }
-    if (t.scale_log.y != 0.0 && !(value > 0.0)) {
-        return t.data_to_panel_offset.y * 2.0 - 1.0;
-    }
-    return data_to_ndc(t, one, base).y;
+    // One `data_to_ndc` call for either axis: a software GPU compiler pays
+    // for every inlined copy (#363).
+    let on_y = axis != 0u;
+    return data_to_ndc(t, select(base, one, on_y), select(one, base, on_y))[axis];
 }
 
 /// A data point in the draw's pixel frame: render pixels from the target's

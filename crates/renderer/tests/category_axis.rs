@@ -11,21 +11,24 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::ShowForPick as _;
+use harness::{fresh_gpu as gpu, upload};
 
-use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba};
+use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at};
 use renderer::config::{
     AxisOptions, Category, DataSelectionsConfig, PickedDataRef, TickVisibility,
 };
-use renderer::data::Column;
 use renderer::format::{LabelFormat, PlainNumberFormat};
 use renderer::layout::{ChartArea, NudgeResult, Rect, RectF, Side, axis_fraction};
 use renderer::sink::{Border, PlacedText, Sink, Slot, StrokeStyle, TextRef};
 use renderer::{
     AxisLabelElement, Chart, Color, ColorBarOptions, Config, CpuTextMeasure, DataRenderType,
     DataScatterStyleConfig, Draggable, GpuPickRequest, HitMap, LayerRef, OverlayLayer, Renderer,
-    RendererDevice, ScatterShape, Selectable, SelectionGeometry, SeriesConfig, Subplot,
+    ScatterShape, Selectable, SelectionGeometry, SeriesConfig, Subplot,
 };
 
 const WIDTH: u32 = 640;
@@ -130,8 +133,10 @@ fn a_categorical_axis_rasterizes_like_its_numeric_twin() {
                 AxisLayerKind::Decoration,
                 AxisLayerKind::All,
             ] {
-                let left = try_raster_chart_layer_to_rgba(&a, layer).unwrap();
-                let right = try_raster_chart_layer_to_rgba(&b, layer).unwrap();
+                let left =
+                    try_raster_chart_layer_to_rgba_with_selection_at(&a, layer, &[], 1.0).unwrap();
+                let right =
+                    try_raster_chart_layer_to_rgba_with_selection_at(&b, layer, &[], 1.0).unwrap();
                 let changed = left
                     .chunks_exact(4)
                     .zip(right.chunks_exact(4))
@@ -145,19 +150,22 @@ fn a_categorical_axis_rasterizes_like_its_numeric_twin() {
     assert_eq!(compared, 12);
     // Crowded: the categorical axis draws labels its twin thins away.
     let (categorical, numeric) = categorical_and_numeric(64, 40);
-    let left = try_raster_chart_layer_to_rgba(&categorical, AxisLayerKind::Decoration).unwrap();
-    let right = try_raster_chart_layer_to_rgba(&numeric, AxisLayerKind::Decoration).unwrap();
+    let left = try_raster_chart_layer_to_rgba_with_selection_at(
+        &categorical,
+        AxisLayerKind::Decoration,
+        &[],
+        1.0,
+    )
+    .unwrap();
+    let right = try_raster_chart_layer_to_rgba_with_selection_at(
+        &numeric,
+        AxisLayerKind::Decoration,
+        &[],
+        1.0,
+    )
+    .unwrap();
     let ink = |px: &[u8]| px.chunks_exact(4).filter(|p| p[3] > 0).count();
     assert!(ink(&left) > ink(&right), "staggered labels add ink");
-}
-
-fn gpu() -> RendererDevice {
-    let (device, queue) = test_gpu::device();
-    RendererDevice::new(device, queue).expect("figgy poll thread")
-}
-
-fn upload(r: &mut Renderer, id: &str, data: Vec<f64>) {
-    r.add_column(id, &Column { data }).unwrap();
 }
 
 fn markers(id: &str, x: &str, y: &str) -> SeriesConfig {
@@ -273,9 +281,14 @@ fn data_on_a_categorical_axis_picks_and_highlights_at_its_category() {
             display_scale: 1.0,
             max_distance_px: 3.0,
         };
-        let picked = test_gpu::block_on(r.pick_chart(id, request).unwrap().resolve())
-            .unwrap()
-            .expect("a marker at its category");
+        let picked = test_gpu::block_on(
+            r.shown(id, &request)
+                .pick_chart(id, request)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap()
+        .expect("a marker at its category");
         assert_eq!((picked.series_id.as_str(), picked.point_index), ("m", i));
     }
 
@@ -461,7 +474,13 @@ fn an_overlay_axis_may_be_categorical() {
     numeric.overlays[0].y_axis.categories = None;
     let drawn = |cfg: &Config| {
         let panel = cfg.expand().unwrap().panels[1].config.clone();
-        try_raster_chart_layer_to_rgba(&panel, AxisLayerKind::Decoration).unwrap()
+        try_raster_chart_layer_to_rgba_with_selection_at(
+            &panel,
+            AxisLayerKind::Decoration,
+            &[],
+            1.0,
+        )
+        .unwrap()
     };
     assert_ne!(drawn(&cfg), drawn(&numeric));
 }
@@ -532,8 +551,9 @@ fn crowded_category_and_log_labels_draw_and_export() {
         for scale in [1.0f32, 2.0] {
             let scaled = cfg.scaled(scale);
             for layer in [AxisLayerKind::Decoration, AxisLayerKind::All] {
-                let rgba = try_raster_chart_layer_to_rgba(&scaled, layer)
-                    .unwrap_or_else(|e| panic!("{name} at {scale}x: {e}"));
+                let rgba =
+                    try_raster_chart_layer_to_rgba_with_selection_at(&scaled, layer, &[], 1.0)
+                        .unwrap_or_else(|e| panic!("{name} at {scale}x: {e}"));
                 assert!(!rgba.is_empty(), "{name} at {scale}x");
             }
             let png = r

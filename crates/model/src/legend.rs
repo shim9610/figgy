@@ -22,7 +22,10 @@
 
 use crate::color::Color;
 use crate::colormap::ColorMap;
-use crate::data_config::{DataRenderType, ScatterShape, SeriesConfig};
+use crate::data_config::{
+    BoxSeries, CategoryBarSeries, DataRenderType, HistogramSeries, ParallelSeries, RangeBarSeries,
+    ScatterShape, SeriesConfig, StreamlineSeries, TernarySeries, VectorSeries,
+};
 use crate::line::LineStylePreset;
 use crate::text::{CharSet, RichSegment, RichText, rich_segments_from_text};
 use std::ops::Range;
@@ -86,19 +89,36 @@ pub fn scatter_shape_char(shape: &ScatterShape) -> char {
 /// marks line up regardless of shape: a lone line, a lone glyph, and a
 /// line-through-glyph all advance the pen by the same fixed field.
 pub const SYMBOL_FIELD_EM: f32 = 2.0;
-const LEGEND_DASH_NOMINAL_FONT_PX: f32 = 14.0;
+/// The legend font size, in px, that series marks are scaled for: a dash
+/// pattern or stroke width of `w` px is stored as `w / 14` em, so the mark
+/// matches its series exactly at the documented 14 px legend and keeps its
+/// proportions at any other legend size.
+const LEGEND_NOMINAL_FONT_PX: f32 = 14.0;
+
+/// The thickest rule a series mark stores, in em: the
+/// [`RichText::within_limits`] bound.
+const MAX_RULE_THICKNESS_EM: f32 = 4.0;
+
+/// The rule thickness, in em, of the mark of a series stroked `width_px`
+/// wide: the stroke at the nominal legend size, and never thinner than the
+/// rule every legend drew before marks took their series' width
+/// ([`crate::text::RULE_THICKNESS_EM`]), so a hairline series keeps a
+/// readable mark.
+fn rule_thickness_em(width_px: f32) -> f32 {
+    let em = if width_px.is_finite() {
+        width_px / LEGEND_NOMINAL_FONT_PX
+    } else {
+        0.0
+    };
+    em.clamp(crate::text::RULE_THICKNESS_EM, MAX_RULE_THICKNESS_EM)
+}
 
 fn rule_dash_em(style: LineStylePreset) -> Option<Vec<f32>> {
     let pattern = style.pattern();
     if pattern.is_empty() {
         None
     } else {
-        Some(
-            pattern
-                .iter()
-                .map(|v| v / LEGEND_DASH_NOMINAL_FONT_PX)
-                .collect(),
-        )
+        Some(pattern.iter().map(|v| v / LEGEND_NOMINAL_FONT_PX).collect())
     }
 }
 
@@ -154,6 +174,64 @@ mod legend_update_tests {
             segs[0].rule_dash.as_deref(),
             Some(&[8.0 / 14.0, 4.0 / 14.0][..])
         );
+    }
+
+    // A line mark is as thick as its series stroke at the nominal 14 px
+    // legend, and never thinner than the legacy rule (#357).
+    #[test]
+    fn line_mark_takes_the_series_stroke_width() {
+        let mut cfg = line_cfg(Color::BLACK, LineStylePreset::Solid);
+        let thickness = |cfg: &SeriesConfig| {
+            let segs = series_symbol_segments(cfg, None);
+            assert!(segs[0].rule);
+            segs[0].rule_thickness_em
+        };
+        let set_width = |cfg: &mut SeriesConfig, width: f32| {
+            if let DataRenderType::Xy(xy) = &mut cfg.render_type {
+                xy.line.as_mut().unwrap().line_width = width;
+            }
+        };
+        // 1 px is thinner than the legacy bar: the legacy bar is kept.
+        assert_eq!(thickness(&cfg), Some(crate::text::RULE_THICKNESS_EM));
+        set_width(&mut cfg, 3.0);
+        assert_eq!(thickness(&cfg), Some(3.0 / 14.0));
+        // The stored value stays inside the document limits.
+        set_width(&mut cfg, 1000.0);
+        assert_eq!(thickness(&cfg), Some(MAX_RULE_THICKNESS_EM));
+        // A dashed series keeps its dash with the new thickness.
+        let mut dashed = line_cfg(Color::BLACK, LineStylePreset::Dash);
+        set_width(&mut dashed, 3.0);
+        let segs = series_symbol_segments(&dashed, None);
+        assert!(segs[0].rule_dash.is_some());
+        assert_eq!(segs[0].rule_thickness_em, Some(3.0 / 14.0));
+        // The builder with no series stores none: the default bar.
+        let plain = symbol_segments(&LegendEntryKind::Line, Color::BLACK);
+        assert_eq!(plain[0].rule_thickness_em, None);
+    }
+
+    // Both rules of a line-and-marker mark take the series stroke width.
+    #[test]
+    fn line_and_marker_rules_take_the_series_stroke_width() {
+        let mut cfg = line_cfg(Color::BLACK, LineStylePreset::Solid);
+        if let DataRenderType::Xy(xy) = &mut cfg.render_type {
+            xy.line.as_mut().unwrap().line_width = 2.8;
+            // A literal, not `Default`: the model's tests also build
+            // without the `helpers` feature (#266).
+            xy.scatter = Some(crate::data_config::DataScatterStyleConfig {
+                point_color: Color::BLACK,
+                point_shape: crate::data_config::ScatterShape::CircleFilled,
+                point_size: 6.0,
+                point_style_table: None,
+                point_style_index_column: None,
+                point_style_overrides: None,
+                point_color_map: None,
+                point_size_map: None,
+            });
+        }
+        let segs = series_symbol_segments(&cfg, None);
+        let rules: Vec<_> = segs.iter().filter(|s| s.rule).collect();
+        assert_eq!(rules.len(), 2);
+        assert!(rules.iter().all(|s| s.rule_thickness_em == Some(0.2)));
     }
 
     #[test]
@@ -239,15 +317,34 @@ mod legend_update_tests {
     }
 }
 
+/// A rule `width_em` long in `color` and `style`, `width_px` thick when
+/// it has a series stroke ([`rule_thickness_em`]), over `band`.
+fn styled_rule(
+    width_em: f32,
+    color: Color,
+    style: LineStylePreset,
+    band: Option<Color>,
+    width_px: Option<f32>,
+) -> RichSegment {
+    match rule_dash_em(style) {
+        Some(dash) => RichSegment::dashed_rule(width_em, Some(color), dash),
+        None => RichSegment::rule(width_em, Some(color)),
+    }
+    .with_rule_thickness(width_px.map(rule_thickness_em))
+    .with_rule_band(band)
+}
+
 /// Line sample: a drawn rule filling the whole symbol field — exact length,
-/// unlike any dash glyph. `band` paints the fill colour under the rule, inside
-/// the same fixed field, for a series that fills the area under its line.
-fn line_symbol(color: Color, style: LineStylePreset, band: Option<Color>) -> Vec<RichSegment> {
-    let seg = match rule_dash_em(style) {
-        Some(dash) => RichSegment::dashed_rule(SYMBOL_FIELD_EM, Some(color), dash),
-        None => RichSegment::rule(SYMBOL_FIELD_EM, Some(color)),
-    };
-    vec![seg.with_rule_band(band)]
+/// unlike any dash glyph — as thick as the series stroke `width_px`.
+/// `band` paints the fill colour under the rule, inside the same fixed
+/// field, for a series that fills the area under its line.
+fn line_symbol(
+    color: Color,
+    style: LineStylePreset,
+    band: Option<Color>,
+    width_px: Option<f32>,
+) -> Vec<RichSegment> {
+    vec![styled_rule(SYMBOL_FIELD_EM, color, style, band, width_px)]
 }
 
 /// Point sample: the shape's glyph centered in the symbol field.
@@ -262,25 +359,16 @@ fn scatter_symbol(shape: &ScatterShape, color: Color) -> Vec<RichSegment> {
 /// Line + point sample: rule — glyph — rule, the three fields summing to
 /// exactly [`SYMBOL_FIELD_EM`] so the combined mark is as long as a lone
 /// line mark.
-fn line_scatter_symbol(shape: &ScatterShape, color: Color) -> Vec<RichSegment> {
-    line_scatter_symbol_with_style(shape, color, LineStylePreset::Solid, None)
-}
-
 fn line_scatter_symbol_with_style(
     shape: &ScatterShape,
     color: Color,
     style: LineStylePreset,
     band: Option<Color>,
+    width_px: Option<f32>,
 ) -> Vec<RichSegment> {
     let glyph_em = 0.7;
     let rule_em = (SYMBOL_FIELD_EM - glyph_em) * 0.5;
-    let rule = |width_em| {
-        match rule_dash_em(style) {
-            Some(dash) => RichSegment::dashed_rule(width_em, Some(color), dash),
-            None => RichSegment::rule(width_em, Some(color)),
-        }
-        .with_rule_band(band)
-    };
+    let rule = |width_em| styled_rule(width_em, color, style, band, width_px);
     vec![
         rule(rule_em),
         RichSegment::fielded(scatter_shape_char(shape), glyph_em, Some(color)),
@@ -288,12 +376,14 @@ fn line_scatter_symbol_with_style(
     ]
 }
 
-/// Arrow sample: a rule for the shaft and the right-pointing head glyph, the
-/// two fields summing to exactly [`SYMBOL_FIELD_EM`] like the other marks.
-fn vector_symbol(color: Color) -> Vec<RichSegment> {
+/// Arrow sample: a rule for the shaft, as thick as the series' shaft
+/// `width_px`, and the right-pointing head glyph, the two fields summing to
+/// exactly [`SYMBOL_FIELD_EM`] like the other marks.
+fn vector_symbol(color: Color, width_px: f32) -> Vec<RichSegment> {
     let glyph_em = 0.6;
     vec![
-        RichSegment::rule(SYMBOL_FIELD_EM - glyph_em, Some(color)),
+        RichSegment::rule(SYMBOL_FIELD_EM - glyph_em, Some(color))
+            .with_rule_thickness(Some(rule_thickness_em(width_px))),
         RichSegment::fielded(
             scatter_shape_char(&ScatterShape::TriangleRightFilled),
             glyph_em,
@@ -304,12 +394,20 @@ fn vector_symbol(color: Color) -> Vec<RichSegment> {
 
 /// Symbol segments for the convenience-builder [`LegendEntryKind`]: each
 /// segment carries `color: Some(color)` so the mark keeps the series color
-/// independent of the document-level text color.
+/// independent of the document-level text color. No series stroke is known
+/// here, so a line rule stores no thickness and draws the default
+/// [`crate::text::RULE_THICKNESS_EM`].
 pub fn symbol_segments(kind: &LegendEntryKind, color: Color) -> Vec<RichSegment> {
     match kind {
-        LegendEntryKind::Line => line_symbol(color, LineStylePreset::Solid, None),
+        LegendEntryKind::Line => line_symbol(color, LineStylePreset::Solid, None, None),
         LegendEntryKind::Scatter => scatter_symbol(&ScatterShape::CircleFilled, color),
-        LegendEntryKind::LineScatter => line_scatter_symbol(&ScatterShape::CircleFilled, color),
+        LegendEntryKind::LineScatter => line_scatter_symbol_with_style(
+            &ScatterShape::CircleFilled,
+            color,
+            LineStylePreset::Solid,
+            None,
+            None,
+        ),
     }
 }
 
@@ -368,7 +466,12 @@ fn series_mark(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegme
             scatter: None,
             line: Some(line),
             ..
-        }) => line_symbol(line.line_color, line.line_style, line_fill_band(line)),
+        }) => line_symbol(
+            line.line_color,
+            line.line_style,
+            line_fill_band(line),
+            Some(line.line_width),
+        ),
         // Neither markers nor a line: nothing is drawn, so nothing stands
         // for it (`XySeries::validate` refuses it).
         DataRenderType::Xy(crate::data_config::XySeries {
@@ -378,7 +481,7 @@ fn series_mark(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegme
         }) => blank_symbol(),
         // A bar reads as a filled swatch; the glyph is already in the shape
         // table, so no new symbol machinery.
-        DataRenderType::Histogram { bar } => {
+        DataRenderType::Histogram(HistogramSeries { bar }) => {
             scatter_symbol(&ScatterShape::SquareFilled, bar.fill_color)
         }
         // Contour lines are lines. When a fill is under them the line is still
@@ -386,7 +489,12 @@ fn series_mark(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegme
         DataRenderType::Field(crate::data_config::FieldSeries {
             contour: Some(contour),
             ..
-        }) => line_symbol(contour.line.line_color, contour.line.line_style, None),
+        }) => line_symbol(
+            contour.line.line_color,
+            contour.line.line_style,
+            None,
+            Some(contour.line.line_width),
+        ),
         DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. }) => {
             colormap.map_or_else(blank_symbol, colormap_symbol)
         }
@@ -395,63 +503,82 @@ fn series_mark(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegme
         DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries {
             contour: Some(contour),
             ..
-        }) => line_symbol(contour.line.line_color, contour.line.line_style, None),
+        }) => line_symbol(
+            contour.line.line_color,
+            contour.line.line_style,
+            None,
+            Some(contour.line.line_width),
+        ),
         DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries { contour: None, .. }) => {
             colormap.map_or_else(blank_symbol, colormap_symbol)
         }
         // An image's colours are its data: no mark stands for them.
-        DataRenderType::RgbImage { .. } => blank_symbol(),
+        DataRenderType::RgbImage(_) => blank_symbol(),
         // A level reads as its stroke (#203).
-        DataRenderType::EnergyLevels(levels) => {
-            line_symbol(levels.style.level.color, LineStylePreset::Solid, None)
-        }
+        DataRenderType::EnergyLevels(levels) => line_symbol(
+            levels.style.level.color,
+            LineStylePreset::Solid,
+            None,
+            Some(levels.style.level.width),
+        ),
         // A diagram reads as its line (#234).
-        DataRenderType::Feynman(diagram) => {
-            line_symbol(diagram.style.color, LineStylePreset::Solid, None)
-        }
+        DataRenderType::Feynman(diagram) => line_symbol(
+            diagram.style.color,
+            LineStylePreset::Solid,
+            None,
+            Some(diagram.style.width),
+        ),
         // A monotonic channel reads as its line (#271).
-        DataRenderType::MonotonicLine(series) => {
-            line_symbol(series.line.line_color, series.line.line_style, None)
-        }
+        DataRenderType::MonotonicLine(series) => line_symbol(
+            series.line.line_color,
+            series.line.line_style,
+            None,
+            Some(series.line.line_width),
+        ),
         // An arrow: a rule for the shaft and the right-pointing head glyph,
         // in the series colour. A colour map's colours belong to the colourbar.
-        DataRenderType::Vector { style, .. } => vector_symbol(style.color),
+        DataRenderType::Vector(VectorSeries { style, .. }) => {
+            vector_symbol(style.color, style.width_px)
+        }
         // Streamlines read as their line; with arrowheads, as an arrow in
         // the line colour. A colour map's colours belong to the colourbar.
-        DataRenderType::Streamlines { line, arrows, .. } => match arrows {
-            Some(_) => vector_symbol(line.line_color),
-            None => line_symbol(line.line_color, line.line_style, None),
+        DataRenderType::Streamlines(StreamlineSeries { line, arrows, .. }) => match arrows {
+            Some(_) => vector_symbol(line.line_color, line.line_width),
+            None => line_symbol(
+                line.line_color,
+                line.line_style,
+                None,
+                Some(line.line_width),
+            ),
         },
         // A parallel series reads as its rows' line; a colour column's
         // colours belong to the colourbar.
-        DataRenderType::Parallel { line, .. } => {
-            line_symbol(line.line_color, line.line_style, None)
-        }
+        DataRenderType::Parallel(ParallelSeries { line, .. }) => line_symbol(
+            line.line_color,
+            line.line_style,
+            None,
+            Some(line.line_width),
+        ),
         // A category bar is a filled swatch like a histogram bar.
-        DataRenderType::CategoryBars { color, .. } => {
+        DataRenderType::CategoryBars(CategoryBarSeries { color, .. }) => {
             scatter_symbol(&ScatterShape::SquareFilled, *color)
         }
         // A box is a filled swatch in the box colour, like a bar.
-        DataRenderType::BoxPlot { color, .. } => {
+        DataRenderType::BoxPlot(BoxSeries { color, .. }) => {
             scatter_symbol(&ScatterShape::SquareFilled, *color)
         }
         // A range bar is a filled swatch in the series colour, like a bar;
         // direction and state colours are read from the bars.
-        DataRenderType::RangeBars { color, .. } => {
+        DataRenderType::RangeBars(RangeBarSeries { color, .. }) => {
             scatter_symbol(&ScatterShape::SquareFilled, *color)
+        }
+        // A dependency link reads as the line it is drawn with (#357).
+        DataRenderType::RangeLinks(links) => {
+            line_symbol(links.color, LineStylePreset::Solid, None, Some(links.width))
         }
         // A radar series reads as the line it is drawn with: its outline
         // over its fill band, with its vertex marker when it has one.
-        DataRenderType::Radar {
-            color,
-            style,
-            labels,
-        } => {
-            let radar = crate::data_config::RadarRef {
-                color: *color,
-                style,
-                labels,
-            };
+        DataRenderType::Radar(radar) => {
             let line = radar.line_style();
             let band = line_fill_band(&line);
             match radar.scatter_style() {
@@ -460,8 +587,14 @@ fn series_mark(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegme
                     radar.color,
                     LineStylePreset::Solid,
                     band,
+                    Some(line.line_width),
                 ),
-                None => line_symbol(radar.color, LineStylePreset::Solid, band),
+                None => line_symbol(
+                    radar.color,
+                    LineStylePreset::Solid,
+                    band,
+                    Some(line.line_width),
+                ),
             }
         }
         DataRenderType::Xy(crate::data_config::XySeries {
@@ -478,16 +611,17 @@ fn series_mark(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegme
             line.line_color,
             line.line_style,
             line_fill_band(line),
+            Some(line.line_width),
         ),
         // A ternary series reads as what it draws: markers, a line, or both,
         // over its region fill's band when it has one; a fill alone is a
         // band under an invisible rule.
-        DataRenderType::Ternary {
+        DataRenderType::Ternary(TernarySeries {
             scatter,
             line,
             region,
             ..
-        } => {
+        }) => {
             let band = region.as_ref().map(|region| {
                 let [r, g, b, a] = region.color_premul();
                 if a > 0.0 {
@@ -502,9 +636,15 @@ fn series_mark(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegme
                     line.line_color,
                     line.line_style,
                     band,
+                    Some(line.line_width),
                 ),
                 (Some(scatter), None) => scatter_symbol(&scatter.point_shape, scatter.point_color),
-                (None, Some(line)) => line_symbol(line.line_color, line.line_style, band),
+                (None, Some(line)) => line_symbol(
+                    line.line_color,
+                    line.line_style,
+                    band,
+                    Some(line.line_width),
+                ),
                 (None, None) => match band {
                     Some(band) => {
                         vec![
@@ -1085,7 +1225,7 @@ mod tests {
     }
 
     fn bar(color: Color) -> DataRenderType {
-        DataRenderType::Histogram {
+        DataRenderType::Histogram(HistogramSeries {
             bar: crate::data_config::DataBarStyleConfig {
                 fill_color: color,
                 border_color: Color::BLACK,
@@ -1096,7 +1236,7 @@ mod tests {
                 orientation: crate::data_config::BarOrientation::Vertical,
                 bar_style_overrides: None,
             },
-        }
+        })
     }
 
     fn contour(color: Color) -> crate::data_config::ContourConfig {

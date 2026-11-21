@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use swash::FontRef;
 
-use super::{PathPaint, VectorOut};
+use super::{PathPaint, VectorOut, segment_is_finite};
 use crate::color::Color;
 use crate::error::Result;
 use crate::layout::Rect;
@@ -130,17 +130,9 @@ fn push_segment(out: &mut String, segment: PathSegment) {
     }
 }
 
-fn segment_is_finite(segment: &PathSegment) -> bool {
-    let f = |p: &(f32, f32)| p.0.is_finite() && p.1.is_finite();
-    match segment {
-        PathSegment::Move(p) | PathSegment::Line(p) => f(p),
-        PathSegment::Cubic(a, b, c) => f(a) && f(b) && f(c),
-        PathSegment::Close => true,
-    }
-}
-
-/// Glyph definitions: face, size bits and glyph id to the `<defs>` id.
-type GlyphKey = (swash::CacheKey, u32, u16);
+/// Glyph definitions: face, size bits, glyph id and hinting to the `<defs>`
+/// id.
+type GlyphKey = (swash::CacheKey, u32, u16, bool);
 
 /// An opaque stroke's paint: colour, width and dash, compared bit for bit.
 #[derive(Clone, Copy, PartialEq)]
@@ -243,8 +235,8 @@ impl SvgOut {
     }
 
     /// The `<defs>` id of a glyph's outline, written on first use.
-    fn glyph_id(&mut self, font: FontRef<'static>, glyph: u16, size: f32) -> u32 {
-        let key = (font.key, size.to_bits(), glyph);
+    fn glyph_id(&mut self, font: FontRef<'static>, glyph: u16, size: f32, hint: bool) -> u32 {
+        let key = (font.key, size.to_bits(), glyph, hint);
         if let Some(id) = self.glyphs.get(&key) {
             return *id;
         }
@@ -252,7 +244,7 @@ impl SvgOut {
         self.glyphs.insert(key, id);
         put(&mut self.defs, format_args!("<path id=\"g{id}\" d=\""));
         let defs = &mut self.defs;
-        crate::text_render::glyph_outline(font, glyph, size, &mut |segment| {
+        crate::text_render::glyph_outline(font, glyph, size, hint, &mut |segment| {
             if segment_is_finite(&segment) {
                 push_segment(defs, segment);
             }
@@ -368,13 +360,15 @@ impl VectorOut for SvgOut {
         font: FontRef<'static>,
         glyph: u16,
         size: f32,
+        hint: bool,
         pen: [f32; 2],
         color: Color,
+        outline: Option<(Color, f32)>,
     ) {
         if !(pen[0].is_finite() && pen[1].is_finite() && size.is_finite() && size > 0.0) {
             return;
         }
-        let id = self.glyph_id(font, glyph, size);
+        let id = self.glyph_id(font, glyph, size, hint);
         let svg = &mut self.svg;
         put(svg, format_args!("<use xlink:href=\"#g{id}\" x=\""));
         push_num(svg, pen[0]);
@@ -384,6 +378,16 @@ impl VectorOut for SvgOut {
         push_color(svg, color);
         svg.push('"');
         push_opacity(svg, "fill-opacity", color);
+        // The outline (#357): a stroke painted under the fill.
+        if let Some((stroke, width)) = outline.filter(|(_, w)| w.is_finite() && *w > 0.0) {
+            svg.push_str(" stroke=\"");
+            push_color(svg, stroke);
+            svg.push('"');
+            push_opacity(svg, "stroke-opacity", stroke);
+            svg.push_str(" stroke-width=\"");
+            push_num(svg, width);
+            svg.push_str("\" stroke-linejoin=\"round\" paint-order=\"stroke\"");
+        }
         svg.push_str("/>\n");
     }
 

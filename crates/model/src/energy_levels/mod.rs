@@ -318,6 +318,13 @@ pub struct Transition {
     /// overlap.
     #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_zero"))]
     pub x_offset: f32,
+    /// The arrow's colour, set by the host (#357). It wins over the
+    /// wavelength and value mappings and over the style's colour.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub color: Option<Color>,
     /// The line's wavelength, in the unit the host names where it draws
     /// one ([`WavelengthLabels::unit`], a text annotation): the NIST
     /// column the host chose (`obs_wl`, `ritz_wl`, in air or vacuum). The
@@ -538,6 +545,119 @@ pub struct TransitionArrowStyle {
     /// `Config.colorbar`; a transition without a value keeps `color`.
     #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
     pub color_by_value: bool,
+    /// Break every shaft where it passes under a drawn transition label's
+    /// glyph ink, each glyph's tight box grown by 1.5 px (#357), so the
+    /// label reads clean where it sits on an arrow: a gap in the stroke,
+    /// not a halo. A shaft across the label's empty corners stays whole. The arrowheads are not cut. Off for
+    /// a document that omits it; the Grotrian look turns it on.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
+    pub label_knockout: bool,
+    /// Colour each arrow by its transition's `wavelength` (#357): the
+    /// spectral colour inside the visible band, the UV or IR colour outside
+    /// it. The wavelength is converted for the mapping only and never
+    /// rewritten. `None` maps nothing.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub color_by_wavelength: Option<SpectralColors>,
+}
+
+/// How [`TransitionArrowStyle::color_by_wavelength`] colours an arrow by
+/// its wavelength (#357). Inside the visible band, 380 to 750 nm after
+/// converting from `unit`, an arrow takes the spectral colour of its
+/// wavelength (the standard piecewise wavelength-to-sRGB approximation,
+/// with gamma 0.8 and the intensity falling off over 380 to 420 and 700 to
+/// 750 nm); below the band it takes `ultraviolet`, above it `infrared`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SpectralColors {
+    /// The unit the transitions' `wavelength` values are written in.
+    pub unit: WavelengthUnit,
+    /// The colour of a line below 380 nm.
+    pub ultraviolet: Color,
+    /// The colour of a line above 750 nm.
+    pub infrared: Color,
+}
+
+/// The unit of a transition's `wavelength` for
+/// [`SpectralColors`] (#357).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum WavelengthUnit {
+    /// Nanometres.
+    Nm,
+    /// Ångström (0.1 nm).
+    Angstrom,
+    /// Micrometres (1000 nm).
+    Um,
+}
+
+impl WavelengthUnit {
+    /// `value` in this unit, in nanometres.
+    pub fn to_nm(self, value: f64) -> f64 {
+        match self {
+            WavelengthUnit::Nm => value,
+            WavelengthUnit::Angstrom => value / 10.0,
+            WavelengthUnit::Um => value * 1000.0,
+        }
+    }
+}
+
+impl SpectralColors {
+    /// The first and last wavelengths of the visible band, nm.
+    pub const VISIBLE_NM: (f64, f64) = (380.0, 750.0);
+
+    /// The colour of a line of `wavelength` (in [`Self::unit`]), or `None`
+    /// when the wavelength is not finite.
+    pub fn color(&self, wavelength: f64) -> Option<Color> {
+        if !wavelength.is_finite() {
+            return None;
+        }
+        let nm = self.unit.to_nm(wavelength);
+        let (low, high) = Self::VISIBLE_NM;
+        if nm < low {
+            return Some(self.ultraviolet);
+        }
+        if nm > high {
+            return Some(self.infrared);
+        }
+        Some(spectral_rgb(nm))
+    }
+}
+
+/// The sRGB colour of visible light of wavelength `nm` (380 to 750): the
+/// standard piecewise approximation (after D. Bruton) with gamma 0.8 and an
+/// intensity that falls off toward both ends of the band.
+fn spectral_rgb(nm: f64) -> Color {
+    let (r, g, b) = match nm {
+        w if w < 440.0 => (-(w - 440.0) / (440.0 - 380.0), 0.0, 1.0),
+        w if w < 490.0 => (0.0, (w - 440.0) / (490.0 - 440.0), 1.0),
+        w if w < 510.0 => (0.0, 1.0, -(w - 510.0) / (510.0 - 490.0)),
+        w if w < 580.0 => ((w - 510.0) / (580.0 - 510.0), 1.0, 0.0),
+        w if w < 645.0 => (1.0, -(w - 645.0) / (645.0 - 580.0), 0.0),
+        _ => (1.0, 0.0, 0.0),
+    };
+    let intensity = if nm < 420.0 {
+        0.3 + 0.7 * (nm - 380.0) / (420.0 - 380.0)
+    } else if nm > 700.0 {
+        0.3 + 0.7 * (750.0 - nm) / (750.0 - 700.0)
+    } else {
+        1.0
+    };
+    let channel = |c: f64| {
+        if c <= 0.0 {
+            0.0
+        } else {
+            (c * intensity).powf(0.8) as f32
+        }
+    };
+    Color {
+        r: channel(r),
+        g: channel(g),
+        b: channel(b),
+        a: 1.0,
+    }
 }
 
 /// Which end of a transition arrow carries the head.
@@ -646,13 +766,17 @@ fn rich_ok(text: &Option<RichText>) -> bool {
         .is_none_or(|t| t.validate_math().is_ok() && t.within_limits())
 }
 
-fn offset_ok(offset: [f32; 2]) -> bool {
+/// Whether both components of a label offset are finite and within
+/// [`MAX_VALUE_LABEL_OFFSET`]. Shared with the Feynman diagram's checks.
+pub(crate) fn offset_ok(offset: [f32; 2]) -> bool {
     offset
         .iter()
         .all(|v| v.is_finite() && v.abs() <= MAX_VALUE_LABEL_OFFSET)
 }
 
-fn color_ok(color: Color) -> bool {
+/// Whether every channel of `color` is finite and within 0..=1. Shared
+/// with the Feynman diagram's checks.
+pub(crate) fn color_ok(color: Color) -> bool {
     [color.r, color.g, color.b, color.a]
         .iter()
         .all(|c| c.is_finite() && (0.0..=1.0).contains(c))
@@ -1029,14 +1153,15 @@ impl crate::config::Config {
             if levels.source.as_deref() == Some(item.series_id.as_str()) {
                 return Err(crate::RuleKind::EnergyLevelsSelfSource);
             }
-            if self.polar().is_some()
-                || self.ternary().is_some()
-                || self.parallel().is_some()
-                || self.view_3d().is_some()
+            let chart = self.series_chart(&item.series_id);
+            if chart.polar().is_some()
+                || chart.ternary().is_some()
+                || chart.parallel().is_some()
+                || chart.view_3d().is_some()
             {
                 return Err(crate::RuleKind::EnergyLevelsChart);
             }
-            if self.bottom_x.categories.is_none() {
+            if chart.bottom_x.categories.is_none() {
                 return Err(crate::RuleKind::EnergyLevelsCategoricalX);
             }
         }
@@ -1578,6 +1703,7 @@ mod tests {
             label_offset: [0.0; 2],
             value: None,
             x_offset: 0.0,
+            color: None,
             wavelength: None,
             wavelength_uncertainty: None,
             intensity: String::new(),
@@ -1674,6 +1800,27 @@ mod tests {
     }
 
     #[test]
+    fn a_subplot_draws_energy_levels_on_its_own_categorical_axis() {
+        // A Cartesian root with a numeric X axis, a categorical subplot
+        // drawing the series (#325).
+        let mut root = crate::defaults::config();
+        let mut cell = chart();
+        cell.chart_area = root.chart_area.clone();
+        root.subplots.push(crate::layer::Subplot {
+            config: cell,
+            series: vec!["he".into()],
+            ..crate::defaults::subplot()
+        });
+        assert!(root.bottom_x.categories.is_none());
+        assert_eq!(root.validate_series(&[series("he", helium())]), Ok(()));
+        // A series the root draws is still held to the root's axis.
+        assert_eq!(
+            root.validate_energy_levels(&[series("other", helium())]),
+            Err(crate::RuleKind::EnergyLevelsCategoricalX)
+        );
+    }
+
+    #[test]
     fn a_helium_series_validates_on_a_categorical_chart() {
         let config = chart();
         assert_eq!(config.validate_series(&[series("he", helium())]), Ok(()));
@@ -1752,6 +1899,42 @@ mod tests {
             ));
         }
         assert_eq!(chart().validate_series(&[series("big", levels)]), Ok(()));
+    }
+
+    // #357: a host-built series starts with the Grotrian look and writes
+    // it in full; a document that omits its style still reads the earlier
+    // default, so older documents draw as they did.
+    #[cfg(all(feature = "serde", feature = "helpers"))]
+    #[test]
+    fn a_host_built_series_writes_its_look_and_older_documents_keep_theirs() {
+        let built = EnergyLevelSeries::default();
+        assert_eq!(built.style.level.width, 3.0);
+        assert_eq!(built.style.transition.width, 2.25);
+        let arrow = &built.style.transition;
+        assert_eq!((arrow.head_length, arrow.head_width), (13.0, 10.0));
+        assert_eq!(built.style.limit.width, 2.0);
+        assert_eq!(built.style.validate(), Ok(()));
+        let item = series(
+            "he",
+            EnergyLevelSeries {
+                levels: helium().levels,
+                ..built
+            },
+        );
+        let json = serde_json::to_value(&item).unwrap();
+        let body = &json["render_type"]["EnergyLevels"];
+        assert_eq!(body["style"]["level"]["width"], 3.0);
+        let back: SeriesConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(back, item);
+        // An older document without a style reads the serde default.
+        let older = serde_json::to_value(series("he", helium())).unwrap();
+        assert!(older["render_type"]["EnergyLevels"].get("style").is_none());
+        let older: SeriesConfig = serde_json::from_value(older).unwrap();
+        let DataRenderType::EnergyLevels(older) = older.render_type else {
+            panic!("an energy-level series");
+        };
+        assert_eq!(older.style, crate::defaults::energy_level_style());
+        assert_eq!(older.style.level.width, 2.0);
     }
 
     #[cfg(feature = "serde")]
@@ -1999,6 +2182,7 @@ mod wavelength_label_tests {
             label_offset: [0.0; 2],
             value: None,
             x_offset: 0.0,
+            color: None,
             wavelength,
             wavelength_uncertainty: None,
             intensity: String::new(),
@@ -2107,6 +2291,56 @@ mod wavelength_label_tests {
             None
         );
         assert_eq!(t.drawn_label(None), None);
+    }
+
+    // A limit label sits above its line, or below it when above would
+    // leave the plot (#357): it is never clipped, and level labels keep
+    // clear of it.
+    #[test]
+    fn a_limit_label_stays_inside_the_plot() {
+        let space = space();
+        let categories = [Category::new("a", "a"), Category::new("b", "b")];
+        let placement = LevelPlacement {
+            space: &space,
+            categories: &categories,
+            view: LevelView::Main,
+            colorbar: None,
+            picked: None,
+        };
+        let plot = space.plot;
+        let limit = |energy: f64| IonizationLimit {
+            id: "lim".into(),
+            energy,
+            label: Some(RichText::plain("He II 24.587 eV", Color::BLACK, 16.0, "")),
+            label_offset: [0.0; 2],
+            uncertainty: None,
+            reference: String::new(),
+        };
+        let mut records = records();
+        let style = records.style.clone();
+        let rect = |records: &EnergyLevelSeries| {
+            let layout = placement.layout(records, &style, &Fixed);
+            placement
+                .label(records, &style, &layout, LabelPart::Limit, 0, &Fixed)
+                .expect("a limit label")
+                .rect()
+        };
+        let line_y = |energy: f64| {
+            space
+                .value_to_px(crate::annotation::AnnotationAxis::Y, energy)
+                .unwrap()
+        };
+        // Room above: the label sits on the line.
+        records.limits = vec![limit(12.0)];
+        let above = rect(&records);
+        assert!(above.y + above.height <= line_y(12.0));
+        // The line at the top of the range: the label hangs below it,
+        // inside the plot.
+        records.limits = vec![limit(24.9)];
+        let below = rect(&records);
+        assert!(below.y >= line_y(24.9), "{below:?}");
+        assert!(below.y >= plot.y && below.y + below.height <= plot.y + plot.height);
+        assert_eq!(below.x, above.x, "right-aligned either way");
     }
 
     #[test]
@@ -2671,5 +2905,50 @@ mod inset_marker_tests {
             let back: Subplot = serde_json::from_str(&json).unwrap();
             assert_eq!(back.marker, config.subplots[0].marker);
         }
+    }
+}
+
+#[cfg(test)]
+mod spectral_tests {
+    use super::*;
+
+    fn colors(unit: WavelengthUnit) -> SpectralColors {
+        SpectralColors {
+            unit,
+            ultraviolet: Color::from_rgb8(1, 2, 3),
+            infrared: Color::from_rgb8(4, 5, 6),
+        }
+    }
+
+    // #357: the visible band maps to its spectral colours, the band's ends
+    // fall off, the UV and IR colours stand outside it, and every unit
+    // converts to nanometres for the mapping only.
+    #[test]
+    fn wavelengths_map_to_spectral_colours() {
+        let nm = colors(WavelengthUnit::Nm);
+        let blue = nm.color(450.0).unwrap();
+        assert!(blue.b > 0.9 && blue.r < 0.1, "{blue:?}");
+        let green = nm.color(530.0).unwrap();
+        assert!(green.g > 0.9 && green.b < 0.1, "{green:?}");
+        let red = nm.color(650.0).unwrap();
+        assert!(red.r > 0.9 && red.g < 0.1 && red.b < 0.1, "{red:?}");
+        let edge = nm.color(745.0).unwrap();
+        assert!(
+            edge.r < red.r && edge.r > 0.0,
+            "the red end falls off: {edge:?}"
+        );
+        let violet = nm.color(385.0).unwrap();
+        assert!(
+            violet.b < 1.0 && violet.r > 0.0,
+            "the violet end falls off: {violet:?}"
+        );
+        assert_eq!(nm.color(300.0), Some(nm.ultraviolet));
+        assert_eq!(nm.color(811.5), Some(nm.infrared));
+        assert_eq!(nm.color(f64::NAN), None);
+        assert_eq!(
+            colors(WavelengthUnit::Angstrom).color(5875.6),
+            nm.color(587.56)
+        );
+        assert_eq!(colors(WavelengthUnit::Um).color(0.58756), nm.color(587.56));
     }
 }

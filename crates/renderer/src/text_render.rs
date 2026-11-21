@@ -262,6 +262,11 @@ struct FontRegistry {
     fonts: ArcSwap<RegisteredFonts>,
     /// Exact font bytes to the families their first registration reported.
     /// Held only while registering, which also serializes registrations.
+    ///
+    /// This lock is the one approved exception to rule 4 (no lock-based
+    /// synchronization; maintainer decision in #160, 2026-11-15). It is held
+    /// only inside [`register_font_bytes`]; lookups read the `fonts`
+    /// `ArcSwap` snapshot and never take it.
     registered: Mutex<HashMap<&'static [u8], Vec<String>>>,
 }
 
@@ -682,8 +687,12 @@ struct GlyphMask {
 /// variant, a stretchy piece, a script alternate) shares the caches; the
 /// character entry points map through the face's charmap first.
 type MetricsKey = (swash::CacheKey, u32, u16);
-/// Mask key: metrics key + horizontal subpixel bin (quarter-pixel phases).
-type MaskKey = (swash::CacheKey, u32, u16, u8);
+/// Mask key: face, size, glyph, horizontal subpixel bin (quarter-pixel
+/// phases) and hinting.
+/// A glyph mask's key: face, size bits, glyph, quarter-pixel phase,
+/// hinting, and the outline stroke width in render pixels as bits (#357;
+/// `0` for the plain fill).
+type MaskKey = (swash::CacheKey, u32, u16, u8, bool, u32);
 
 /// The largest glyph size in pixels the raster draws. A glyph mask holds
 /// about `size²` bytes, so this bounds one mask at about 16 MiB; a larger
@@ -750,6 +759,32 @@ fn font_hinting(font: FontRef<'static>, size: f32) -> bool {
     !is_handwritten(font) && size <= HINT_MAX_SIZE_PX
 }
 
+/// Whether a glyph of `font` drawn at `size` pixels, in a drawing of
+/// `pixel_scale` pixels per logical pixel, is hinted when painted (#357):
+/// the one decision every raster and outline of a glyph reads. Grid
+/// fitting is per pixel grid, so a glyph hinted at two scales snaps
+/// differently at each and a 2x drawing would not be the 1x drawing
+/// scaled. Glyphs are therefore hinted only in a 1x drawing: base text up
+/// to [`HINT_MAX_SIZE_PX`] ([`font_hinting`]); a glyph at a script
+/// position (`script`: a superscript or subscript segment, or a math leaf
+/// in script or scriptscript style) never. Every other scale draws
+/// unhinted outlines. Hinting changes pixels only: every measurement the
+/// layout reads (advances and ink extents) is unhinted
+/// ([`glyph_extents_id`]), so positions are the same at every scale.
+pub(crate) fn glyph_hinting(
+    font: FontRef<'static>,
+    size: f32,
+    pixel_scale: f32,
+    script: bool,
+) -> bool {
+    // The tolerance test draws the earlier, hinted scripts beside these.
+    #[cfg(test)]
+    if tests::SCRIPTS_HINTED.with(std::cell::Cell::get) {
+        return font_hinting(font, size);
+    }
+    pixel_scale == 1.0 && !script && font_hinting(font, size)
+}
+
 /// Synthetic embolden strength (px) for the handwritten face — ~2% of the
 /// font size, i.e. ≈0.4 px at typical label sizes.
 fn font_embolden(font: FontRef<'static>, size: f32) -> f32 {
@@ -773,11 +808,9 @@ fn glyph_extents_id(font: FontRef<'static>, size: f32, glyph: u16) -> GlyphExten
     let advance = font.glyph_metrics(&[]).scale(size).advance_width(glyph);
     let (ink_top, ink_bottom, ink_left, ink_right) = SCALE_CTX.with(|cx| {
         let mut cx = cx.borrow_mut();
-        let mut scaler = cx
-            .builder(font)
-            .size(size)
-            .hint(font_hinting(font, size))
-            .build();
+        // Unhinted: the layout's measurement does not depend on the grid
+        // a scale fits glyphs to (#357); hinting changes pixels only.
+        let mut scaler = cx.builder(font).size(size).hint(false).build();
         match scaler.scale_outline(glyph) {
             // zeno bounds are y-up; flip into the y-down baseline convention.
             Some(outline) => {
@@ -809,11 +842,29 @@ fn glyph_extents_id(font: FontRef<'static>, size: f32, glyph: u16) -> GlyphExten
 /// subpixel offset is baked into the rasterization instead of resampling the
 /// finished mask, which is what kept text crisp under skia. A size above
 /// [`MAX_GLYPH_PX`] (or not a number) is an error, nothing is rasterized.
+#[cfg(test)]
 fn with_glyph_mask_id(
     font: FontRef<'static>,
     size: f32,
     glyph: u16,
     xbin: u8,
+    hint: bool,
+    use_mask: impl FnOnce(&GlyphMask),
+) -> crate::Result<()> {
+    with_glyph_mask_stroked(font, size, glyph, xbin, hint, 0.0, use_mask)
+}
+
+/// [`with_glyph_mask_id`] for the glyph stroked `stroke` render pixels wide
+/// along its outline (#357), centred on its edge; `0` is the plain fill.
+/// The stroked mask has its own cache key.
+#[allow(clippy::too_many_arguments)]
+fn with_glyph_mask_stroked(
+    font: FontRef<'static>,
+    size: f32,
+    glyph: u16,
+    xbin: u8,
+    hint: bool,
+    stroke: f32,
     use_mask: impl FnOnce(&GlyphMask),
 ) -> crate::Result<()> {
     if !(size <= MAX_GLYPH_PX) {
@@ -822,22 +873,35 @@ fn with_glyph_mask_id(
             kind: crate::RuleKind::GlyphTooLarge,
         });
     }
-    let key = (font.key, size.to_bits(), glyph, xbin);
+    let stroke = if stroke.is_finite() && stroke > 0.0 {
+        stroke
+    } else {
+        0.0
+    };
+    let key = (
+        font.key,
+        size.to_bits(),
+        glyph,
+        xbin,
+        hint,
+        stroke.to_bits(),
+    );
     MASK_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if !cache.masks.contains_key(&key) {
             let mask = SCALE_CTX.with(|cx| {
                 let mut cx = cx.borrow_mut();
-                let mut scaler = cx
-                    .builder(font)
-                    .size(size)
-                    .hint(font_hinting(font, size))
-                    .build();
+                let mut scaler = cx.builder(font).size(size).hint(hint).build();
                 let mut render = Render::new(&[Source::Outline]);
                 render.offset(swash::zeno::Vector::new(xbin as f32 * 0.25, 0.0));
                 let embolden = font_embolden(font, size);
                 if embolden > 0.0 {
                     render.embolden(embolden);
+                }
+                let mut style = swash::zeno::Stroke::new(stroke);
+                style.join(swash::zeno::Join::Round);
+                if stroke > 0.0 {
+                    render.style(&style);
                 }
                 render.render(&mut scaler, glyph).and_then(|image| {
                     let p = image.placement;
@@ -875,17 +939,14 @@ pub(crate) fn glyph_outline(
     font: FontRef<'static>,
     glyph: u16,
     size: f32,
+    hint: bool,
     out: &mut dyn FnMut(crate::sketch::PathSegment),
 ) {
     use crate::sketch::PathSegment;
     use swash::zeno::Verb;
     SCALE_CTX.with(|cx| {
         let mut cx = cx.borrow_mut();
-        let mut scaler = cx
-            .builder(font)
-            .size(size)
-            .hint(font_hinting(font, size))
-            .build();
+        let mut scaler = cx.builder(font).size(size).hint(hint).build();
         let Some(mut outline) = scaler.scale_outline(glyph) else {
             return;
         };
@@ -942,14 +1003,34 @@ pub(crate) fn glyph_outline(
 
 /// Rasterize glyph id `glyph` of `font` and blit it with `color` at
 /// (`pen_x`, `baseline`).
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn draw_glyph(
     canvas: &mut Canvas,
     font: FontRef<'static>,
     size: f32,
     glyph: u16,
+    hint: bool,
     pen_x: f32,
     baseline: f32,
     color: &Color,
+) -> crate::Result<()> {
+    draw_glyph_stroked(canvas, font, size, glyph, hint, pen_x, baseline, color, 0.0)
+}
+
+/// [`draw_glyph`] of the glyph stroked `stroke` render pixels wide along its
+/// outline (#357); `0` draws the fill.
+#[allow(clippy::too_many_arguments)]
+fn draw_glyph_stroked(
+    canvas: &mut Canvas,
+    font: FontRef<'static>,
+    size: f32,
+    glyph: u16,
+    hint: bool,
+    pen_x: f32,
+    baseline: f32,
+    color: &Color,
+    stroke: f32,
 ) -> crate::Result<()> {
     match canvas.orthogonal_text_transform() {
         // Crisp path: snap to the pixel grid, carry the sub-pixel x phase
@@ -965,7 +1046,7 @@ fn draw_glyph(
                 xbin = 0;
                 ix += 1;
             }
-            with_glyph_mask_id(font, size, glyph, xbin, |m| {
+            with_glyph_mask_stroked(font, size, glyph, xbin, hint, stroke, |m| {
                 canvas.blit_mask_orthogonal(
                     ix + m.left,
                     gy - m.top,
@@ -979,7 +1060,7 @@ fn draw_glyph(
         }
         // General transforms (non-right-angle rotation or scaling) retain
         // the filtered fallback. Axis titles use the crisp path above.
-        None => with_glyph_mask_id(font, size, glyph, 0, |m| {
+        None => with_glyph_mask_stroked(font, size, glyph, 0, hint, stroke, |m| {
             canvas.draw_mask(
                 pen_x + m.left as f32,
                 baseline - m.top as f32,
@@ -999,7 +1080,6 @@ const UNDERLINE_Y_OFFSET_RATIO: f32 = 0.1; // below baseline
 // Rule segments (legend line marks): bar center sits where dash glyphs put
 // their ink (~0.3 em above the baseline) so rules and shape glyphs align.
 const RULE_Y_RATIO: f32 = 0.3; // above baseline
-const RULE_THICKNESS_RATIO: f32 = 0.09;
 // Fill band under a rule (legend mark of a filled line series): from the
 // rule's center down to this many em above the baseline, so it stays inside
 // the glyph ascent and never changes the line's measured extents.
@@ -1131,11 +1211,15 @@ pub(crate) trait GlyphSink {
     /// of a math node).
     fn paints(&self) -> bool;
     /// Glyph `glyph` of `font` at `size`, its pen at `pen` (left, baseline).
+    /// `script` says whether it sits at a script position; a painting sink
+    /// decides its hinting from it, the glyph's size and its own pixel scale
+    /// ([`glyph_hinting`]).
     fn glyph(
         &mut self,
         font: FontRef<'static>,
         glyph: u16,
         size: f32,
+        script: bool,
         pen: (f32, f32),
         color: &Color,
     );
@@ -1150,18 +1234,55 @@ impl GlyphSink for MeasureSink {
     fn paints(&self) -> bool {
         false
     }
-    fn glyph(&mut self, _: FontRef<'static>, _: u16, _: f32, _: (f32, f32), _: &Color) {}
+    fn glyph(&mut self, _: FontRef<'static>, _: u16, _: f32, _: bool, _: (f32, f32), _: &Color) {}
     fn rect(&mut self, _: RectF, _: &Color) {}
 }
 
-/// The sink of [`draw_rich_text`]: paints onto the canvas. The first glyph
-/// that cannot be rasterized stops the painting of glyphs, and its error is
-/// what the draw returns ([`Self::finish`]).
-struct CanvasSink<'a>(&'a mut Canvas, Option<crate::FiggyError>);
+/// The sink of [`CpuTextMeasure::ink_boxes`] (#357): hands each glyph's
+/// tight ink box (its pen plus its outline's bounds) and each rule's
+/// rectangle; paints nothing.
+struct InkSink<'a>(&'a mut dyn FnMut(RectF));
+
+impl GlyphSink for InkSink<'_> {
+    fn paints(&self) -> bool {
+        false
+    }
+    fn glyph(
+        &mut self,
+        font: FontRef<'static>,
+        glyph: u16,
+        size: f32,
+        _: bool,
+        pen: (f32, f32),
+        _: &Color,
+    ) {
+        let g = glyph_extents_id(font, size, glyph);
+        if g.ink_right > g.ink_left && g.ink_bottom > g.ink_top {
+            (self.0)(RectF {
+                x: pen.0 + g.ink_left,
+                y: pen.1 + g.ink_top,
+                width: g.ink_right - g.ink_left,
+                height: g.ink_bottom - g.ink_top,
+            });
+        }
+    }
+    fn rect(&mut self, r: RectF, _: &Color) {
+        (self.0)(r);
+    }
+}
+
+/// The sink of [`draw_rich_text`]: paints onto the canvas. Its third field
+/// is the pixel scale the text's sizes carry (pixels per logical pixel),
+/// from which each glyph's hinting is decided ([`glyph_hinting`]). The first glyph that cannot be rasterized
+/// stops the painting of glyphs, and its error is what the draw returns
+/// ([`Self::finish`]).
+struct CanvasSink<'a>(&'a mut Canvas, Option<crate::FiggyError>, f32);
 
 impl<'a> CanvasSink<'a> {
-    fn new(canvas: &'a mut Canvas) -> Self {
-        Self(canvas, None)
+    /// A sink drawing text whose sizes carry `pixel_scale` pixels per
+    /// logical pixel.
+    fn at(canvas: &'a mut Canvas, pixel_scale: f32) -> Self {
+        Self(canvas, None, pixel_scale)
     }
 
     fn finish(self) -> crate::Result<()> {
@@ -1181,13 +1302,15 @@ impl GlyphSink for CanvasSink<'_> {
         font: FontRef<'static>,
         glyph: u16,
         size: f32,
+        script: bool,
         pen: (f32, f32),
         color: &Color,
     ) {
         if self.1.is_some() {
             return;
         }
-        if let Err(error) = draw_glyph(self.0, font, size, glyph, pen.0, pen.1, color) {
+        let hint = glyph_hinting(font, size, self.2, script);
+        if let Err(error) = draw_glyph(self.0, font, size, glyph, hint, pen.0, pen.1, color) {
             self.1 = Some(error);
         }
     }
@@ -1199,6 +1322,112 @@ impl GlyphSink for CanvasSink<'_> {
             r.height,
             &crate::raster::Paint::fill(color),
         );
+    }
+}
+
+/// The outline pass of a text block (#357): every glyph stroked `.2`
+/// render pixels wide (twice the outline's reach, centred on the edge, so
+/// the fill drawn after covers the inner half) and every rule grown by the
+/// reach, all in the outline colour `.3`. Errors as [`CanvasSink`].
+struct OutlineCanvasSink<'a>(&'a mut Canvas, Option<crate::FiggyError>, f32, Color, f32);
+
+impl GlyphSink for OutlineCanvasSink<'_> {
+    fn paints(&self) -> bool {
+        true
+    }
+    fn glyph(
+        &mut self,
+        font: FontRef<'static>,
+        glyph: u16,
+        size: f32,
+        script: bool,
+        pen: (f32, f32),
+        _: &Color,
+    ) {
+        if self.1.is_some() {
+            return;
+        }
+        let hint = glyph_hinting(font, size, self.4, script);
+        let (color, stroke) = (self.3, self.2);
+        if let Err(error) = draw_glyph_stroked(
+            self.0, font, size, glyph, hint, pen.0, pen.1, &color, stroke,
+        ) {
+            self.1 = Some(error);
+        }
+    }
+    fn rect(&mut self, r: RectF, _: &Color) {
+        let reach = self.2 / 2.0;
+        self.0.draw_rect(
+            r.x - reach,
+            r.y - reach,
+            r.width + 2.0 * reach,
+            r.height + 2.0 * reach,
+            &crate::raster::Paint::fill(&self.3),
+        );
+    }
+}
+
+/// The outline of [`draw_rich_text_at`] (#357): every glyph and rule of
+/// `rt` at `origin` stroked in `outline.color`, reaching `outline.width`
+/// canvas pixels past the glyph edges. Drawn before the text.
+pub(crate) fn draw_rich_text_outline_at(
+    canvas: &mut Canvas,
+    rt: &RichText,
+    origin: (f32, f32),
+    policy: FontPolicy,
+    pixel_scale: f32,
+    outline: model::sink::TextOutline,
+) -> crate::Result<()> {
+    let mut sink = OutlineCanvasSink(
+        canvas,
+        None,
+        2.0 * outline.width,
+        outline.color,
+        pixel_scale,
+    );
+    place_rich_text(&mut sink, rt, origin, policy);
+    match sink.1 {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// The outline of [`draw_plain_text_at`] (#357), as
+/// [`draw_rich_text_outline_at`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_plain_text_outline_at(
+    canvas: &mut Canvas,
+    text: &str,
+    origin: (f32, f32),
+    family: &str,
+    size: f32,
+    bold: bool,
+    italic: bool,
+    policy: FontPolicy,
+    pixel_scale: f32,
+    outline: model::sink::TextOutline,
+) -> crate::Result<()> {
+    let mut sink = OutlineCanvasSink(
+        canvas,
+        None,
+        2.0 * outline.width,
+        outline.color,
+        pixel_scale,
+    );
+    place_plain_text(
+        &mut sink,
+        text,
+        origin,
+        outline.color,
+        family,
+        size,
+        bold,
+        italic,
+        policy,
+    );
+    match sink.1 {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }
 
@@ -1235,7 +1464,8 @@ fn place_cell(
     while i < segments.len() {
         let seg = &segments[i];
         i += 1;
-        let mut position = ScriptPosition::of(seg);
+        let drawn = DrawnChar::of(seg);
+        let mut position = drawn.position;
         if let Some(face) = &math {
             if let Some(node) = seg.math_node {
                 if matches!(node.kind, crate::text::MathKind::Math(_)) {
@@ -1263,12 +1493,16 @@ fn place_cell(
             // A text-mode script places its slots as the `superscript` and
             // `subscript` flags do, so the node and the flags give the same
             // pixels.
+            // A Unicode script character in a slot combines with the
+            // slot's position as it does with the flags (math segments
+            // carry no flags).
             if let Some(parent) = seg.math_parent {
                 position = match parent.slot {
                     1 => ScriptPosition::Superscript,
                     2 => ScriptPosition::Subscript,
                     _ => ScriptPosition::Base,
-                };
+                }
+                .with(drawn.position);
             }
         }
         let base = segment_base_size(seg, rt);
@@ -1285,14 +1519,17 @@ fn place_cell(
             // Drawn rule: a bar centered on the symbol axis. Width is the
             // fixed field; vertical extent is the bar thickness only.
             let field = seg.field_em.unwrap_or(1.0) * base;
-            let t = (base * RULE_THICKNESS_RATIO).max(1.0);
+            let thickness = seg
+                .rule_thickness_em
+                .unwrap_or(crate::text::RULE_THICKNESS_EM);
+            let t = (base * thickness).max(1.0);
             let center = y_offset - base * RULE_Y_RATIO;
             if sink.paints() {
                 place_rule(sink, seg, (pen_x, y), field, t, base, &color);
             }
             (field, field, center - t * 0.5, center + t * 0.5)
         } else {
-            let ch = seg.char_set.glyph_char(seg.text);
+            let ch = seg.char_set.glyph_char(drawn.text);
             // A math character draws from the math face (whatever the
             // policy), falling back to the text chain when the face lacks it.
             let (font, glyph) = (seg.char_set == crate::text::CharSet::Math)
@@ -1302,18 +1539,21 @@ fn place_cell(
                     let font = glyph_font(policy, &rt.font, seg.bold, seg.italic, ch);
                     (font, font.charmap().map(ch))
                 });
+            // A glyph at a script position is not hinted when painted
+            // (#357); the extents are unhinted either way.
+            let at_script = position != ScriptPosition::Base;
             let g = glyph_extents_id(font, size, glyph);
             let pen_advance = match seg.field_em {
                 Some(f) => {
                     // Center the glyph ink inside the fixed field.
                     let field = f * base;
                     let inset = (field - g.advance) * 0.5;
-                    sink.glyph(font, glyph, size, (pen_x + inset, y), &color);
+                    sink.glyph(font, glyph, size, at_script, (pen_x + inset, y), &color);
                     field
                 }
                 None => {
                     pen_x += script.kern_before;
-                    sink.glyph(font, glyph, size, (pen_x, y), &color);
+                    sink.glyph(font, glyph, size, at_script, (pen_x, y), &color);
                     g.advance
                 }
             };
@@ -1461,7 +1701,7 @@ mod dashed_rule_tests {
         let mut previous = 0usize;
         for step in 0..12u16 {
             let size = 4000.0 + f32::from(step);
-            with_glyph_mask_id(font, size, glyph, 0, |_| {}).unwrap();
+            with_glyph_mask_id(font, size, glyph, 0, true, |_| {}).unwrap();
             let bytes = MASK_CACHE.with(|cache| cache.borrow().bytes);
             assert!(
                 bytes <= MASK_CACHE_BUDGET_BYTES,
@@ -1482,16 +1722,43 @@ mod dashed_rule_tests {
         }
     }
 
+    /// A stroked glyph (#357) is its own mask, reaching half the stroke past
+    /// the fill on every side, and the plain fill is unchanged by it.
+    #[test]
+    fn a_stroked_glyph_has_its_own_wider_mask() {
+        let font = glyph_font(FontPolicy::Standard, "", false, false, 'o');
+        let glyph = font.charmap().map('o');
+        let size_of = |stroke: f32| {
+            let mut out = (0i32, 0i32, 0u32, 0u32);
+            with_glyph_mask_stroked(font, 24.0, glyph, 0, false, stroke, |m| {
+                out = (m.left, m.top, m.width, m.height);
+            })
+            .unwrap();
+            out
+        };
+        let plain = size_of(0.0);
+        let stroked = size_of(4.0);
+        assert_eq!(size_of(0.0), plain, "the fill keeps its mask");
+        assert!(
+            stroked.2 >= plain.2 + 3 && stroked.3 >= plain.3 + 3,
+            "{plain:?} -> {stroked:?}"
+        );
+        assert!(
+            stroked.0 < plain.0 && stroked.1 > plain.1,
+            "{plain:?} -> {stroked:?}"
+        );
+    }
+
     /// A glyph above `MAX_GLYPH_PX` is an error, not a mask of gigabytes,
     /// and the error reaches the caller of the draw (#152).
     #[test]
     fn a_glyph_above_the_size_limit_is_an_error() {
         let font = glyph_font(FontPolicy::Standard, "", false, false, 'x');
         let glyph = font.charmap().map('x');
-        assert!(with_glyph_mask_id(font, MAX_GLYPH_PX, glyph, 0, |_| {}).is_ok());
+        assert!(with_glyph_mask_id(font, MAX_GLYPH_PX, glyph, 0, false, |_| {}).is_ok());
         for size in [MAX_GLYPH_PX + 1.0, 50_000.0, f32::INFINITY, f32::NAN] {
             assert!(matches!(
-                with_glyph_mask_id(font, size, glyph, 0, |_| {}),
+                with_glyph_mask_id(font, size, glyph, 0, false, |_| {}),
                 Err(crate::FiggyError::InvalidConfig {
                     field: "font size",
                     ..
@@ -1582,6 +1849,45 @@ mod dashed_rule_tests {
         );
     }
 
+    // A rule draws as thick as its stored `rule_thickness_em`; a rule that
+    // stores none keeps the thickness every rule had before the field.
+    #[test]
+    fn rule_thickness_follows_the_stored_em_and_defaults_to_the_legacy_bar() {
+        let make = |thickness: Option<f32>| RichText {
+            segments: vec![
+                RichSegment::rule(2.0, Some(Color::BLACK)).with_rule_thickness(thickness),
+            ],
+            color: Color::BLACK,
+            font_size: 20.0,
+            font: String::new(),
+            align: TextAlign::Left,
+        };
+        let inked_rows = |rt: &RichText| {
+            let mut canvas = Canvas::new(48, 40).unwrap();
+            draw_rich_text(&mut canvas, rt, (4.0, 30.0), FontPolicy::Standard).unwrap();
+            let rgba = canvas.into_rgba();
+            // Rows whose middle column is mostly covered.
+            (0..40u32)
+                .filter(|&y| rgba[((y * 48 + 24) * 4 + 3) as usize] > 127)
+                .count()
+        };
+        let legacy = inked_rows(&make(None));
+        // 0.09 em × 20 px = 1.8 px.
+        assert!((1..=2).contains(&legacy), "legacy bar rows: {legacy}");
+        assert_eq!(
+            legacy,
+            inked_rows(&make(Some(crate::text::RULE_THICKNESS_EM)))
+        );
+        // 0.3 em × 20 px = 6 px.
+        let thick = inked_rows(&make(Some(0.3)));
+        assert!((5..=7).contains(&thick), "0.3 em bar rows: {thick}");
+        // The measured height grows with the bar.
+        let thin_m = measure_rich_text(&make(None), FontPolicy::Standard);
+        let thick_m = measure_rich_text(&make(Some(0.3)), FontPolicy::Standard);
+        assert!(thick_m.ascent + thick_m.descent > thin_m.ascent + thin_m.descent);
+        assert_eq!(thin_m.width, thick_m.width);
+    }
+
     #[test]
     fn dashed_rule_renders_visible_gaps_inside_fixed_field() {
         let rt = RichText {
@@ -1631,7 +1937,21 @@ pub fn draw_rich_text(
     origin: (f32, f32),
     policy: FontPolicy,
 ) -> crate::Result<()> {
-    let mut sink = CanvasSink::new(canvas);
+    draw_rich_text_at(canvas, rt, origin, policy, 1.0)
+}
+
+/// [`draw_rich_text`] for a text whose sizes carry `pixel_scale` pixels
+/// per logical pixel (a display or export scale): its glyphs are hinted
+/// only at 1x, so every other scale draws the 1x layout unhinted (#357,
+/// [`glyph_hinting`]).
+pub(crate) fn draw_rich_text_at(
+    canvas: &mut Canvas,
+    rt: &RichText,
+    origin: (f32, f32),
+    policy: FontPolicy,
+    pixel_scale: f32,
+) -> crate::Result<()> {
+    let mut sink = CanvasSink::at(canvas, pixel_scale);
     place_rich_text(&mut sink, rt, origin, policy);
     sink.finish()
 }
@@ -1708,6 +2028,12 @@ impl CpuTextMeasure {
 impl crate::text::MeasureText for CpuTextMeasure {
     fn measure_rich(&self, rt: &RichText) -> crate::text::TextExtents {
         measure_rich_text(rt, self.policy)
+    }
+
+    /// Every glyph's ink box and every rule of `rt` at `origin`, from the
+    /// placement the raster and the vector export draw (#357).
+    fn ink_boxes(&self, rt: &RichText, origin: (f32, f32), each: &mut dyn FnMut(RectF)) {
+        place_rich_text(&mut InkSink(each), rt, origin, self.policy);
     }
 
     /// A tick label's extents as the raster draws plain text: per glyph,
@@ -1793,15 +2119,83 @@ pub(crate) enum ScriptPosition {
 }
 
 impl ScriptPosition {
-    /// The position a segment's `superscript` / `subscript` flags select.
-    /// `superscript` wins when both are set, as it always has.
+    /// Both positions at once, as the segment flags combine: superscript
+    /// wins when either is a superscript, as it always has; a script is not
+    /// raised or dropped twice.
+    fn with(self, other: ScriptPosition) -> Self {
+        match (self, other) {
+            (ScriptPosition::Superscript, _) | (_, ScriptPosition::Superscript) => {
+                ScriptPosition::Superscript
+            }
+            (ScriptPosition::Subscript, _) | (_, ScriptPosition::Subscript) => {
+                ScriptPosition::Subscript
+            }
+            _ => ScriptPosition::Base,
+        }
+    }
+}
+
+/// What a segment draws: the character and the script position it sits at.
+///
+/// The one place segment text is normalized for drawing (#353). A Unicode
+/// superscript or subscript character (`⁻`, `²`, `₀`, …) draws as its base
+/// character at the superscript or subscript position, through the table
+/// the string conversions use ([`crate::text::unicode_script_char`]),
+/// whether or not some installed face has the character itself; the bundled
+/// faces lack several of them, so native, WASM and every CI host draw the
+/// same pixels. The stored segment keeps its character: this is
+/// appearance, not data.
+///
+/// Every path that turns segments into glyphs reads the character and the
+/// position from here: [`place_cell`] (canvas raster, measurement, the
+/// label rasters, and the SVG and PDF export, which all place through it)
+/// and the math layout's leaves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DrawnChar {
+    /// The character to draw, before the segment's character set maps it
+    /// ([`crate::text::CharSet::glyph_char`]).
+    pub(crate) text: char,
+    /// Where it sits against the baseline.
+    pub(crate) position: ScriptPosition,
+}
+
+impl DrawnChar {
+    /// The character alone: a Unicode super- or subscript character as its
+    /// base character at its position, any other character as itself on
+    /// the baseline.
+    pub(crate) fn of_char(c: char) -> Self {
+        use crate::text::{UnicodeScript, unicode_script_char};
+        match unicode_script_char(c) {
+            Some((text, UnicodeScript::Superscript)) => DrawnChar {
+                text,
+                position: ScriptPosition::Superscript,
+            },
+            Some((text, UnicodeScript::Subscript)) => DrawnChar {
+                text,
+                position: ScriptPosition::Subscript,
+            },
+            None => DrawnChar {
+                text: c,
+                position: ScriptPosition::Base,
+            },
+        }
+    }
+
+    /// A segment: its character as [`DrawnChar::of_char`] maps it, with
+    /// the segment's own flags combined in ([`ScriptPosition::with`]): a
+    /// `⁻` in a superscript segment is raised once.
     pub(crate) fn of(seg: &RichSegment) -> Self {
-        if seg.superscript {
+        let flags = if seg.superscript {
             ScriptPosition::Superscript
         } else if seg.subscript {
             ScriptPosition::Subscript
         } else {
             ScriptPosition::Base
+        };
+        let c = DrawnChar::of_char(seg.text);
+        DrawnChar {
+            position: flags.with(c.position),
+            ..c
         }
     }
 }
@@ -1874,7 +2268,27 @@ pub fn draw_plain_text(
     italic: bool,
     policy: FontPolicy,
 ) -> crate::Result<()> {
-    let mut sink = CanvasSink::new(canvas);
+    draw_plain_text_at(
+        canvas, text, origin, color, family, size, bold, italic, policy, 1.0,
+    )
+}
+
+/// [`draw_plain_text`] for a text whose size carries `pixel_scale` pixels
+/// per logical pixel: hinted only at 1x (#357, [`draw_rich_text_at`]).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_plain_text_at(
+    canvas: &mut Canvas,
+    text: &str,
+    origin: (f32, f32),
+    color: Color,
+    family: &str,
+    size: f32,
+    bold: bool,
+    italic: bool,
+    policy: FontPolicy,
+    pixel_scale: f32,
+) -> crate::Result<()> {
+    let mut sink = CanvasSink::at(canvas, pixel_scale);
     place_plain_text(
         &mut sink, text, origin, color, family, size, bold, italic, policy,
     );
@@ -1899,7 +2313,7 @@ pub(crate) fn place_plain_text(
     for ch in text.chars() {
         let font = glyph_font(policy, family, bold, italic, ch);
         let glyph = font.charmap().map(ch);
-        sink.glyph(font, glyph, size, (pen_x, baseline), &color);
+        sink.glyph(font, glyph, size, false, (pen_x, baseline), &color);
         pen_x += glyph_extents_id(font, size, glyph).advance;
     }
 }
@@ -1951,6 +2365,86 @@ pub(crate) fn font_line_metrics(family: &str, size: f32, policy: FontPolicy) -> 
 mod tests {
     use super::*;
     use crate::text::{CharSet, TextAlign, rich_segments_from_text};
+
+    thread_local! {
+        /// Test support: hint glyphs at script positions as before #357, so
+        /// a test can draw the earlier pixels beside the current ones.
+        pub(super) static SCRIPTS_HINTED: std::cell::Cell<bool> =
+            const { std::cell::Cell::new(false) };
+    }
+
+    /// `rt` drawn on a fresh canvas with scripts hinted as before #357
+    /// (`hinted`) or as now.
+    fn draw_scripts(rt: &RichText, hinted: bool) -> Vec<u8> {
+        SCRIPTS_HINTED.with(|cell| cell.set(hinted));
+        let mut canvas = Canvas::new(640, 96).unwrap();
+        draw_rich_text(&mut canvas, rt, (8.0, 64.0), FontPolicy::Standard).unwrap();
+        SCRIPTS_HINTED.with(|cell| cell.set(false));
+        canvas.into_rgba()
+    }
+
+    // #357 (I5, option 1): glyphs at a script position are no longer hinted.
+    // Appearance only: on the labels the change touches (Grotrian Ar and Cu
+    // terms and configurations, a Feynman label with charges, a math x², and
+    // the #358 Unicode scripts), the pixels stay within a pinned tolerance of
+    // the hinted drawing: the mean colour difference over the inked pixels
+    // and its 99th percentile. Base text is drawn exactly as before, the
+    // layout (advances) does not move, and the scripts do change.
+    #[test]
+    fn unhinted_scripts_stay_within_the_appearance_tolerance() {
+        let labels = [
+            "3p$^{5}$ $^{2}$P°$_{3/2}$ core",
+            "Ar II $^{2}$P°$_{3/2}$  15.760 eV",
+            "4p$_{3/2}$ 1s$^{2}$ 3p$^{6}$",
+            "3d$^{9}$4s4p $^{4}$P°",
+            "Cu II 3d$^{10}$ $^{1}$S  7.726 eV",
+            "W⁻ → e⁻ ν̄ₑ, μ⁺μ⁻",
+            "$x^2 + y_1$",
+            "e⁻ e⁺ ⁽ⁿ⁾ ₍₂₎",
+        ];
+        let mut changed = 0usize;
+        for size in [16.0f32, 20.0, 24.0, 48.0] {
+            for text in labels {
+                let rt = RichText::from_label(text, Color::BLACK, size, "");
+                let before = draw_scripts(&rt, true);
+                let after = draw_scripts(&rt, false);
+                let mut diffs: Vec<u32> = before
+                    .chunks_exact(4)
+                    .zip(after.chunks_exact(4))
+                    .filter(|(a, b)| a[3] > 0 || b[3] > 0)
+                    .map(|(a, b)| (0..4).map(|k| a[k].abs_diff(b[k]) as u32).max().unwrap())
+                    .collect();
+                assert!(!diffs.is_empty(), "{text} at {size}: drawn");
+                diffs.sort_unstable();
+                let mean = diffs.iter().sum::<u32>() as f64 / diffs.len() as f64;
+                let p99 = diffs[(diffs.len() - 1) * 99 / 100];
+                changed += usize::from(before != after);
+                eprintln!("{text:?} at {size}: mean {mean:.2}, p99 {p99}");
+                assert!(mean <= MEAN_LIMIT, "{text} at {size}: mean {mean:.2}");
+                assert!(p99 <= P99_LIMIT, "{text} at {size}: p99 {p99}");
+                // The layout does not move.
+                SCRIPTS_HINTED.with(|cell| cell.set(true));
+                let hinted = measure_rich_text_std(&rt).width;
+                SCRIPTS_HINTED.with(|cell| cell.set(false));
+                assert_eq!(measure_rich_text_std(&rt).width, hinted, "{text}");
+            }
+        }
+        assert!(changed > 0, "the scripts are drawn unhinted");
+        // Base text is drawn as before.
+        let base = RichText::from_label("Energy (eV) 4p 3d", Color::BLACK, 20.0, "");
+        assert_eq!(draw_scripts(&base, true), draw_scripts(&base, false));
+    }
+
+    /// The pinned tolerance of
+    /// [`unhinted_scripts_stay_within_the_appearance_tolerance`], measured on
+    /// lavapipe's CPU raster (the canvas does not depend on the GPU): the
+    /// largest mean is 25.4 (the line of #358 Unicode scripts at 24 px,
+    /// nearly every glyph a script) and the labels' at most 6.6; the 99th
+    /// percentile reaches 186, the script glyphs' edges moving within one
+    /// pixel without the grid fit. The scaled sizes (48 px) are unhinted
+    /// either way and draw the same.
+    const MEAN_LIMIT: f64 = 30.0;
+    const P99_LIMIT: u32 = 200;
 
     fn measure_rich_text_std(rt: &RichText) -> TextMetrics {
         measure_rich_text(rt, FontPolicy::Standard)
@@ -2029,7 +2523,8 @@ mod tests {
             for size in [12.0_f32, 24.0, 32.0, 33.0, 40.0, 51.0, 64.0, 102.0] {
                 let font = glyph_font(FontPolicy::Standard, "", false, false, ch);
                 let mut seen = None;
-                with_glyph_mask_id(font, size, font.charmap().map(ch), 0, |m| {
+                let hint = glyph_hinting(font, size, 1.0, false);
+                with_glyph_mask_id(font, size, font.charmap().map(ch), 0, hint, |m| {
                     seen = Some((m.width, m.height))
                 })
                 .unwrap();
@@ -2452,7 +2947,6 @@ mod tests {
 
     /// Whether `font` maps `ch` to a glyph with an outline. A test-local
     /// check, independent of the coverage helper the fallback chain uses.
-    #[cfg(not(target_arch = "wasm32"))]
     fn outline_drawn(font: FontRef<'_>, ch: char, scale: &mut ScaleContext) -> bool {
         let glyph = font.charmap().map(ch);
         glyph != 0
@@ -2464,38 +2958,137 @@ mod tests {
                 .is_some_and(|outline| !outline.is_empty())
     }
 
-    /// Whether any face installed on this host draws `ch`, in any style.
-    /// This runs its own system scan, so it does not depend on the fallback
-    /// chain: if the chain's system step breaks, the test fails instead of
-    /// skipping.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn installed_face_draws(ch: char) -> bool {
-        let mut db = fontdb::Database::new();
-        db.load_system_fonts();
-        let mut scale = ScaleContext::new();
-        db.faces().any(|face| {
-            db.with_face_data(face.id, |data, index| {
-                FontRef::from_index(data, index as usize)
-                    .is_some_and(|font| outline_drawn(font, ch, &mut scale))
-            })
-            .unwrap_or(false)
-        })
+    /// Every Unicode superscript and subscript character the string
+    /// conversions map, with its base character and position.
+    const UNICODE_SCRIPTS: [(char, char, ScriptPosition); 30] = {
+        use ScriptPosition::{Subscript as Sub, Superscript as Sup};
+        [
+            ('⁰', '0', Sup),
+            ('¹', '1', Sup),
+            ('²', '2', Sup),
+            ('³', '3', Sup),
+            ('⁴', '4', Sup),
+            ('⁵', '5', Sup),
+            ('⁶', '6', Sup),
+            ('⁷', '7', Sup),
+            ('⁸', '8', Sup),
+            ('⁹', '9', Sup),
+            ('⁺', '+', Sup),
+            ('⁻', '-', Sup),
+            ('⁽', '(', Sup),
+            ('⁾', ')', Sup),
+            ('ⁿ', 'n', Sup),
+            ('ᵗ', 't', Sup),
+            ('₀', '0', Sub),
+            ('₁', '1', Sub),
+            ('₂', '2', Sub),
+            ('₃', '3', Sub),
+            ('₄', '4', Sub),
+            ('₅', '5', Sub),
+            ('₆', '6', Sub),
+            ('₇', '7', Sub),
+            ('₈', '8', Sub),
+            ('₉', '9', Sub),
+            ('₊', '+', Sub),
+            ('₋', '-', Sub),
+            ('₍', '(', Sub),
+            ('₎', ')', Sub),
+        ]
+    };
+
+    /// A rich text of `segments` at the fallback size in the default family.
+    fn rich_of(segments: Vec<RichSegment>) -> RichText {
+        RichText {
+            segments,
+            color: Color::BLACK,
+            font_size: FALLBACK_SIZE,
+            font: String::new(),
+            align: TextAlign::Left,
+        }
     }
 
-    // U+207B (superscript minus) is missing from every bundled face, and
-    // tests register only bundled faces, so with the default font only an
-    // installed system face can draw it. Installed fonts vary across CI
-    // hosts: the assertion runs only when some installed face draws it.
-    // The chain picks one face per family per requested style (CSS
-    // matching), and the covering face may be another style, so at least
-    // one of the four styles must draw a real glyph.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// A segment drawing `c` in the given style and script flags.
+    fn styled(
+        c: char,
+        bold: bool,
+        italic: bool,
+        superscript: bool,
+        subscript: bool,
+    ) -> RichSegment {
+        RichSegment {
+            bold,
+            italic,
+            superscript,
+            subscript,
+            ..RichSegment::plain(c)
+        }
+    }
+
+    /// Draw rich `runs` of (text, left x) onto one fresh canvas, in order,
+    /// on a shared baseline.
+    fn draw_rich_runs(runs: &[(&RichText, f32)], policy: FontPolicy) -> Vec<u8> {
+        let mut canvas = Canvas::new(160, 40).unwrap();
+        for &(rt, x) in runs {
+            draw_rich_text(&mut canvas, rt, (x, 28.0), policy).unwrap();
+        }
+        canvas.into_rgba()
+    }
+
+    // The draw-time map covers exactly the string conversions' table: each
+    // character is its base character at its position, in a segment of
+    // any flags, and every other character is itself on the baseline.
     #[test]
-    fn superscript_minus_draws_from_an_installed_face_when_one_covers_it() {
+    fn drawn_char_maps_every_unicode_script_character() {
+        for (c, base, position) in UNICODE_SCRIPTS {
+            let drawn = DrawnChar::of_char(c);
+            assert_eq!((drawn.text, drawn.position), (base, position), "{c}");
+            let from_text = rich_segments_from_text(&c.to_string());
+            assert_eq!(
+                DrawnChar::of(&from_text[0]),
+                drawn,
+                "{c}: the string conversion and the draw-time map agree"
+            );
+            // Nested: the segment's own flag is not applied twice, and a
+            // superscript wins over a subscript either way.
+            for (sup, sub) in [(true, false), (false, true), (true, true)] {
+                let want = if sup || position == ScriptPosition::Superscript {
+                    ScriptPosition::Superscript
+                } else {
+                    ScriptPosition::Subscript
+                };
+                let seg = styled(c, false, false, sup, sub);
+                assert_eq!(
+                    DrawnChar::of(&seg),
+                    DrawnChar {
+                        text: base,
+                        position: want
+                    },
+                    "{c} sup={sup} sub={sub}"
+                );
+            }
+        }
+        for c in ['-', '+', '2', 'e', 'μ', '\n', '\u{2212}'] {
+            assert_eq!(
+                DrawnChar::of_char(c),
+                DrawnChar {
+                    text: c,
+                    position: ScriptPosition::Base
+                }
+            );
+        }
+    }
+
+    // #353: U+207B, U+207A and the rest of the Unicode scripts draw as their
+    // base character at the script position, the same pixels as a styled
+    // base segment, on every host: the bundled faces lack U+207A and U+207B
+    // and installed faces do not matter. The pen after a mapped character
+    // sits where measurement ends it, and the drawing is never the .notdef
+    // box.
+    #[test]
+    fn unicode_script_characters_draw_as_styled_base_characters() {
         let _font_registration = FONT_REGISTRATION_TEST_LOCK
             .lock()
             .expect("font registration test lock poisoned");
-        let ch = '\u{207B}';
         let mut scale = ScaleContext::new();
         let bundled = [
             EMBEDDED_REGULAR,
@@ -2505,31 +3098,54 @@ mod tests {
             HANDWRITTEN_REGULAR,
             HANDWRITTEN_BOLD,
         ];
-        for bytes in bundled {
-            let font = FontRef::from_index(bytes, 0).unwrap();
-            assert!(!outline_drawn(font, ch, &mut scale), "fixture");
+        for ch in ['\u{207A}', '\u{207B}'] {
+            for bytes in bundled {
+                let font = FontRef::from_index(bytes, 0).unwrap();
+                assert!(!outline_drawn(font, ch, &mut scale), "fixture: {ch}");
+            }
         }
-        if !installed_face_draws(ch) {
-            return;
-        }
-        let policy = FontPolicy::Standard;
-        let mut real_glyph = false;
-        for (bold, italic) in STYLES {
-            let minus = measure_plain_text("\u{207B}", "", FALLBACK_SIZE, bold, italic, policy);
-            let draw = |runs: &[(&str, f32)]| draw_runs(runs, "", bold, italic, policy);
-            assert!(
-                draw(&[("\u{207B}X", 4.0)]) == draw(&[("\u{207B}", 4.0), ("X", 4.0 + minus.width)]),
-                "the pen after U+207B (bold={bold} italic={italic}) must sit where \
-                 measurement ends it"
+        for policy in [FontPolicy::Standard, FontPolicy::Handwritten] {
+            let notdef = draw_rich_runs(
+                &[(&rich_of(rich_segments_from_text(NOTDEF_TEXT)), 4.0)],
+                policy,
             );
-            let drawn = draw(&[("\u{207B}", 4.0)]);
-            real_glyph |= has_ink(&drawn) && drawn != draw(&[(NOTDEF_TEXT, 4.0)]);
+            for (bold, italic) in STYLES {
+                for (c, base, position) in UNICODE_SCRIPTS {
+                    let sup = position == ScriptPosition::Superscript;
+                    let literal = rich_of(vec![styled(c, bold, italic, false, false)]);
+                    let styled_base = rich_of(vec![styled(base, bold, italic, sup, !sup)]);
+                    let what = format!("{c} bold={bold} italic={italic} {policy:?}");
+                    assert_eq!(
+                        measure_rich_text(&literal, policy),
+                        measure_rich_text(&styled_base, policy),
+                        "{what}: measures as the styled base character"
+                    );
+                    let drawn = draw_rich_runs(&[(&literal, 4.0)], policy);
+                    assert!(
+                        drawn == draw_rich_runs(&[(&styled_base, 4.0)], policy),
+                        "{what}: draws the styled base character's pixels"
+                    );
+                    assert!(
+                        has_ink(&drawn) && drawn != notdef,
+                        "{what}: not the .notdef box"
+                    );
+                }
+                // The pen after a mapped run sits where measurement ends it.
+                let minus = rich_of(vec![styled('⁻', bold, italic, false, false)]);
+                let then_x = rich_of(vec![
+                    styled('⁻', bold, italic, false, false),
+                    styled('X', bold, italic, false, false),
+                ]);
+                let x = rich_of(vec![styled('X', bold, italic, false, false)]);
+                let w = measure_rich_text(&minus, policy).width;
+                assert!(
+                    draw_rich_runs(&[(&then_x, 4.0)], policy)
+                        == draw_rich_runs(&[(&minus, 4.0), (&x, 4.0 + w)], policy),
+                    "the pen after U+207B (bold={bold} italic={italic} {policy:?}) must sit \
+                     where measurement ends it"
+                );
+            }
         }
-        assert!(
-            real_glyph,
-            "an installed face draws U+207B, so the default font must draw it in \
-             at least one style instead of the .notdef box"
-        );
     }
 
     // Every legend symbol form must measure EXACTLY the same width at the
@@ -2658,7 +3274,7 @@ mod tests {
                 for (k, cell) in cells.iter().enumerate() {
                     let cell_origin = (x + doc.col_starts[k], baseline);
                     place_cell(
-                        &mut CanvasSink::new(canvas),
+                        &mut CanvasSink::at(canvas, 1.0),
                         cell,
                         rt,
                         cell_origin,
@@ -2973,11 +3589,12 @@ mod tests {
         );
 
         let flags = |superscript: bool, subscript: bool| {
-            ScriptPosition::of(&RichSegment {
+            DrawnChar::of(&RichSegment {
                 superscript,
                 subscript,
                 ..RichSegment::plain('2')
             })
+            .position
         };
         assert_eq!(flags(false, false), ScriptPosition::Base);
         assert_eq!(flags(true, false), ScriptPosition::Superscript);
@@ -3067,7 +3684,8 @@ mod tests {
                         Some(outline.verbs().len())
                     });
                     let mut segments = 0;
-                    glyph_outline(font, glyph, size, &mut |_| segments += 1);
+                    let hint = font_hinting(font, size);
+                    glyph_outline(font, glyph, size, hint, &mut |_| segments += 1);
                     assert_eq!(segments, verbs.unwrap_or(0), "glyph {glyph} at {size}");
                     outlines += usize::from(verbs.is_some());
                 }

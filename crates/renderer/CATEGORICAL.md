@@ -1,11 +1,15 @@
-# 범주형 막대 차트
+# Categorical bars / 범주형 막대 차트
 
-범주형 막대 차트는 직교 좌표 차트다. 범주형 축(`AxisOptions::categories`)이 있는 `Config`에
-막대 시리즈마다 `DataRenderType::CategoryBars` 시리즈 하나를 두고, 직교 좌표 `Renderer`가 그린다.
-위치와 값은 `ColumnSource`로 올린 컬럼에서 읽으며 스트리밍 소스는 거부한다.
-`CategoricalChart`는 0.12까지의 릴리스가 쓴 문서 형식이며, `Config::from_categorical`이 이 문서를
-범주형 막대 차트로 읽는다([직교 좌표 차트로 열기](#직교-좌표-차트로-열기)). 아래 규칙은 이 문서에 적용된다.
-`CategoricalChart`는 이번 릴리스에서 문서 리더로만 남아 사용 중단(deprecated)되며, 다음 마일스톤에서 제거된다.
+A categorical bar chart is a Cartesian chart. Put one
+`DataRenderType::CategoryBars` series per bar series on a `Config` with a
+categorical axis (`AxisOptions::categories`), and the Cartesian `Renderer`
+draws them. Positions and values are read from columns uploaded through
+`ColumnSource`; streamed sources are rejected. `CategoricalChart` is the
+document format of the releases up to 0.12, and `Config::from_categorical`
+reads such a document as a categorical bar chart
+([Opening as a Cartesian chart](#opening-as-a-cartesian-chart)). The rules
+below apply to this document. `CategoricalChart` is kept as the reader for
+documents written before 0.13.
 
 ```rust,no_run
 use renderer::{CategoricalChart, Category, BarSeries, Color, CategoryBarMode};
@@ -22,7 +26,220 @@ chart.validate()?;
 # Ok::<(), &'static str>(())
 ```
 
-## 입력과 누적 규칙
+## Input and stacking rules
+
+- There is at least one category and at least one series. The number of
+  categories, the number of series and `categories × series` have no upper
+  limit.
+- Category and series IDs must be unique within their lists. Names may
+  repeat, and renaming does not change the ID.
+- Each series' `values` has as many entries as there are categories. `None`
+  is missing and `Some(0.0)` is a real 0. Neither has bar area, but 0 stays
+  in the value, the label and the selection state. The pointer selects only
+  bars that have area.
+- `Grouped` draws the bars side by side. With one series it is a single bar.
+  A missing value does not move the other bars.
+- `Stacked` stacks positive values up/right and negative values down/left,
+  each from 0.
+- `PercentStacked` scales the positive total of each category to 100%.
+  Negative values are rejected. A total of 0 is an empty bar, and its percent
+  label is `—`. The original values are not changed. Very large values do
+  not overflow the total.
+- In plain stacking, a total outside the finite number range is rejected.
+  NaN and infinity are rejected in every mode.
+- The `Percent` label is relative to the total of the series in the same
+  category. A category with negative values shows `—`.
+- The value axis is linear. `Chart::auto_fit_layer_union` fits it to 0 and
+  the range the bars draw. Stacked bars fit to
+  `[Σ min(0, minimum), Σ max(0, maximum)]` from the minimum and maximum
+  stored for each value column. When a series' extremes fall in different
+  categories, the upper bound is wider than the actual stack. Uploading the
+  columns at once or separately gives the same result. 100% stacking fits to
+  `0..100`.
+- Columns the host uploads directly follow the same rules. If a value column
+  of a `PercentStacked` group has a negative value (the column minimum is
+  below 0), drawing and picking reject it with an `InvalidSeriesConfig` that
+  names the series and the mode. `Stacked` and `Grouped` draw negative
+  values.
+
+Selection and per-bar styles refer to IDs, so they still point at the same
+item after a rename. When an item is deleted, delete its selection and
+per-bar settings too.
+
+## Direction, style and per-bar editing
+
+`direction` is `Vertical` / `Horizontal`, and changing it needs no change to
+the input values or the category array. `value_title` and `category_title`
+also move with each axis' role. On a polar chart (`Config::polar`, with a
+categorical angle axis) the same series becomes a rose: it draws wedges
+radially within each category's angular cell, and only `Vertical` is allowed
+([POLAR.md](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md#roses-polar-bars)).
+
+Styles apply in the order **chart → series → single bar**. `style: Some(...)`
+replaces the whole style and no longer inherits later changes to the parent
+style. Setting it back to `None` inherits again. The color comes from the
+series' `color`, and a single bar's color from `CategoryBarOverride.color`.
+
+```rust,no_run
+use renderer::{CategoricalChart, CategoryBarTarget, CategoryBarOverride,
+    CategoryBarStyle, CategoryBarLabels, CategoryBarLabelFormat, Color, Material};
+# fn edit(chart: &mut CategoricalChart) {
+let target = CategoryBarTarget::new("a", "before");
+let mut edit = CategoryBarOverride::new(target.clone());
+edit.color = Some(Color::from_rgb8(30, 175, 165));
+edit.style = Some(CategoryBarStyle {
+    material: Material::SatinMetal,
+    outline: true,
+    ..chart.style.clone()
+});
+edit.labels = Some(CategoryBarLabels::Inside);
+edit.label_format = Some(CategoryBarLabelFormat::ValuePercent);
+// A target can have only one override, so remove the existing one and add the new one.
+chart.overrides.retain(|o| o.target != target);
+chart.overrides.push(edit);
+chart.selected = Some(target);
+# }
+```
+
+| Option | Default | Range and behavior |
+|---|---|---|
+| `material` | `Flat` | Any [`Material`](RADIAL.md#materials) except `Toon` and `Pearl`. A bar is shaded like a flat pie top |
+| `corner_radius` | 5 | 0 to 32 logical pixels. Limited to half the bar's thickness and length |
+| `outline` | false | Turns on the outline |
+| `outline_width` | 1 | 0 to 8 logical pixels. Drawn inside the shape |
+| `outline_color` | RGB(40,55,75) | Each RGBA component 0 to 1, alpha allowed |
+| `texture_strength` | 0.2 | 0 to 1; 0 turns the pattern off |
+| `texture_scale` | 1 | 0.1 to 8; higher values make the pattern finer |
+| `gloss` | 0.45 | 0 to 1. The sheen of `SatinMetal` and `BrushedMetal`; it has no visible effect on `Enamel` bars (see [Materials](RADIAL.md#materials)) |
+| `emphasis_brightness` | 0.08 | 0 to 0.5, brightness increase on hover and selection |
+| `group_width` | 0.7 | The fraction of a category cell the bars take, 0.1 to 0.95 |
+| `bar_gap` | 3 | Logical pixels between bars in a group, 0 to 24 |
+| `grid`, `legend` | true | Show the grid and the series legend |
+
+Grouped bars round only the end away from 0. Stacked bars round only the end
+of the last nonzero segment of each positive and negative stack, and keep the
+inner boundaries straight. The original values and the bar end positions do
+not change with material, outline or hover. Textures need no external
+texture files. This is a 2D look for comparing category colors; the radial
+chart's 3D camera and extrusion are not applied.
+
+## Labels and fonts
+
+- `labels`: `None` / `Inside` / `Outside` / `Auto` (default). A per-bar
+  `labels: None` inherits, and `Some(CategoryBarLabels::None)` hides the
+  label.
+- `Auto`: grouped bars show labels outside, stacked bars inside.
+- `label_format`: `Value` (default) / `Percent` / `ValuePercent` /
+  `CategoryValue`. 100% stacking does not switch value labels to percentages
+  by itself; state the format you want.
+- `label_decimals`: 0 to 6 (default 1); trailing zeros are removed.
+- `value_suffix`: one line of up to 24 characters. Include the space, as in
+  `" kg"`.
+- `font_size`: 8 to 32 logical pixels (default 14); `font_family`: default
+  `sans-serif`.
+- Category and series names and IDs are up to 80 characters without control
+  characters; titles and axis titles are up to 160 characters.
+
+The reader moves these settings into the series' `labels`
+(`CategoryBarSeriesLabels`) and `label_format`, and `format_labels` writes
+the string to show for each bar into `labels.text`. The renderer does not
+format values; it draws these strings at the bar ends. Outside labels are
+placed 6px past the bar end and inside labels in the middle of the bar.
+`Auto` draws grouped bars' labels outside, and on stacked bars draws inside
+only the segments the label fits in. Text inside a dark bar is white;
+otherwise the font, size and color of the value axis' tick labels are used.
+Empty strings are not drawn, and labels do not push each other apart. When
+an outside label crosses the edge of the data area, it is drawn inside the
+bar end. `pick_chart_data` picks labels as `PickedData::ValueLabel`, and
+dragging one records the offset in the series' `labels.offsets`. `DataLabel`
+offsets of the original document are also moved into `labels.offsets` (see
+Value labels in the [interaction guide](INTERACTION.md)).
+
+## Opening as a Cartesian chart
+
+```rust,no_run
+use renderer::{CategoricalChart, Chart, ColumnSource, LayerRef, Renderer};
+# fn open(r: &mut Renderer, json: &str) -> Result<(), Box<dyn std::error::Error>> {
+let document: CategoricalChart = serde_json::from_str(json)?;
+document.validate()?;
+let (mut config, series, uploads) = renderer::config::Config::from_categorical(&document);
+config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect {
+    x: 0, y: 0, width: 900, height: 620,
+});
+// Upload the position column first and the value columns at once. The uploads borrow the document's values.
+let (positions, values) = uploads.split_first().expect("positions");
+r.add_column(positions.column.clone(), &positions.values)?;
+let columns: Vec<(&str, &dyn ColumnSource)> = values
+    .iter()
+    .map(|u| (u.column.as_str(), &u.values as &dyn ColumnSource))
+    .collect();
+r.add_columns(&columns)?;
+let mut chart = Chart::new(config);
+chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)?;
+# Ok(())
+# }
+```
+
+`Config::from_categorical` moves the categories to the categorical axis that
+fits the direction (`bottom_x` for vertical bars, `left_y` for horizontal
+bars), `mode`, `direction`, `group_width` and `bar_gap` to
+`Config.bar_groups`, and the series to `CategoryBars` series. The value and
+category axis titles, the grid, the legend, the font, the text color, the
+chart title, the annotation layer, the active layer, the selection and the
+decoration positions also move to the Cartesian configuration. The category
+axis of a horizontal document is inverted (`inverted`) so that the first
+category is at the top as in the document, and `Y` axis annotations sit on
+the same categories. An explicit `decorations.data_area` becomes the plot
+area through the margins (`Config::fit_legacy_data_area`, edges rounded to
+whole pixels; #334); one the layout cannot hold keeps the automatic layout
+and is reported as dropped with the reason. The hover state, the background
+color and value label positions are not moved. The category axis line sits
+at 0 on the value axis (`AxisOptions::cross_at`).
+
+From then on it is a Cartesian chart. `pick_chart_data` picks bars as
+`PickedData::HistogramBin` (the category row is `bin_index`), and selecting
+one with `PickedDataRef::HistogramBin` in `Config.picked_data` draws an
+emphasis border inside the drawn shape. Selecting and moving the title,
+legend, axes, tick labels and axis titles, moving and resizing the plot area,
+the annotation layer, overlays and subplots, and PNG export work as on
+Cartesian charts. In the browser, `FiggyChart.set_categorical_document(json,
+options?)` does the same and returns the conversion report (`{ config,
+series, uploads, columns, notes }`); `convert_categorical_document(json,
+{chart_area})` previews that report without a chart, and the setter's
+`{ "refuse": [...] | "any" }` option refuses a lossy document with
+`code: "conversion_loss"` before anything changes (#334; see
+[WASM.md](WASM.md#model-api)).
+
+```bash
+cargo run -p figgy-renderer --example categorical_gallery -- target/categorical-gallery
+cargo test -p figgy-renderer --features serde --test category_bars_render -- --test-threads=1
+```
+
+## 한국어 사용법
+
+범주형 막대 차트는 직교 좌표 차트다. 범주형 축(`AxisOptions::categories`)이 있는 `Config`에
+막대 시리즈마다 `DataRenderType::CategoryBars` 시리즈 하나를 두고, 직교 좌표 `Renderer`가 그린다.
+위치와 값은 `ColumnSource`로 올린 컬럼에서 읽으며 스트리밍 소스는 거부한다.
+`CategoricalChart`는 0.12까지의 릴리스가 쓴 문서 형식이며, `Config::from_categorical`이 이 문서를
+범주형 막대 차트로 읽는다([직교 좌표 차트로 열기](#직교-좌표-차트로-열기)). 아래 규칙은 이 문서에 적용된다.
+`CategoricalChart`는 0.13 이전에 쓰인 문서를 읽는 리더로 남는다.
+
+```rust,no_run
+use renderer::{CategoricalChart, Category, BarSeries, Color, CategoryBarMode};
+let chart = CategoricalChart {
+    categories: vec![Category::new("a", "A"), Category::new("b", "B")],
+    series: vec![
+        BarSeries::new("before", "Before", vec![Some(12.0), Some(8.0)], Color::from_rgb8(70,130,205)),
+        BarSeries::new("after", "After", vec![Some(18.0), Some(15.0)], Color::from_rgb8(255,166,105)),
+    ],
+    mode: CategoryBarMode::Grouped,
+    ..Default::default()
+};
+chart.validate()?;
+# Ok::<(), &'static str>(())
+```
+
+### 입력과 누적 규칙
 
 - 범주와 시리즈는 각각 1개 이상이다. 범주 수, 시리즈 수와 `범주 수 × 시리즈 수`에는 상한이 없다.
 - 범주·시리즈 ID는 각 목록에서 고유해야 한다. 이름은 중복될 수 있고, 이름을 바꿔도 ID는 바뀌지 않는다.
@@ -45,7 +262,7 @@ chart.validate()?;
 선택과 개별 스타일은 ID를 참조하므로 이름을 바꿔도 같은 항목을 가리킨다. 항목을 삭제하면
 해당 선택·개별 설정도 지워야 한다.
 
-## 방향, 스타일과 개별 편집
+### 방향, 스타일과 개별 편집
 
 `direction`은 `Vertical` / `Horizontal`이며 방향을 바꿔도 입력 값이나 범주 배열을 바꿀 필요가
 없다. `value_title`과 `category_title`도 각 축의 역할을 따라 이동한다. 극좌표 차트(`Config::polar`,
@@ -97,7 +314,7 @@ chart.selected = Some(target);
 재질·외곽선·호버에 따라 바뀌지 않는다. 질감에 외부 텍스처 파일은 필요 없다.
 범주 색을 비교하기 위한 2D 표현이며 원형 차트의 입체 카메라·돌출 효과는 적용하지 않는다.
 
-## 표기와 글꼴
+### 표기와 글꼴
 
 - `labels`: `None` / `Inside` / `Outside` / `Auto`(기본).
   개별 `labels: None`은 상속, `Some(CategoryBarLabels::None)`은 숨기기다.
@@ -119,7 +336,7 @@ chart.selected = Some(target);
 이동량이 기록된다. 원래 문서의 `DataLabel` 이동량도 `labels.offsets`로 옮긴다
 ([상호작용 가이드](INTERACTION.md)의 Value labels 참고).
 
-## 직교 좌표 차트로 열기
+### 직교 좌표 차트로 열기
 
 ```rust,no_run
 use renderer::{CategoricalChart, Chart, ColumnSource, LayerRef, Renderer};
@@ -148,8 +365,10 @@ chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)?;
 `left_y`)으로, `mode`·`direction`·`group_width`·`bar_gap`을 `Config.bar_groups`로, 시리즈를
 `CategoryBars` 시리즈로 옮긴다. 값 축·범주 축 제목, 격자, 범례, 글꼴, 글자 색, 차트 제목, 주석 층,
 활성 레이어, 선택, 장식 위치도 직교 좌표 설정으로 옮긴다. 가로 문서의 범주 축은 뒤집어
-(`inverted`) 문서에서처럼 첫 범주가 맨 위에 오고, `Y` 축 주석도 같은 범주에 놓인다. 호버 상태, 배경색,
-명시한 `decorations.data_area`, 값 라벨 위치는 옮기지 않는다. 범주 축의 축선은 값 축의 0에
+(`inverted`) 문서에서처럼 첫 범주가 맨 위에 오고, `Y` 축 주석도 같은 범주에 놓인다. 명시한
+`decorations.data_area`는 여백을 맞춰 그리기 영역이 된다(`Config::fit_legacy_data_area`, 가장자리는
+가장 가까운 정수 픽셀로 반올림; #334). 레이아웃에 들어가지 않는 영역은 자동 레이아웃을 유지하고 이유와 함께
+dropped로 보고한다. 호버 상태, 배경색, 값 라벨 위치는 옮기지 않는다. 범주 축의 축선은 값 축의 0에
 놓인다(`AxisOptions::cross_at`).
 
 그 뒤로는 직교 좌표 차트다. 막대는 `pick_chart_data`가 `PickedData::HistogramBin`(범주 행이

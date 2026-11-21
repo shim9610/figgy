@@ -207,7 +207,10 @@ impl Renderer {
     /// Release the defrag backup and shrink the resident pool to the live
     /// columns (never below `minimum_capacity`). This never reads columns
     /// back to the CPU. It waits for submitted GPU work before releasing an
-    /// old slab and again before reporting retired bytes as reusable.
+    /// old slab and again before reporting retired bytes as reusable. It
+    /// also drops the typed data pick kernels no registered chart can
+    /// dispatch any more (#363); until then a removed chart's stay for
+    /// reuse.
     ///
     /// Call only at a host quiescence point: no unsubmitted command buffer may
     /// still reference the old pool. A failed candidate leaves live columns
@@ -231,6 +234,8 @@ impl Renderer {
             result?;
             waited?;
         }
+        self.release_unused_data_pick_kernels();
+        self.release_ink_masks();
         Ok(())
     }
 
@@ -247,9 +252,17 @@ impl Renderer {
                 result?;
                 waited?;
             }
+            self.release_unused_data_pick_kernels();
+            self.release_ink_masks();
             Ok(())
         })();
         self.reported(result)
+    }
+
+    /// Drop every ink mask (#381); the next on-screen prepare of each chart
+    /// draws its masks again, and until then its picks hit nothing.
+    pub(super) fn release_ink_masks(&mut self) {
+        self.ink_masks = Vec::new();
     }
 
     /// The release's first step, once the queued work is done: drop the

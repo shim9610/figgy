@@ -239,6 +239,11 @@ pub const MODULES: &[(&str, Assembled)] = &[
         "pick_vector",
         crate::gpu_pick::PickShader::Vector.assembled(),
     ),
+    ("pick_nearest", crate::gpu_pick::NEAREST_PICK_MODULE.1.full),
+    (
+        "pick_nearest_3d",
+        crate::gpu_pick::NEAREST_PICK_3D_MODULE.1.full,
+    ),
 ];
 
 /// Every module assembled by variant ([`AssembledBySet`], #299), by
@@ -302,6 +307,8 @@ pub const MODULES_BY_SET: &[(&str, AssembledBySet)] = &[
     ),
     ("pick_line", crate::gpu_pick::PickShader::Line.by_set()),
     ("pick_vector", crate::gpu_pick::PickShader::Vector.by_set()),
+    ("pick_nearest", crate::gpu_pick::NEAREST_PICK_MODULE.1),
+    ("pick_nearest_3d", crate::gpu_pick::NEAREST_PICK_3D_MODULE.1),
 ];
 
 /// The source of the module called `name` in [`MODULES_BY_SET`] assembled
@@ -875,6 +882,7 @@ mod tests {
             ("RANGE_COLOR_SINGLE", dr::RANGE_COLOR_SINGLE),
             ("RANGE_COLOR_DIRECTION", dr::RANGE_COLOR_DIRECTION),
             ("RANGE_COLOR_STATE", dr::RANGE_COLOR_STATE),
+            ("RANGE_COLOR_ROW", dr::RANGE_COLOR_ROW),
             ("RANGE_SLOT_WHISKER", dr::RANGE_SLOT_WHISKER),
             ("RANGE_SLOT_CONNECTOR", dr::RANGE_SLOT_CONNECTOR),
             ("RANGE_SLOT_UP", dr::RANGE_SLOT_UP),
@@ -1392,6 +1400,10 @@ mod tests {
                     selection,
                     radar,
                     ring,
+                    ink_dark,
+                    ink_light,
+                    ink_back,
+                    ink_base,
                 }
             ),
             mirror!(

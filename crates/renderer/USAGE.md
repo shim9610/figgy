@@ -97,6 +97,22 @@ at the display scale the style was built for); `prepare` does not rebuild it.
 Charts registered with `Renderer::register_chart` keep their own style cache,
 updated by `set_chart_config` / `set_chart_series`, and `prepare_registered`
 redraws the caller-owned `ChartView` from the stored chart and its selection.
+
+Every value the renderer fits is fitted once, where the renderer first holds
+the chart and its series ([#357](https://github.com/shim9610/figgy/issues/357)).
+`register_chart` with a new chart's config (`LayoutState::Fitted`:
+`Chart::sized`, `default::config_for_series`, the family presets) fits its
+axis ranges (the `fit_ranges` path), its layout, the scale of every
+auto-scaled vector series and the stroke share of every energy-level
+series' column slots (`slot_fraction`, narrowed so the level labels fit
+their own lane), and stores them in the chart's config and
+series; draws and exports read them as stored and nothing refits them on
+its own. A `Fixed` config, such as a loaded document, is registered as
+given. `register_chart_as_given(config, series)` registers any config
+without the fit, and `Chart::as_given(config)` makes a chart object
+without the layout fit `Chart::new` makes. A streamed source cannot be
+fitted (rule 8): `register_chart` refuses a new chart over one with
+`ColumnNotResident`; register it as given.
 See the [edit table and compiled example](API.md#cartesian-edits-update-the-derived-inputs-before-preparing).
 
 A redraw also reports tick settings the axis raster could not draw as written.
@@ -161,7 +177,7 @@ let mut chart = Chart::new(config)
     .with_y_title("sin(x)");
 
 // Series = SeriesConfig (declaration) + ChartStyle (GPU style auto-built from that declaration).
-let cfg = SeriesConfig {
+let mut cfg = SeriesConfig {
     series_id: "sin".into(), label: None,
     source_id: None,
     x_column: "x".into(), y_column: "y".into(), z_column: None,
@@ -177,7 +193,7 @@ let cfg = SeriesConfig {
 // A chart starts at a 0..1 placeholder range: fit every axis the series use
 // to the registered columns (5% padding). For one axis or another padding,
 // use `chart.auto_fit_x(renderer.pool(), "x", 0.02)` and its family.
-renderer.fit_ranges(&mut chart, std::slice::from_ref(&cfg)).unwrap();
+renderer.fit_ranges(&mut chart, std::slice::from_mut(&mut cfg)).unwrap();
 let style = renderer.create_style_for_series(&cfg).unwrap();   // budget-checked ChartStyle
 let mut view = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();
 
@@ -445,10 +461,10 @@ if let Some(ticket) = pending.take() {
 
 ### iced integration status
 
-The retained [iced integration source](https://github.com/shim9610/figgy/blob/master/crates/renderer/unsupported/iced_embed_wgpu27.rs)
-documents the intended `prepare` / `paint_prepared` ownership pattern, but its
-build target is disabled while iced 0.14 remains on wgpu 27. wgpu device,
-queue, and render-pass types cannot be shared across major versions.
+figgy ships no iced integration while iced 0.14 remains on wgpu 27: wgpu
+device, queue, and render-pass types cannot be shared across major versions.
+An embedder follows the same `prepare` / `paint_prepared` ownership pattern
+as the other hosts above.
 
 ### Series constructors
 
@@ -477,8 +493,16 @@ The families: `line`, `scatter`, `scatter_line`, `stem`, `histogram`,
 `vectors_3d`, `streamlines`, `category_bars`, `box_plot`, `range_bars`,
 `radar`, `ternary`, `parallel`, `tri_mesh`, `energy_levels`, `feynman` and
 `monotonic_line` (and `of_kind` for any `DataRenderType`). Each is named
-after its kind, and none takes a colour: a series is black until `.color(c)`
-or a theme's palette colours it. Matrices are
+after its kind, and none takes a colour: a series starts in the first
+colour of the default cycle (`ColorCycle::DEFAULT`, the `Balanced` preset)
+until `.color(c)` or a theme's palette colours it
+([#357](https://github.com/shim9610/figgy/issues/357); it started in black
+before). A constructor cannot know where its series will stand, so the
+series list gives the order: `config.apply_palette(&mut series, palette)`
+gives series `i` the palette's colour `i` in every part its kind draws in
+a palette colour, and `default::config_for_series(&mut series)` applies
+`ColorCycle::DEFAULT` that way. The colours are written into the series,
+so the document holds what is drawn (see [Palette presets](#palette-presets)). Matrices are
 named with `MatrixRef::columns_are_x` or `columns_are_y` (and
 `with_layout`). A family that needs its chart set up (a category axis,
 polar, ternary or parallel axes) still validates against that chart.
@@ -506,9 +530,9 @@ Everything else goes through a closure on the family's sub-style:
 `style_line`, `style_markers` (including a size map's `scale`),
 `style_stem` (a stem's own colour, width or dash), `style_bars` (category
 and range bars), `style_vectors` (minimum length, colour grid),
-`style_contours`, `style_surface` (3D look), and two that hand over every
-field of their family as `&mut` parts (`renderer::helpers::RangeBarsParts`,
-`BoxPlotParts`):
+`style_contours`, `style_surface` (3D look), and two that hand over the
+whole family series as `&mut` (`renderer::data_config::RangeBarSeries`,
+`BoxSeries`):
 
 ```rust
 use renderer::SeriesConfig;
@@ -519,15 +543,15 @@ let tasks = SeriesConfig::range_bars("tasks", "day", "begin", "end")
     .color(Color::from_rgb8(70, 110, 170))
     .bar_labels(CategoryBarLabels::Outside, owners)     // one string per bar
     .style_range_bars(|parts| {
-        *parts.progress = Some(RangeProgress { column: "done".into(), remaining_opacity: 0.35 });
-        *parts.slot_width = Some(1.0);                   // a numeric (day) position axis
+        parts.progress = Some(RangeProgress { column: "done".into(), remaining_opacity: 0.35 });
+        parts.slot_width = Some(1.0);                   // a numeric (day) position axis
     });
 let commute = SeriesConfig::box_plot("commute", "pos", "record")
     .color(Color::from_rgb8(60, 120, 110))
     .outliers("commute.outliers")
     .style_box_plot(|parts| {
         parts.style.notched = true;
-        *parts.points = Some(BoxPoints {                 // a raincloud
+        parts.points = Some(BoxPoints {                 // a raincloud
             positions: "commute.cat".into(),
             values: "commute.value".into(),
             style: BoxPointsStyle::default(),
@@ -665,6 +689,13 @@ setters ([WASM.md](WASM.md#math-in-labels)).
 - `\$` is a dollar sign: `r"Price (\$)"`.
 - Text whose TeX does not parse is shown as written, with each `\$` as
   `$`; the wrapper never fails.
+- Unicode superscript and subscript characters (`⁰`–`⁹`, `⁺`, `⁻`, `⁽`,
+  `⁾`, `ⁿ`, `ᵗ`, `₀`–`₉`, `₊`, `₋`, `₍`, `₎`) become their base character
+  with the `superscript` or `subscript` flag. A segment that holds one of
+  these characters itself, as a document or a host that builds segments
+  may write, keeps it and draws the same way: the renderer maps it with
+  `text::unicode_script_char` when it measures, draws and exports, whatever
+  fonts are installed (#353).
 
 The same reading is public as `text::rich_segments_from_label`
 (`RichText::from_label` for a whole `RichText`). The document types stay
@@ -863,10 +894,10 @@ styles, and label content are fields of that model. It shares the host wgpu devi
 and does not use the column pool or column streams.
 Try the [native editor](examples/radial_editor.rs) with
 `cargo run -p figgy-renderer --example radial_editor --features egui_demo`.
-The [radial chart guide](RADIAL.md) (in Korean) covers the API with an example,
-[option defaults and ranges](RADIAL.md#스타일-옵션-기본값과-범위),
-[per-slice editing](RADIAL.md#모델-편집과-선택), and
-[host update order](RADIAL.md#호스트의-갱신-순서), including frame ownership and export.
+The [radial chart guide](RADIAL.md) covers the API with an example,
+[option defaults and ranges](RADIAL.md#style-option-defaults-and-ranges),
+[per-slice editing](RADIAL.md#editing-the-model-and-selection), and
+[host update order](RADIAL.md#host-update-order), including frame ownership and export.
 
 ### Headless renderer and saving by format
 
@@ -904,6 +935,13 @@ renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // o
   that chart area; `with_legend_from(&series)` adds one legend entry per
   labelled series with the series' own symbol; `fit_layout()` fits the axis
   bands and margins to their labels (`layout::auto_layout`).
+- A chart made by `Chart::sized` keeps its layout fitted
+  (`layout_state: Fitted`, #357): it is created with its bands fitted, and
+  every chart method that edits it (titles, ranges, legend, themes) fits
+  them again as part of the edit. Draws and exports never fit and never
+  write: they draw the config as stored. An edit through `config_mut()` is
+  not fitted; call `fit_layout()` after it. A drag or a placed data area
+  sets `Fixed`, which no later edit refits.
 - `RadialRenderer::headless_blocking()` makes a radial renderer the same way,
   `RadialChart::with_title(text)` gives the chart a title in its own font and
   label colour, and `RasterImage::save_png(path)` writes an `export_rgba`
@@ -1018,8 +1056,10 @@ chart.apply_custom_theme(&theme, &mut series)?;
   `palette[i % len]`; an empty palette keeps every colour), then `lines`,
   `bars`, `boxes`, `fields`, `vectors`, `radar`, `range_bars`, `ternary`,
   `parallel`, `surfaces`, `energy_levels` or `feynman`. Energy-level and
-  Feynman charts take a frame of their own (`Grotrian`, `Hidden`). The legend
-  symbols follow the new series look.
+  Feynman charts take a frame of their own (`Grotrian`, `Hidden`). The
+  Grotrian frame draws the energy axis alone and names the term columns
+  without a value frame (#357). The legend symbols follow the new series
+  look.
 - **What it keeps.** Axis ranges, scales, tick spacing, label formats,
   categories, axis breaks, the chart area, every offset, all text content,
   the annotation layer, the overlay and subplot structure, series ids,
@@ -1063,6 +1103,15 @@ chart.apply_custom_theme(&theme, &mut series)?;
   (`SubplotIndexError { index, count }` past the subplots) and
   `chart.subplot_text_factor(i)` is the factor it draws with now. The names
   are the browser's.
+- **Palette presets.** `theme.with_palette(cycle)` (and
+  `RadialTheme::with_palette`) replaces a theme's palette with a preset;
+  see [Palette presets](#palette-presets). The families' palettes hold
+  eight or more colours: a member designed with fewer keeps its colours
+  first and is filled from public presets (gallery: `Balanced`, `Dark2`;
+  cool slate: `Tableau10`, `Dark2`; midnight: `Set2`, `Plotly`; warm paper:
+  `Dark2`, `Tableau10`), skipping colours close to one already in, so no
+  colour repeats in a chart of up to eight series, range-bar states or
+  ternary regions ([#357](https://github.com/shim9610/figgy/issues/357)).
 - **Radial charts.** The radial chart is a model of its own and has its own
   theme value, `RadialTheme`. `radial_chart.apply_theme(name)` applies a
   family's radial member (`ThemeFamily::radial()`), refusing any other name
@@ -1083,6 +1132,71 @@ chart.apply_custom_theme(&theme, &mut series)?;
   [gallery pages](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/lines.md): a family, or a custom theme the example
   builds in [examples/support/looks.rs](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/support/looks.rs).
 - Applying the same theme twice changes nothing more.
+
+### Palette presets
+
+`ColorCycle` ([#357](https://github.com/shim9610/figgy/issues/357)) names
+the series colour cycles. `ColorCycle::PRESETS` are the categorical
+palettes taken from established public sources, each with eight or more
+distinct colours; `ColorCycle::ALL` adds figgy's own `Classic`, `Vivid` and
+`Monochrome` rotations. `cycle.colors()` is the palette, `cycle.color(i)`
+the colour of series `i` (wrapping), `cycle.name()` and
+`ColorCycle::from_name(name)` the kebab-case name.
+
+| Preset | Colours | Source | Licence |
+|---|---|---|---|
+| `Balanced` (default) | 10 | D3 `schemeCategory10` (also matplotlib `tab10`, Vega `category10`), [d3-scale-chromatic](https://github.com/d3/d3-scale-chromatic) | ISC |
+| `ColorblindSafe` | 8 | Okabe and Ito, [Color Universal Design](https://jfly.uni-koeln.de/color/) | published as a free recommendation, no licence terms |
+| `Tableau10` | 10 | Tableau 10 (2016), D3 `schemeTableau10`, [d3-scale-chromatic](https://github.com/d3/d3-scale-chromatic) | ISC |
+| `Set2` | 8 | ColorBrewer Set2, Cynthia Brewer, Mark Harrower and The Pennsylvania State University, [colorbrewer2.org](https://colorbrewer2.org) | Apache-2.0 |
+| `Dark2` | 8 | ColorBrewer Dark2, same authors, [colorbrewer2.org](https://colorbrewer2.org) | Apache-2.0 |
+| `Plotly` | 10 | plotly.py `qualitative.Plotly`, [plotly.py](https://github.com/plotly/plotly.py) | MIT |
+| `HighContrast` | 24 | plotly.py `qualitative.Dark24`, [plotly.py](https://github.com/plotly/plotly.py) | MIT |
+
+ColorBrewer attribution: this product includes color specifications and
+designs developed by Cynthia Brewer (http://colorbrewer.org/). The
+ColorBrewer colour schemes are licensed under the Apache License, Version
+2.0, the licence figgy itself offers in `LICENSE-APACHE`.
+
+```rust
+use renderer::{ColorCycle, SeriesConfig, theme::{ChartKind, ThemeFamily}};
+
+// The default flow gives series `i` the default palette's colour `i`.
+let mut series = [
+    SeriesConfig::line("a", "x", "ya"),
+    SeriesConfig::line("b", "x", "yb"),
+];
+let mut config = renderer::default::config_for_series(&mut series);
+// Another palette: the same method with a preset's colours (or any list).
+config.apply_palette(&mut series, ColorCycle::Tableau10.colors());
+// A colour the host wants for one series is set after the palette.
+series[1] = series[1].clone().color(renderer::Color::BLACK);
+
+// A family's look with a preset's colours.
+let theme = ThemeFamily::Gallery.theme(ChartKind::Line).with_palette(ColorCycle::Set2);
+chart.apply_custom_theme(&theme, &mut series)?;
+```
+
+Where the colour is assigned matters for the document. A series' colour is
+a plain value in the SSOT and the renderer draws exactly that value; there
+is no "unset" colour in the model, and neither loading nor drawing a
+document recolours it. So a document saved by an earlier release, with its
+black series, reads back and draws the same. A palette is applied only by
+an explicit call where the chart is built: the constructors' starting
+colour, `Config::apply_palette` (which `default::config_for_series` calls)
+on the list the host builds, and in the browser `add_line_series`, whose
+new series take the next colour of the chart's cycle (now `Balanced`; it
+was `Classic`, which starts in black), and `apply_color_cycle`, which
+applies a cycle through the same method.
+
+`Config::apply_palette` writes colours only: series `i` takes colour
+`i % len` in its line, markers, error bars, stems, fill or series colour,
+and the legends derived from the series (the base chart's, each overlay's
+and each subplot's) redraw their symbols. A field or mesh (its fill comes
+from the colour map, its contour lines are dark ink), an RGB image, an
+energy-level diagram and a Feynman diagram keep their colours but still
+take their index. The layout is not touched. An empty palette changes
+nothing.
 
 ### PNG export (memory only — saving is the caller's job)
 
@@ -1249,6 +1363,15 @@ iced 0.14는 wgpu 27을 사용하므로, wgpu 30과 호환되는 iced 버전이 
 `refresh_axis_with_selection`)는 래스터를 직접 다시 그리려는 호스트가 쓴다. 시리즈의
 모양·매핑 스타일·식별자를 바꿨다면 `create_style_for_series`로 `ChartStyle`을 다시 만든다.
 특정 표시 배율로 만든 스타일은 같은 배율로 `create_style_for_series_scaled`를 호출한다.
+렌더러가 맞추는 값은 렌더러가 차트와 시리즈를 처음 함께 받을 때 한 번만 맞춘다(#357). 새 차트
+설정(`LayoutState::Fitted`: `Chart::sized`, `default::config_for_series`, 계열 프리셋)을 받은
+`register_chart`는 축 범위(`fit_ranges` 경로), 레이아웃, 자동 배율 벡터 시리즈의 배율, 에너지 준위 시리즈의 칸 폭 비율(`slot_fraction`, 준위 레이블이 제 칸에 들어가도록 좁힘)을 맞춰 차트의
+설정과 시리즈에 저장한다. 그리기와 내보내기는 저장된 값을 읽고, 저절로 다시 맞추지 않는다. 불러온
+문서처럼 `Fixed`인 설정은 받은 그대로 등록한다. `register_chart_as_given(config, series)`는 어떤 설정이든
+맞추지 않고 등록하고, `Chart::as_given(config)`는 `Chart::new`의 레이아웃 맞춤 없이 차트 객체를 만든다.
+스트리밍 소스는 맞출 수 없으므로(규칙 8) 그 위의 새 차트는 `register_chart`가 `ColumnNotResident`로
+거부한다. 이때는 그대로 등록한다.
+
 `prepare`는 스타일을 다시 만들지 않는다. `Renderer::register_chart`로 등록한 차트는 자체
 스타일 캐시를 두고 `set_chart_config` / `set_chart_series`로 갱신하며, `prepare_registered`가
 저장된 차트와 그 선택 상태로 호출자의 `ChartView`를 다시 그린다.
@@ -1311,7 +1434,7 @@ let mut chart = Chart::new(config)
     .with_y_title("sin(x)");
 
 // 시리즈 = SeriesConfig (선언) + ChartStyle (그 선언에서 자동 빌드된 GPU 스타일).
-let cfg = SeriesConfig {
+let mut cfg = SeriesConfig {
     series_id: "sin".into(), label: None,
     source_id: None,
     x_column: "x".into(), y_column: "y".into(), z_column: None,
@@ -1326,7 +1449,7 @@ let cfg = SeriesConfig {
 };
 // 새 차트의 범위는 0..1 자리표시자다. 시리즈가 쓰는 모든 축을 등록된 컬럼에 맞춘다(여백 5%).
 // 축 하나만 맞추거나 여백을 바꾸려면 `chart.auto_fit_x(renderer.pool(), "x", 0.02)` 계열을 쓴다.
-renderer.fit_ranges(&mut chart, std::slice::from_ref(&cfg)).unwrap();
+renderer.fit_ranges(&mut chart, std::slice::from_mut(&mut cfg)).unwrap();
 let style = renderer.create_style_for_series(&cfg).unwrap();   // budget-checked ChartStyle
 let mut view = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();
 
@@ -1527,7 +1650,7 @@ if let Some(ticket) = pending.take() {
 
 ### iced 통합 상태
 
-[보관 중인 iced 통합 예제](https://github.com/shim9610/figgy/blob/master/crates/renderer/unsupported/iced_embed_wgpu27.rs)에서 `prepare` / `paint_prepared`의 소유권 패턴을 확인할 수 있다. 다만 iced 0.14는 wgpu 27을 사용하므로 현재 빌드 대상에서는 제외한다. 서로 다른 wgpu 주 버전의 장치·큐·렌더 패스 타입은 공유할 수 없다.
+iced 0.14는 wgpu 27을 사용하므로 figgy는 iced 통합을 제공하지 않는다. 서로 다른 wgpu 주 버전의 장치·큐·렌더 패스 타입은 공유할 수 없다. 임베드하는 호스트는 위의 다른 호스트와 같은 `prepare` / `paint_prepared` 소유권 패턴을 따른다.
 
 ### 시리즈 생성 함수
 
@@ -1553,7 +1676,14 @@ let series = [
 `rgb_image`, `vectors`, `vectors_grid`, `vectors_3d`, `streamlines`, `category_bars`, `box_plot`,
 `range_bars`, `radar`, `ternary`, `parallel`, `tri_mesh`, `energy_levels`, `feynman`,
 `monotonic_line`. 그 밖의 `DataRenderType`은 `of_kind`로 만든다. 생성 함수 이름은 종류 이름과 같고
-색을 인자로 받지 않는다. 시리즈는 `.color(c)`나 테마 팔레트가 색을 정하기 전까지 검은색이다. 행렬은 `MatrixRef::columns_are_x`나 `columns_are_y`로
+색을 인자로 받지 않는다. 시리즈는 `.color(c)`나 테마 팔레트가 색을 정하기 전까지 기본 색 순환
+(`ColorCycle::DEFAULT`, `Balanced` 프리셋)의 첫 색이다(#357, 이전에는 검은색). 생성 함수는 시리즈의
+순서를 모르므로 순서는 시리즈 목록이 정한다. `config.apply_palette(&mut series, palette)`는 시리즈
+`i`가 팔레트 색으로 그리는 모든 부분에 팔레트의 `i`번째 색을 쓰고, `default::config_for_series(&mut series)`는
+이 방법으로 `ColorCycle::DEFAULT`를 적용한다. 필드·메시, RGB 이미지, 에너지 준위 도표, 파인만 도표는 제
+색을 유지하고, 시리즈에서 파생된 범례는 기호를 다시 그린다. 레이아웃은 건드리지 않는다. 색은
+시리즈에 값으로 써 넣으므로 문서가 그려지는 색을 그대로 담는다. 프리셋과 출처는 영문 절의
+[Palette presets](#palette-presets)에 있다. 행렬은 `MatrixRef::columns_are_x`나 `columns_are_y`로
 지정한다(`with_layout`도 있다). 차트 설정이 필요한 종류(범주 축, 극좌표, 삼각 좌표, 평행 좌표)는 그
 차트 설정에 맞춰 검증된다.
 
@@ -1576,8 +1706,8 @@ let series = [
 나머지 필드는 하위 스타일을 받는 클로저로 바꾼다. `style_line`, `style_markers`(크기 매핑의
 `scale` 포함), `style_stem`(줄기만의 색, 두께, 점선), `style_bars`(범주형·범위 막대),
 `style_vectors`(최소 길이, 색 격자), `style_contours`, `style_surface`(3D 모양)가 있다. 범위 막대와
-박스플롯은 그 종류의 필드를 모두 `&mut`로 묶어 넘기는 클로저를 쓴다(`renderer::helpers::RangeBarsParts`,
-`BoxPlotParts`).
+박스플롯은 그 종류의 시리즈 전체를 `&mut`로 넘기는 클로저를 쓴다(`renderer::data_config::RangeBarSeries`,
+`BoxSeries`).
 
 ```rust
 use renderer::SeriesConfig;
@@ -1588,15 +1718,15 @@ let tasks = SeriesConfig::range_bars("tasks", "day", "begin", "end")
     .color(Color::from_rgb8(70, 110, 170))
     .bar_labels(CategoryBarLabels::Outside, owners)     // 막대마다 문자열 하나
     .style_range_bars(|parts| {
-        *parts.progress = Some(RangeProgress { column: "done".into(), remaining_opacity: 0.35 });
-        *parts.slot_width = Some(1.0);                   // 숫자(날짜) 위치 축
+        parts.progress = Some(RangeProgress { column: "done".into(), remaining_opacity: 0.35 });
+        parts.slot_width = Some(1.0);                   // 숫자(날짜) 위치 축
     });
 let commute = SeriesConfig::box_plot("commute", "pos", "record")
     .color(Color::from_rgb8(60, 120, 110))
     .outliers("commute.outliers")
     .style_box_plot(|parts| {
         parts.style.notched = true;
-        *parts.points = Some(BoxPoints {                 // 레인클라우드
+        parts.points = Some(BoxPoints {                 // 레인클라우드
             positions: "commute.cat".into(),
             values: "commute.value".into(),
             style: BoxPointsStyle::default(),
@@ -1710,6 +1840,10 @@ chart.set_y_range(0.0, 32768.0);                       // 0, 1, 2, 3, 4, 5 V에 
   일반 텍스트다.
 - `\$`는 달러 기호다. 예: `r"Price (\$)"`.
 - TeX를 해석할 수 없는 텍스트는 쓴 그대로 보이고, `\$`만 `$`로 바뀐다. 편의 함수는 실패하지 않는다.
+- 유니코드 위첨자·아래첨자 문자(`⁰`–`⁹`, `⁺`, `⁻`, `⁽`, `⁾`, `ⁿ`, `ᵗ`, `₀`–`₉`, `₊`, `₋`, `₍`, `₎`)는
+  기본 문자에 `superscript` 또는 `subscript` 플래그를 붙인 구간이 된다. 문서나 호스트가 이 문자를 그대로
+  담은 구간을 만들어도 문자는 그대로 남고 같은 모양으로 그려진다. 렌더러가 측정·그리기·내보내기 때
+  `text::unicode_script_char`로 변환하므로 설치된 글꼴과 관계없다(#353).
 
 같은 읽기 방식을 `text::rich_segments_from_label`로 직접 쓸 수 있다(`RichText` 전체가 필요하면
 `RichText::from_label`). 문서 타입은 명시적으로 남는다. `RichText::plain`은 일반 텍스트이고,
@@ -1862,7 +1996,7 @@ x에서 픽셀로의 매핑(x 범위, 장치 픽셀 단위 플롯 너비, x 방�
 컬럼에서 읽으며, 스트리밍 소스는 거부한다. 막대별 색·재질·둥근 모서리·외곽선은 시리즈에 막대별로
 덮어쓰는 값이고, 막대 하나는 히스토그램 구간처럼 선택한다. 예전 `CategoricalChart` 문서는
 `Config::from_categorical`로 연다.
-[API 사용법](CATEGORICAL.md)을 참고하거나
+[API 사용법](CATEGORICAL.md#한국어-사용법)을 참고하거나
 `cargo run -p figgy-renderer --example categorical_gallery -- target/categorical-gallery`로 예제 PNG를 만든다.
 
 ### 원형 차트
@@ -1873,7 +2007,7 @@ x에서 픽셀로의 매핑(x 범위, 장치 픽셀 단위 플롯 너비, x 방�
 컬럼 풀이나 컬럼 스트림은 쓰지 않는다.
 [네이티브 편집기](examples/radial_editor.rs)는
 `cargo run -p figgy-renderer --example radial_editor --features egui_demo`로 실행한다.
-[사용법과 예제](RADIAL.md)에서 [옵션 기본값과 범위](RADIAL.md#스타일-옵션-기본값과-범위),
+[사용법과 예제](RADIAL.md#한국어-사용법)에서 [옵션 기본값과 범위](RADIAL.md#스타일-옵션-기본값과-범위),
 [조각별 편집과 상속](RADIAL.md#모델-편집과-선택), 프레임 수명과 내보내기를 포함한
 [호스트 갱신 순서](RADIAL.md#호스트의-갱신-순서)를 확인할 수 있다.
 
@@ -2005,8 +2139,8 @@ chart.apply_custom_theme(&theme, &mut series)?;
   `palette`의 색을 받고(시리즈 `i`는 `palette[i % len]`, 빈 팔레트는 모든 색을 그대로 둔다),
   이어서 `lines`, `bars`, `boxes`, `fields`, `vectors`, `radar`, `range_bars`, `ternary`,
   `parallel`, `surfaces`, `energy_levels`, `feynman` 가운데 해당하는 부분을 받는다. 에너지 준위
-  차트와 파인만 도형은 자기 축 틀(`Grotrian`, `Hidden`)을 받는다. 범례 기호는 바뀐 시리즈
-  모양을 따른다.
+  차트와 파인만 도형은 자기 축 틀(`Grotrian`, `Hidden`)을 받는다. `Grotrian` 틀은 에너지 축만
+  그리고, 항 열은 값 테두리 없이 이름만 단다(#357). 범례 기호는 바뀐 시리즈 모양을 따른다.
 - **그대로 두는 것.** 축 범위, 스케일, 눈금 간격, 라벨 형식, 범주, 축 끊김, 차트 영역, 모든
   오프셋, 모든 텍스트 내용, 주석 레이어, 오버레이와 서브플롯 구조, 시리즈 id·컬럼·라벨, 선택
   자체는 그대로 둔다. 부분의 `Option` 필드가 `None`이면(채움 불투명도, 범위 막대의 `up` 색, 라벨
@@ -2038,6 +2172,12 @@ chart.apply_custom_theme(&theme, &mut series)?;
   `chart.set_subplot_text_scale(i, mode)`는 그 방식을 정하며(범위를 넘으면
   `SubplotIndexError { index, count }`), `chart.subplot_text_factor(i)`는 지금 그리는 배율을
   돌려준다. 이름은 브라우저 메서드와 같다.
+- **팔레트 프리셋.** `theme.with_palette(cycle)`(와 `RadialTheme::with_palette`)는 테마의 팔레트를
+  프리셋으로 바꾼다. 계열의 팔레트는 8색 이상이다. 더 적은 색으로 설계된 구성원은 그 색을 앞에 두고
+  공개 프리셋(gallery: `Balanced`, `Dark2`, cool slate: `Tableau10`, `Dark2`, midnight: `Set2`,
+  `Plotly`, warm paper: `Dark2`, `Tableau10`)에서 이미 있는 색과 가깝지 않은 색을 뒤에 채운다. 그래서
+  시리즈, 범위 막대 상태, 삼각 영역이 여덟 개까지인 차트에서는 색이 반복되지 않는다(#357). 프리셋 목록과
+  출처, 라이선스는 영문 절의 [Palette presets](#palette-presets)에 있다.
 - **원형 차트.** 원형 차트는 모델이 따로 있고 테마 값도 따로 있다(`RadialTheme`).
   `radial_chart.apply_theme(name)`은 계열의 원형 구성원(`ThemeFamily::radial()`)을 적용하고, 그
   밖의 이름은 `ThemeError::UnknownName`으로 거부한다. `theme.apply(&mut radial_chart)`는

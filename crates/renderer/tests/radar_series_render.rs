@@ -13,30 +13,30 @@
 //! Expected positions come from the chart's own `polar_geometry` and
 //! `polar_angle_map`, the circle and the angle mapping the renderer draws
 //! with.
-// Legacy documents are read through their deprecated reader types.
-#![allow(deprecated)]
 use test_gpu::BlockOn as _;
 
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::ShowForPick as _;
+use harness::{
+    BLUE, MID_GREEN as GREEN, RED, categories, col, export, is_empty_rgba as is_empty, save,
+};
+use test_gpu::shared_device;
 
 use renderer::config::{Category, TickVisibility};
-use renderer::data::Column;
 use renderer::layout::{ChartArea, Rect};
 use renderer::polar::{GridShape, PolarInterpolation, PolarOptions};
 use renderer::{
     Anchor, Annotation, AnnotationKind, Chart, Color, Config, DataRenderType, DataSelectionsConfig,
-    FiggyError, LayerRef, PickedDataRef, RadarLabels, RadarMarker, RadarSeriesLabels,
-    RadarSeriesStyle, RasterImage, Renderer, RendererDevice, SeriesConfig, Subplot,
+    FiggyError, LayerRef, PickedDataRef, RadarLabels, RadarMarker, RadarPolygonSeries,
+    RadarSeriesLabels, RadarSeriesStyle, RasterImage, Renderer, RendererDevice, SeriesConfig,
+    Subplot,
 };
 
 const WIDTH: u32 = 400;
 const HEIGHT: u32 = 360;
-const RED: Color = Color::from_rgb8(255, 0, 0);
-const GREEN: Color = Color::from_rgb8(0, 200, 0);
-const BLUE: Color = Color::from_rgb8(0, 0, 255);
 const CLEAR: Color = Color {
     r: 0.0,
     g: 0.0,
@@ -46,19 +46,6 @@ const CLEAR: Color = Color {
 /// The values of the first series over five categories, on a 0..1 radius.
 const ONE: [f64; 5] = [0.9, 0.5, 0.8, 0.4, 0.7];
 const TWO: [f64; 5] = [0.3, 0.6, 0.35, 0.65, 0.4];
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
-
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
 
 /// A renderer holding the category indices and the two series' values, the
 /// first one also with a NaN vertex.
@@ -78,12 +65,6 @@ fn renderer() -> Renderer {
     gap[1] = f64::NAN;
     r.add_column("gap", &col(gap)).unwrap();
     r
-}
-
-fn categories(n: usize) -> Vec<Category> {
-    (0..n)
-        .map(|i| Category::new(format!("c{i}"), format!("Cat {i}")))
-        .collect()
 }
 
 /// A polar chart over the five categories and a 0..1 radius, first spoke
@@ -142,11 +123,11 @@ fn radar(id: &str, values: &str, color: Color, style: RadarSeriesStyle) -> Serie
         x_column: "cat".into(),
         y_column: values.into(),
         z_column: None,
-        render_type: DataRenderType::Radar {
+        render_type: DataRenderType::Radar(RadarPolygonSeries {
             color,
             style,
             labels: RadarSeriesLabels::default(),
-        },
+        }),
     }
 }
 
@@ -200,36 +181,11 @@ fn is_blue(p: [u8; 4]) -> bool {
     p[3] > 180 && p[2] > 180 && p[0] < 90 && p[1] < 90
 }
 
-fn is_empty(p: [u8; 4]) -> bool {
-    p[3] < 16
-}
-
 fn count(img: &RasterImage, pred: fn([u8; 4]) -> bool) -> usize {
     img.rgba
         .chunks_exact(4)
         .filter(|p| pred([p[0], p[1], p[2], p[3]]))
         .count()
-}
-
-fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], scale: f32) -> RasterImage {
-    r.export_rgba(
-        renderer::ExportSource::chart(chart, series),
-        renderer::ExportOptions::panel(scale),
-    )
-    .block_on()
-    .unwrap()
-}
-
-/// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
-fn save(name: &str, image: &RasterImage) {
-    if let Ok(path) = std::env::var("FIGGY_INTERACTION_ARTIFACTS") {
-        std::fs::create_dir_all(&path).unwrap();
-        std::fs::write(
-            std::path::Path::new(&path).join(format!("{name}.png")),
-            renderer::encode_png(image).unwrap(),
-        )
-        .unwrap();
-    }
 }
 
 #[test]
@@ -649,7 +605,10 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
         .block_on(),
         "rectangular",
     );
-    assert!(reason.to_string().contains("polar"), "{reason}");
+    assert!(
+        matches!(reason, renderer::RuleKind::RadarNotPolar),
+        "{reason}"
+    );
     // A numeric angle axis.
     let mut numeric = chart(up_clockwise());
     numeric.config_mut().bottom_x.categories = None;
@@ -662,7 +621,7 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
         "numeric",
     );
     assert!(
-        reason.to_string().contains("categorical angle axis"),
+        matches!(reason, renderer::RuleKind::RadarAngleAxis),
         "{reason}"
     );
     // Arc interpolation.
@@ -694,12 +653,12 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
         "short",
     );
     assert!(
-        reason.to_string().contains("one value per category"),
+        matches!(reason, renderer::RuleKind::RadarValueCount { .. }),
         "{reason}"
     );
     // A label text per category or none.
     let mut labelled = radar("one", "one", RED, outline_and_fill());
-    if let DataRenderType::Radar { labels, .. } = &mut labelled.render_type {
+    if let DataRenderType::Radar(RadarPolygonSeries { labels, .. }) = &mut labelled.render_type {
         labels.placement = RadarLabels::Values;
         labels.text = vec!["1".into(); 4];
     }
@@ -712,7 +671,7 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
         "labels",
     );
     assert!(
-        reason.to_string().contains("one string per category"),
+        matches!(reason, renderer::RuleKind::RadarLabelTextCount),
         "{reason}"
     );
     // A polygon grid needs the categorical angle axis too.
@@ -929,7 +888,9 @@ fn every_radar_edit_redraws_like_a_fresh_renderer() {
         }
         for (name, edit) in series_edits {
             let mut edited = series.clone();
-            if let DataRenderType::Radar { style, color, .. } = &mut edited[0].render_type {
+            if let DataRenderType::Radar(RadarPolygonSeries { style, color, .. }) =
+                &mut edited[0].render_type
+            {
                 edit(style, color);
             }
             let after = export(&mut r, &grid, &edited, scale);
@@ -944,12 +905,16 @@ fn every_radar_edit_redraws_like_a_fresh_renderer() {
         // strings, a drag offset) like a fresh renderer: the label atlas is
         // keyed by its strings and the offsets are read on every draw.
         let mut labelled = series.clone();
-        if let DataRenderType::Radar { labels, .. } = &mut labelled[0].render_type {
+        if let DataRenderType::Radar(RadarPolygonSeries { labels, .. }) =
+            &mut labelled[0].render_type
+        {
             labels.placement = RadarLabels::Values;
             labels.text = vec!["a".into(); 5];
         }
         let mut retexted = labelled.clone();
-        if let DataRenderType::Radar { labels, .. } = &mut retexted[0].render_type {
+        if let DataRenderType::Radar(RadarPolygonSeries { labels, .. }) =
+            &mut retexted[0].render_type
+        {
             labels.text[2] = "bb".into();
         }
         let mut dragged = labelled.clone();
@@ -973,12 +938,14 @@ fn every_radar_edit_redraws_like_a_fresh_renderer() {
         // second's at their spokes (#272) and follow every edit of the
         // second series' labels and values like a fresh renderer.
         let mut both = labelled.clone();
-        if let DataRenderType::Radar { labels, .. } = &mut both[1].render_type {
+        if let DataRenderType::Radar(RadarPolygonSeries { labels, .. }) = &mut both[1].render_type {
             labels.placement = RadarLabels::Values;
             labels.text = vec!["b".into(); 5];
         }
         let mut other_text = both.clone();
-        if let DataRenderType::Radar { labels, .. } = &mut other_text[1].render_type {
+        if let DataRenderType::Radar(RadarPolygonSeries { labels, .. }) =
+            &mut other_text[1].render_type
+        {
             labels.text[1] = "bbbb".into();
         }
         for (name, edited) in [
@@ -1104,6 +1071,9 @@ fn radar_value_labels_meet_no_other_label() {
         for upload in &uploads {
             r.add_column(upload.column.clone(), &upload.values).unwrap();
         }
+        // A document built in Rust carries `text_sizes`: its chart is
+        // created with its layout fitted (#357), and the vertices are read
+        // from that layout, the one the exports draw.
         let chart = Chart::new(config);
         // `only` keeps the labels of that series on the chart; the others
         // are dragged far off it, which leaves every label where it is
@@ -1112,7 +1082,7 @@ fn radar_value_labels_meet_no_other_label() {
         let labelled = |only: Option<usize>| {
             let mut out = series.clone();
             for (k, s) in out.iter_mut().enumerate() {
-                if let DataRenderType::Radar { labels, .. } = &mut s.render_type
+                if let DataRenderType::Radar(RadarPolygonSeries { labels, .. }) = &mut s.render_type
                     && only != Some(k)
                 {
                     labels.offsets = vec![[4000.0, 4000.0]; labels.text.len()];
@@ -1160,7 +1130,9 @@ fn radar_value_labels_meet_no_other_label() {
             let scaled = chart.config().scaled(scale);
             let face = &scaled.left_y.label_style;
             for (k, mask) in inks.iter().enumerate() {
-                let DataRenderType::Radar { labels, style, .. } = &series[k].render_type else {
+                let DataRenderType::Radar(RadarPolygonSeries { labels, style, .. }) =
+                    &series[k].render_type
+                else {
                     unreachable!("a radar document opens as radar series")
                 };
                 let extent = labels
@@ -1272,7 +1244,7 @@ fn a_hundred_spokes_draw_pick_and_highlight() {
             ..outline_and_fill()
         },
     );
-    if let DataRenderType::Radar { labels, .. } = &mut series.render_type {
+    if let DataRenderType::Radar(RadarPolygonSeries { labels, .. }) = &mut series.render_type {
         labels.text = (0..N).map(|i| format!("{i}")).collect();
     }
     let series = [series];
@@ -1303,9 +1275,14 @@ fn a_hundred_spokes_draw_pick_and_highlight() {
         display_scale: 1.0,
         max_distance_px: 2.0,
     };
-    let hit = test_gpu::block_on(r.pick_chart(id, request).unwrap().resolve())
-        .unwrap()
-        .expect("the last vertex picks");
+    let hit = test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap()
+    .expect("the last vertex picks");
     assert_eq!((hit.series_id.as_str(), hit.point_index), ("many", N - 1));
     // Its picked ring draws outside the marker, and nowhere near vertex 0.
     chart.config_mut().picked_data = Some(DataSelectionsConfig {
@@ -1402,9 +1379,14 @@ fn twenty_radar_series_draw_pick_and_highlight() {
         display_scale: 1.0,
         max_distance_px: 2.0,
     };
-    let hit = test_gpu::block_on(r.pick_chart(id, request).unwrap().resolve())
-        .unwrap()
-        .expect("the last series' vertex picks");
+    let hit = test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap()
+    .expect("the last series' vertex picks");
     assert_eq!((hit.series_id.as_str(), hit.point_index), ("s19", 3));
     chart.config_mut().picked_data = Some(DataSelectionsConfig {
         refs: vec![PickedDataRef::Point {

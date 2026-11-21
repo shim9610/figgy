@@ -10,10 +10,14 @@
 //! past its edge fails rather than passes.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    cell, col as col_f64, data_to_px, pixel_at as pixel, renderer_16mib as renderer, renderer_with,
+    save_png as save, to8,
+};
 
 use renderer::data::{Column, ColumnSource};
 use renderer::data_config::{
@@ -22,8 +26,8 @@ use renderer::data_config::{
 use renderer::layout::{ChartArea, Rect};
 use renderer::view3d::View3d;
 use renderer::{
-    Chart, Color, DataRenderType, DataSelectionsConfig, FiggyError, GpuPickRequest, PickedData,
-    PickedDataRef, RasterImage, Renderer, RendererDevice, SeriesConfig,
+    Chart, Color, DataRenderType, DataSelectionsConfig, FiggyError, GpuPickRequest, PickedDataRef,
+    RasterImage, Renderer, RgbImageSeries, SeriesConfig,
 };
 
 const WIDTH: u32 = 480;
@@ -63,33 +67,6 @@ const MISSING: (usize, usize) = (3, 2);
 
 fn center(c: usize, r: usize) -> (f64, f64) {
     (1.0 + c as f64, 1.0 + r as f64)
-}
-
-fn col_f64(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
-
-fn renderer_with(budget: u64) -> Renderer {
-    let (device, queue) = shared_device();
-    Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Bgra8Unorm,
-        budget,
-    )
-    .expect("renderer init")
-}
-
-fn renderer() -> Renderer {
-    renderer_with(16 * 1024 * 1024)
 }
 
 /// The three channel grids' column ids, red, green and blue.
@@ -166,14 +143,14 @@ fn image(
         label: None,
         x_column: format!("{prefix}_x"),
         y_column: format!("{prefix}_y"),
-        render_type: DataRenderType::RgbImage {
+        render_type: DataRenderType::RgbImage(RgbImageSeries {
             red: matrix(&ids[0], orientation.clone()),
             green: matrix(&ids[1], orientation.clone()),
             blue: matrix(&ids[2], orientation),
             range,
             shading,
             opacity: 1.0,
-        },
+        }),
     }
 }
 
@@ -209,19 +186,6 @@ fn chart() -> Chart {
     chart
 }
 
-/// Data (x, y) → export pixel at `scale`, through the chart's data area and
-/// axis ranges.
-fn data_to_px(chart: &Chart, x: f64, y: f64, scale: f64) -> (f64, f64) {
-    let cfg = chart.config();
-    let da = cfg.data_area().expect("data area");
-    let tx = (x - cfg.bottom_x.min) / (cfg.bottom_x.max - cfg.bottom_x.min);
-    let ty = (y - cfg.left_y.min) / (cfg.left_y.max - cfg.left_y.min);
-    (
-        (f64::from(da.x) + tx * f64::from(da.width)) * scale,
-        (f64::from(da.y + da.height) - ty * f64::from(da.height)) * scale,
-    )
-}
-
 /// The data point an export pixel's centre maps to at `scale`: the inverse
 /// of `data_to_px`, for an assertion about the pixel the export sampled.
 fn px_center_to_data(chart: &Chart, at: (f64, f64), scale: f64) -> (f64, f64) {
@@ -234,31 +198,6 @@ fn px_center_to_data(chart: &Chart, at: (f64, f64), scale: f64) -> (f64, f64) {
         cfg.bottom_x.min + tx * (cfg.bottom_x.max - cfg.bottom_x.min),
         cfg.left_y.min + ty * (cfg.left_y.max - cfg.left_y.min),
     )
-}
-
-/// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
-fn save(name: &str, image: &RasterImage) {
-    if let Ok(path) = std::env::var("FIGGY_INTERACTION_ARTIFACTS") {
-        std::fs::create_dir_all(&path).unwrap();
-        let png = renderer::encode_png(image).unwrap();
-        std::fs::write(format!("{path}/{name}.png"), png).unwrap();
-    }
-}
-
-fn pixel(img: &RasterImage, (x, y): (f64, f64)) -> [u8; 4] {
-    let x = (x.floor() as i64).clamp(0, i64::from(img.width) - 1) as u32;
-    let y = (y.floor() as i64).clamp(0, i64::from(img.height) - 1) as u32;
-    let i = ((y * img.width + x) * 4) as usize;
-    [
-        img.rgba[i],
-        img.rgba[i + 1],
-        img.rgba[i + 2],
-        img.rgba[i + 3],
-    ]
-}
-
-fn to8(v: f32) -> i32 {
-    (v.clamp(0.0, 1.0) * 255.0).round() as i32
 }
 
 /// The colour a cell's channels map to through `range`: each channel
@@ -589,9 +528,9 @@ fn a_hexagonal_lattice_paints_its_centres() {
     let ids = upload(&mut r, "img", &MatrixOrientation::ColumnsAreX, 1.0);
     let chart = chart();
     let mut series = flat("img", &ids);
-    if let DataRenderType::RgbImage {
+    if let DataRenderType::RgbImage(RgbImageSeries {
         red, green, blue, ..
-    } = &mut series.render_type
+    }) = &mut series.render_type
     {
         for channel in [red, green, blue] {
             channel.grid_layout = GridLayout::Hexagonal;
@@ -636,16 +575,6 @@ fn request(at: (f64, f64)) -> GpuPickRequest {
         },
         display_scale: 1.0,
         max_distance_px: 0.0,
-    }
-}
-
-fn cell(picked: Option<PickedData>) -> Option<(usize, usize)> {
-    match picked {
-        Some(PickedData::MatrixCell {
-            x_index, y_index, ..
-        }) => Some((x_index, y_index)),
-        None => None,
-        other => panic!("picked {other:?}"),
     }
 }
 
@@ -814,7 +743,7 @@ fn registration_names_what_an_image_cannot_read() {
         }
     };
     let mut short = flat("img", &ids);
-    if let DataRenderType::RgbImage { green, .. } = &mut short.render_type {
+    if let DataRenderType::RgbImage(RgbImageSeries { green, .. }) = &mut short.render_type {
         green.columns.truncate(COLS - 1);
     }
     assert_eq!(
@@ -822,7 +751,7 @@ fn registration_names_what_an_image_cannot_read() {
         renderer::RuleKind::ImageChannelColumns
     );
     let mut turned = flat("img", &ids);
-    if let DataRenderType::RgbImage { blue, .. } = &mut turned.render_type {
+    if let DataRenderType::RgbImage(RgbImageSeries { blue, .. }) = &mut turned.render_type {
         blue.orientation = MatrixOrientation::ColumnsAreY;
     }
     assert_eq!(
@@ -830,7 +759,7 @@ fn registration_names_what_an_image_cannot_read() {
         renderer::RuleKind::ImageChannelLattice
     );
     let mut hexagonal = flat("img", &ids);
-    if let DataRenderType::RgbImage { red, .. } = &mut hexagonal.render_type {
+    if let DataRenderType::RgbImage(RgbImageSeries { red, .. }) = &mut hexagonal.render_type {
         red.grid_layout = GridLayout::Hexagonal;
     }
     assert_eq!(
@@ -857,7 +786,7 @@ fn registration_names_what_an_image_cannot_read() {
         );
     }
     let mut opaque = flat("img", &ids);
-    if let DataRenderType::RgbImage { opacity, .. } = &mut opaque.render_type {
+    if let DataRenderType::RgbImage(RgbImageSeries { opacity, .. }) = &mut opaque.render_type {
         *opacity = 1.5;
     }
     assert_eq!(
@@ -877,7 +806,7 @@ fn registration_names_what_an_image_cannot_read() {
         renderer::RuleKind::PolarImage
     );
     let mut unregistered = flat("img", &ids);
-    if let DataRenderType::RgbImage { blue, .. } = &mut unregistered.render_type {
+    if let DataRenderType::RgbImage(RgbImageSeries { blue, .. }) = &mut unregistered.render_type {
         blue.columns[0] = "nowhere".into();
     }
     assert!(
