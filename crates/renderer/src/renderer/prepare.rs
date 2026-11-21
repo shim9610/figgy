@@ -379,6 +379,7 @@ impl PrepareContext<'_> {
                         (w, h),
                         &pieces,
                         super::composite::PieceSeries::of(&series_list, &own),
+                        CompositeSteps::All,
                     );
                     i
                 }
@@ -546,23 +547,38 @@ impl PrepareContext<'_> {
                 if series_list.is_empty() {
                     pipeline.record(encoder, &source, &mask_view, 0, true);
                 }
-                // Each series alone, in drawing order: its slot overwrites
-                // what earlier series left wherever it inks. A 3D panel
-                // keeps its depth from series to series.
-                for (index, slot) in (0..series_list.len()).zip(1u32..) {
-                    draw_panel_composite(
-                        encoder,
-                        PanelCompositeTargets {
-                            color: msaa_view.as_ref().unwrap_or(&layer_view),
-                            resolve: msaa_view.as_ref().map(|_| &layer_view),
-                            depth: depth_view.as_ref(),
-                            depth_carried: Some(index > 0),
-                        },
-                        (w, h),
-                        &pieces,
-                        all.series(index),
-                    );
-                    pipeline.record(encoder, &source, &mask_view, slot, index == 0);
+                // Each series alone, in the frame's order: every series'
+                // fills, then every series' bodies. Its slot overwrites what
+                // was recorded before wherever it inks, so a marker over a
+                // later series' fill stays the owner. A 3D panel keeps its
+                // depth from pass to pass. A series with no fill skips the
+                // fill step.
+                let mut first = true;
+                for steps in [CompositeSteps::Fills, CompositeSteps::Bodies] {
+                    for (index, slot) in (0..series_list.len()).zip(1u32..) {
+                        let layers = &series_list[index];
+                        if steps == CompositeSteps::Fills
+                            && layers.area.is_none()
+                            && layers.region.is_none()
+                        {
+                            continue;
+                        }
+                        draw_panel_composite(
+                            encoder,
+                            PanelCompositeTargets {
+                                color: msaa_view.as_ref().unwrap_or(&layer_view),
+                                resolve: msaa_view.as_ref().map(|_| &layer_view),
+                                depth: depth_view.as_ref(),
+                                depth_carried: Some(!first),
+                            },
+                            (w, h),
+                            &pieces,
+                            all.series(index),
+                            steps,
+                        );
+                        pipeline.record(encoder, &source, &mask_view, slot, first);
+                        first = false;
+                    }
                 }
             }
         }
@@ -1017,6 +1033,18 @@ pub(super) fn create_composite_depth(
     )
 }
 
+/// Which steps of a panel's data a composite pass draws: every step, or
+/// one of the two the frame draws in order, the fills (with the ternary
+/// region fills under them) and then the bodies (with a 3D panel's
+/// surfaces). The ink mask records each step series by series, so a
+/// marker over a later series' fill stays the owner (#381).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CompositeSteps {
+    All,
+    Fills,
+    Bodies,
+}
+
 /// The attachments of a panel composite pass.
 pub(super) struct PanelCompositeTargets<'t> {
     pub(super) color: &'t wgpu::TextureView,
@@ -1041,7 +1069,16 @@ pub(super) fn draw_panel_composite(
     (w, h): (u32, u32),
     data: &super::composite::DataPieces,
     series: super::composite::PieceSeries<'_, '_>,
+    steps: CompositeSteps,
 ) {
+    let fills = steps != CompositeSteps::Bodies;
+    let bodies = steps != CompositeSteps::Fills;
+    let issue_bodies =
+        |pass: &mut wgpu::RenderPass<'_>, list: &[data_render::SeriesLayers<'_>]| match steps {
+            CompositeSteps::All => data_render::issue_series_bodies(pass, list),
+            CompositeSteps::Fills => data_render::issue_series_fills(pass, list),
+            CompositeSteps::Bodies => data_render::issue_series_bodies_without_fills(pass, list),
+        };
     let three_d = series.piece(0).iter().any(|s| {
         s.surface.is_some()
             || s.floor.is_some()
@@ -1126,13 +1163,15 @@ pub(super) fn draw_panel_composite(
         // its bodies (in the second pass when the stencil is attached).
         for (piece, series_list) in pieces() {
             scissor(&mut pass, piece);
-            if targets.depth.is_some() {
+            if targets.depth.is_some() && fills {
                 data_render::issue_series_regions(&mut pass, series_list);
             }
             if three_d {
-                data_render::issue_series_surfaces(&mut pass, series_list);
+                if bodies {
+                    data_render::issue_series_surfaces(&mut pass, series_list);
+                }
             } else if !two_passes {
-                data_render::issue_series_bodies(&mut pass, series_list);
+                issue_bodies(&mut pass, series_list);
             }
         }
     }
@@ -1152,7 +1191,7 @@ pub(super) fn draw_panel_composite(
         });
         for (piece, series_list) in pieces() {
             scissor(&mut pass, piece);
-            data_render::issue_series_bodies(&mut pass, series_list);
+            issue_bodies(&mut pass, series_list);
         }
     }
 }

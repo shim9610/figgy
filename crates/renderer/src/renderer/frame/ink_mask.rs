@@ -10,12 +10,15 @@ use super::*;
 /// [`Self::owners`] plus one, and 0 where no series inks it. Ownership only,
 /// no colour.
 ///
-/// It is recorded series by series: each series drawn on its own with its
-/// own pipelines, then the resolve pass writes its slot where it inked, so
-/// a later series overwrites an earlier one. A 3D panel keeps its depth
+/// It is recorded series by series in the frame's order, every series'
+/// fill and then every series' body, each drawn on its own with its own
+/// pipelines; the resolve pass then writes its slot where it inked, so a
+/// later pass overwrites an earlier one and a marker over a later series'
+/// fill keeps the marker's series. A 3D panel keeps its depth
 /// between the series, so a surface behind an earlier one leaves it the
 /// owner. It costs 4 bytes per panel pixel, and recording it one panel
-/// pass and one resolve pass per series, on a display key change only.
+/// pass and one resolve pass per series (one more of each for a series
+/// with a fill), on a display key change only.
 ///
 /// Every panel of a registered chart has one, whatever its draw style:
 /// each layer of a layered document (overlays, subplots, line offset

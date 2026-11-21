@@ -1204,6 +1204,7 @@ impl Renderer {
                         })
                     }),
                 super::composite::PieceSeries::of(&series_list, &own),
+                super::prepare::CompositeSteps::All,
             );
             let bind_group = data_render::create_texture_bind_group(
                 &self.device,
