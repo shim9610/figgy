@@ -45,9 +45,10 @@ use engine::{ReduceResources, create_buffer_checked, gate_dispatch_layout, lane_
 #[cfg(target_arch = "wasm32")]
 pub(crate) use nearest::NEAREST_PICK_COMPILES;
 pub(crate) use nearest::{
-    InkRead, NEAREST_PICK_3D_MODULE, NEAREST_PICK_MODULE, NearestPickPipelines, NearestSlot,
+    InkMaskRead, InkRead, InkSeries, NEAREST_PICK_3D_MODULE, NEAREST_PICK_MODULE,
+    NearestPickPipelines, NearestSlot,
 };
-pub use nearest::{NearestDatum, NearestPick, NearestPickTicket};
+pub use nearest::{InkOwner, NearestDatum, NearestPick, NearestPickTicket};
 #[cfg(test)]
 use registry::GpuPickSeriesId;
 pub(crate) use registry::{GpuPickRegistrySlot, PreparedPickRegistryTransition};

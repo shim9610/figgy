@@ -1949,9 +1949,10 @@ impl GpuDataPickTicket {
     }
 
     /// After a wait: decode the pick. A resident layer answers its
-    /// nearest-datum pick and its typed hit separately (#381): the selected
-    /// element is the nearest datum when the cursor hits drawn ink and the
-    /// chart has a series with point data, and the typed hit otherwise.
+    /// nearest-datum pick and its typed hit separately (#381), and the
+    /// series that owns the drawn ink nearest to the cursor selects: its
+    /// nearest datum for a series with point data, the typed hit for a body
+    /// or fill series. With no ink in reach the typed hit answers alone.
     fn finish(&mut self) -> Result<DataPickResult, crate::gpu_pick::GpuPickError> {
         let alone = |picked: Option<PickedData>| DataPickResult {
             picked: picked.clone(),
@@ -1982,11 +1983,18 @@ impl GpuDataPickTicket {
                 }
             }
         };
-        let picked = point
-            .hit
-            .clone()
-            .map(PickedData::from)
-            .or_else(|| data.clone());
+        // The series that owns the ink nearest to the cursor decides: a
+        // point-datum owner selects its nearest datum, a body or fill owner
+        // its typed hit. Without an owner the typed hit answers as before:
+        // value labels and DataLess series are not in the ink masks.
+        let picked = match (&point.hit, &point.owner) {
+            (Some(hit), _) => Some(PickedData::from(hit.clone())),
+            (None, Some(owner)) => data
+                .clone()
+                .filter(|data| data.series_id() == owner.series_id)
+                .or_else(|| data.clone()),
+            (None, None) => data.clone(),
+        };
         Ok(DataPickResult {
             picked,
             point,
@@ -2000,7 +2008,8 @@ impl GpuDataPickTicket {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DataPickResult {
     /// The element the pick selects: the nearest datum (as
-    /// [`PickedData::Point`]) when `point` hits, the typed hit `data`
+    /// [`PickedData::Point`]) when the series that owns the ink at the
+    /// cursor (`point.owner`) has point data, the typed hit `data`
     /// otherwise.
     pub picked: Option<PickedData>,
     /// The nearest-datum pick ([`crate::Renderer::pick_chart`]): the hit

@@ -360,8 +360,10 @@ impl FiggyChart {
     }
 
     /// Pick at canvas pixel `(x, y)` (#381): a hit when the chart's drawn
-    /// data has ink within `max_distance_px` of it, naming the datum nearest
-    /// to the cursor.
+    /// data has ink within `max_distance_px` of it and the topmost series
+    /// that drew the nearest inked pixel has point data, naming that
+    /// series' datum nearest to the cursor. Ink of a body series (bars,
+    /// bins, cells) answers no point hit; `pick_data` answers its typed hit.
     /// Resolves to a JSON string
     /// `{ source_id, series_id, point_index, distance_px, nearest }`:
     /// `nearest` lists every pickable series' datum nearest to the cursor

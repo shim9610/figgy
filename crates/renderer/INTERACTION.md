@@ -65,6 +65,30 @@ recomputes hit regions or label positions.
 - 좌표와 이동량은 차트 내부의 논리 픽셀이다. CSS로 확대된 캔버스라면 화면 좌표를
   차트의 논리 크기로 변환한다. DPR을 곱한 framebuffer 좌표를 넘기지 않는다.
 
+### 데카르트 차트의 데이터 픽 / Cartesian data pick ([#381](https://github.com/shim9610/figgy/issues/381))
+
+- 등록 차트의 `pick_chart`와 `pick_chart_data`(WASM의 `pick_point`, `pick_data`)는 그려진 잉크로 판정한다.
+  커서에서 `max_distance_px` 안에 잉크가 있으면 적중이고, 가장 가까운 잉크 텍셀을 그린 맨 위
+  시리즈(소유자, `PickResult::owner`)가 무엇을 고를지 정한다. 거리가 같으면 활성 레이어, 그다음
+  나중에 그린 패널과 시리즈가 이긴다.
+- 소유자가 점 데이터 시리즈(선, 산점, 벡터, 삼각 영역, 박스플롯 점)면 그 시리즈의 최근접 데이터를,
+  몸체나 채움 시리즈(막대, 히스토그램 구간, 셀, 박스)면 그 시리즈의 typed 적중을 고른다. 막대 위에
+  선을 겹친 차트에서 막대를 누르면 막대가, 선의 점 근처를 누르면 그 점이 선택된다. 선의 채움은
+  선의 일부라 그 선의 최근접 데이터를 고른다.
+- 사거리 안에 잉크가 없으면 빗나감이다. 값 라벨과 DataLess 시리즈는 마스크에 없으므로 typed 적중이
+  그대로 답한다. typed 커널은 활성 레이어만 읽으므로, 다른 레이어의 몸체 소유자는 고를 typed 적중이 없다.
+- Registered charts' `pick_chart` and `pick_chart_data` (`pick_point` and `pick_data` in the WASM
+  wrapper) decide by drawn ink. The cursor hits when ink lies within `max_distance_px` of it, and the
+  topmost series drawn at the nearest inked texel (the owner, `PickResult::owner`) decides what is
+  selected. An exact tie goes to the active layer, then to the panel and series drawn later.
+- A point-datum owner (line, scatter, vector, ternary region, box plot points) selects its nearest
+  datum; a body or fill owner (bars, histogram bins, cells, boxes) selects its typed hit. On a bar
+  chart with a line over it, a click on a bar selects the bar, and a click near a line point selects
+  the point. A line's fill is part of the line and selects the line's nearest datum.
+- No ink in reach is a miss. Value labels and DataLess series are not in the ink masks, so their
+  typed hits answer as before. The typed kernels read the active layer only, so a body owner on
+  another layer has no typed hit to select.
+
 장식 요소 선택은 `chart.decorations.selected`에, 데이터 선택과 호버는 원형의
 `interaction.selected`·`interaction.hovered`에 저장한다.
 두 선택은 별개 상태이므로 한 종류만 선택하려면 호스트가 다른 쪽 선택을 명시적으로 지운다.

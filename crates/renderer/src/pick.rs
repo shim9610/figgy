@@ -24,19 +24,25 @@ pub struct PickedPoint {
     pub distance_px: f32,
 }
 
-/// A registered chart's resolved pick (#381): the hit, and every series'
-/// datum nearest to the cursor.
+/// A registered chart's resolved pick (#381): the hit, the series that owns
+/// the ink at the cursor, and every series' datum nearest to the cursor.
 ///
-/// `hit` is the nearest datum of all when drawn ink lies within the
-/// request's `max_distance_px` of the cursor, and `None` otherwise.
-/// `nearest` holds each pickable series' nearest datum (in drawing order,
-/// with its layer and screen distance) whether or not the cursor hits, so
-/// a host can apply a rule of its own. A series the draw places nothing of
-/// has no entry.
+/// `owner` is the topmost series drawn at the inked texel nearest to the
+/// cursor within the request's `max_distance_px` (an exact tie goes to the
+/// active layer, then to the series drawn later), and `None` when no drawn
+/// ink is in reach (a miss). `hit` is the owner's nearest datum when the
+/// owner has point data (a line, scatter, vector, ternary region or box
+/// plot points series), and `None` for a body or fill owner (bars, cells,
+/// bins, boxes), whose typed hit the data pick answers. `nearest` holds
+/// each pickable series' nearest datum (in drawing order, with its layer
+/// and screen distance) whether or not the cursor hits, so a host can
+/// apply a rule of its own. A series the draw places nothing of has no
+/// entry.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PickResult {
     pub hit: Option<PickedPoint>,
     pub nearest: Vec<crate::gpu_pick::NearestDatum>,
+    pub owner: Option<crate::gpu_pick::InkOwner>,
 }
 
 impl From<crate::gpu_pick::NearestDatum> for PickedPoint {
