@@ -1,17 +1,23 @@
-//! Cartesian scenes: one registered chart, drawn into the host surface.
+//! Cartesian scenes: one registered chart, drawn into a viewport texture.
 //!
 //! The registry (`Renderer::chart_config`) holds the logical document; the
-//! window shows a scaled, letterboxed display copy of it, the same split the
-//! WASM host uses. Pointer deltas are divided by the display scale before
-//! they edit the document, so drags stay exact at any window size.
+//! viewport shows it scaled and letterboxed at the chart's display placement
+//! (`Renderer::set_chart_display`), drawn by `prepare_registered` or
+//! `prepare_monotonic`, the same split the WASM host uses, so the ink masks
+//! a pick reads are recorded (#381). The viewport texture is the display
+//! surface: pointer positions are taken relative to its origin. Pointer
+//! deltas are divided by the display scale before they edit the document,
+//! so drags stay exact at any window size.
 
 use renderer::config::{
     AxisOptions, AxisScale, AxisUnit, Config, DrawStyle, LabelClearanceMode, LogTickPolicy,
     MilkywayOptions, ProbabilityScale, SketchOptions,
 };
 use renderer::data_config::{
-    BarOrientation, DataRenderType, LineFill, LineInterpolation, PointColorMap, PointSizeMap,
-    SeriesConfig, Shading, SizeScale, VectorColorMap, VectorComponents, VectorPivot, VectorScale,
+    BarOrientation, BoxSeries, CategoryBarSeries, DataRenderType, HistogramSeries, LineFill,
+    LineInterpolation, ParallelSeries, PointColorMap, PointSizeMap, RadarPolygonSeries,
+    RangeBarSeries, RgbImageSeries, SeriesConfig, Shading, SizeScale, StreamlineSeries,
+    TernarySeries, VectorColorMap, VectorComponents, VectorPivot, VectorScale, VectorSeries,
     VectorStyle,
 };
 use renderer::layout::ChartArea;
@@ -20,10 +26,10 @@ use renderer::legend::LegendCorner;
 use renderer::text::{RichText, rich_segments_from_text};
 use renderer::{
     Anchor, Annotation, AnnotationAxis, AnnotationKind, AnnotationLineStyle, AnnotationMap,
-    ArrowStyle, AxisPreset, CellRef, Chart, ChartDrawItem, ChartId, ChartStyle, ChartView, Color,
-    ColorCycle, ColorMap, CpuTextMeasure, DataSelectionsConfig, GpuPickRequest, HitId, HitMap,
-    LayerHit, LayerRef, OverlayLayer, PickedData, PreparedFrame, RenderWarning, Renderer,
-    ResizeHandle, ScatterShape, Series, Subplot, fit_display_panel, place_document,
+    ArrowStyle, AxisPreset, CellRef, Chart, ChartId, ChartView, Color, ColorCycle, ColorMap,
+    CpuTextMeasure, DataSelectionsConfig, GpuPickRequest, HitId, HitMap, LayerHit, LayerRef,
+    MonotonicChartDrawItem, OverlayLayer, PickedData, PreparedFrame, RegisteredChartDrawItem,
+    RenderWarning, Renderer, ResizeHandle, ScatterShape, Subplot,
 };
 
 use crate::HostCtx;
@@ -133,15 +139,14 @@ pub struct CartesianHost {
     /// calls that take them ([`Self::sync_monotonic`] and the exports).
     monotonic: Vec<scenes::MonotonicData>,
     view: Option<ChartView>,
-    /// The display chart the view draws, kept across frames so its raster
-    /// stamp moves only when the display config or the selection changes.
+    /// The display chart the view's annotation layer is drawn from, kept
+    /// across frames and rebuilt when the display config changes.
     display_chart: Option<Chart>,
-    styles: Vec<ChartStyle>,
-    /// Display scale the styles were built at; `None` forces a rebuild.
-    styles_scale: Option<f32>,
-    raster_dirty: bool,
-    /// Central egui area in physical surface pixels.
+    /// Central egui area in physical surface pixels: its size is the
+    /// chart's display surface, its origin where the viewport texture sits.
     viewport_px: Rect,
+    /// The viewport texture the chart is painted into and its egui id.
+    target: Option<(wgpu::Texture, egui::TextureId)>,
     selected: Option<HitId>,
     selected_annotation: Option<usize>,
     drag: Drag,
@@ -149,10 +154,10 @@ pub struct CartesianHost {
     /// point advanced by every move. A subplot frame steps by whole pixels
     /// from it, polar axes turn by its angle.
     drag_pointer: [f32; 2],
-    /// While a subplot frame drags (#205): the display scale and the
-    /// surface position of the parent's chart area, held from the press so
-    /// a document the drag grows does not rescale under the pointer.
-    hold: Option<(f32, [i64; 2])>,
+    /// While a subplot frame drags (#205): the chart's display placement
+    /// is held from the press (`Renderer::hold_chart_display`), so a
+    /// document the drag grows does not rescale under the pointer.
+    hold: bool,
     mode: PointerMode,
     picks: Vec<PickedData>,
     /// One line per pick: the picked point's coordinates and, for a colour-
@@ -187,20 +192,18 @@ impl CartesianHost {
             monotonic: scene.monotonic,
             view: None,
             display_chart: None,
-            styles: Vec::new(),
-            styles_scale: None,
-            raster_dirty: true,
             viewport_px: Rect {
                 x: 0,
                 y: 0,
                 width: 1,
                 height: 1,
             },
+            target: None,
             selected: None,
             selected_annotation: None,
             drag: Drag::None,
             drag_pointer: [0.0; 2],
-            hold: None,
+            hold: false,
             mode: PointerMode::Edit,
             picks: Vec::new(),
             pick_notes: Vec::new(),
@@ -215,7 +218,6 @@ impl CartesianHost {
 
     pub fn remove(self, r: &mut Renderer) {
         drop(self.view);
-        drop(self.styles);
         if let Err(e) = self.id.remove(r) {
             eprintln!("[scene] remove chart: {e}");
         }
@@ -262,7 +264,6 @@ impl CartesianHost {
     fn commit(&mut self, r: &mut Renderer, config: Config) -> bool {
         match self.id.set_config(r, config) {
             Ok(()) => {
-                self.raster_dirty = true;
                 self.error = None;
                 true
             }
@@ -285,39 +286,97 @@ impl CartesianHost {
         if !self.commit(r, config) {
             let _ = self.id.set_series(r, previous);
         }
-        self.styles_scale = None;
     }
 
+    /// The document as the renderer displays it: the placed config of the
+    /// chart's display ([`Self::sync_display`]) in viewport pixels.
     fn display(&self, r: &Renderer) -> Option<Display> {
-        let cfg = self.id.config(r).ok()?;
         let vp = self.viewport_px;
         if vp.width < 8 || vp.height < 8 {
             return None;
         }
-        let (config, document, scale) = match self.hold {
-            Some((scale, origin)) => {
-                let mut config = cfg.scaled(scale);
-                let at = config.chart_area.0;
-                config.translate_areas(origin[0] - i64::from(at.x), origin[1] - i64::from(at.y));
-                let document = config.document_area();
-                (config, document, scale)
-            }
-            None => {
-                let doc = cfg.document_area();
-                let (scale, mut document) =
-                    fit_display_panel((doc.width, doc.height), (vp.width, vp.height));
-                document.x += vp.x;
-                document.y += vp.y;
-                (place_document(cfg, scale, document), document, scale)
-            }
-        };
-        let panel = config.chart_area.0;
+        let (config, panel, scale) = match self.id {
+            HostChart::General(id) => r.chart_display_config(id),
+            HostChart::Monotonic(id) => r.monotonic_display_config(id),
+        }
+        .ok()?;
+        let config = config.into_owned();
+        let document = config.document_area();
         Some(Display {
             config,
             panel,
             document,
             scale,
         })
+    }
+
+    /// Show the chart on the viewport: its display surface is the
+    /// viewport's size (a monotonic chart's is set by its resize call,
+    /// [`Self::sync_monotonic`]), held while a subplot frame drags, with
+    /// the element selection the raster draws.
+    fn sync_display(&self, r: &mut Renderer) -> Result<(), renderer::FiggyError> {
+        let vp = self.viewport_px;
+        match self.id {
+            HostChart::General(id) => {
+                r.set_chart_display(id, Some((vp.width, vp.height)))?;
+                r.hold_chart_display(id, self.hold)?;
+                if r.chart_selection(id)? != self.selected {
+                    r.set_chart_selection(id, self.selected)?;
+                }
+            }
+            HostChart::Monotonic(id) => {
+                if r.monotonic_selection(id)? != self.selected {
+                    r.monotonic_chart(id)?.set_selection(self.selected)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The viewport texture's view and size, for the frame's chart pass.
+    pub fn paint_target(&self) -> Option<(wgpu::TextureView, (u32, u32))> {
+        self.target.as_ref().map(|(texture, _)| {
+            (
+                texture.create_view(&Default::default()),
+                (texture.width(), texture.height()),
+            )
+        })
+    }
+
+    /// A viewport texture of the viewport's size in the renderer's target
+    /// format, registered with egui.
+    fn ensure_target(&mut self, host: &mut HostCtx<'_>, format: wgpu::TextureFormat) {
+        let (w, h) = (self.viewport_px.width, self.viewport_px.height);
+        if self
+            .target
+            .as_ref()
+            .is_some_and(|(t, _)| t.width() == w && t.height() == h)
+        {
+            return;
+        }
+        if let Some((_, id)) = self.target.take() {
+            host.egui_renderer.free_texture(&id);
+        }
+        let texture = host.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("cartesian scene"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let id = host.egui_renderer.register_native_texture(
+            host.device,
+            &texture.create_view(&Default::default()),
+            wgpu::FilterMode::Nearest,
+        );
+        self.target = Some((texture, id));
     }
 
     /// A monotonic series draws from an envelope the renderer built at the
@@ -390,29 +449,16 @@ impl CartesianHost {
             chart.set_x_range(min, max);
             self.commit(r, chart.config().clone());
         }
-        let d = self.display(r)?;
         if !self.monotonic.is_empty()
             && let Err(e) = self.sync_monotonic(r)
         {
             self.error = Some(format!("monotonic: {e}"));
         }
-        let series = self.series(r);
-        if self.styles_scale != Some(d.scale) {
-            match series
-                .iter()
-                .map(|s| r.create_style_for_series_scaled(s, d.scale))
-                .collect::<Result<Vec<_>, _>>()
-            {
-                Ok(styles) => {
-                    self.styles = styles;
-                    self.styles_scale = Some(d.scale);
-                }
-                Err(e) => {
-                    self.error = Some(format!("style: {e}"));
-                    return None;
-                }
-            }
+        if let Err(e) = self.sync_display(r) {
+            self.error = Some(format!("display: {e}"));
+            return None;
         }
+        let d = self.display(r)?;
         if self
             .display_chart
             .as_ref()
@@ -420,59 +466,37 @@ impl CartesianHost {
         {
             self.display_chart = Some(Chart::new(d.config.clone()));
         }
-        let selected = {
-            let hitmap = HitMap::for_active_layer(&d.config);
-            self.selected
-                .and_then(|id| hitmap.get(id))
-                .map(|el| el.element_id())
-        };
-        let chart = self.display_chart.as_mut()?;
-        chart.select(selected.as_deref());
-        let chart: &Chart = chart;
-        let view = match self.view.take() {
+        let chart: &Chart = self.display_chart.as_ref()?;
+        let mut view = match self.view.take() {
             Some(v) => v,
             None => match r.create_chart_view_at(chart, d.panel, d.scale) {
-                Ok(v) => {
-                    self.raster_dirty = true;
-                    v
-                }
+                Ok(v) => v,
                 Err(e) => {
                     self.error = Some(format!("view: {e}"));
                     return None;
                 }
             },
         };
-        let mut view = view;
-        if self.raster_dirty || view.panel_rect() != d.panel {
-            if let Err(e) = r.refresh_axis_with_selection_at(
-                &mut view,
-                chart,
-                d.panel,
-                selected.as_deref(),
-                d.scale,
-            ) {
-                self.error = Some(format!("refresh: {e}"));
-            }
-            self.warnings = view.render_warnings().to_vec();
-            self.raster_dirty = false;
-        }
         if view.annotation_selected() != self.selected_annotation
             && let Err(e) =
                 r.refresh_annotations(&mut view, chart, d.panel, self.selected_annotation)
         {
             self.error = Some(format!("annotations: {e}"));
         }
-        let draw: Vec<Series<'_>> = series
-            .iter()
-            .zip(&self.styles)
-            .map(|(config, style)| Series { config, style })
-            .collect();
-        let prepared = r.prepare(&mut [ChartDrawItem {
-            view: &mut view,
-            chart,
-            series: &draw,
-        }]);
-        drop(draw);
+        // The registered draw redraws the text and axis raster itself when
+        // the chart, its selection or its display placement changed (#265),
+        // and records the ink masks the chart's picks read (#381).
+        let prepared = match self.id {
+            HostChart::General(chart_id) => r.prepare_registered(&mut [RegisteredChartDrawItem {
+                chart_id,
+                view: &mut view,
+            }]),
+            HostChart::Monotonic(chart) => r.prepare_monotonic(&mut [MonotonicChartDrawItem {
+                chart,
+                view: &mut view,
+            }]),
+        };
+        self.warnings = view.render_warnings().to_vec();
         self.view = Some(view);
         match prepared {
             Ok(p) => Some(p),
@@ -502,6 +526,22 @@ impl CartesianHost {
             width: (rect.width() * ppp).floor().max(1.0) as u32,
             height: (rect.height() * ppp).floor().max(1.0) as u32,
         };
+        self.ensure_target(host, r.surface_format());
+        if let Some((_, id)) = &self.target {
+            let vp = self.viewport_px;
+            ui.painter().image(
+                *id,
+                egui::Rect::from_min_size(
+                    rect.min,
+                    egui::vec2(vp.width as f32 / ppp, vp.height as f32 / ppp),
+                ),
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+        if let Err(e) = self.sync_display(r) {
+            self.error = Some(format!("display: {e}"));
+        }
         let Some(d) = self.display(r) else {
             return;
         };
@@ -518,7 +558,9 @@ impl CartesianHost {
                 i.pointer.press_origin(),
             )
         });
-        let px = |p: egui::Pos2| [p.x * ppp, p.y * ppp];
+        // Viewport pixels: the display surface starts at the viewport.
+        let origin_px = [self.viewport_px.x as f32, self.viewport_px.y as f32];
+        let px = |p: egui::Pos2| [p.x * ppp - origin_px[0], p.y * ppp - origin_px[1]];
         let inside = pos.is_some_and(|p| rect.contains(p));
         let mut changed = false;
 
@@ -545,7 +587,7 @@ impl CartesianHost {
         if released {
             self.drag = Drag::None;
             // The document fits the viewport again.
-            changed |= self.hold.take().is_some();
+            changed |= std::mem::take(&mut self.hold);
         }
         // A monotonic scene's x range is the full call's (#271): no pan or
         // zoom moves it.
@@ -597,9 +639,7 @@ impl CartesianHost {
         if let Some(LayerHit::Annotation { index, .. }) =
             view.hit_test_active_layer(&d.config, &hitmap, p)
         {
-            if self.selected.take().is_some() {
-                self.raster_dirty = true;
-            }
+            self.selected = None;
             self.selected_annotation = Some(index);
             self.drag = Drag::Annotation;
             return;
@@ -612,7 +652,7 @@ impl CartesianHost {
             self.drag = Drag::Resize(handle);
             let (horizontal, vertical) = rz.resize_targets(handle);
             if moves_subplot_frame(horizontal.as_ref()) || moves_subplot_frame(vertical.as_ref()) {
-                self.hold_display(d);
+                self.hold_display(r);
             }
             return;
         }
@@ -626,9 +666,7 @@ impl CartesianHost {
         if (hit.is_none() || (on_area && hit != self.selected))
             && let Some(picked) = self.query_pick(r, d, p, ppp)
         {
-            if self.selected.take().is_some() {
-                self.raster_dirty = true;
-            }
+            self.selected = None;
             self.selected_annotation = None;
             // A value label is selected alone and dragged by the move.
             let label = matches!(
@@ -644,10 +682,7 @@ impl CartesianHost {
         }
         let draggable =
             hit.is_some_and(|id| hitmap.get(id).is_some_and(|e| e.as_draggable().is_some()));
-        if hit != self.selected {
-            self.selected = hit;
-            self.raster_dirty = true;
-        }
+        self.selected = hit;
         if hit.is_some() || routes {
             self.selected_annotation = None;
         }
@@ -657,7 +692,7 @@ impl CartesianHost {
             .and_then(|e| e.as_draggable())
             .map(|e| e.nudge_element());
         if moves_subplot_frame(frame.as_ref()) {
-            self.hold_display(d);
+            self.hold_display(r);
         }
     }
 
@@ -677,15 +712,18 @@ impl CartesianHost {
         ]
     }
 
-    /// Hold the display where it is while a subplot frame drags (#205).
-    fn hold_display(&mut self, d: &Display) {
+    /// Hold the display where it is while a subplot frame drags (#205),
+    /// from the press, before the drag edits the document.
+    fn hold_display(&mut self, r: &mut Renderer) {
         // A monotonic scene is never held (#271): the release would move
         // the plot's device pixels without the scene's samples.
         if !self.monotonic.is_empty() {
             return;
         }
-        let at = d.config.chart_area.0;
-        self.hold = Some((d.scale, [i64::from(at.x), i64::from(at.y)]));
+        self.hold = true;
+        if let Err(e) = self.sync_display(r) {
+            self.error = Some(format!("display: {e}"));
+        }
     }
 
     fn on_move(&mut self, r: &mut Renderer, d: &Display, dx: f32, dy: f32) -> bool {
@@ -1046,7 +1084,6 @@ impl CartesianHost {
                 if ui.button("Deselect").clicked() {
                     self.selected = None;
                     self.selected_annotation = None;
-                    self.raster_dirty = true;
                 }
             });
             let hitmap = HitMap::for_active_layer(&config);
@@ -1088,7 +1125,6 @@ impl CartesianHost {
                     3 => DrawStyle::Constellation(Default::default()),
                     _ => DrawStyle::Precise,
                 };
-                self.styles_scale = None;
             }
             if let DrawStyle::Sketch(o) = &mut config.draw_style {
                 slider(ui, "amplitude px", &mut o.amplitude_px, 0.0..=6.0);
@@ -1546,7 +1582,6 @@ impl CartesianHost {
         };
         match action {
             big_data::Action::Upload => {
-                self.styles_scale = None;
                 self.selected = None;
                 self.picks.clear();
                 self.pick_notes.clear();
@@ -1848,21 +1883,22 @@ fn render_type_name(t: &DataRenderType) -> &'static str {
                 (true, true, true) => "line+scatter+errors",
             }
         }
-        DataRenderType::Histogram { .. } => "histogram",
-        DataRenderType::CategoryBars { .. } => "category bars",
-        DataRenderType::BoxPlot { .. } => "box plot",
-        DataRenderType::RangeBars { .. } => "range bars",
-        DataRenderType::Ternary { .. } => "ternary",
-        DataRenderType::Radar { .. } => "radar",
-        DataRenderType::RgbImage { .. } => "image",
+        DataRenderType::Histogram(_) => "histogram",
+        DataRenderType::CategoryBars(_) => "category bars",
+        DataRenderType::BoxPlot(_) => "box plot",
+        DataRenderType::RangeBars(_) => "range bars",
+        DataRenderType::RangeLinks(_) => "range links",
+        DataRenderType::Ternary(_) => "ternary",
+        DataRenderType::Radar(_) => "radar",
+        DataRenderType::RgbImage(_) => "image",
         DataRenderType::Field(field) => match (field.fill.is_some(), field.contour.is_some()) {
             (_, false) => "heatmap",
             (false, true) => "contour",
             (true, true) => "heatmap+contour",
         },
-        DataRenderType::Vector { .. } => "vector",
-        DataRenderType::Streamlines { .. } => "streamlines",
-        DataRenderType::Parallel { .. } => "parallel",
+        DataRenderType::Vector(_) => "vector",
+        DataRenderType::Streamlines(_) => "streamlines",
+        DataRenderType::Parallel(_) => "parallel",
         DataRenderType::EnergyLevels(_) => "energy levels",
         DataRenderType::TriMesh(mesh) => match (mesh.fill.is_some(), mesh.contour.is_some()) {
             (_, false) => "triangle mesh",
@@ -1999,10 +2035,10 @@ fn series_columns(s: &SeriesConfig) -> Vec<String> {
 
 /// The component and colour columns of a point vector series.
 fn vector_point_columns(t: &DataRenderType) -> Option<(&String, &String, Option<&String>)> {
-    let DataRenderType::Vector {
+    let DataRenderType::Vector(VectorSeries {
         components: VectorComponents::Points { u, v, .. },
         style,
-    } = t
+    }) = t
     else {
         return None;
     };
@@ -2193,7 +2229,7 @@ fn series_controls(
         }
         // A parallel series' rows: their line (its colour stands when no
         // colour column maps them).
-        DataRenderType::Parallel { line, .. } => line_controls(ui, line),
+        DataRenderType::Parallel(ParallelSeries { line, .. }) => line_controls(ui, line),
         // A monotonic line (#271) is linear without a fill: its colour,
         // width and dash. A width that widens the columns its stroke
         // reaches from asks for the samples again.
@@ -2233,7 +2269,7 @@ fn series_controls(
             );
         }
         // The markers and the line of a ternary series, whichever it draws.
-        DataRenderType::Ternary { scatter, line, .. } => {
+        DataRenderType::Ternary(TernarySeries { scatter, line, .. }) => {
             if let Some(scatter) = scatter {
                 scatter_controls(ui, scatter, columns, r);
             }
@@ -2241,7 +2277,7 @@ fn series_controls(
                 line_controls(ui, line);
             }
         }
-        DataRenderType::Histogram { bar } => {
+        DataRenderType::Histogram(HistogramSeries { bar }) => {
             color(ui, "fill", &mut bar.fill_color);
             color(ui, "border", &mut bar.border_color);
             slider(ui, "border width", &mut bar.border_width, 0.0..=4.0);
@@ -2269,9 +2305,9 @@ fn series_controls(
         }
         // The direction and stacking are the chart's (`Config::bar_groups`),
         // shared by every bar series of the panel.
-        DataRenderType::CategoryBars {
+        DataRenderType::CategoryBars(CategoryBarSeries {
             color: fill, style, ..
-        } => {
+        }) => {
             color(ui, "fill", fill);
             slider(ui, "corner radius", &mut style.corner_radius, 0.0..=12.0);
             ui.checkbox(&mut style.outline, "outline");
@@ -2280,9 +2316,9 @@ fn series_controls(
         }
         // The direction, group width and gap are the chart's
         // (`Config::bar_groups`), shared by the panel's box plot series.
-        DataRenderType::BoxPlot {
+        DataRenderType::BoxPlot(BoxSeries {
             color: fill, style, ..
-        } => {
+        }) => {
             color(ui, "fill", fill);
             choice(ui, "material", &mut style.material, FLAT_BODY_MATERIALS);
             ui.checkbox(&mut style.notched, "notched");
@@ -2296,13 +2332,13 @@ fn series_controls(
         }
         // The direction, group width and gap are the chart's
         // (`Config::bar_groups`); the columns are the scene's.
-        DataRenderType::RangeBars {
+        DataRenderType::RangeBars(RangeBarSeries {
             color: fill,
             style,
             whiskers,
             connector,
             ..
-        } => {
+        }) => {
             color(ui, "fill", fill);
             slider(ui, "corner radius", &mut style.corner_radius, 0.0..=12.0);
             ui.checkbox(&mut style.outline, "outline");
@@ -2316,11 +2352,18 @@ fn series_controls(
                 slider(ui, "connector width", &mut c.width, 0.0..=8.0);
             }
         }
+        // Dependency links (#357): their look; the links are SSOT.
+        DataRenderType::RangeLinks(links) => {
+            color(ui, "link colour", &mut links.color);
+            slider(ui, "link width", &mut links.width, 0.0..=8.0);
+            slider(ui, "head", &mut links.head, 0.0..=32.0);
+            slider(ui, "inset", &mut links.inset, 0.0..=64.0);
+        }
         // The grid shape, the spoke direction and the rings are the polar
         // chart's (the "Chart" section); the look is the series'.
-        DataRenderType::Radar {
+        DataRenderType::Radar(RadarPolygonSeries {
             color: c, style, ..
-        } => {
+        }) => {
             color(ui, "colour", c);
             let mut width = style.line_width();
             slider(ui, "line width", &mut width, 0.0..=12.0);
@@ -2372,12 +2415,12 @@ fn series_controls(
         }
         // An image's channels are its data; its look is the opacity and the
         // shading, and the range the bytes map through.
-        DataRenderType::RgbImage {
+        DataRenderType::RgbImage(RgbImageSeries {
             range,
             shading,
             opacity,
             ..
-        } => {
+        }) => {
             slider(ui, "opacity", opacity, 0.0..=1.0);
             choice(
                 ui,
@@ -2391,12 +2434,12 @@ fn series_controls(
                 ui.add(egui::DragValue::new(&mut range[1]).speed(0.5));
             });
         }
-        DataRenderType::Vector { components, style } => {
+        DataRenderType::Vector(VectorSeries { components, style }) => {
             vector_controls(ui, components, style, columns);
         }
         // The paths are the host's; the look is the line's and the heads'.
         // Interpolation and fill stay off: streamlines are plain polylines.
-        DataRenderType::Streamlines { line, arrows, .. } => {
+        DataRenderType::Streamlines(StreamlineSeries { line, arrows, .. }) => {
             color(ui, "line colour", &mut line.line_color);
             slider(ui, "line width", &mut line.line_width, 0.5..=10.0);
             choice(ui, "dash", &mut line.line_style, widgets::LINE_STYLES);
@@ -2578,7 +2621,7 @@ fn layer_columns<'a>(
         .filter(|s| {
             !matches!(
                 s.render_type,
-                DataRenderType::Field(_) | DataRenderType::RgbImage { .. }
+                DataRenderType::Field(_) | DataRenderType::RgbImage(_)
             )
         })
         .collect();
@@ -2778,6 +2821,7 @@ fn new_subplot(parent: &Config, n: usize) -> Subplot {
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     }
 }
 
@@ -3273,6 +3317,44 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
             std::fs::write(&path, pdf).map_err(|e| e.to_string())?;
         }
         println!("ok  scene {kind:?} (PNG, SVG, PDF)");
+    }
+
+    // A point pick on the viewport (#381): the host draws its chart through
+    // the registered prepare, which records the ink masks the pick reads,
+    // on a viewport away from the window's origin; a point under the
+    // pointer then picks, for a general and a monotonic chart.
+    r.enable_gpu_picking().map_err(|e| e.to_string())?;
+    for kind in [SceneKind::Scatter, SceneKind::Monotonic] {
+        let mut host = CartesianHost::new(r, kind).map_err(e)?;
+        host.viewport_px = Rect {
+            x: 300,
+            y: 40,
+            width: 640,
+            height: 480,
+        };
+        let picked = host.prepare(r).and_then(|_| host.display(r)).and_then(|d| {
+            let area = d.config.data_area().ok()?.0;
+            let (host, r) = (&mut host, &mut *r);
+            (area.y..area.y + area.height)
+                .step_by(8)
+                .flat_map(|y| {
+                    (area.x..area.x + area.width)
+                        .step_by(8)
+                        .map(move |x| (x, y))
+                })
+                .find_map(|(x, y)| {
+                    let p = [x as f32 + 0.5, y as f32 + 0.5];
+                    host.query_pick(r, &d, p, 1.0)
+                        .filter(|p| matches!(p, PickedData::Point { .. }))
+                })
+        });
+        let error = host.error.clone();
+        host.remove(r);
+        let picked = picked.ok_or_else(|| format!("{kind:?}: no point picks ({error:?})"))?;
+        println!(
+            "ok  {kind:?} point pick on the viewport: {}",
+            describe_pick(&picked)
+        );
     }
 
     // The offset spectra with their group edited through the registry: a

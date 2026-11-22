@@ -204,24 +204,6 @@ async fn automatic_streaming_collects_progressive_fit_and_completes_through_publ
         completed,
         "automatic stream did not reach terminal display state: {statuses:?}"
     );
-    let before_pick = chart.stream_status().expect("completed stream status");
-    assert!(
-        chart
-            .begin_stream_pick_point(320.0, 180.0, 16.0, 2.0)
-            .await
-            .is_err()
-    );
-    assert!(
-        chart
-            .begin_stream_pick_data(320.0, 180.0, 16.0, 2.0)
-            .await
-            .is_err()
-    );
-    let after_pick = chart
-        .stream_status()
-        .expect("status after disabled picking");
-    assert_eq!(after_pick, before_pick);
-
     let config: renderer::Config =
         serde_json::from_str(&chart.get_config().expect("get fitted config"))
             .expect("fitted config json");

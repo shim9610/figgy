@@ -12,23 +12,24 @@ impl DataRenderType {
     fn steps_points(&self) -> bool {
         match self {
             DataRenderType::Xy(_)
-            | DataRenderType::Radar { .. }
+            | DataRenderType::Radar(_)
             // Its samples, as a scatter or a line series'.
-            | DataRenderType::Ternary { .. }
+            | DataRenderType::Ternary(_)
             // Its vertices, NaN separators included, as a line's (D4).
-            | DataRenderType::Streamlines { .. }
+            | DataRenderType::Streamlines(_)
             // Its rows (#141).
-            | DataRenderType::Parallel { .. } => true,
-            DataRenderType::Vector { components, .. } => {
+            | DataRenderType::Parallel(_) => true,
+            DataRenderType::Vector(VectorSeries { components, .. }) => {
                 matches!(components, VectorComponents::Points { .. })
             }
             // Its raw points, when it has them.
-            DataRenderType::BoxPlot { points, .. } => points.is_some(),
-            DataRenderType::Histogram { .. }
+            DataRenderType::BoxPlot(BoxSeries { points, .. }) => points.is_some(),
+            DataRenderType::Histogram(_)
             | DataRenderType::Field(_)
-            | DataRenderType::RgbImage { .. }
-            | DataRenderType::CategoryBars { .. }
-            | DataRenderType::RangeBars { .. }
+            | DataRenderType::RgbImage(_)
+            | DataRenderType::CategoryBars(_)
+            | DataRenderType::RangeBars(_)
+            | DataRenderType::RangeLinks(_)
             // Its transitions step as points by their own rule (#203).
             | DataRenderType::EnergyLevels(_)
             // Its triangles step by their own rule (#210).
@@ -149,15 +150,15 @@ impl crate::config::Config {
                 let Some(next) = points().nth(shift(index, dy, points().count())) else {
                     return Ok(None);
                 };
-                let mut count = match next.render_type.box_plot().and_then(|b| b.points) {
+                let mut count = match next.render_type.box_plot().and_then(|b| b.points.as_ref()) {
                     Some(points) => len(&points.positions).min(len(&points.values)),
                     None => len(&next.x_column).min(len(&next.y_column)),
                 };
                 // A point vector draws only where all four columns have a value.
-                if let DataRenderType::Vector {
+                if let DataRenderType::Vector(VectorSeries {
                     components: VectorComponents::Points { u, v, w },
                     ..
-                } = &next.render_type
+                }) = &next.render_type
                 {
                     count = count.min(len(u)).min(len(v));
                     // A 3D arrow needs its z component too (#211).
@@ -170,11 +171,11 @@ impl crate::config::Config {
                     count = count.min(len(z));
                 }
                 // A ternary sample needs its third component too.
-                if let DataRenderType::Ternary { c_column, .. } = &next.render_type {
+                if let DataRenderType::Ternary(TernarySeries { c_column, .. }) = &next.render_type {
                     count = count.min(len(c_column));
                 }
                 // A parallel row needs every axis column (#141).
-                if let DataRenderType::Parallel { columns, .. } = &next.render_type {
+                if let DataRenderType::Parallel(ParallelSeries { columns, .. }) = &next.render_type {
                     for column in columns {
                         count = count.min(len(column));
                     }
@@ -193,7 +194,21 @@ impl crate::config::Config {
                 let selected = &series[position].render_type;
                 let boxes = selected.box_plot().is_some();
                 let ranges = selected.range_bars().is_some();
-                if selected.category_bars().is_some() || boxes || ranges {
+                if let Some(links) = selected.range_links() {
+                    // A dependency link (#357) steps along the series' links
+                    // by either pointer axis; it stays in its series.
+                    let next = &series[position];
+                    let count = links.links.len();
+                    if count == 0 {
+                        return Ok(None);
+                    }
+                    Some(PickedDataRef::HistogramBin {
+                        series_id: next.series_id.clone(),
+                        source_id: next.source_id.clone(),
+                        bin_index: shift(*bin_index, dx + dy, count),
+                        half: None,
+                    })
+                } else if selected.category_bars().is_some() || boxes || ranges {
                     let layer = self.layer_of_series(series_id);
                     let groups = self.bar_groups_of(layer);
                     let horizontal = groups.direction == CategoryBarDirection::Horizontal;
@@ -242,14 +257,14 @@ impl crate::config::Config {
                         half: None,
                     })
                 } else {
-                    let DataRenderType::Histogram { bar } = selected else {
+                    let DataRenderType::Histogram(HistogramSeries { bar }) = selected else {
                         return Ok(None);
                     };
                     let horizontal = matches!(bar.orientation, BarOrientation::Horizontal);
                     let histograms = || {
                         series.iter().filter(|s| {
                             matches!(&s.render_type,
-                                DataRenderType::Histogram { bar: other }
+                                DataRenderType::Histogram(HistogramSeries { bar: other })
                                 if other.orientation == bar.orientation)
                         })
                     };
@@ -291,11 +306,11 @@ impl crate::config::Config {
                 let matrix = match &selected.render_type {
                     DataRenderType::Field(crate::data_config::FieldSeries { matrix, .. }) => matrix,
                     // An image steps over its red grid, which the others match.
-                    DataRenderType::RgbImage { red, .. } => red,
-                    DataRenderType::Vector {
+                    DataRenderType::RgbImage(RgbImageSeries { red, .. }) => red,
+                    DataRenderType::Vector(VectorSeries {
                         components: VectorComponents::Grid { u, .. },
                         ..
-                    } => u,
+                    }) => u,
                     _ => return Err(crate::RuleKind::SelectedMatrixGone),
                 };
                 let edges = usize::from(matches!(matrix.grid_layout, GridLayout::Edges));

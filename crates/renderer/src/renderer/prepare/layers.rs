@@ -120,44 +120,6 @@ type BoxExtraLayers<'a> = (
 );
 
 impl PrepareContext<'_> {
-    /// A region series' ring starts for the pick (#49): the scan its draw
-    /// runs, over the same rows. `None` for any other series, or when its
-    /// columns are not resident; a scan the draw would fail fails the pick
-    /// with the same error.
-    pub(in crate::renderer) fn region_ring_starts(
-        &mut self,
-        config: &Config,
-        series: &SeriesConfig,
-    ) -> Result<Option<wgpu::Buffer>> {
-        let (Some(_), Some(_), Some(c)) = (
-            series.render_type.ternary_region(),
-            config.ternary(),
-            series.render_type.ternary_c_column(),
-        ) else {
-            return Ok(None);
-        };
-        let (Some(x), Some(y), Some(c)) = (
-            self.pool.handle_for(&series.x_column),
-            self.pool.handle_for(&series.y_column),
-            self.pool.handle_for(c),
-        ) else {
-            return Ok(None);
-        };
-        let params = ternary_region_params(&series.series_id, [0.0; 4], x, y, c)?;
-        let scan = self.pipelines.ensure_ternary_region_scan(self.device);
-        let (buffer, _charge) = data_render::ternary_region::scan_ring_starts(
-            self.device,
-            self.queue,
-            self.gpu_ledger,
-            &scan,
-            self.pool.buffer(),
-            &params,
-            self.caps.max_compute_workgroups_per_dimension,
-        )?
-        .ok_or_else(|| ring_scan_too_large(&series.series_id))?;
-        Ok(Some(buffer))
-    }
-
     pub(in crate::renderer) fn build_series_layers<'a>(
         &'a self,
         view: &'a ChartView,
@@ -213,24 +175,28 @@ impl PrepareContext<'_> {
         // stem entries, a Milkyway jet (its `vs_jet` stem branch), none
         // under Constellation, which drops a stem series.
         let stem_pipe = match styled {
-            None => pipelines.errorbar_stem.as_ref(),
+            None => pipelines.precise(PrecisePipeline::ErrorbarStem),
             Some(StyleSet::Sketch { stem, .. }) => Some(stem),
             Some(StyleSet::Milkyway(c)) => Some(&c.jets),
             Some(StyleSet::Constellation(_)) => None,
         };
         let (line_pick, stars_pick, scatter_pick, errorbar_pipe) = match styled {
             None => (
-                pipelines.line.as_ref().map(|pipeline| LinePick {
-                    pipeline,
-                    verts: 4,
-                    texture_bg: None,
-                }),
+                pipelines
+                    .precise(PrecisePipeline::Line)
+                    .map(|pipeline| LinePick {
+                        pipeline,
+                        verts: 4,
+                        texture_bg: None,
+                    }),
                 None,
-                pipelines.scatter.as_ref().map(|pipeline| ScatterPick {
-                    pipeline,
-                    texture_bg: None,
-                }),
-                pipelines.errorbar.as_ref(),
+                pipelines
+                    .precise(PrecisePipeline::Scatter)
+                    .map(|pipeline| ScatterPick {
+                        pipeline,
+                        texture_bg: None,
+                    }),
+                pipelines.precise(PrecisePipeline::Errorbar),
             ),
             Some(StyleSet::Sketch {
                 line,
@@ -330,7 +296,25 @@ impl PrepareContext<'_> {
                 });
                 continue;
             }
-            let x_h = match lookup(&cfg.x_column) {
+            // Range links read no column (#357): they route from their
+            // bars' group 3, so the generic handles are the bars' own. Bars
+            // left out of this pass (their pipelines still compiling, #299)
+            // leave the links nothing to route: they draw nothing until the
+            // bars draw too (#406).
+            let columns = match rt.range_links() {
+                Some(links) => match series_specs
+                    .iter()
+                    .find(|s| s.config.series_id == links.bars)
+                {
+                    Some(bars) => bars.config,
+                    None => {
+                        out.push(data_render::SeriesLayers::empty());
+                        continue;
+                    }
+                },
+                None => cfg,
+            };
+            let x_h = match lookup(&columns.x_column) {
                 // A monotonic series before its group's first full call has
                 // no envelope columns: it draws nothing (#271).
                 Err(FiggyError::UnknownColumn { .. }) if cfg.monotonic().is_some() => {
@@ -359,7 +343,7 @@ impl PrepareContext<'_> {
             let y_h = if rt.box_plot().is_some() {
                 x_h
             } else {
-                lookup(&cfg.y_column)?
+                lookup(&columns.y_column)?
             };
             // A radar polygon has one vertex per category: its columns are
             // data, so their lengths are checked here against the pool.

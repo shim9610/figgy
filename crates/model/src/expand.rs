@@ -59,7 +59,7 @@
 
 use crate::config::{
     AxisBreaks, AxisOptions, AxisScale, Category, ChartTitleOptions, ColorBarOptions, Config,
-    TickVisibility,
+    LayoutState, TickVisibility,
 };
 use crate::layer::{AnnotationLayer, CellRef, LayerRef, OverlayLayer, SubplotTextScale};
 use crate::layout::{DataArea, LayoutError, Margins, Rect, Side};
@@ -149,6 +149,20 @@ impl Config {
         match self.subplots[index].config.layer_of_series(series_id) {
             LayerRef::Overlay(overlay) => LayerRef::SubplotOverlay(index, overlay),
             _ => LayerRef::Subplot(index),
+        }
+    }
+
+    /// The chart `series_id` is drawn on: its subplot's own config when a
+    /// subplot (or one of its overlays) draws it, else this chart. The
+    /// rules that depend on a series' coordinate system (categorical X,
+    /// ternary, parallel) hold it to this chart, not to the root (#325).
+    pub fn series_chart(&self, series_id: &str) -> &Config {
+        match self.layer_of_series(series_id) {
+            LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => self
+                .subplots
+                .get(index)
+                .map_or(self, |subplot| &subplot.config),
+            LayerRef::Base | LayerRef::Overlay(_) | LayerRef::Annotations => self,
         }
     }
 
@@ -732,6 +746,8 @@ impl Config {
             line_offsets: _,
             plot_background: _,
             background: _,
+            // A panel is drawn as the document's layout places it.
+            layout_state: _,
         } = self;
         let OverlayLayer {
             y_axis,
@@ -778,6 +794,8 @@ impl Config {
                 breaks: _,
                 // The hidden left axis prints no labels.
                 unit: _,
+                // Row striping, each chart's own style.
+                category_bands: _,
             } = left_y;
             let mut left = hidden_axis(followed_y, crate::defaults::axis_options_y());
             left.out_margin = *out_margin;
@@ -841,6 +859,7 @@ impl Config {
             line_offsets: None,
             plot_background: None,
             background: None,
+            layout_state: LayoutState::Fixed,
         };
         retain_layer_picks(&mut panel, self, LayerRef::Overlay(index));
         align_margins(&mut panel, group, data_area)?;
@@ -884,6 +903,7 @@ impl Config {
             line_offsets: _,
             plot_background: _,
             background: _,
+            layout_state: _,
         } = owner;
         let [dx, dy] = self
             .line_offsets
@@ -919,6 +939,7 @@ impl Config {
             line_offsets: None,
             plot_background: None,
             background: None,
+            layout_state: LayoutState::Fixed,
         };
         retain_picks(&mut panel, |id| id == series_id);
         align_margins(&mut panel, group, data_area)?;
@@ -1054,6 +1075,8 @@ fn hidden_colorbar(bar: &ColorBarOptions) -> ColorBarOptions {
         breaks: _,
         // The hidden colourbar prints no labels.
         unit: _,
+        // Row striping, each chart's own style.
+        category_bands: _,
     } = axis;
     let mut hidden = crate::defaults::color_bar_options();
     hidden.visible = false;
@@ -1122,6 +1145,8 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
         // The spacing is read in shown units (#273), so the unit travels
         // with it and the linked axes print the same ticks.
         unit,
+        // Row striping, each chart's own style.
+        category_bands: _,
     } = from;
     to.scale = scale.clone();
     to.min = *min;
@@ -1202,6 +1227,8 @@ fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
             breaks,
             // Printing only; it travels with the spacing (see above).
             unit: _,
+            // Row striping, each chart's own style.
+            category_bands: _,
         } = axis;
         (
             scale.clone(),
@@ -1266,6 +1293,8 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         breaks,
         // A hidden axis prints no labels.
         unit: _,
+        // A hidden axis draws no bands.
+        category_bands: _,
     } = axis;
     let AxisOptions {
         scale: _,
@@ -1292,9 +1321,10 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         log_ticks,
         breaks: _,
         unit: _,
+        category_bands: _,
     } = template;
     let (min, max) = axis.data_range();
-    AxisOptions {
+    with_hidden_text(AxisOptions {
         scale: scale.clone(),
         min,
         max,
@@ -1319,21 +1349,16 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         log_ticks,
         breaks: breaks.clone(),
         unit: None,
-    }
-    .with_hidden_text()
+        category_bands: None,
+    })
 }
 
-trait HiddenText {
-    fn with_hidden_text(self) -> Self;
-}
-
-impl HiddenText for AxisOptions {
-    fn with_hidden_text(mut self) -> Self {
-        self.label_style.visible = false;
-        self.label_style.label_visible = false;
-        self.title_option.visible = false;
-        self
-    }
+/// `axis` with its tick labels and title hidden.
+fn with_hidden_text(mut axis: AxisOptions) -> AxisOptions {
+    axis.label_style.visible = false;
+    axis.label_style.label_visible = false;
+    axis.title_option.visible = false;
+    axis
 }
 
 impl Config {
@@ -1365,6 +1390,7 @@ impl Config {
             line_offsets: _,
             plot_background: _,
             background: _,
+            layout_state: _,
         } = self;
         let owned = |id: &str| {
             matches!(
@@ -1420,6 +1446,7 @@ fn retain_picks(panel: &mut Config, keep: impl Fn(&str) -> bool) {
         line_offsets: _,
         plot_background: _,
         background: _,
+        layout_state: _,
     } = panel;
     if let Some(picked) = picked_data.as_mut() {
         picked.refs.retain(|reference| keep(reference.series_id()));
@@ -2931,7 +2958,8 @@ mod tests {
     /// A category bar, box plot and range bar series named `id`.
     fn indexed_series(id: &str) -> [crate::data_config::SeriesConfig; 3] {
         use crate::data_config::{
-            CategoryBarLabelFormat, DataRenderType, RangeColor, SeriesConfig,
+            BoxSeries, CategoryBarLabelFormat, CategoryBarSeries, DataRenderType, RangeBarSeries,
+            RangeColor, SeriesConfig,
         };
         let series = |render_type| SeriesConfig {
             series_id: id.into(),
@@ -2944,14 +2972,14 @@ mod tests {
         };
         let color = crate::Color::from_rgb8(40, 120, 200);
         [
-            series(DataRenderType::CategoryBars {
+            series(DataRenderType::CategoryBars(CategoryBarSeries {
                 color,
                 style: crate::defaults::category_bar_style(),
                 labels: crate::defaults::category_bar_series_labels(),
                 label_format: CategoryBarLabelFormat::Value,
                 overrides: None,
-            }),
-            series(DataRenderType::BoxPlot {
+            })),
+            series(DataRenderType::BoxPlot(BoxSeries {
                 color,
                 style: crate::defaults::box_plot_style(),
                 labels: crate::defaults::box_plot_series_labels(),
@@ -2959,8 +2987,8 @@ mod tests {
                 overrides: None,
                 violin: None,
                 points: None,
-            }),
-            series(DataRenderType::RangeBars {
+            })),
+            series(DataRenderType::RangeBars(RangeBarSeries {
                 color,
                 style: crate::defaults::category_bar_style(),
                 start: format!("{id}.start"),
@@ -2970,7 +2998,7 @@ mod tests {
                 connector: None,
                 slot_width: None,
                 labels: crate::defaults::category_bar_series_labels(),
-            }),
+            })),
         ]
     }
 

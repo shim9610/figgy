@@ -8,9 +8,8 @@
 //! document still parses and validates here, and `Config::from_boxplot`
 //! turns it into that chart and the uploads of its summaries. Statistical
 //! policy belongs to the host: the summaries are precomputed. The type is
-//! deprecated and is removed in the next milestone.
-// The module defines the deprecated reader type and its tests use it.
-#![allow(deprecated)]
+//! the reader for documents written before 0.13.
+
 #[cfg(test)]
 use crate::Material;
 use crate::{Color, categorical::Category};
@@ -25,10 +24,7 @@ use std::collections::HashSet;
 
 /// Actual whisker endpoints, not the theoretical IQR fences. CI endpoints may
 /// extend outside Q1/Q3. No sample statistics are inferred by the renderer.
-#[deprecated(
-    since = "0.13.0",
-    note = "part of the BoxPlotChart document reader; removed with it in the next milestone"
-)]
+/// Part of the [`BoxPlotChart`] reader for documents written before 0.13.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BoxSummary {
@@ -86,10 +82,7 @@ impl BoxSummary {
         Ok(())
     }
 }
-#[deprecated(
-    since = "0.13.0",
-    note = "part of the BoxPlotChart document reader; removed with it in the next milestone"
-)]
+/// Part of the [`BoxPlotChart`] reader for documents written before 0.13.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BoxPlotDirection {
@@ -97,18 +90,7 @@ pub enum BoxPlotDirection {
     Horizontal,
 }
 
-/// The former box material enum, now the shared [`Material`](crate::Material). Boxes
-/// reject the materials
-/// [`Material::supported_on_flat_body`](crate::Material::supported_on_flat_body)
-/// excludes. The box
-/// style's default stays `Matte` (`BoxPlotStyle::default`); the enum's own
-/// default is `Flat`.
-#[deprecated(since = "0.13.0", note = "use Material")]
-pub type BoxPlotMaterial = crate::Material;
-#[deprecated(
-    since = "0.13.0",
-    note = "part of the BoxPlotChart document reader; removed with it in the next milestone"
-)]
+/// Part of the [`BoxPlotChart`] reader for documents written before 0.13.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BoxPlotSeries {
@@ -134,12 +116,9 @@ impl BoxPlotSeries {
         }
     }
 }
-/// A legacy box plot document. [`Self::validate`] checks it, and
+/// The reader for box plot documents written before 0.13.
+/// [`Self::validate`] checks it, and
 /// `Config::from_boxplot` opens it as a Cartesian chart of box plot series.
-#[deprecated(
-    since = "0.13.0",
-    note = "a document reader only: open it with Config::from_boxplot; removed in the next milestone"
-)]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
@@ -201,6 +180,17 @@ pub struct BoxPlotChart {
     pub box_gap: f32,
     pub font_family: String,
     pub font_size: f32,
+    /// The text sizes by role (#357, [`crate::DocumentTextSizes`]): the
+    /// title, the axis titles, the tick labels and the legend. `None` (key
+    /// absent in JSON, every document written before the field) draws every
+    /// text at `font_size` and the title half as large again; the Rust
+    /// `Default` sets the documented Cartesian chart's sizes
+    /// ([`crate::DocumentTextSizes::CARTESIAN`]).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub text_sizes: Option<crate::DocumentTextSizes>,
     pub text_color: Color,
     pub background: Color,
 }
@@ -212,15 +202,22 @@ impl BoxPlotChart {
     pub fn active_layer(&self) -> crate::LayerRef {
         self.active_layer.bounded()
     }
+    /// The text sizes the document draws with (#357): `text_sizes`, or every
+    /// role at `font_size` with the title half as large again
+    /// ([`crate::DocumentTextSizes::resolved`]).
+    pub fn resolved_text_sizes(&self) -> crate::DocumentTextSizes {
+        crate::DocumentTextSizes::resolved(self.text_sizes.as_ref(), self.font_size)
+    }
+
     pub fn resolved_title(&self) -> crate::BoundedTitleOptions {
-        self.chart_title.clone().unwrap_or_else(|| {
-            crate::BoundedTitleOptions::from_legacy(
-                &self.title,
-                &self.font_family,
-                self.font_size,
-                self.text_color,
-            )
-        })
+        crate::BoundedTitleOptions::resolved(
+            self.chart_title.as_ref(),
+            &self.title,
+            &self.font_family,
+            self.font_size,
+            self.text_sizes.as_ref(),
+            self.text_color,
+        )
     }
 
     pub fn summary(&self, target: &BoxPlotTarget) -> Option<&BoxSummary> {
@@ -281,7 +278,8 @@ impl BoxPlotChart {
             }
         }
         self.style.validate()?;
-        if !range(self.font_size, 8.0, 32.0)
+        if !(range(self.font_size, 8.0, 32.0)
+            && self.text_sizes.is_none_or(|sizes| sizes.is_valid()))
             || !range(self.group_width, 0.1, 0.95)
             || !range(self.box_gap, 0.0, 24.0)
             || !color(self.text_color)

@@ -50,8 +50,18 @@ impl JsErrorSource for crate::DocumentError {
     fn rule(&self) -> Option<&renderer::RuleKind> {
         match self {
             crate::DocumentError::Rule(kind) => Some(kind),
-            crate::DocumentError::Json(_) => None,
+            crate::DocumentError::Json(_) | crate::DocumentError::Options(_) => None,
         }
+    }
+}
+
+/// A legacy document refusal as a JS error (#334): options a document call
+/// refuses throw an `Error` with `code` `"invalid_options"`; a rule refusal
+/// throws its rule's code and a JSON error its message ([`js_err`]).
+pub(crate) fn document_error(error: crate::DocumentError) -> JsValue {
+    match &error {
+        crate::DocumentError::Options(why) => coded_error(why, "invalid_options", []),
+        _ => js_err(error),
     }
 }
 
@@ -274,7 +284,13 @@ pub(super) fn js_safe_u64(value: f64, name: &str) -> Result<u64, JsValue> {
     Ok(value as u64)
 }
 
-/// Series color rotations (mirror of `model::ColorCycle`).
+/// Series color rotations (mirror of `model::ColorCycle`). `Balanced` is
+/// the default cycle a new series takes. The categorical presets from
+/// public palettes (#357) are `Balanced` (D3 category10 / matplotlib
+/// tab10), `ColorblindSafe` (Okabe–Ito), `Tableau10`, `Set2` and `Dark2`
+/// (ColorBrewer, Apache-2.0), `Plotly` and `HighContrast` (plotly.py
+/// Dark24); `crates/renderer/USAGE.md` ("Palette presets") lists each source and
+/// licence.
 #[wasm_bindgen]
 #[derive(Clone, Copy)]
 pub enum ColorCycle {
@@ -283,6 +299,11 @@ pub enum ColorCycle {
     Balanced,
     ColorblindSafe,
     Monochrome,
+    Tableau10,
+    Set2,
+    Dark2,
+    Plotly,
+    HighContrast,
 }
 
 impl From<ColorCycle> for renderer::ColorCycle {
@@ -293,6 +314,11 @@ impl From<ColorCycle> for renderer::ColorCycle {
             ColorCycle::Balanced => Self::Balanced,
             ColorCycle::ColorblindSafe => Self::ColorblindSafe,
             ColorCycle::Monochrome => Self::Monochrome,
+            ColorCycle::Tableau10 => Self::Tableau10,
+            ColorCycle::Set2 => Self::Set2,
+            ColorCycle::Dark2 => Self::Dark2,
+            ColorCycle::Plotly => Self::Plotly,
+            ColorCycle::HighContrast => Self::HighContrast,
         }
     }
 }

@@ -13,13 +13,12 @@ use renderer::{Config, SeriesConfig};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::*;
 
+mod support;
+use support::json;
+
 wasm_bindgen_test_configure!(run_in_browser);
 
 const COLOR: &str = r#"{"r": 0.25, "g": 0.5, "b": 0.75, "a": 1.0}"#;
-
-fn json(text: &str) -> serde_json::Value {
-    serde_json::from_str(text).unwrap()
-}
 
 /// The `code` of a thrown `Error`, `None` for a thrown string.
 fn code(error: &JsValue) -> Option<String> {
@@ -123,7 +122,7 @@ fn a_categorical_document_converts_with_its_notes() {
             }}
         }}"#
     );
-    let converted = json(&convert_categorical_document(&document).unwrap());
+    let converted = json(&convert_categorical_document(&document, None).unwrap());
     let config: Config = serde_json::from_value(converted["config"].clone()).unwrap();
     let series: Vec<SeriesConfig> = serde_json::from_value(converted["series"].clone()).unwrap();
     assert_eq!(config.validate_category_bars(&series), Ok(()));
@@ -139,17 +138,19 @@ fn a_categorical_document_converts_with_its_notes() {
         note_paths(&converted),
         [
             ("hovered".to_owned(), "dropped".to_owned()),
-            ("decorations.data_area".into(), "dropped".into()),
             ("decorations.offsets[0]".into(), "dropped".into()),
+            // Too tight for the title band, so the automatic layout stays
+            // (#334); fitted last, its note comes last.
+            ("decorations.data_area".into(), "dropped".into()),
         ]
     );
 
     // A document rule throws an `Error` with the rule's code; text that
     // does not parse as a document throws its message.
     let refused = document.replace("\"hovered\"", "\"bar_gap\": -1, \"hovered\"");
-    let error = convert_categorical_document(&refused).unwrap_err();
+    let error = convert_categorical_document(&refused, None).unwrap_err();
     assert!(code(&error).is_some(), "{error:?}");
-    let error = convert_categorical_document("{\"categories\":").unwrap_err();
+    let error = convert_categorical_document("{\"categories\":", None).unwrap_err();
     assert_eq!(code(&error), None);
     assert!(error.as_string().is_some());
 }
@@ -167,7 +168,7 @@ fn a_box_plot_document_converts_with_its_record_and_outliers() {
             "background": {{"r": 0, "g": 0, "b": 0, "a": 1}}
         }}"#
     );
-    let converted = json(&convert_boxplot_document(&document).unwrap());
+    let converted = json(&convert_boxplot_document(&document, None).unwrap());
     let roles: Vec<_> = converted["uploads"]
         .as_array()
         .unwrap()
@@ -186,7 +187,7 @@ fn a_box_plot_document_converts_with_its_record_and_outliers() {
         note_paths(&converted),
         [("background".to_owned(), "dropped".to_owned())]
     );
-    assert!(convert_boxplot_document("{\"series\": 3}").is_err());
+    assert!(convert_boxplot_document("{\"series\": 3}", None).is_err());
 }
 
 #[wasm_bindgen_test]
@@ -204,7 +205,7 @@ fn a_radar_document_converts_with_its_notes() {
             }}
         }}"#
     );
-    let converted = json(&convert_radar_document(&document).unwrap());
+    let converted = json(&convert_radar_document(&document, None).unwrap());
     let config: Config = serde_json::from_value(converted["config"].clone()).unwrap();
     assert!(config.polar().is_some());
     assert_eq!(converted["uploads"][1]["len"], 3);
@@ -224,5 +225,5 @@ fn a_radar_document_converts_with_its_notes() {
     );
     // A non-finite value cannot be written in JSON: `null` is refused.
     let refused = document.replace("[1, 2, 3]", "[1, null, 3]");
-    assert!(convert_radar_document(&refused).is_err());
+    assert!(convert_radar_document(&refused, None).is_err());
 }

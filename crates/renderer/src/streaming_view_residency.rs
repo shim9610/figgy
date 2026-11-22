@@ -309,7 +309,7 @@ impl ViewPackedCandidate {
             return None;
         }
         let supported = series.iter().all(|item| match &item.render_type {
-            DataRenderType::Histogram { .. } | DataRenderType::Field(_) => false,
+            DataRenderType::Histogram(_) | DataRenderType::Field(_) => false,
             other => {
                 let scatter_ok = super::extract_scatter(other).is_none_or(|scatter| {
                     scatter.point_style_index_column.is_none()

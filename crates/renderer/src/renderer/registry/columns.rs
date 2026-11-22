@@ -293,7 +293,9 @@ impl Renderer {
     }
 
     /// Prepare one commit (#311) that uploads `uploads` — plain columns,
-    /// records and ragged columns, each inserted under its id or replacing
+    /// chunked uploads ([`BatchSource::Staged`], #334, checked as
+    /// [`Self::check_column_upload`] checks one), records and ragged
+    /// columns, each inserted under its id or replacing
     /// what the id holds of the same kind —, removes `removals` (plain
     /// columns, records, ragged or triangle index columns no series of
     /// another chart reads) and replaces chart `chart_id`'s config and
@@ -342,6 +344,71 @@ impl Renderer {
         Ok(guard)
     }
 
+    /// Install several chunked uploads (#334) and, optionally, chart
+    /// `chart_id`'s new config and series, in one commit: the
+    /// [`Self::begin_replace_chart_sources`] transaction with every upload a
+    /// [`BatchSource::Staged`] source. The pool, the chart and the picker
+    /// publish together, or nothing changes.
+    ///
+    /// Every upload is checked as [`Self::commit_column_upload`] checks one
+    /// ([`Self::check_column_upload`]), its revision included, so a column
+    /// that changed since its upload began refuses the whole transaction.
+    /// Without `state` the chart keeps its config and series, which must
+    /// still hold against the new columns (a series whose columns' lengths
+    /// no longer agree is refused). A streamed or reserved id, and an id
+    /// twice, are refused. The number of uploads is not limited. Peak
+    /// memory: as [`Self::begin_replace_chart_sources`], the uploads'
+    /// staging already being held. The uploads are consumed either way.
+    pub fn commit_column_uploads(
+        &mut self,
+        chart_id: ChartId,
+        uploads: Vec<ColumnUpload>,
+        state: Option<(Config, Vec<SeriesConfig>)>,
+    ) -> Result<()> {
+        let result = self.commit_column_uploads_unreported(chart_id, &uploads, state);
+        drop(uploads);
+        self.reported(result)
+    }
+
+    fn commit_column_uploads_unreported(
+        &mut self,
+        chart_id: ChartId,
+        uploads: &[ColumnUpload],
+        state: Option<(Config, Vec<SeriesConfig>)>,
+    ) -> Result<()> {
+        // The chart keeps its own config and series: the SSOT, read again
+        // so they are validated against the candidate pool.
+        let (config, series) = match state {
+            Some(state) => state,
+            None => (
+                self.chart_config(chart_id)?.clone(),
+                self.chart_series(chart_id)?.to_vec(),
+            ),
+        };
+        // The batch view of the uploads: borrowed, nothing is copied.
+        let mut batch: Vec<(&str, BatchSource<'_>)> = Vec::new();
+        batch.try_reserve_exact(uploads.len()).map_err(|error| {
+            FiggyError::StateAllocationFailed {
+                resource: "column transaction uploads",
+                reason: error.to_string(),
+            }
+        })?;
+        batch.extend(
+            uploads
+                .iter()
+                .map(|upload| (upload.id(), BatchSource::Staged(upload))),
+        );
+        let health = self.health.clone();
+        let guard =
+            self.begin_replace_chart_sources_unreported(chart_id, &batch, &[], move |_| {
+                Ok((config, series))
+            })?;
+        // A failed check drops the guard, which rolls back.
+        health.check()?;
+        guard.commit();
+        Ok(())
+    }
+
     pub(super) fn begin_replace_chart_sources_unreported<'a, F>(
         &'a mut self,
         chart_id: ChartId,
@@ -356,6 +423,15 @@ impl Renderer {
         for (id, source) in uploads {
             match source {
                 BatchSource::Column(_) => self.reject_streamed_id(id)?,
+                BatchSource::Staged(upload) => {
+                    if upload.id() != *id {
+                        return Err(FiggyError::InvalidColumnUpload {
+                            id: (*id).to_owned(),
+                            reason: "the batch installs a chunked upload under another id",
+                        });
+                    }
+                    self.check_column_upload(upload)?;
+                }
                 BatchSource::Record(_) => self.reject_streamed_composite(id, "a record")?,
                 BatchSource::Ragged(_) => self.reject_streamed_composite(id, "a ragged column")?,
             }
@@ -735,25 +811,8 @@ impl Renderer {
         upload: ColumnUpload,
     ) -> Result<ColumnHandle> {
         self.health.check()?;
-        let ColumnUpload {
-            id,
-            staging,
-            renderer_identity,
-            expected_revision,
-        } = upload;
-        if renderer_identity != self.renderer_identity {
-            return Err(FiggyError::StaleStateToken {
-                reason: format!("column upload {id} was begun on another renderer"),
-            });
-        }
-        if !staging.is_complete() {
-            return Err(FiggyError::InvalidColumnUpload {
-                id,
-                reason: data_render::ColumnStagingError::Incomplete.reason(),
-            });
-        }
-        self.reject_streamed_id(&id)?;
-        self.check_upload_revision(&id, expected_revision)?;
+        self.check_column_upload(&upload)?;
+        let ColumnUpload { id, staging, .. } = upload;
         let health = self.health.clone();
         let invalidation = self.prepare_column_invalidation(&id)?;
         let old_layout_generation = self.pool.layout_generation();
@@ -779,6 +838,31 @@ impl Renderer {
         // A failed check drops the guard, which rolls back.
         health.check()?;
         Ok(guard.commit())
+    }
+
+    /// Whether `upload` can be installed now, as
+    /// [`Self::commit_column_upload`] and a batch that holds it
+    /// ([`BatchSource::Staged`], #334) check it before anything changes:
+    /// refused when another renderer began it or the column's revision is
+    /// no longer the one it expects ([`FiggyError::StaleStateToken`]), when
+    /// a value was not written ([`FiggyError::InvalidColumnUpload`]), or
+    /// when its id is streamed or reserved. A host that installs several
+    /// uploads together calls it per upload to name the one refused.
+    pub fn check_column_upload(&self, upload: &ColumnUpload) -> Result<()> {
+        let id = upload.id();
+        if upload.renderer_identity != self.renderer_identity {
+            return Err(FiggyError::StaleStateToken {
+                reason: format!("column upload {id} was begun on another renderer"),
+            });
+        }
+        if !upload.staging.is_complete() {
+            return Err(FiggyError::InvalidColumnUpload {
+                id: id.to_owned(),
+                reason: data_render::ColumnStagingError::Incomplete.reason(),
+            });
+        }
+        self.reject_streamed_id(id)?;
+        self.check_upload_revision(id, upload.expected_revision)
     }
 
     /// Refuse an upload whose expected revision is not column `id`'s.

@@ -8,8 +8,6 @@
 //! here is covered without a test of its own. It uses only the renderer's
 //! public API.
 #![allow(dead_code)]
-// Legacy documents are read through their deprecated reader types.
-#![allow(deprecated)]
 
 // The NIST diagrams the gallery draws, shared with the playground (#205).
 #[allow(dead_code)]
@@ -25,11 +23,13 @@ mod nist_csv;
 use renderer::config::{Config, append_legend_entry, series_symbol_segments};
 use renderer::data::Column;
 use renderer::data_config::{
-    BarOrientation, ContourConfig, ContourLabelConfig, DataBarStyleConfig, DataErrorBarStyleConfig,
-    DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorRef, FieldFillConfig,
-    FillMode, GridLayout, LineFill, LineInterpolation, MatrixOrientation, MatrixRef, PointColorMap,
-    PointSizeMap, ScatterShape, SeriesConfig, Shading, SizeScale, StreamlineArrows, VectorColorMap,
-    VectorComponents, VectorPivot, VectorScale, VectorStyle,
+    BarOrientation, BoxSeries, CategoryBarSeries, ContourConfig, ContourLabelConfig,
+    DataBarStyleConfig, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
+    DataScatterStyleConfig, ErrorRef, FieldFillConfig, FillMode, GridLayout, HistogramSeries,
+    LineFill, LineInterpolation, MatrixOrientation, MatrixRef, ParallelSeries, PointColorMap,
+    PointSizeMap, RangeBarSeries, RgbImageSeries, ScatterShape, SeriesConfig, Shading, SizeScale,
+    StreamlineArrows, StreamlineSeries, TernarySeries, VectorColorMap, VectorComponents,
+    VectorPivot, VectorScale, VectorSeries, VectorStyle,
 };
 use renderer::format::LabelFormat;
 use renderer::layout::{ChartArea, Rect};
@@ -677,7 +677,27 @@ pub fn with_legend(mut config: Config, series: &[SeriesConfig]) -> Config {
 
 /// The starting model of Cartesian scene `kind`, its columns uploaded to
 /// `r`. The large-data scene generates `big_data_points` samples.
+///
+/// The scene is the document as its chart object holds it: a layout the
+/// chart keeps fitted (`LayoutState::Fitted`, which a document reader gives
+/// a document with text sizes and the default parallel config sets, #357)
+/// is fitted when the chart is created (`Chart::new`), and every check
+/// reads that layout: the rasters, the hit map and the parts a vector
+/// export writes are measured on the config the export draws.
 pub fn build(
+    r: &mut Renderer,
+    kind: SceneKind,
+    big_data_points: usize,
+) -> Result<CartesianScene, FiggyError> {
+    let mut scene = build_scene(r, kind, big_data_points)?;
+    if scene.config.layout_state.is_fitted() {
+        scene.config = renderer::Chart::new(scene.config).config().clone();
+    }
+    Ok(scene)
+}
+
+/// [`build`] before its chart object fits a layout it keeps fitted.
+fn build_scene(
     r: &mut Renderer,
     kind: SceneKind,
     big_data_points: usize,
@@ -1221,6 +1241,7 @@ fn probability_paper(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     };
     for axis in [&mut times.config.left_y, &mut times.config.right_y] {
         axis.scale = AxisScale::Probability(weibull);
@@ -1484,7 +1505,7 @@ fn histogram(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "samples",
         "hist_edges",
         "hist_counts",
-        DataRenderType::Histogram { bar },
+        DataRenderType::Histogram(HistogramSeries { bar }),
     )];
     let mut chart = Chart::new(base_config("Histogram of 5000 samples", "value", "count"));
     chart.set_x_range(-3.0, 3.0);
@@ -1738,7 +1759,7 @@ fn vector_field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "quiver",
         "vf_x",
         "vf_y",
-        DataRenderType::Vector {
+        DataRenderType::Vector(VectorSeries {
             components: VectorComponents::Grid {
                 u: grid(&u_ids),
                 v: grid(&v_ids),
@@ -1752,8 +1773,9 @@ fn vector_field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 head_width_px: 6.0,
                 min_length_px: 2.0,
                 color_map: Some(VectorColorMap::Grid(grid(&s_ids))),
+                auto_scale: false,
             },
-        },
+        }),
     );
     // Probe arrows: pixel-scaled, so they keep their size under zoom.
     let mut probe_style = VectorStyle {
@@ -1765,20 +1787,21 @@ fn vector_field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         head_width_px: 9.0,
         min_length_px: 0.0,
         color_map: None,
+        auto_scale: false,
     };
     probe_style.fit_scale(bounds(|p| p.0), bounds(|p| p.1), 48.0);
     let probes = series(
         "probes",
         "vf_px",
         "vf_py",
-        DataRenderType::Vector {
+        DataRenderType::Vector(VectorSeries {
             components: VectorComponents::Points {
                 u: "vf_pu".into(),
                 v: "vf_pv".into(),
                 w: None,
             },
             style: probe_style,
-        },
+        }),
     );
     let series = vec![speed, quiver, probes];
     let mut config = base_config("Vector field: vortex flow", "x", "y");
@@ -1858,7 +1881,7 @@ fn streamlines(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "field lines",
         "sl_x",
         "sl_y",
-        DataRenderType::Streamlines {
+        DataRenderType::Streamlines(StreamlineSeries {
             line: line_style(Color::from_rgb8(40, 40, 40), 1.4),
             arrows: Some(StreamlineArrows {
                 spacing_px: 70.0,
@@ -1868,7 +1891,7 @@ fn streamlines(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             color_map: Some(PointColorMap {
                 column: "sl_speed".into(),
             }),
-        },
+        }),
     );
     let series = vec![field_lines];
     let mut config = base_config("Electric dipole: field lines", "x", "y");
@@ -2076,6 +2099,13 @@ fn long_labels(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     chart.set_y_range(0.0, 0.003);
     chart.auto_fit_colorbar_union(r.pool(), &["ll_albedo"], 0.0)?;
     let mut config = chart.config().clone();
+    // The scene shows the long `Decimal` labels (`0.00300`) that auto
+    // layout switches to powers of ten; the helpers now give `Auto` (#357).
+    config.left_y.label_style.format = LabelFormat::Decimal;
+    config.right_y.label_style.format = LabelFormat::Decimal;
+    if let Some(bar) = config.colorbar.as_mut() {
+        bar.axis.label_style.format = LabelFormat::Decimal;
+    }
 
     // A second Y scale on the right: the same depths as a negative forcing.
     let right = &mut config.right_y;
@@ -2304,6 +2334,7 @@ fn subplots(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     };
     let rust = Color::from_rgb8(176, 64, 32);
     let green = Color::from_rgb8(40, 140, 90);
@@ -2598,7 +2629,7 @@ fn offset_spectra(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     }
     let mut config = base_config(
         "Offset spectra: band drift with temperature",
-        "Raman shift (cm⁻¹)",
+        "Raman shift (cm$^{-1}$)",
         "Intensity (offset)",
     );
     config.line_offsets = Some(renderer::data_config::LineOffsets {
@@ -3317,7 +3348,7 @@ fn violin_box(
         id,
         "vl_pos",
         &format!("{id}.record"),
-        DataRenderType::BoxPlot {
+        DataRenderType::BoxPlot(BoxSeries {
             color,
             style: BoxPlotStyle {
                 caps: false,
@@ -3332,7 +3363,7 @@ fn violin_box(
                 box_width: 0.18,
             }),
             points: None,
-        },
+        }),
     );
     // The legend names a series by its id.
     item.series_id = label.into();
@@ -3408,7 +3439,7 @@ fn violins(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         },
     );
     control_series.y_column.clear();
-    if let DataRenderType::BoxPlot { overrides, .. } = &mut control_series.render_type {
+    if let DataRenderType::BoxPlot(BoxSeries { overrides, .. }) = &mut control_series.render_type {
         let mut o = BoxPlotOverride::new(BoxPlotTarget::new("10mg", "Control / treated"));
         o.color = Some(Color::from_rgb8(170, 140, 210));
         *overrides = Some(vec![o]);
@@ -3465,7 +3496,7 @@ fn raincloud(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         },
     );
     cloud.x_column = "vl_pos".into();
-    if let DataRenderType::BoxPlot { points, violin, .. } = &mut cloud.render_type {
+    if let DataRenderType::BoxPlot(BoxSeries { points, violin, .. }) = &mut cloud.render_type {
         if let Some(violin) = violin {
             violin.box_width = 0.12;
         }
@@ -3554,7 +3585,7 @@ fn ternary(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             "Cr-rich field",
             "tn_field_fe",
             "tn_field_ni",
-            DataRenderType::Ternary {
+            DataRenderType::Ternary(TernarySeries {
                 c_column: "tn_field_cr".into(),
                 scatter: None,
                 line: Some(line_style(Color::from_rgb8(214, 96, 40), 1.2)),
@@ -3562,24 +3593,24 @@ fn ternary(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                     color: Color::from_rgb8(244, 160, 90),
                     opacity: 0.3,
                 }),
-            },
+            }),
         ),
         series(
             "alloys",
             "tn_fe",
             "tn_ni",
-            DataRenderType::Ternary {
+            DataRenderType::Ternary(TernarySeries {
                 c_column: "tn_cr".into(),
                 scatter: Some(markers),
                 line: None,
                 region: None,
-            },
+            }),
         ),
         series(
             "tie-line",
             "tn_tie_fe",
             "tn_tie_ni",
-            DataRenderType::Ternary {
+            DataRenderType::Ternary(TernarySeries {
                 c_column: "tn_tie_cr".into(),
                 scatter: Some(scatter_style(
                     Color::from_rgb8(60, 60, 60),
@@ -3588,7 +3619,7 @@ fn ternary(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 )),
                 line: Some(tie),
                 region: None,
-            },
+            }),
         ),
     ];
     let mut config = base_config("Alloy compositions", "Fe %", "Ni %");
@@ -3985,20 +4016,21 @@ fn quiver_3d(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         head_width_px: 6.0,
         min_length_px: 0.0,
         color_map: Some(VectorColorMap::Column("q3_s".into())),
+        auto_scale: false,
     };
     style.fit_scale_3d(bounds(0), bounds(1), bounds(2), 0.8 * spacing);
     let mut arrows = series(
         "flow",
         "q3_x",
         "q3_y",
-        DataRenderType::Vector {
+        DataRenderType::Vector(VectorSeries {
             components: VectorComponents::Points {
                 u: "q3_u".into(),
                 v: "q3_v".into(),
                 w: Some("q3_w".into()),
             },
             style,
-        },
+        }),
     );
     arrows.z_column = Some("q3_z".into());
     let series = vec![arrows];
@@ -4038,7 +4070,7 @@ fn range_series(id: &str, positions: &str, start: &str, end: &str, color: Color)
         id,
         positions,
         end,
-        DataRenderType::RangeBars {
+        DataRenderType::RangeBars(RangeBarSeries {
             color,
             style: CategoryBarStyle {
                 corner_radius: 2.0,
@@ -4051,7 +4083,7 @@ fn range_series(id: &str, positions: &str, start: &str, end: &str, color: Color)
             connector: None,
             slot_width: None,
             labels: CategoryBarSeriesLabels::default(),
-        },
+        }),
     )
 }
 
@@ -4113,12 +4145,12 @@ fn waterfall(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "wf_end",
         Color::from_rgb8(90, 110, 130),
     );
-    if let DataRenderType::RangeBars {
+    if let DataRenderType::RangeBars(RangeBarSeries {
         color_by,
         connector,
         labels,
         ..
-    } = &mut bars.render_type
+    }) = &mut bars.render_type
     {
         *color_by = RangeColor::Direction {
             up: Color::from_rgb8(44, 160, 90),
@@ -4187,13 +4219,13 @@ fn candles(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "cd_close",
         Color::from_rgb8(90, 110, 130),
     );
-    if let DataRenderType::RangeBars {
+    if let DataRenderType::RangeBars(RangeBarSeries {
         style,
         whiskers,
         color_by,
         slot_width,
         ..
-    } = &mut candles.render_type
+    }) = &mut candles.render_type
     {
         style.corner_radius = 0.0;
         *whiskers = Some(RangeWhiskers {
@@ -4283,12 +4315,12 @@ fn gantt(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "gt_end",
         Color::from_rgb8(90, 110, 130),
     );
-    if let DataRenderType::RangeBars {
+    if let DataRenderType::RangeBars(RangeBarSeries {
         color_by,
         progress,
         labels,
         ..
-    } = &mut actual.render_type
+    }) = &mut actual.render_type
     {
         *color_by = RangeColor::State {
             column: "gt_state".into(),
@@ -4369,7 +4401,7 @@ fn rose(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 id,
                 "rose_pos",
                 id,
-                DataRenderType::CategoryBars {
+                DataRenderType::CategoryBars(CategoryBarSeries {
                     color,
                     style: CategoryBarStyle {
                         corner_radius: 0.0,
@@ -4378,7 +4410,7 @@ fn rose(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                     labels: Default::default(),
                     label_format: Default::default(),
                     overrides: None,
-                },
+                }),
             );
             s.label = Some(RichText::plain(label, Color::BLACK, 12.0, ""));
             s
@@ -4593,6 +4625,7 @@ fn broken_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     }];
     let mut chart = Chart::new(config);
     chart.set_x_range(0.0, 100.0);
@@ -4688,11 +4721,11 @@ fn parallel(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "flowers",
         names[0],
         names[1],
-        DataRenderType::Parallel {
+        DataRenderType::Parallel(ParallelSeries {
             columns: names.iter().map(|n| (*n).to_owned()).collect(),
             line: line_style(Color::from_rgb8(31, 119, 180), 1.2),
             color_column: Some("pc_species".into()),
-        },
+        }),
     )];
     let mut config = base_config("Iris measurements", "", "");
     config.bottom_x.categories = Some(
@@ -4718,6 +4751,8 @@ fn parallel(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     config.grid.show_minor_y = false;
     // Each axis spans its measurement with a little room past the data.
     config.set_parallel(Some(ParallelOptions {
+        names_on_top: false,
+        label_backdrop: None,
         axes: ranges
             .iter()
             .map(|(lo, hi)| {
@@ -4840,14 +4875,14 @@ fn image(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             "image",
             "img_x",
             "img_y",
-            DataRenderType::RgbImage {
+            DataRenderType::RgbImage(RgbImageSeries {
                 red: lattice(&ids[0]),
                 green: lattice(&ids[1]),
                 blue: lattice(&ids[2]),
                 range: [0.0, 255.0],
                 shading: Shading::Flat,
                 opacity: 1.0,
-            },
+            }),
         ),
         series(
             "marks",
@@ -5081,7 +5116,9 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         EnergyLevel, EnergyLevelSeries, IonizationLimit, LevelRole, LevelView, Transition,
     };
     let ink = Color::from_rgb8(70, 76, 90);
-    let label = |text: &str| Some(RichText::plain(text, ink, 11.0, ""));
+    // `$…$` spans are TeX: scripts are written as script segments, not as
+    // Unicode script characters (#357).
+    let label = |text: &str| Some(RichText::from_label(text, ink, 11.0, ""));
     let level = |id: &str, column: &str, energy: f64, text: Option<&str>| EnergyLevel {
         id: id.into(),
         column: column.into(),
@@ -5111,7 +5148,7 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         ..level(id, "3P*", energy, None)
     };
     let levels = vec![
-        level("1s2", "1S", 0.0, Some("1s²")),
+        level("1s2", "1S", 0.0, Some("1s$^{2}$")),
         level("2s1S", "1S", 20.615_774_823, Some("2s")),
         level("3s1S", "1S", 22.920_317_359, Some("3s")),
         level("4s1S", "1S", 23.673_570_590, Some("4s")),
@@ -5147,6 +5184,7 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         label_offset: [0.0; 2],
         value: None,
         x_offset,
+        color: None,
         wavelength: Some(nm),
         wavelength_uncertainty: None,
         intensity: String::new(),
@@ -5161,8 +5199,8 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         limits: vec![IonizationLimit {
             id: "He II".into(),
             energy: 24.587_389_011,
-            label: Some(RichText::plain(
-                "He II 1s ²S  24.587 eV",
+            label: Some(RichText::from_label(
+                "He II 1s $^{2}$S  24.587 eV",
                 Color::from_rgb8(40, 50, 120),
                 11.0,
                 "",
@@ -5360,6 +5398,7 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         // inset and the view.
         marker: Some(renderer::InsetMarker::default()),
         text_scale: Default::default(),
+        anchor: None,
     });
 
     let mut fine_style = series.style.clone();

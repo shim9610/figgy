@@ -5,6 +5,7 @@
 use super::*;
 
 mod chart_view;
+mod ink_mask;
 mod paint;
 mod panels;
 mod prepared;
@@ -14,6 +15,7 @@ mod submit;
 mod views;
 
 pub use chart_view::*;
+pub(super) use ink_mask::*;
 pub use panels::*;
 pub use prepared::*;
 pub(super) use prepared_layers::*;

@@ -47,6 +47,9 @@ pub(in crate::renderer) fn raster_config_equal(left: &Config, right: &Config) ->
         line_offsets,
         plot_background,
         background,
+        // Who owns the layout: the margins it chose are drawn through the
+        // axes, the title and the legend above; the state draws nothing.
+        layout_state: _,
     } = left;
     chart_area == &right.chart_area
         && top_x == &right.top_x
@@ -227,6 +230,37 @@ pub(in crate::renderer) struct ChartRenderState {
     /// [`Renderer::prepare_registered`], when it set one with
     /// [`Renderer::set_chart_display`]; `None` draws the document as stored.
     pub(in crate::renderer) display: Option<ChartDisplay>,
+    /// The pick warm-up a browser renderer last scheduled for this chart
+    /// (#363, #381, [`Renderer::warm_first_pick`]).
+    #[cfg(target_arch = "wasm32")]
+    pub(in crate::renderer) pick_warmup: Option<PickWarmup>,
+    /// The range link exit fit in flight for this chart (#357): a browser
+    /// cannot wait for its gather, so the frame that finds it complete
+    /// writes the exits ([`Renderer::service_link_exit_fits`]). Always
+    /// `None` on native, where the fit runs to the end when it is asked.
+    pub(in crate::renderer) link_exit_fit: Option<PendingLinkExitFit>,
+}
+
+/// A registered chart's range link exit fit in flight (#357): the gather
+/// and the series revision it was begun from, a generation stamp, so a
+/// series edit before it completes fits the new series instead.
+pub(in crate::renderer) struct PendingLinkExitFit {
+    pub(in crate::renderer) ticket: crate::renderer::LinkExitFitTicket,
+    pub(in crate::renderer) revision: RenderRevision,
+}
+
+/// One chart's pick warm-up (#363): scalars only.
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer) struct PickWarmup {
+    /// The config and series revisions and the shader set it was scheduled
+    /// for: a generation stamp, so an edit that moves either revision
+    /// schedules it again.
+    pub(in crate::renderer) stamp: (RenderRevision, RenderRevision, ShaderSet),
+    /// The compile queue's settled count when the frame last created the
+    /// pipelines whose compiles had resolved; `None` once every one has
+    /// been created or has ended any other way.
+    pub(in crate::renderer) adopting: Option<u64>,
 }
 
 /// A registered chart drawn scaled onto a surface (#160). The placed config

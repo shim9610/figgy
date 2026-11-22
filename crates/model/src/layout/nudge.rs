@@ -267,7 +267,43 @@ impl Config {
     /// the angle labels move along the spoke under the pointer. Without it
     /// the ray turns as if grabbed on the outer ring and the angle labels
     /// use the spoke at the zero angle.
+    ///
+    /// A move fixes the layout ([`crate::config::LayoutState::Fixed`], #357): the user
+    /// placed part of it, so no later draw fits it again. A move that
+    /// changes a panel's data area moves the insets nested in it with it
+    /// ([`Self::follow_parent_areas`], #392). A rejected move changes
+    /// nothing, the state included.
     pub fn nudge_from(
+        &mut self,
+        element: Element,
+        measure: &dyn MeasureText,
+        at: Option<[f32; 2]>,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        // A move that changes a parent's data area carries its insets
+        // along (#392); a moved subplot frame is placed where it was put.
+        let placed = match &element {
+            Element::SubplotFrame(index) | Element::SubplotFrameEdge(index, _) => Some(*index),
+            _ => None,
+        };
+        let before = self.has_insets().then(|| self.clone());
+        let result = self.nudge_unfixed(element, measure, at, dx, dy);
+        if result == NudgeResult::Moved {
+            self.layout_state = crate::config::LayoutState::Fixed;
+            if let Some(before) = before {
+                self.follow_parent_areas(&before, placed);
+            }
+            // A dragged or resized frame is the subplot's new placement.
+            if let Some(index) = placed {
+                self.anchor_placed(index);
+            }
+        }
+        result
+    }
+
+    /// The move of [`Self::nudge_from`], without the layout state.
+    fn nudge_unfixed(
         &mut self,
         element: Element,
         measure: &dyn MeasureText,
@@ -1014,14 +1050,6 @@ impl Config {
             return NudgeResult::Rejected(NudgeReject::OutOfBounds);
         }
         NudgeResult::Moved
-    }
-
-    pub fn nudge_x(&mut self, element: Element, measure: &dyn MeasureText, dx: f32) -> NudgeResult {
-        self.nudge(element, measure, dx, 0.0)
-    }
-
-    pub fn nudge_y(&mut self, element: Element, measure: &dyn MeasureText, dy: f32) -> NudgeResult {
-        self.nudge(element, measure, 0.0, dy)
     }
 }
 

@@ -40,7 +40,8 @@ pub use annotation::{
     MeasuredText, NoteAlign, PixelSpace, ShapeStyle,
 };
 pub use layer::{
-    AnnotationLayer, CellRef, InsetMarker, LayerRef, OverlayLayer, Subplot, SubplotTextScale,
+    AnnotationLayer, CellRef, InsetAnchor, InsetMarker, LayerRef, OverlayLayer, Subplot,
+    SubplotTextScale,
 };
 pub mod format;
 pub mod layout;
@@ -69,18 +70,21 @@ pub use color::Color;
 pub use colormap::{ColorMap, LUT_LEN};
 pub use config::{
     AxisBreak, AxisBreakStyle, AxisBreaks, BarAlign, BreakMark, ColorBarOptions, Config,
-    DataSelectionsConfig, MAX_AXIS_BREAK_GAP_PX, MAX_AXIS_BREAKS, PickedDataRef, PieceSizing,
+    DataSelectionsConfig, LayoutState, MAX_AXIS_BREAK_GAP_PX, MAX_AXIS_BREAKS, PickedDataRef,
+    PieceSizing,
 };
 pub use data::{Column, ColumnId};
 pub use data_config::{
-    BarGroups, BoxPlotRef, BoxPlotSeriesLabels, CategoryBarSeriesLabels, CategoryBarsRef,
+    BarGroups, BoxPlotSeriesLabels, BoxSeries, CategoryBarSeries, CategoryBarSeriesLabels,
     DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
     DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
     DataScatterPointStyleConfig, DataScatterPointStyleOverride, DataScatterStyleConfig, ErrorBars,
-    ErrorRef, FieldSeries, LineFill, LineInterpolation, LineOffsets, MAX_CONTOUR_LABEL_ANCHORS,
-    MAX_CONTOUR_LEVELS, PointColorMap, PointSizeMap, RadarRef, RadarSeriesLabels, ScatterShape,
-    SeriesConfig, SeriesRef, SizeScale, StreamlineArrows, StreamlinesRef, VectorColorMap,
-    VectorComponents, VectorPivot, VectorScale, VectorStyle, XySeries,
+    ErrorRef, FieldSeries, HistogramSeries, LineFill, LineInterpolation, LineOffsets,
+    MAX_CONTOUR_LABEL_ANCHORS, MAX_CONTOUR_LEVELS, ParallelSeries, PointColorMap, PointSizeMap,
+    RadarPolygonSeries, RadarSeriesLabels, RangeBarSeries, RgbImageSeries, ScatterShape,
+    SeriesConfig, SeriesRef, SizeScale, StreamlineArrows, StreamlineSeries, TernarySeries,
+    VectorColorMap, VectorComponents, VectorPivot, VectorScale, VectorSeries, VectorStyle,
+    XySeries,
 };
 pub use drag::Draggable;
 pub use preset::{AxisPreset, ColorCycle};
@@ -98,19 +102,13 @@ pub use text::{MeasureText, TextAlign, TextExtents};
 pub mod material;
 pub use material::Material;
 
-pub use radial::{
-    RadialChart, RadialInteraction, RadialKind, RadialLabelFormat, RadialLabels, RadialOutline,
-    RadialSlice, RadialSplit, RadialStyle, RadialTarget,
-};
-// The deprecated name stays importable from the crate root.
-#[allow(deprecated)]
-pub use radial::RadialMaterial;
-
-#[allow(deprecated)]
 pub use categorical::*;
+pub use radial::{
+    InnerLabelFallback, RadialChart, RadialInteraction, RadialKind, RadialLabelFormat,
+    RadialLabels, RadialOutline, RadialSlice, RadialSplit, RadialStyle, RadialTarget,
+};
 
 pub mod boxplot;
-#[allow(deprecated)]
 pub use boxplot::*;
 pub mod energy_levels;
 pub mod feynman;
@@ -121,8 +119,8 @@ pub mod tri_mesh;
 pub mod view3d;
 pub use energy_levels::{
     EnergyLevel, EnergyLevelSeries, EnergyLevelStyle, IonizationLimit, LabelPart, LevelLabelSide,
-    LevelRole, LevelStrokeStyle, LevelView, Transition, TransitionArrowStyle, TransitionDirection,
-    WavelengthLabels,
+    LevelRole, LevelStrokeStyle, LevelView, SpectralColors, Transition, TransitionArrowStyle,
+    TransitionDirection, WavelengthLabels, WavelengthUnit,
 };
 pub use feynman::{
     FeynmanHit, FeynmanLabelPart, FeynmanLayout, FeynmanPicked, FeynmanSeries, FeynmanStyle,
@@ -136,8 +134,7 @@ pub use polar::{
 };
 pub use tri_mesh::{MeshValueLocation, MeshValues, TriMeshSeries};
 pub mod radar;
-#[allow(deprecated)]
 pub use radar::*;
 
 pub mod bounded_title;
-pub use bounded_title::BoundedTitleOptions;
+pub use bounded_title::{BoundedTitleOptions, DocumentTextSizes};

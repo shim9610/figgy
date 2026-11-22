@@ -270,6 +270,17 @@ impl PrepareContext<'_> {
                     PickedDataRef::HistogramBin { bin_index, .. } if primitives.range_bars => {
                         self.range_bar_selection(&s, selection_cfg, bin_index, &mut selected_bars)?;
                     }
+                    // A range link is a bin whose index is its row (#357):
+                    // the highlight routes the same link from the same
+                    // group 3 as the draw.
+                    PickedDataRef::HistogramBin { bin_index, .. } if primitives.range_links => {
+                        self.range_link_selection(
+                            &s,
+                            selection_cfg,
+                            bin_index,
+                            &mut selected_bars,
+                        )?;
+                    }
                     // A category bar is a bin whose index is its row: the
                     // highlight builds the same bar from the same group 3
                     // and override table as the draw.
@@ -617,7 +628,7 @@ mod tests {
         for kind in 0..3 {
             let mut declaration = declaration();
             if kind != 0 {
-                declaration.render_type = DataRenderType::Histogram {
+                declaration.render_type = DataRenderType::Histogram(HistogramSeries {
                     bar: DataBarStyleConfig {
                         fill_color: Color::BLACK,
                         border_color: Color::BLACK,
@@ -639,7 +650,7 @@ mod tests {
                             },
                         }]),
                     },
-                };
+                });
                 if kind == 2 {
                     std::mem::swap(&mut declaration.x_column, &mut declaration.y_column);
                 }

@@ -97,12 +97,9 @@ impl PrepareContext<'_> {
                     (Some(_), Some(_), false) => ternary(TernaryPipeline::ScatterMapped)?,
                     (None, Some(_), false) => ternary(TernaryPipeline::Scatter)?,
                     (Some(_), None, false) => {
-                        pipelines
-                            .scatter_mapped
-                            .as_ref()
-                            .ok_or(FiggyError::internal(
-                                "prepare ensured mapped scatter pipeline",
-                            ))?
+                        pipelines.precise(PrecisePipeline::ScatterMapped).ok_or(
+                            FiggyError::internal("prepare ensured mapped scatter pipeline"),
+                        )?
                     }
                     (None, None, false) => scatter_pick.pipeline,
                 },
@@ -224,14 +221,9 @@ impl PrepareContext<'_> {
                         pipeline: match precise_errorbar_style_map {
                             None => errorbar_pipe
                                 .ok_or(FiggyError::internal("prepare ensured errorbar pipeline"))?,
-                            Some(_) => {
-                                pipelines
-                                    .errorbar_mapped
-                                    .as_ref()
-                                    .ok_or(FiggyError::internal(
-                                        "prepare ensured mapped errorbar pipeline",
-                                    ))?
-                            }
+                            Some(_) => pipelines.precise(PrecisePipeline::ErrorbarMapped).ok_or(
+                                FiggyError::internal("prepare ensured mapped errorbar pipeline"),
+                            )?,
                         },
                         transform_bg: &view.transform_bg,
                         style_bg: &series.style.errorbar_bg,

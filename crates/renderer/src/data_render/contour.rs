@@ -37,61 +37,6 @@ pub struct ContourLookupMetadataGpu {
 
 const _: () = assert!(std::mem::size_of::<ContourLookupMetadataGpu>() == 8);
 
-/// The selected-field highlight for a labelled contour: group 3 is the
-/// series' label-gap group, which `fs_data_selection_labelled` reads.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn create_field_selection_labelled_pipeline_with_sample_count(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    selection_bgl: &wgpu::BindGroupLayout,
-    field_bgl: &wgpu::BindGroupLayout,
-    label_gap_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    create_field_columnar_pipeline_with_optional_extra_layout(
-        device,
-        shader,
-        transform_bgl,
-        selection_bgl,
-        field_bgl,
-        Some(label_gap_bgl),
-        target_format,
-        sample_count,
-        "fs_data_selection_labelled",
-        "figgy selected labelled field data pipeline",
-    )
-}
-
-/// Labelled contours add group 3 containing the exact selected-anchor buffers.
-/// No-label contours keep the original layout and entry point, so merely adding
-/// contour support does not compile or bind label machinery.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn create_labelled_contour_pipeline(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    field_bgl: &wgpu::BindGroupLayout,
-    label_gap_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    create_field_columnar_pipeline_with_optional_extra_layout(
-        device,
-        shader,
-        transform_bgl,
-        style_bgl,
-        field_bgl,
-        Some(label_gap_bgl),
-        target_format,
-        sample_count,
-        "fs_contour_labelled",
-        "figgy labelled field contour pipeline",
-    )
-}
-
 /// One contour series' draw.
 ///
 /// The **same quad as the field**, through `fs_contour`: the isolines are the

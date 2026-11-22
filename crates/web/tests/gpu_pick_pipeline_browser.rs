@@ -2,7 +2,7 @@
 
 use renderer::{
     Color, DataRenderType, DataScatterStyleConfig, GpuPickRequest, Renderer, RendererDevice,
-    ScatterShape, SeriesConfig,
+    ScatterShape, SeriesConfig, StreamlineSeries,
     config::DrawStyle,
     data::Column,
     default,
@@ -14,14 +14,10 @@ use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::*;
 use web_sys::HtmlCanvasElement;
 
-wasm_bindgen_test_configure!(run_in_browser);
+mod support;
+use support::raw_device_method;
 
-fn raw_device_method(device: &wgpu::webgpu::GpuDevice, name: &str) -> js_sys::Function {
-    js_sys::Reflect::get(device.as_ref(), &JsValue::from_str(name))
-        .expect("GPUDevice method lookup failed")
-        .dyn_into()
-        .expect("GPUDevice property was not a function")
-}
+wasm_bindgen_test_configure!(run_in_browser);
 
 fn push_validation_scope(device: &wgpu::Device) {
     let raw = device
@@ -118,6 +114,8 @@ async fn raw_figgy_prewarm_is_idempotent_and_pick_reuses_it() {
         .set_config(&serde_json::to_string(&config).expect("raw config serialization failed"))
         .expect("raw config update failed");
     chart.resize(100, 100).expect("raw chart resize failed");
+    // A pick hits the ink the chart's frames drew (#381).
+    chart.series_ready().await.expect("raw chart draws");
 
     chart
         .prewarm_gpu_picking()
@@ -127,8 +125,11 @@ async fn raw_figgy_prewarm_is_idempotent_and_pick_reuses_it() {
         .prewarm_gpu_picking()
         .await
         .expect("idempotent raw picker prewarm failed");
+    // The first draw fits the margins to the tick labels; the line's
+    // middle datum is the centre of the data area it drew in.
+    let [x, y] = data_area_centre(&chart);
     let picked = chart
-        .pick_point(50.0, 50.0, 2.0)
+        .pick_point(x, y, 2.0)
         .await
         .expect("raw pick failed")
         .as_string()
@@ -137,6 +138,25 @@ async fn raw_figgy_prewarm_is_idempotent_and_pick_reuses_it() {
         serde_json::from_str(&picked).expect("raw pick payload was not JSON");
     assert_eq!(picked["series_id"], "raw-series");
     assert_eq!(picked["point_index"], 1);
+
+    // Releasing the unused GPU memory keeps the drawn chart's ink masks:
+    // after it, a frame (which has nothing to redraw) and the same pick
+    // still hit the datum (#381).
+    chart
+        .release_unused_gpu_memory()
+        .await
+        .expect("unused memory release failed");
+    chart.frame().expect("frame after the release failed");
+    let picked = chart
+        .pick_point(x, y, 2.0)
+        .await
+        .expect("pick after the release failed")
+        .as_string()
+        .expect("a pick after the release resolves to JSON");
+    let picked: serde_json::Value =
+        serde_json::from_str(&picked).expect("pick payload after the release was not JSON");
+    assert_eq!(picked["series_id"], "raw-series", "{picked}");
+    assert_eq!(picked["point_index"], 1, "{picked}");
 }
 
 /// A streamline series goes through the wrapper whole: `set_series` /
@@ -162,14 +182,14 @@ async fn streamline_series_round_trip_and_pick_through_the_wrapper() {
         x_column: "sl-x".into(),
         y_column: "sl-y".into(),
         z_column: None,
-        render_type: DataRenderType::Streamlines {
+        render_type: DataRenderType::Streamlines(StreamlineSeries {
             line: renderer::DataLineStyleConfig {
                 line_width: 2.0,
                 ..renderer::DataLineStyleConfig::default()
             },
             arrows: Some(renderer::StreamlineArrows::default()),
             color_map: None,
-        },
+        }),
     }];
     let json = serde_json::to_string(&series).expect("series serialization failed");
     chart
@@ -202,13 +222,17 @@ async fn streamline_series_round_trip_and_pick_through_the_wrapper() {
         .set_config(&serde_json::to_string(&config).expect("config serialization failed"))
         .expect("config update failed");
     chart.resize(100, 100).expect("chart resize failed");
+    // A pick hits the ink the chart's frames drew (#381).
+    chart.series_ready().await.expect("chart draws");
     chart
         .prewarm_gpu_picking()
         .await
         .expect("picker prewarm failed");
-    // The first streamline runs along y = 1, the middle of the panel.
+    // The first streamline runs along y = 1, the middle of the data area
+    // the first draw fitted to the tick labels.
+    let [x, y] = data_area_centre(&chart);
     let picked = chart
-        .pick_point(50.0, 50.0, 2.0)
+        .pick_point(x, y, 2.0)
         .await
         .expect("pick failed")
         .as_string()
@@ -339,6 +363,17 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
     let chart_id = renderer
         .register_chart(config, series)
         .expect("chart registration failed");
+    // A pick hits the ink the chart's on-screen prepare drew (#381).
+    let stored = renderer.chart_config(chart_id).expect("stored").clone();
+    let mut view = renderer
+        .create_chart_view(&renderer::Chart::new(stored.clone()), stored.chart_area.0)
+        .expect("chart view");
+    renderer
+        .prepare_registered(&mut [renderer::RegisteredChartDrawItem {
+            chart_id,
+            view: &mut view,
+        }])
+        .expect("on-screen prepare");
 
     push_validation_scope(&device);
     renderer
@@ -384,4 +419,14 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
     assert_eq!(picked.series_id, "browser-series");
     assert_eq!(picked.point_index, point_count / 2);
     assert_eq!(picked.distance_px, 0.0);
+}
+
+/// The centre of the chart's data area in canvas pixels, as drawn.
+fn data_area_centre(chart: &figgy::FiggyChart) -> [f32; 2] {
+    let area: serde_json::Value =
+        serde_json::from_str(&chart.data_area_rect().expect("data area read failed"))
+            .expect("data area JSON failed to parse");
+    let rect = &area["canvas"];
+    let at = |i: usize| rect[i].as_f64().expect("data area rect") as f32;
+    [at(0) + at(2) * 0.5, at(1) + at(3) * 0.5]
 }

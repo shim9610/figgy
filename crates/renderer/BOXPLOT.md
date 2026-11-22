@@ -8,9 +8,8 @@ by the host and uploaded through `ColumnSource`: a **record** of box
 statistics per series and, when the series has outliers, a **ragged column**
 of them. Streamed sources are rejected. `BoxPlotChart` is the document format
 of the releases up to 0.12; `Config::from_boxplot` reads it as such a chart
-([Opening a legacy document](#opening-a-legacy-document)). It is kept as a
-deprecated document reader for this release and is removed in the next
-milestone.
+([Opening a legacy document](#opening-a-legacy-document)). It is kept as the
+reader for documents written before 0.13.
 
 ## Series and uploads
 
@@ -30,7 +29,7 @@ the direction: the series names its record in `y_column` either way.
 
 ```rust,no_run
 use renderer::{
-    BOX_PLOT_RECORD, Chart, Color, Column, ColumnSource, DataRenderType, LayerRef,
+    BOX_PLOT_RECORD, BoxSeries, Chart, Color, Column, ColumnSource, DataRenderType, LayerRef,
     RaggedSource, RecordSource, Renderer, SeriesConfig,
 };
 /// A host column (NaN is a missing value); the renderer measures its range.
@@ -71,13 +70,13 @@ r.upsert_ragged(
 let series = [SeriesConfig {
     x_column: "positions".into(),
     y_column: "response.record".into(),
-    render_type: DataRenderType::BoxPlot {
+    render_type: DataRenderType::BoxPlot(BoxSeries {
         color: Color::from_rgb8(65, 144, 208),
         style: Default::default(),
         labels: Default::default(),
         outliers: Some("response.outliers".into()),
         overrides: None,
-    },
+    }),
     ..template
 }];
 let mut chart = Chart::new(config);
@@ -294,7 +293,11 @@ half (`PickedDataRef::HistogramBin { half: Some(..), .. }`) outlines that
 half alone. Inside the box, which is painted over the violin, the pick
 answers the box (`half: None`). A
 raw point answers `PickedData::Point` with its row where it is drawn, and its
-highlight rings it; `step_selection` walks the points
+highlight rings it. A series with raw points has point data, so what a click
+selects follows the series that owns the ink under the cursor (#381): its
+nearest raw point, also on its violin or box, which stays the typed hit
+(`DataPickResult::data`); a series without points selects its box or violin.
+`step_selection` walks the points
 (`dx`) and the box plot series with points (`dy`), and `selection_details()`
 reports a point's `position`, `value` and category.
 
@@ -363,10 +366,16 @@ colour, its style (or the chart's), the chart's label settings with the text
 written from the medians and counts, and its overrides. `value_range` becomes
 the fixed value axis range; the titles, grid, legend, font, text colour, chart
 title, annotations, active layer, selection and decoration offsets map onto
-their Cartesian options. The hover state, the background colour (the host's
-clear colour draws) and an explicit `decorations.data_area` are not carried;
-the data label offsets become the series' `labels.offsets`. In the browser, `FiggyChart.set_boxplot_document(json)`
-does the same.
+their Cartesian options. An explicit `decorations.data_area` becomes the plot
+area through the margins (`Config::fit_legacy_data_area`, edges rounded to
+whole pixels; #334); one the layout cannot hold keeps the automatic layout and
+is reported as dropped with the reason. The hover state and the background
+colour (the host's clear colour draws) are not carried; the data label offsets become the series' `labels.offsets`. In the browser, `FiggyChart.set_boxplot_document(json, options?)`
+does the same and returns the conversion report (`{ config, series,
+uploads, columns, notes }`), which `convert_boxplot_document(json,
+{chart_area})` previews without a chart; its `{ "refuse": [...] | "any" }`
+option refuses a lossy document with `code: "conversion_loss"` before
+anything changes (#334; see [WASM.md](WASM.md#model-api)).
 
 ### Document rules
 
@@ -404,7 +413,7 @@ document in `FiggyChart`.
 범주마다 이상치 묶음 하나를 담은 가변 길이 컬럼의 ID다. 레코드와 가변 길이 컬럼은
 `Renderer::upsert_record`, `upsert_ragged`로 올리며 스트리밍 소스는 거부한다.
 `BoxPlotChart`는 0.12까지의 문서 형식이고, `Config::from_boxplot`이 이 문서를 박스플롯 차트로 읽는다.
-`BoxPlotChart`는 이번 릴리스에서 문서 리더로만 남아 사용 중단(deprecated)되며, 다음 마일스톤에서 제거된다.
+`BoxPlotChart`는 0.13 이전에 쓰인 문서를 읽는 리더로 남는다.
 
 박스플롯은 집계한 통계값을 받는다. 문서에서는 `BoxSummary::new(수염 하한, Q1, 중앙값, Q3,
 수염 상한)`으로 만들고, 평균·표본 수·이상치·중앙값 신뢰구간은 필요할 때 추가한다.
@@ -433,6 +442,12 @@ document in `FiggyChart`.
 `labels.text`에 두며, 렌더러는 상자 꼭대기(높은 수염·평균·노치·이상치 중 가장 높은 곳)에서 10px 위에
 그린다. 데이터 영역 가장자리를 넘으면 꼭대기 아래에 그린다. 라벨은 `PickedData::ValueLabel`로 고르고 드래그하면
 `labels.offsets`에 기록된다.
+바이올린도 상자처럼 칠한 면 안이나 외곽선에서 자기 범주를 `PickedData::HistogramBin`으로 답하고,
+분할 바이올린은 커서 아래 반쪽(`half`)도 알려 준다. 바이올린 위에 그린 상자 안에서는 상자를 답한다(`half: None`).
+원시 점은 그려진 자리에서 자기 행을 `PickedData::Point`로 답하고, 강조는 그 점에 고리를 그린다. 원시 점이 있는
+시리즈는 점 데이터를 가지므로 클릭이 고르는 대상은 커서 아래 잉크를 가진 시리즈를 따른다(#381). 바이올린이나
+상자를 눌러도 가장 가까운 원시 점을 고르고, 바이올린·상자는 typed 적중(`DataPickResult::data`)으로 남는다. 점이
+없는 시리즈는 상자나 바이올린을 고른다.
 시리즈·범주·상자·이상치 수에는 상한이 없다.
 
 ## 제목·축·라벨·범례 선택과 이동
@@ -440,7 +455,7 @@ document in `FiggyChart`.
 제목·범례·축·눈금 라벨·축 제목의 선택과 이동, 그리기 영역 이동·크기 조정, 오버레이와 서브플롯,
 PNG 내보내기는 직교 좌표 차트와 같다. 좌표 단위, 요소별 이동 규칙, 캐시·저장 복원 및 웹 연결은
 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)를 참고한다.
-브라우저에서는 `FiggyChart.set_boxplot_document(json)`로 문서를 연다.
+브라우저에서는 `FiggyChart.set_boxplot_document(json, options?)`로 문서를 열고 변환 보고서(`{ config, series, uploads, columns, notes }`)를 받는다. 차트 없이 이 보고서를 미리 보려면 `convert_boxplot_document(json, {chart_area})`를 쓴다. `{ "refuse": [...] | "any" }` 옵션을 주면 손실이 있는 문서를 아무것도 바꾸기 전에 `code: "conversion_loss"`로 거부한다(#334, [WASM.md](WASM.md#model-api) 참고).
 
 ### 주석 층
 

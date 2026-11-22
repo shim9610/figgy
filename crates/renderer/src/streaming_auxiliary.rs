@@ -5,6 +5,8 @@ use super::*;
 /// export had before 0.19 (streaming is not extended, rule 8).
 const STREAM_EXPORT_MAX_SCALE: f32 = 8.0;
 
+#[path = "streaming_export.rs"]
+mod export;
 #[cfg(test)]
 #[path = "streaming_auxiliary_tests.rs"]
 mod tests;
@@ -555,7 +557,17 @@ impl Renderer {
             identities(),
         )?;
         let data = if typed {
+            // Its two reduction kernels are created by the first streamed
+            // typed pick, through the browser's async API there (#327).
+            #[cfg(target_arch = "wasm32")]
+            self.compile_data_pick_kernels_async(
+                crate::gpu_data_pick::DataPickKernelSet::EMPTY
+                    .with(crate::gpu_data_pick::DataPickKernel::StreamReduceData)
+                    .with(crate::gpu_data_pick::DataPickKernel::StreamReducePoint),
+            )
+            .await?;
             Some(self.picker.ready_data_bundle()?.begin_stream(
+                &mut self.picker.data_kernels,
                 crate::gpu_data_pick::GpuDataPickQuery {
                     transform,
                     chart_rect_px,
@@ -969,187 +981,26 @@ impl Renderer {
             width: size.0,
             height: size.1,
         });
-        let limits = live_runtime(&self.stream_runtime)?.scheduler.limits();
-        for series in &completed.series {
-            PrepareContext::validate_stream_series(&config, series)?;
-            for phase in stream_draw_phases(&config.draw_style, series)? {
-                if *phase == StreamDrawPhase::Field {
-                    field_runtime::preflight(
-                        &self.device,
-                        limits,
-                        &config,
-                        series,
-                        max_primitives,
-                        |id| completed.sources.get(id),
-                    )?;
-                    continue;
-                }
-                let columns = stream_phase_columns(series, *phase);
-                let total = stream_phase_total(series, *phase, |id| {
-                    completed.sources.get(id).map(|s| s.len)
-                })?;
-                if total == 0 {
-                    continue;
-                }
-                if *phase == StreamDrawPhase::Line
-                    && arc_runtime::needs_arc(&config.draw_style, series)
-                    && total >= u64::from(u32::MAX)
-                {
-                    return Err(StreamError::TooLarge.into());
-                }
-                let mut input = 0u64;
-                let mut work = 0u64;
-                for id in &columns.ids[..columns.count] {
-                    let rows = if *phase == StreamDrawPhase::Line
-                        && arc_runtime::needs_arc(&config.draw_style, series)
-                    {
-                        (total + 1).min(max_primitives).min(257)
-                    } else {
-                        stream_phase_request_len(*phase, total.min(max_primitives))?
-                    };
-                    input = input
-                        .checked_add(
-                            rows.checked_mul(completed.sources[*id].encoding.bytes_per_value())
-                                .ok_or(StreamError::Overflow)?,
-                        )
-                        .ok_or(StreamError::Overflow)?;
-                    work = work
-                        .checked_add(rows.checked_mul(8).ok_or(StreamError::Overflow)?)
-                        .ok_or(StreamError::Overflow)?;
-                }
-                if columns.count > limits.max_columns_per_request
-                    || input > limits.max_chunk_bytes
-                    || work.checked_mul(2).ok_or(StreamError::Overflow)?
-                        > limits.max_in_flight_bytes
-                    || work > self.device.limits().max_buffer_size
-                    || work > u64::from(self.device.limits().max_storage_buffer_binding_size)
-                {
-                    return Err(StreamError::TooLarge.into());
-                }
-            }
-        }
-        // Admission precedes every export-owned GPU allocation. Each
-        // ChartStyle charges its own uniforms and mapped-style buffers.
-        let mut untracked_style_bytes = 0u64;
-        let mut style_bytes = 0u64;
-        for series in &completed.series {
-            style_bytes = style_bytes
-                .checked_add(self.style_allocation_bytes(series)?)
-                .ok_or(StreamError::Overflow)?;
-        }
-        if matches!(
-            config.draw_style,
-            DrawStyle::Milkyway(_) | DrawStyle::Constellation(_)
-        ) {
-            untracked_style_bytes = untracked_style_bytes
-                .checked_add(data_render::STYLED_TEXTURE_BYTES)
-                .ok_or(StreamError::Overflow)?;
-        }
-        let surface_spec = StreamSurfaceSpec {
-            width: size.0,
-            height: size.1,
+        self.check_stream_export_phases(&completed, &config, max_primitives)?;
+        let (untracked_style_bytes, surface_spec) =
+            self.admit_stream_export(&completed, &config, size, format, sample_count)?;
+        let (
+            chart_view,
+            expected_view_revision,
+            displayed_view_revision,
+            styles,
+            styles_charge,
+            pipelines,
+            transfer,
+            surface,
+        ) = self.create_stream_export_target(
+            &config,
+            &completed,
+            scale,
+            untracked_style_bytes,
             format,
             sample_count,
-        };
-        let view_bytes = u64::from(size.0)
-            .checked_mul(u64::from(size.1))
-            .and_then(|pixels| pixels.checked_mul(8))
-            .and_then(|bytes| {
-                bytes.checked_add(std::mem::size_of::<data_render::ScatterTransform>() as u64)
-            })
-            .ok_or(StreamError::Overflow)?;
-        let allocation_bytes = surface_spec
-            .charged_bytes()?
-            .checked_add(view_bytes)
-            .and_then(|bytes| bytes.checked_add(untracked_style_bytes))
-            .and_then(|bytes| bytes.checked_add(style_bytes))
-            .ok_or(StreamError::Overflow)?;
-        self.preflight_auxiliary_gpu_bytes(allocation_bytes)?;
-        live_runtime_mut(&mut self.stream_runtime)?
-            .draws
-            .try_reserve(1)
-            .map_err(|_| StreamError::AllocationFailed)?;
-        let chart_view =
-            self.create_chart_view(&Chart::new(config.clone()), config.chart_area.0)?;
-        let expected_view_revision = chart_view.advance_stream_revision()?;
-        let displayed_view_revision = chart_view.advance_content_revision()?;
-        data_render::update_scatter_transform(
-            &self.queue,
-            &chart_view.transform_buffer,
-            &data_render::scatter_transform_from_config(&config),
-        );
-        let styles = RegisteredChartStyles {
-            series_revision: completed.series_revision,
-            styles: completed
-                .series
-                .iter()
-                .map(|series| self.create_style_for_series_scaled_inner(series, scale))
-                .collect::<Result<_>>()?,
-        };
-        let tally = crate::gpu_memory::ChargeTally::new();
-        tally.add(untracked_style_bytes);
-        let styles_charge =
-            crate::gpu_memory::shared_charge(tally, &self.gpu_ledger, GpuResourceKind::Uniform);
-        if self.gpu_memory_usage().total_bytes() > self.gpu_ledger.budget_limit() {
-            return Err(StreamError::TooLarge.into());
-        }
-        let mut pipelines = create_target_pipelines(
-            &self.device,
-            &self.texture_bgl,
-            &self.transform_bgl,
-            &self.style_bgl,
-            &self.per_point_style_map_bgl,
-            format,
-            sample_count,
-            self.pipelines.shaders.set,
-        );
-        let series: Vec<_> = completed
-            .series
-            .iter()
-            .zip(&styles.styles)
-            .map(|(config, style)| Series { config, style })
-            .collect();
-        pipelines.ensure_precise_variants_for_items(
-            &self.device,
-            &self.transform_bgl,
-            &self.style_bgl,
-            &self.per_point_style_map_bgl,
-            &self.point_value_map_bgl,
-            [&self.surface_bgl, &self.view3d_value_map_bgl],
-            &self.data_selection_bgl,
-            &self.field_bgl,
-            &self.vector_bgl,
-            &self.star_data_bgl,
-            &self.category_bar_data_bgl,
-            &self.parallel_bgl,
-            self.contour_label_pipelines.as_ref(),
-            format,
-            &[PanelDraw {
-                view: &chart_view,
-                chart_config: &config,
-                series: &series,
-            }],
-        );
-        pipelines.ensure_styles_for_items(
-            &self.device,
-            &self.queue,
-            &self.transform_bgl,
-            &self.style_bgl,
-            &self.star_data_bgl,
-            format,
-            &[PanelDraw {
-                view: &chart_view,
-                chart_config: &config,
-                series: &series,
-            }],
-        );
-        let transfer = StreamTransfer::new(&self.device, format, sample_count)?;
-        let surface = StreamSurface::new(
-            &self.device,
-            &self.gpu_ledger,
-            &transfer,
             surface_spec,
-            self.gpu_ledger.budget_limit(),
         )?;
         let snapshot = Arc::new(AutoStreamExecutionSnapshot {
             requested_config: config.clone(),
@@ -1175,46 +1026,8 @@ impl Renderer {
             _target_charge: None,
             _completed: completed,
         });
-        let axis = &auxiliary
-            .pipelines
-            .as_ref()
-            .ok_or(FiggyError::internal(
-                "an export target is built with its pipelines",
-            ))?
-            .axis;
-        let target = wgpu::Texture::clone(surface.prefix());
-        let target_view = target.create_view(&Default::default());
-        let mut encoder = self.device.create_command_encoder(&Default::default());
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stream export initialization"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: clear.r as f64,
-                            g: clear.g as f64,
-                            b: clear.b as f64,
-                            a: clear.a as f64,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-            pass.set_pipeline(axis);
-            pass.set_bind_group(0, &snapshot.view.grid_bind_group, &[]);
-            pass.draw(0..3, 0..1);
-            if let (Some(underlay), _) = snapshot
-                .view
-                .annotation_bind_groups(snapshot.annotations_visible())
-            {
-                pass.set_bind_group(0, underlay, &[]);
-                pass.draw(0..3, 0..1);
-            }
-        }
+        let (target, encoder) =
+            self.clear_stream_export_target(&surface, &auxiliary, &snapshot, clear)?;
         let runtime = live_runtime_mut(&mut self.stream_runtime)?;
         let id = runtime.scheduler.start_auxiliary(
             chart.sequence,

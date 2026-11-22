@@ -8,13 +8,16 @@
 //! lands on, so a wrong projection, pivot or scale fails rather than passes.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    BLUE, GREEN, RED, col as col_f64, count, export_1x as export, is_red_soft as is_red,
+    is_selection, pixel, to8, try_renderer,
+};
 
 use renderer::config::{AxisOptions, AxisScale};
-use renderer::data::Column;
 use renderer::data_config::{
     ContourConfig, DataLineStyleConfig, FieldFillConfig, FillMode, GridLayout, LineInterpolation,
     MatrixOrientation, MatrixRef, PointColorMap, Shading, StreamlineArrows, VectorColorMap,
@@ -25,58 +28,12 @@ use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
     Chart, Color, ColorBarOptions, ColorMap, DataRenderType, DataSelectionsConfig, FiggyError,
-    GpuPickRequest, OverlayLayer, PickedData, PickedDataRef, RasterImage, Renderer, RendererDevice,
-    SeriesConfig, Subplot, display_config_for_surface,
+    GpuPickRequest, OverlayLayer, PickedData, PickedDataRef, RasterImage, Renderer, SeriesConfig,
+    StreamlineSeries, Subplot, VectorSeries, display_config_for_surface,
 };
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 320;
-
-const RED: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 0.0,
-    a: 1.0,
-};
-const GREEN: Color = Color {
-    r: 0.0,
-    g: 1.0,
-    b: 0.0,
-    a: 1.0,
-};
-const BLUE: Color = Color {
-    r: 0.0,
-    g: 0.0,
-    b: 1.0,
-    a: 1.0,
-};
-
-fn col_f64(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
-    DEVICE
-        .get_or_init(|| {
-            let (device, queue) = test_gpu::device();
-            Some((device, queue))
-        })
-        .as_ref()
-        .map(|(device, queue)| (device.clone(), queue.clone()))
-}
-
-fn try_renderer() -> Option<Renderer> {
-    let (device, queue) = shared_device()?;
-    Some(
-        Renderer::try_new(
-            RendererDevice::new(device, queue).expect("figgy poll thread"),
-            wgpu::TextureFormat::Bgra8Unorm,
-            4 * 1024 * 1024,
-        )
-        .expect("renderer init"),
-    )
-}
 
 /// Grid and legend off: the only non-vector ink is the black deco frame.
 fn bare_chart() -> Chart {
@@ -108,6 +65,7 @@ fn style(scale: VectorScale) -> VectorStyle {
         head_width_px: 10.0,
         min_length_px: 0.0,
         color_map: None,
+        auto_scale: false,
     }
 }
 
@@ -127,14 +85,14 @@ fn points(id: &str, style: VectorStyle) -> SeriesConfig {
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::Vector {
+        render_type: DataRenderType::Vector(VectorSeries {
             components: VectorComponents::Points {
                 u: "u".into(),
                 v: "v".into(),
                 w: None,
             },
             style,
-        },
+        }),
     }
 }
 
@@ -164,13 +122,13 @@ fn grid(
         x_column: "gx".into(),
         y_column: "gy".into(),
         z_column: None,
-        render_type: DataRenderType::Vector {
+        render_type: DataRenderType::Vector(VectorSeries {
             components: VectorComponents::Grid {
                 u: matrix(u, orientation, grid_layout),
                 v: matrix(v, orientation, grid_layout),
             },
             style,
-        },
+        }),
     }
 }
 
@@ -228,25 +186,8 @@ fn grid_chart() -> Chart {
     chart
 }
 
-fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
-    let i = ((y * img.width + x) * 4) as usize;
-    &img.rgba[i..i + 4]
-}
-
-fn is_red(p: &[u8]) -> bool {
-    p[3] > 180 && p[0] > 180 && p[1] < 80 && p[2] < 80
-}
-
 fn is_green(p: &[u8]) -> bool {
     p[3] > 180 && p[1] > 180 && p[0] < 80 && p[2] < 80
-}
-
-fn is_selection(p: &[u8]) -> bool {
-    p[3] > 180 && p[0] > 180 && p[2] > 180 && p[1] < 80
-}
-
-fn count(img: &RasterImage, pred: fn(&[u8]) -> bool) -> usize {
-    img.rgba.chunks_exact(4).filter(|p| pred(p)).count()
 }
 
 fn axis_t(axis: &AxisOptions, v: f64) -> f64 {
@@ -293,16 +234,6 @@ fn assert_clear(img: &RasterImage, origin: (f64, f64), dx: f64, dy: f64, what: &
         !is_red(p),
         "{what}: expected no arrow ink at {origin:?} + ({dx}, {dy}), got {p:?}"
     );
-}
-
-fn export(renderer: &mut Renderer, chart: &Chart, series: &[SeriesConfig]) -> RasterImage {
-    renderer
-        .export_rgba(
-            renderer::ExportSource::chart(chart, series),
-            renderer::ExportOptions::panel(1.0),
-        )
-        .block_on()
-        .unwrap()
 }
 
 // ── Pixel mode ───────────────────────────────────────────────────────────────
@@ -584,10 +515,6 @@ fn two_stop_colorbar(scale: AxisScale, min: f64, max: f64) -> ColorBarOptions {
     bar.axis.min = min;
     bar.axis.max = max;
     bar
-}
-
-fn to8(v: f32) -> i32 {
-    (v.clamp(0.0, 1.0) * 255.0).round() as i32
 }
 
 fn assert_colour_at(img: &RasterImage, px: (f64, f64), want: Color, what: &str) {
@@ -1010,9 +937,10 @@ fn pick_request(chart: &Chart, x: f64, y: f64, dx: f64, dy: f64, max: f32) -> Gp
     }
 }
 
-/// A point vector is picked on the arrow it draws, shaft and head: inside the
-/// glyph the hit is at distance 0, outside it the distance counts from the
-/// glyph's edge, and past the tip or `max_distance_px` nothing hits.
+/// A point vector is picked on the arrow it draws, shaft and head (#381):
+/// a cursor on its ink hits with no reach and answers the nearest datum
+/// (the arrow's anchor); beside the glyph a cursor hits only when the reach
+/// covers the gap to its ink, and past the tip nothing is drawn to hit.
 #[test]
 fn point_vectors_pick_on_the_drawn_arrow() {
     let Some(mut renderer) = try_renderer() else {
@@ -1024,6 +952,11 @@ fn point_vectors_pick_on_the_drawn_arrow() {
         .register_chart(chart.config().clone(), vec![points("arrows", pixels(1.0))])
         .unwrap();
     renderer.enable_gpu_picking().unwrap();
+    harness::show_for_pick(
+        &mut renderer,
+        id,
+        &pick_request(&chart, 1.0, 1.0, 0.0, 0.0, 0.0),
+    );
     let pick = |renderer: &mut Renderer, request| {
         test_gpu::block_on(renderer.pick_chart(id, request).unwrap().resolve()).unwrap()
     };
@@ -1031,29 +964,23 @@ fn point_vectors_pick_on_the_drawn_arrow() {
     // A 40 px arrow along +x: a 4 px shaft to x = 30, then a 10 px head.
     let hit = pick(&mut renderer, pick_request(&chart, 3.0, 3.0, 4.0, 0.0, 0.0)).expect("hit");
     assert_eq!((hit.series_id.as_str(), hit.point_index), ("arrows", 1));
-    assert_eq!(hit.distance_px, 0.0, "on the shaft");
     let shaft = pick(
         &mut renderer,
         pick_request(&chart, 1.0, 1.0, 25.0, 1.5, 0.0),
     )
     .expect("hit");
-    assert_eq!((shaft.point_index, shaft.distance_px), (0, 0.0));
+    assert_eq!(shaft.point_index, 0);
     let head = pick(
         &mut renderer,
         pick_request(&chart, 1.0, 1.0, 35.0, 2.0, 0.0),
     )
     .expect("hit");
-    assert_eq!((head.point_index, head.distance_px), (0, 0.0));
+    assert_eq!(head.point_index, 0);
 
-    let miss = pick(&mut renderer, pick_request(&chart, 3.0, 3.0, 4.0, 3.0, 0.0));
-    assert!(miss.is_none(), "1 px beside a 4 px shaft: {miss:?}");
-    let near = pick(&mut renderer, pick_request(&chart, 1.0, 1.0, 4.0, 3.0, 3.0)).expect("hit");
+    let miss = pick(&mut renderer, pick_request(&chart, 3.0, 3.0, 4.0, 4.0, 0.0));
+    assert!(miss.is_none(), "2 px beside a 4 px shaft: {miss:?}");
+    let near = pick(&mut renderer, pick_request(&chart, 1.0, 1.0, 4.0, 4.0, 3.0)).expect("hit");
     assert_eq!(near.point_index, 0);
-    assert!(
-        (near.distance_px - 1.0).abs() < 0.01,
-        "{}",
-        near.distance_px
-    );
 
     let past_tip = pick(
         &mut renderer,
@@ -1062,14 +989,10 @@ fn point_vectors_pick_on_the_drawn_arrow() {
     assert!(past_tip.is_none(), "3 px past the tip: {past_tip:?}");
     let behind = pick(
         &mut renderer,
-        pick_request(&chart, 1.0, 1.0, -3.0, 0.0, 3.0),
+        pick_request(&chart, 1.0, 1.0, -3.0, 0.0, 4.0),
     )
     .expect("hit");
-    assert!(
-        (behind.distance_px - 1.0).abs() < 0.01,
-        "{}",
-        behind.distance_px
-    );
+    assert_eq!(behind.point_index, 0);
 }
 
 /// A grid vector picks the arrow it draws, answered as the cell the arrow is
@@ -1327,6 +1250,7 @@ fn vector_series_draw_inside_their_subplot() {
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     });
     let series = [points("arrows", pixels(1.0))];
     let img = renderer
@@ -1457,14 +1381,14 @@ fn vector_series_are_validated_at_registration() {
     );
 
     let mut missing = points("v", pixels(1.0));
-    missing.render_type = DataRenderType::Vector {
+    missing.render_type = DataRenderType::Vector(VectorSeries {
         components: VectorComponents::Points {
             u: "u".into(),
             v: "nope".into(),
             w: None,
         },
         style: pixels(1.0),
-    };
+    });
     assert!(matches!(
         renderer.register_chart(config.clone(), vec![missing]),
         Err(FiggyError::UnknownColumn { id }) if id == "nope"
@@ -1477,10 +1401,10 @@ fn vector_series_are_validated_at_registration() {
         &GridLayout::Edges,
         pixels(1.0),
     );
-    if let DataRenderType::Vector {
+    if let DataRenderType::Vector(VectorSeries {
         components: VectorComponents::Grid { v, .. },
         ..
-    } = &mut mismatched.render_type
+    }) = &mut mismatched.render_type
     {
         v.orientation = MatrixOrientation::ColumnsAreY;
     }
@@ -1558,7 +1482,7 @@ fn removing_a_component_column_removes_the_series() {
 // ── Streamlines ──────────────────────────────────────────────────────────────
 
 fn streamline_style(arrows: Option<StreamlineArrows>, color: Option<&str>) -> DataRenderType {
-    DataRenderType::Streamlines {
+    DataRenderType::Streamlines(StreamlineSeries {
         line: DataLineStyleConfig {
             line_style: LineStylePreset::Solid,
             line_color: RED,
@@ -1571,7 +1495,7 @@ fn streamline_style(arrows: Option<StreamlineArrows>, color: Option<&str>) -> Da
         color_map: color.map(|column| PointColorMap {
             column: column.into(),
         }),
-    }
+    })
 }
 
 fn streamlines(arrows: Option<StreamlineArrows>, color: Option<&str>) -> SeriesConfig {
@@ -1675,7 +1599,7 @@ const ARROWS: StreamlineArrows = StreamlineArrows {
 /// inside a head (10 px wide).
 fn thin_streamlines(arrows: Option<StreamlineArrows>) -> SeriesConfig {
     let mut series = streamlines(arrows, None);
-    if let DataRenderType::Streamlines { line, .. } = &mut series.render_type {
+    if let DataRenderType::Streamlines(StreamlineSeries { line, .. }) = &mut series.render_type {
         line.line_width = 1.0;
     }
     series
@@ -1997,6 +1921,7 @@ fn streamlines_draw_inside_their_subplot() {
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     });
     let series = [thin_streamlines(Some(ARROWS))];
     let img = renderer
@@ -2047,6 +1972,174 @@ fn three_hundred_vector_series_in_one_frame_all_draw() {
             20.0,
             0.0,
             "shaft middle",
+        );
+    }
+}
+
+/// A colour-mapped vector in a subplot reads the subplot's own colourbar
+/// (#401): beside a root without one it registers and colours its arrow
+/// through the subplot's ramp; a root colourbar alone does not satisfy it.
+#[test]
+fn colour_mapped_vectors_in_a_subplot_read_its_own_colorbar() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    point_fixture(&mut renderer, &[(2.0, 2.0)], &[(0.0, 40.0)]);
+    renderer.add_column("c", &col_f64(vec![10.0])).unwrap();
+    let bar = two_stop_colorbar(AxisScale::Linear, 0.0, 10.0);
+    let document = |root_bar: Option<ColorBarOptions>, sub_bar: Option<ColorBarOptions>| {
+        let mut chart = bare_chart();
+        chart.config_mut().colorbar = root_bar;
+        let mut sub = bare_chart();
+        sub.config_mut().chart_area = ChartArea(Rect {
+            x: WIDTH,
+            y: 0,
+            width: WIDTH,
+            height: HEIGHT,
+        });
+        sub.config_mut().colorbar = sub_bar;
+        chart.config_mut().subplots.push(Subplot {
+            config: sub.config().clone(),
+            series: vec!["arrows".into()],
+            ..Subplot::default()
+        });
+        chart.config().clone()
+    };
+    let mut style = pixels(1.0);
+    style.width_px = 6.0;
+    style.color_map = Some(VectorColorMap::Column("c".into()));
+    let series = vec![points("arrows", style)];
+    let id = renderer
+        .register_chart(document(None, Some(bar.clone())), series.clone())
+        .expect("the subplot's colourbar colours its arrows");
+    let sub = Chart::new(
+        renderer.chart_config(id).unwrap().subplots[0]
+            .config
+            .clone(),
+    );
+    let img = renderer
+        .export_rgba(
+            renderer::ExportSource::Registered(id),
+            renderer::ExportOptions::document(1.0),
+        )
+        .block_on()
+        .unwrap();
+    let a = data_to_px(&sub, 2.0, 2.0);
+    assert!(a.0 >= WIDTH as f64, "the anchor lies in the subplot");
+    assert_colour_at(&img, (a.0, a.1 - 15.0), bar.color_for_z(10.0), "z = max");
+    renderer.remove_chart(id).unwrap();
+    let error = renderer
+        .register_chart(document(Some(bar), None), series)
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            FiggyError::InvalidSeriesConfig {
+                kind: renderer::RuleKind::VectorColorMapNeedsColorbar,
+                ..
+            }
+        ),
+        "{error}"
+    );
+}
+
+/// Colour-mapped streamlines and a heatmap in a subplot read the subplot's
+/// own colourbar (#401): beside a root without one each registers and draws
+/// in the subplot's colours; a root colourbar alone does not satisfy them.
+#[test]
+fn streamlines_and_fields_in_a_subplot_read_its_own_colorbar() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    streamline_fixture(&mut renderer, &[(0.5, 1.0), (3.5, 1.0)]);
+    renderer
+        .add_column("speed", &col_f64(vec![10.0, 10.0]))
+        .unwrap();
+    grid_fixture(&mut renderer, &GridLayout::Edges);
+    let tens = col_f64(vec![10.0, 10.0]);
+    renderer
+        .add_columns(&[
+            ("zf0", &tens as &dyn renderer::ColumnSource),
+            ("zf1", &tens as &dyn renderer::ColumnSource),
+            ("zf2", &tens as &dyn renderer::ColumnSource),
+        ])
+        .unwrap();
+    let heatmap = SeriesConfig {
+        series_id: "field".into(),
+        source_id: None,
+        label: None,
+        x_column: "gx".into(),
+        y_column: "gy".into(),
+        z_column: None,
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
+            matrix: matrix(
+                &["zf0", "zf1", "zf2"],
+                &MatrixOrientation::ColumnsAreX,
+                &GridLayout::Edges,
+            ),
+            fill: Some(FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Flat,
+                opacity: 1.0,
+            }),
+            contour: None,
+            surface: None,
+        }),
+    };
+    let bar = two_stop_colorbar(AxisScale::Linear, 0.0, 10.0);
+    let document =
+        |id: &str, root_bar: Option<ColorBarOptions>, sub_bar: Option<ColorBarOptions>| {
+            let mut chart = bare_chart();
+            chart.config_mut().colorbar = root_bar;
+            let mut sub = bare_chart();
+            sub.config_mut().chart_area = ChartArea(Rect {
+                x: WIDTH,
+                y: 0,
+                width: WIDTH,
+                height: HEIGHT,
+            });
+            sub.config_mut().colorbar = sub_bar;
+            chart.config_mut().subplots.push(Subplot {
+                config: sub.config().clone(),
+                series: vec![id.into()],
+                ..Subplot::default()
+            });
+            chart.config().clone()
+        };
+    for (series, at, kind) in [
+        (
+            streamlines(None, Some("speed")),
+            (2.0, 1.0),
+            renderer::RuleKind::StreamlineColorMapNeedsColorbar,
+        ),
+        (heatmap, (1.5, 1.0), renderer::RuleKind::FieldNeedsColorbar),
+    ] {
+        let id = series.series_id.clone();
+        let chart = renderer
+            .register_chart(document(&id, None, Some(bar.clone())), vec![series.clone()])
+            .unwrap_or_else(|error| panic!("{id}: {error}"));
+        let sub = Chart::new(
+            renderer.chart_config(chart).unwrap().subplots[0]
+                .config
+                .clone(),
+        );
+        let img = renderer
+            .export_rgba(
+                renderer::ExportSource::Registered(chart),
+                renderer::ExportOptions::document(1.0),
+            )
+            .block_on()
+            .unwrap();
+        let px = data_to_px(&sub, at.0, at.1);
+        assert!(px.0 >= WIDTH as f64, "{id}: drawn in the subplot");
+        assert_colour_at(&img, px, bar.color_for_z(10.0), &id);
+        renderer.remove_chart(chart).unwrap();
+        let error = renderer
+            .register_chart(document(&id, Some(bar.clone()), None), vec![series])
+            .unwrap_err();
+        assert!(
+            matches!(&error, FiggyError::InvalidSeriesConfig { kind: got, .. } if *got == kind),
+            "{id}: {error}"
         );
     }
 }

@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_x_title("Time (s)")
         // A `$…$` span in a title is TeX.
         .with_y_title(r"$\sin(2\pi f t)$");
-    // Round ranges, set by hand. `renderer.fit_ranges(&mut chart, &series)?`
+    // Round ranges, set by hand. `renderer.fit_ranges(&mut chart, &mut series)?`
     // fits them to the columns instead, as the README quick start does.
     chart.set_x_range(0.0, 10.0);
     chart.set_y_range(-1.2, 1.2);

@@ -19,8 +19,6 @@
 //! given.
 //!
 //! cargo run --locked -p figgy-renderer --example boxplot_gallery -- target/boxplot-gallery
-// Legacy documents are read through their deprecated reader types.
-#![allow(deprecated)]
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]
 mod gallery;
@@ -447,7 +445,7 @@ fn raincloud(r: &mut Renderer, out: &Path) -> Result {
     .style_box_plot(|parts| {
         parts.style.show_outliers = false;
         // The samples jittered in a band below each box.
-        *parts.points = Some(BoxPoints {
+        parts.points = Some(BoxPoints {
             positions: "commute.cat".into(),
             values: "commute.value".into(),
             style: BoxPointsStyle {

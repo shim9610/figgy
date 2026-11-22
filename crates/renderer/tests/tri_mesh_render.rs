@@ -10,10 +10,12 @@
 use test_gpu::BlockOn as _;
 #[path = "support/edge_band.rs"]
 mod edge_band;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::to8;
+use test_gpu::shared_device;
 
 use renderer::config::AxisScale;
 use renderer::data::Column;
@@ -25,7 +27,7 @@ use renderer::line::LineStylePreset;
 use renderer::tri_mesh::{MeshValueLocation, MeshValues, TriMeshSeries};
 use renderer::{
     Chart, Color, ColorBarOptions, ColorMap, DataRenderType, FiggyError, RasterImage, Renderer,
-    RendererDevice, SeriesConfig, TriangleSource, encode_png,
+    RendererDevice, RuleKind, SeriesConfig, TriangleSource, encode_png,
 };
 
 const WIDTH: u32 = 480;
@@ -50,19 +52,8 @@ const NAN_PAINT: Color = Color {
     a: 1.0,
 };
 
-fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
-    DEVICE
-        .get_or_init(|| {
-            let (device, queue) = test_gpu::device();
-            Some((device, queue))
-        })
-        .as_ref()
-        .map(|(device, queue)| (device.clone(), queue.clone()))
-}
-
 fn try_renderer() -> Option<Renderer> {
-    let (device, queue) = shared_device()?;
+    let (device, queue) = shared_device();
     Some(
         Renderer::try_new(
             RendererDevice::new(device, queue).expect("figgy poll thread"),
@@ -226,10 +217,6 @@ fn data_to_px(chart: &Chart, x: f64, y: f64, scale: f64) -> (u32, u32) {
         ((da.x as f64 + tx * da.width as f64) * scale) as u32,
         (((da.y + da.height) as f64 - ty * da.height as f64) * scale) as u32,
     )
-}
-
-fn to8(v: f32) -> i32 {
-    (v.clamp(0.0, 1.0) * 255.0).round() as i32
 }
 
 fn assert_colour(img: &RasterImage, px: (u32, u32), want: Color, tol: i32, what: &str) {
@@ -578,7 +565,7 @@ fn registration_refuses_what_the_mesh_cannot_draw() {
         )],
     ));
     assert!(
-        why.to_string().contains("triangle index 3") && why.to_string().contains("\"mv\""),
+        matches!(&why, RuleKind::TriangleIndexPastVertices { index: 3, column, .. } if column == "mv"),
         "{why}"
     );
     // One face value for two triangles.
@@ -594,7 +581,14 @@ fn registration_refuses_what_the_mesh_cannot_draw() {
         )],
     ));
     assert!(
-        why.to_string().contains("1 values for 2 triangles"),
+        matches!(
+            why,
+            RuleKind::FaceValueColumnShort {
+                len: 1,
+                triangles: 2,
+                ..
+            }
+        ),
         "{why}"
     );
     renderer
@@ -613,7 +607,7 @@ fn registration_refuses_what_the_mesh_cannot_draw() {
             None,
         )],
     ));
-    assert!(why.to_string().contains("Config.colorbar"), "{why}");
+    assert!(matches!(why, RuleKind::TriMeshNeedsColorbar), "{why}");
     let mut plain = mesh_series(MeshValueLocation::Vertices, interpolated.clone(), None);
     if let DataRenderType::TriMesh(mesh) = &mut plain.render_type {
         mesh.triangles = "mx".into();
@@ -621,8 +615,7 @@ fn registration_refuses_what_the_mesh_cannot_draw() {
     let why =
         reason(renderer.register_chart(chart(Some(bar.clone())).config().clone(), vec![plain]));
     assert!(
-        why.to_string()
-            .contains("not a resident triangle index column"),
+        matches!(&why, RuleKind::TrianglesNotResident { id } if id == "mx"),
         "{why}"
     );
     // On a 3D chart the mesh draws as a surface over its height column
@@ -645,7 +638,7 @@ fn registration_refuses_what_the_mesh_cannot_draw() {
     lifted.z_column = Some("mh".into());
     let why = reason(renderer.register_chart(three_d, vec![lifted]));
     assert!(
-        why.to_string().contains("triangle index 3") && why.to_string().contains("\"mh\""),
+        matches!(&why, RuleKind::TriangleIndexPastVertices { index: 3, column, .. } if column == "mh"),
         "{why}"
     );
 }
@@ -1728,6 +1721,7 @@ fn a_mesh_subplot_draws_and_picks_its_triangles() {
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     });
     let doc = Chart::new(document.clone());
     let series = vec![mesh_series(
@@ -1880,4 +1874,88 @@ fn decoration_drags_leave_the_mesh_in_place() {
             );
         }
     }
+}
+
+/// A mesh in a subplot reads the subplot's own colourbar (#401): beside a
+/// Cartesian root without one it registers and paints its faces through the
+/// subplot's ramp; a root colourbar alone does not satisfy it.
+#[test]
+fn a_subplot_mesh_reads_its_own_colorbar() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    square(&mut renderer, SQUARE_X, vec![1.0, 5.0]);
+    let bar = colorbar(0.0, 6.0);
+    let document = |root_bar: Option<ColorBarOptions>, cell_bar: Option<ColorBarOptions>| {
+        let mut root = chart(root_bar).config().clone();
+        root.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: WIDTH,
+            height: HEIGHT,
+        });
+        let mut cell = chart(cell_bar).config().clone();
+        cell.chart_area = ChartArea(Rect {
+            x: WIDTH,
+            y: 0,
+            width: WIDTH,
+            height: HEIGHT,
+        });
+        root.subplots.push(renderer::Subplot {
+            config: cell,
+            series: vec!["mesh".into()],
+            ..renderer::Subplot::default()
+        });
+        root
+    };
+    let series = || {
+        vec![mesh_series(
+            MeshValueLocation::Faces,
+            Some(fill(Shading::Flat, FillMode::Continuous)),
+            None,
+        )]
+    };
+    let id = renderer
+        .register_chart(document(None, Some(bar.clone())), series())
+        .expect("the subplot's colourbar colours its mesh");
+    let cell = Chart::new(
+        renderer.chart_config(id).unwrap().subplots[0]
+            .config
+            .clone(),
+    );
+    for scale in [1.0f32, 2.0] {
+        let img = renderer
+            .export_rgba(
+                renderer::ExportSource::Registered(id),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        save_probe(&format!("subplot-faces-{scale}x"), &img);
+        for (x, y, z) in [(1.5, 0.3, 1.0), (0.3, 1.5, 5.0)] {
+            let px = data_to_px(&cell, x, y, f64::from(scale));
+            assert!(px.0 as f32 > WIDTH as f32 * scale, "in the subplot");
+            assert_colour(
+                &img,
+                px,
+                bar.color_for_z(z),
+                2,
+                &format!("{scale}x ({x}, {y})"),
+            );
+        }
+    }
+    renderer.remove_chart(id).unwrap();
+    let error = renderer
+        .register_chart(document(Some(bar), None), series())
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            FiggyError::InvalidSeriesConfig {
+                kind: RuleKind::TriMeshNeedsColorbar,
+                ..
+            }
+        ),
+        "{error}"
+    );
 }

@@ -576,134 +576,23 @@ pub fn create_field_data_bind_group(
     Ok((bind_group, charge))
 }
 
-/// Columnar field pipeline. No vertex buffers — the quad is emitted from
-/// `vertex_index` and every data read goes through group 2's storage bindings.
-pub fn create_field_columnar_pipeline(
-    device: &wgpu::Device,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    field_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::field(device, crate::shader_assembly::ShaderSet::Full);
-    create_field_columnar_pipeline_with_sample_count(
-        device,
-        &shader,
-        transform_bgl,
-        style_bgl,
-        field_bgl,
-        target_format,
-        1,
-    )
-}
-
-pub(crate) fn create_field_columnar_pipeline_with_sample_count(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    field_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    create_field_columnar_pipeline_with_entry(
-        device,
-        shader,
-        transform_bgl,
-        style_bgl,
-        field_bgl,
-        target_format,
-        sample_count,
-        "fs_main",
-        "figgy field columnar pipeline",
-    )
-}
-
-pub(crate) fn create_field_selection_pipeline_with_sample_count(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    selection_bgl: &wgpu::BindGroupLayout,
-    field_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    create_field_columnar_pipeline_with_entry(
-        device,
-        shader,
-        transform_bgl,
-        selection_bgl,
-        field_bgl,
-        target_format,
-        sample_count,
-        "fs_data_selection",
-        "figgy selected field data pipeline",
-    )
-}
-
-/// The field quad against one fragment entry point.
-///
-/// `fs_main` fills; `fs_contour` draws the isolines as the level set of the same
-/// interpolation. Same vertex shader, same layouts, same quad — which is what
-/// makes a filled band and the line over it agree by construction rather than by
-/// two implementations happening to round the same way.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn create_field_columnar_pipeline_with_entry(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    field_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    fragment_entry: &str,
-    label: &str,
-) -> wgpu::RenderPipeline {
-    create_field_columnar_pipeline_with_optional_extra_layout(
-        device,
-        shader,
-        transform_bgl,
-        style_bgl,
-        field_bgl,
-        None,
-        target_format,
-        sample_count,
-        fragment_entry,
-        label,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn create_field_columnar_pipeline_with_optional_extra_layout(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    field_bgl: &wgpu::BindGroupLayout,
-    extra_bgl: Option<&wgpu::BindGroupLayout>,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    fragment_entry: &str,
-    label: &str,
-) -> wgpu::RenderPipeline {
-    create_field_render_pipeline(
-        device,
-        shader,
-        [transform_bgl, style_bgl, field_bgl],
-        extra_bgl,
-        target_format,
-        sample_count,
-        "vs_main",
-        fragment_entry,
-        label,
-    )
-}
-
 /// A render pipeline over the field's groups (transform, style, the field's
 /// group 2 and an optional group 3) from `vertex_entry` into
 /// `fragment_entry`: the heatmap quad and the triangle mesh (#210) share it.
+/// No vertex buffers: the quad is emitted from `vertex_index` and every data
+/// read goes through group 2's storage bindings.
+///
+/// The heatmap quad is `vs_main` against one fragment entry point:
+/// `fs_main` fills; `fs_contour` draws the isolines as the level set of the
+/// same interpolation. Same vertex shader, same layouts, same quad — which
+/// is what makes a filled band and the line over it agree by construction
+/// rather than by two implementations happening to round the same way. A
+/// selection (`fs_data_selection`) binds the data selection uniform as
+/// group 1; the labelled contour (`fs_contour_labelled`) and the selected
+/// labelled field (`fs_data_selection_labelled`) bind the series' label
+/// gaps as group 3, so the stroke is omitted under the label quads.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn create_field_render_pipeline(
+pub(crate) fn create_field_render_pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
     [transform_bgl, style_bgl, field_bgl]: [&wgpu::BindGroupLayout; 3],
@@ -721,50 +610,26 @@ pub(super) fn create_field_render_pipeline(
         extra_bgl,
     ];
     let layout_count = if extra_bgl.is_some() { 4 } else { 3 };
-    let layout = crate::gpu_compile::pipeline_layout(
-        &device,
-        &wgpu::PipelineLayoutDescriptor {
-            label: Some("figgy field columnar layout"),
-            bind_group_layouts: &layouts[..layout_count],
-            immediate_size: 0,
-        },
+    let layout = RenderPipelineSpec::layout(
+        device,
+        "figgy field columnar layout",
+        &layouts[..layout_count],
     );
-    crate::gpu_compile::render_pipeline(
-        &device,
-        &wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some(vertex_entry),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: multisample_state(sample_count),
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some(fragment_entry),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        },
-    )
+    RenderPipelineSpec {
+        label,
+        layout: &layout,
+        shader,
+        entries: (vertex_entry, fragment_entry),
+        buffers: &[],
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        depth_stencil: None,
+        multisample: multisample_state(sample_count),
+        target: blended_target(
+            target_format,
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        ),
+    }
+    .create(device)
 }
 
 /// One columnar field (heatmap / band) series.

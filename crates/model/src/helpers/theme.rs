@@ -38,9 +38,10 @@ use crate::config::{
     AxisOptions, Config, DataSelectionsConfig, DrawStyle, GridOptions, TickVisibility,
 };
 use crate::data_config::{
-    BoxPlotOverride, BoxPlotTarget, BoxPoints, CategoryBarDirection, CategoryBarOverride,
-    CategoryBarTarget, DataRenderType, FieldSeries, RangeColor, SeriesConfig, Violin, ViolinBody,
-    ViolinHalf,
+    BoxPlotOverride, BoxPlotTarget, BoxPoints, BoxSeries, CategoryBarDirection,
+    CategoryBarOverride, CategoryBarSeries, CategoryBarTarget, DataRenderType, FieldSeries,
+    HistogramSeries, ParallelSeries, RadarPolygonSeries, RangeBarSeries, RangeColor, SeriesConfig,
+    TernarySeries, VectorSeries, Violin, ViolinBody, ViolinHalf,
 };
 use crate::feynman::{ParticleLine, Wiggle};
 use crate::layer::LayerRef;
@@ -317,6 +318,19 @@ pub struct FieldTheme {
     /// The space around a contour label, logical pixels: the gap it leaves
     /// in its line.
     pub contour_label_padding: f32,
+    /// The fill behind each contour label (`ContourLabelConfig::bg_color`,
+    /// #357); `None` draws the text alone. The documented look puts a
+    /// translucent white plate behind its black labels so they read on
+    /// either end of a map.
+    pub contour_label_background: Option<Color>,
+    /// The contour lines' colour on a field or mesh without a fill (#357):
+    /// its lines are drawn straight on the plot background, which an ink
+    /// chosen for a map's colours may vanish into. `None` takes
+    /// [`Self::contour_color`], as a filled field does.
+    pub unfilled_contour_color: Option<Color>,
+    /// The contour labels' colour on a field without a fill (#357);
+    /// `None` takes [`Self::contour_label_color`].
+    pub unfilled_contour_label_color: Option<Color>,
 }
 
 /// Vector arrows.
@@ -343,7 +357,8 @@ pub struct RadarTheme {
 /// are the colours that carry a bar's meaning, the whiskers, the connector
 /// and the unfinished part of a bar with progress. The theme never chooses
 /// how a series is coloured ([`crate::data_config::RangeColor`]): it
-/// recolours the colouring the series has.
+/// recolours the colouring the series has. A series coloured by row takes
+/// the theme's [`SeriesTheme::palette`] as its row colours.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
@@ -391,6 +406,14 @@ pub struct TernaryTheme {
 pub struct ParallelTheme {
     /// The size of the axis names, the labels of the category axis.
     pub name_size: f32,
+    /// The box behind every parallel axis's tick label
+    /// ([`crate::parallel::ParallelOptions::label_backdrop`]); `None` draws
+    /// none.
+    pub label_backdrop: Option<Color>,
+    /// The opacity of every row in its colour; `None` keeps each row's own
+    /// alpha. A row coloured through the colourbar takes its alpha from the
+    /// map.
+    pub line_opacity: Option<f32>,
 }
 
 /// 3D surfaces and their lighting response.
@@ -422,6 +445,12 @@ pub struct EnergyLevelTheme {
     pub limit_width: f32,
     pub transition_color: Color,
     pub transition_width: f32,
+    /// The transition arrowheads' length and width, logical pixels (#357);
+    /// `None` keeps each series' own.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub head_length: Option<f32>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub head_width: Option<f32>,
     pub band_fill: Color,
     /// The level labels; `None`, here and below, keeps each text's own
     /// colour and size.
@@ -463,6 +492,10 @@ pub struct FeynmanTheme {
     pub head_length: f32,
     pub head_width: f32,
     pub dot_radius: f32,
+    /// The factor the labels are drawn at (`FeynmanStyle::label_scale`):
+    /// the label looks below give the stored size, and the series draws it
+    /// this much larger, as it draws a label the host adds later.
+    pub label_scale: f32,
     /// The colour of photon and graviton lines; `None`, here and below,
     /// keeps each line's own colour.
     pub photon: Option<Color>,
@@ -882,6 +915,13 @@ fn fill_continuum(config: &mut Config, series: &[SeriesConfig], charts: Charts, 
 }
 
 impl Theme {
+    /// The theme with its series palette replaced by `cycle`'s colours: a
+    /// palette preset ([`ColorCycle::PRESETS`]) on any theme (#357).
+    pub fn with_palette(mut self, cycle: ColorCycle) -> Self {
+        self.series.palette = cycle.colors().to_vec();
+        self
+    }
+
     /// The documented default look of `kind`.
     pub(crate) fn documented(kind: ChartKind) -> Self {
         let config = crate::defaults::config();
@@ -1016,6 +1056,9 @@ impl Theme {
                     contour_label_color: contour_labels.color,
                     contour_label_size: contour_labels.font_size,
                     contour_label_padding: contour_labels.bg_padding_px,
+                    contour_label_background: contour_labels.bg_color,
+                    unfilled_contour_color: None,
+                    unfilled_contour_label_color: None,
                 },
                 vectors: VectorTheme {
                     width_px: vector.width_px,
@@ -1044,6 +1087,8 @@ impl Theme {
                 },
                 parallel: ParallelTheme {
                     name_size: config.bottom_x.label_style.font_size,
+                    label_backdrop: crate::defaults::parallel_options().label_backdrop,
+                    line_opacity: None,
                 },
                 surfaces: SurfaceTheme {
                     material: surface.material,
@@ -1059,6 +1104,8 @@ impl Theme {
                     limit_width: levels.limit.width,
                     transition_color: levels.transition.color,
                     transition_width: levels.transition.width,
+                    head_length: None,
+                    head_width: None,
                     band_fill: levels.band.fill,
                     level_labels: None,
                     transition_labels: None,
@@ -1076,6 +1123,7 @@ impl Theme {
                     head_length: feynman.head_length,
                     head_width: feynman.head_width,
                     dot_radius: feynman.dot_radius,
+                    label_scale: feynman.label_scale,
                     photon: None,
                     gluon: None,
                     boson: None,
@@ -1145,8 +1193,8 @@ impl Theme {
         if palette.is_empty() {
             return;
         }
-        let boxes = |rt: &DataRenderType| matches!(rt, DataRenderType::BoxPlot { .. });
-        let bars = |rt: &DataRenderType| matches!(rt, DataRenderType::CategoryBars { .. });
+        let boxes = |rt: &DataRenderType| matches!(rt, DataRenderType::BoxPlot(_));
+        let bars = |rt: &DataRenderType| matches!(rt, DataRenderType::CategoryBars(_));
         let families: [(bool, &dyn Fn(&DataRenderType) -> bool); 2] = [
             (self.series.boxes.color_by_category, &boxes),
             (self.series.bars.color_by_category, &bars),
@@ -1183,7 +1231,7 @@ impl Theme {
                     };
                     let color = Some(palette[place % palette.len()]);
                     match &mut item.render_type {
-                        DataRenderType::BoxPlot { overrides, .. } => {
+                        DataRenderType::BoxPlot(BoxSeries { overrides, .. }) => {
                             let overrides = overrides.get_or_insert_with(Vec::new);
                             match overrides
                                 .iter_mut()
@@ -1199,7 +1247,7 @@ impl Theme {
                                 }),
                             }
                         }
-                        DataRenderType::CategoryBars { overrides, .. } => {
+                        DataRenderType::CategoryBars(CategoryBarSeries { overrides, .. }) => {
                             let overrides = overrides.get_or_insert_with(Vec::new);
                             match overrides
                                 .iter_mut()
@@ -1351,12 +1399,12 @@ impl Theme {
                     errors.style.error_bar_cap_size = lines.error_cap_size;
                 }
             }
-            DataRenderType::Ternary {
+            DataRenderType::Ternary(TernarySeries {
                 scatter,
                 line,
                 region,
                 ..
-            } => {
+            }) => {
                 if let Some(scatter) = scatter {
                     style_markers(scatter, lines);
                 }
@@ -1372,13 +1420,13 @@ impl Theme {
                     }
                 }
             }
-            DataRenderType::Histogram { bar } => {
+            DataRenderType::Histogram(HistogramSeries { bar }) => {
                 bar.border_color = theme.bars.border_color;
                 bar.border_width = theme.bars.border_width;
                 bar.gap_px = theme.bars.gap;
             }
-            DataRenderType::CategoryBars { style, .. }
-            | DataRenderType::RangeBars { style, .. } => {
+            DataRenderType::CategoryBars(CategoryBarSeries { style, .. })
+            | DataRenderType::RangeBars(RangeBarSeries { style, .. }) => {
                 style.material = theme.bars.material;
                 style.corner_radius = theme.bars.corner_radius;
                 style.texture_strength = theme.bars.texture_strength;
@@ -1387,12 +1435,12 @@ impl Theme {
                 style.outline_width = theme.bars.outline_width;
                 style.outline_color = theme.bars.outline_color;
             }
-            DataRenderType::BoxPlot {
+            DataRenderType::BoxPlot(BoxSeries {
                 style,
                 violin,
                 points,
                 ..
-            } => {
+            }) => {
                 let boxes = &theme.boxes;
                 style.material = boxes.material;
                 style.gloss = boxes.gloss;
@@ -1457,12 +1505,12 @@ impl Theme {
             DataRenderType::TriMesh(mesh) => {
                 self.style_field(mesh.fill.as_mut(), mesh.contour.as_mut(), &mut mesh.surface);
             }
-            DataRenderType::Vector { style, .. } => {
+            DataRenderType::Vector(VectorSeries { style, .. }) => {
                 style.width_px = theme.vectors.width_px;
                 style.head_length_px = theme.vectors.head_length_px;
                 style.head_width_px = theme.vectors.head_width_px;
             }
-            DataRenderType::Radar { style, .. } => {
+            DataRenderType::Radar(RadarPolygonSeries { style, .. }) => {
                 let radar = &theme.radar;
                 if radar.line_width_px.is_some() {
                     style.line_width_px = radar.line_width_px;
@@ -1482,6 +1530,12 @@ impl Theme {
                 style.limit.width = energy.limit_width;
                 style.transition.color = energy.transition_color;
                 style.transition.width = energy.transition_width;
+                if let Some(length) = energy.head_length {
+                    style.transition.head_length = length;
+                }
+                if let Some(width) = energy.head_width {
+                    style.transition.head_width = width;
+                }
                 style.band.fill = energy.band_fill;
                 if let (Some(look), Some(labels)) =
                     (energy.transition_labels, &mut style.wavelength_labels)
@@ -1521,6 +1575,7 @@ impl Theme {
                 style.head_length = feynman.head_length;
                 style.head_width = feynman.head_width;
                 style.dot_radius = feynman.dot_radius;
+                style.label_scale = feynman.label_scale;
                 if let Some(look) = feynman.vertex_labels {
                     for label in (diagram.vertices.iter_mut()).filter_map(|v| v.label.as_mut()) {
                         self.style_text(label, look.color, look.size);
@@ -1552,18 +1607,25 @@ impl Theme {
             }
             // The line width is set above; a streamline's arrowheads keep
             // their size, which follows its spacing.
-            DataRenderType::Streamlines { .. }
+            // The rows' opacity in their colour (#357); a row coloured
+            // through the colour column takes the map's alpha.
+            DataRenderType::Parallel(ParallelSeries { line, .. }) => {
+                if let Some(opacity) = theme.parallel.line_opacity {
+                    line.line_color.a = opacity;
+                }
+            }
+            DataRenderType::Streamlines(_)
             | DataRenderType::MonotonicLine(_)
-            | DataRenderType::Parallel { .. }
-            | DataRenderType::RgbImage { .. } => {}
+            | DataRenderType::RgbImage(_)
+            | DataRenderType::RangeLinks(_) => {}
         }
-        if let DataRenderType::RangeBars {
+        if let DataRenderType::RangeBars(RangeBarSeries {
             whiskers,
             color_by,
             progress,
             connector,
             ..
-        } = &mut series.render_type
+        }) = &mut series.render_type
         {
             let range = &theme.range_bars;
             match color_by {
@@ -1584,6 +1646,12 @@ impl Theme {
                         for (k, style) in styles.iter_mut().enumerate() {
                             style.color = range.states[k % range.states.len()];
                         }
+                    }
+                }
+                // One colour per row: the rows take the palette.
+                RangeColor::ByRow { colors } => {
+                    if !theme.palette.is_empty() {
+                        colors.clone_from(&theme.palette);
                     }
                 }
             }
@@ -1627,17 +1695,28 @@ impl Theme {
                 }
             }
         }
+        // Lines without a fill under them sit on the plot background, so
+        // they take the theme's ink for that (#357).
+        let unfilled = fill.is_none();
         if let (Some(opacity), Some(fill)) = (fields.fill_opacity, fill) {
             fill.opacity = opacity;
         }
         if let Some(contour) = contour {
-            if let Some(color) = fields.contour_color {
+            let line_color = match fields.unfilled_contour_color {
+                Some(color) if unfilled => Some(color),
+                _ => fields.contour_color,
+            };
+            if let Some(color) = line_color {
                 contour.line.line_color = color;
             }
             contour.line.line_width = fields.contour_width;
             if let Some(labels) = &mut contour.labels {
-                labels.color = fields.contour_label_color;
+                labels.color = match fields.unfilled_contour_label_color {
+                    Some(color) if unfilled => color,
+                    _ => fields.contour_label_color,
+                };
                 labels.font_size = fields.contour_label_size;
+                labels.bg_color = fields.contour_label_background;
                 labels.bg_padding_px = fields.contour_label_padding;
             }
         }
@@ -1654,17 +1733,46 @@ impl Theme {
     /// The frame of the chart `layer` names: a family's own frame when the
     /// chart draws one, the chrome's otherwise.
     fn frame_for(&self, config: &Config, series: &[SeriesConfig], layer: LayerRef) -> AxisPreset {
-        let on_layer = |item: &&SeriesConfig| drawn_on(config, layer, &item.series_id);
-        for item in series.iter().filter(on_layer) {
-            match item.render_type {
-                DataRenderType::Feynman(_) => return self.series.feynman.axis_preset,
-                DataRenderType::EnergyLevels(_) => return self.series.energy_levels.axis_preset,
-                _ => {}
-            }
-        }
-        self.chrome.axis_preset
+        self.family_frame(config, series, layer)
+            .unwrap_or(self.chrome.axis_preset)
     }
 
+    /// The frame of a family that draws one of its own, when the chart
+    /// `layer` names draws it: the first Feynman or energy-level series
+    /// drawn there decides (`series.feynman.axis_preset`,
+    /// `series.energy_levels.axis_preset`). `None` for every other chart.
+    /// Shared by [`Self::apply`] and [`crate::default::config_for_series`].
+    pub(crate) fn family_frame(
+        &self,
+        config: &Config,
+        series: &[SeriesConfig],
+        layer: LayerRef,
+    ) -> Option<AxisPreset> {
+        let on_layer = |item: &&SeriesConfig| drawn_on(config, layer, &item.series_id);
+        series
+            .iter()
+            .filter(on_layer)
+            .find_map(|item| match item.render_type {
+                DataRenderType::Feynman(_) => Some(self.series.feynman.axis_preset),
+                DataRenderType::EnergyLevels(_) => Some(self.series.energy_levels.axis_preset),
+                _ => None,
+            })
+    }
+}
+
+/// Whether a chart of `series` is a timeline (#357): it draws a range link
+/// series, the dependencies of a Gantt chart. Such a
+/// chart takes the timeline frame
+/// ([`crate::default::default_timeline_config`]) by default, as a Feynman
+/// or energy-level chart takes its family's ([`Theme::family_frame`]).
+/// Read by [`crate::default::config_for_series`].
+pub(crate) fn draws_timeline(series: &[SeriesConfig]) -> bool {
+    series
+        .iter()
+        .any(|item| matches!(item.render_type, DataRenderType::RangeLinks(_)))
+}
+
+impl Theme {
     /// The chrome of one chart: its own axes, titles, grid, legend,
     /// colourbar and highlight, and its overlays' axes and legends.
     fn apply_chart_chrome(&self, config: &mut Config, preset: AxisPreset, series: &[SeriesConfig]) {
@@ -1717,6 +1825,9 @@ impl Theme {
             names.line_visible = config.top_x.line_visible;
             names.tick = config.top_x.tick.clone();
             names.label_style.font_size = self.series.parallel.name_size;
+            if let Some(parallel) = config.parallel_mut() {
+                parallel.label_backdrop = self.series.parallel.label_backdrop;
+            }
         }
         // An energy-level chart names its term columns on `bottom_x`.
         if self.kind == ChartKind::EnergyLevels {
@@ -1737,6 +1848,9 @@ impl Theme {
         }
         self.style_text(&mut config.chart_title.text, chrome.ink, chrome.title_size);
         self.style_grid(&mut config.grid);
+        if self.kind == ChartKind::RangeBars {
+            hide_category_grid(config);
+        }
         let colormap = match &mut config.colorbar {
             Some(bar) => {
                 bar.colormap = self.series.fields.colormap.clone();
@@ -1870,6 +1984,13 @@ impl Theme {
 }
 
 impl RadialTheme {
+    /// The theme with its palette replaced by `cycle`'s colours: a palette
+    /// preset ([`ColorCycle::PRESETS`]) on the top-level slices (#357).
+    pub fn with_palette(mut self, cycle: ColorCycle) -> Self {
+        self.palette = cycle.colors().to_vec();
+        self
+    }
+
     /// The documented default look.
     pub(crate) fn documented() -> Self {
         let radial = crate::defaults::radial_chart();
@@ -1960,6 +2081,21 @@ impl RadialTheme {
             );
             self.tint_children(&mut child.children, child.color, tint);
         }
+    }
+}
+
+/// A range bar chart's gridlines along a categorical position axis are
+/// off: they would run through the bars' middles (a timeline's rows, a
+/// waterfall's steps). The value axis keeps its gridlines.
+fn hide_category_grid(config: &mut Config) {
+    let horizontal = config.effective_bar_groups().direction == CategoryBarDirection::Horizontal;
+    let grid = &mut config.grid;
+    if horizontal && config.left_y.categories.is_some() {
+        grid.show_major_y = false;
+        grid.show_minor_y = false;
+    } else if !horizontal && config.bottom_x.categories.is_some() {
+        grid.show_major_x = false;
+        grid.show_minor_x = false;
     }
 }
 

@@ -233,6 +233,7 @@ fn parity_with_samples(
         streamed.end_gpu_frame();
         streamed.wait_idle().unwrap();
         streamed.service_stream_requests();
+        crate::renderer::tests::settle_gpu_retirement(&mut streamed);
         assert_eq!(
             streamed
                 .gpu_memory_usage()
@@ -453,6 +454,7 @@ fn stream_arc_scratch_is_bounded_and_budget_rejection_is_preallocation() {
     renderer.end_gpu_frame();
     renderer.wait_idle().unwrap();
     renderer.service_gpu_completions().unwrap();
+    crate::renderer::tests::settle_gpu_retirement(&mut renderer);
     assert_eq!(
         renderer
             .gpu_memory_usage()

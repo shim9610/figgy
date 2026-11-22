@@ -958,7 +958,8 @@ mod mutation;
 
 /// A chart drawn through `draw_registered` with a display set paints the same
 /// pixels as the direct draw of its placed config with styles at the display
-/// scale, which is what the browser product drew before (#160). Checked at a
+/// scale through a view at that scale, which is what the browser product drew
+/// before (#160). Checked at a
 /// shrinking, an equal and a growing surface.
 #[test]
 fn a_registered_display_paints_the_placed_document_at_its_scale() {
@@ -991,7 +992,11 @@ fn a_registered_display_paints_the_placed_document_at_its_scale() {
             .zip(&styles)
             .map(|(config, style)| Series { config, style })
             .collect();
-        let mut direct_view = r.create_chart_view(&chart, panel_rect).unwrap();
+        // The placed config's pixels carry the display scale, so the direct
+        // draw passes it to its view, as a host showing a placed document
+        // does: the rasters snap at that scale and text is hinted only at
+        // 1x (#357).
+        let mut direct_view = r.create_chart_view_at(&chart, panel_rect, scale).unwrap();
         let direct = r
             .prepare(&mut [ChartDrawItem {
                 view: &mut direct_view,

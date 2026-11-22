@@ -163,26 +163,21 @@ impl ChartKind {
         } else if has(|rt| {
             matches!(
                 rt,
-                DataRenderType::Vector { .. } | DataRenderType::Streamlines { .. }
+                DataRenderType::Vector(_) | DataRenderType::Streamlines(_)
             )
         }) {
             Self::VectorField
         } else if has(|rt| matches!(rt, DataRenderType::TriMesh(_))) {
             Self::TriMesh
-        } else if has(|rt| {
-            matches!(
-                rt,
-                DataRenderType::Field(_) | DataRenderType::RgbImage { .. }
-            )
-        }) {
+        } else if has(|rt| matches!(rt, DataRenderType::Field(_) | DataRenderType::RgbImage(_))) {
             Self::Field
-        } else if has(|rt| matches!(rt, DataRenderType::RangeBars { .. })) {
+        } else if has(|rt| matches!(rt, DataRenderType::RangeBars(_))) {
             Self::RangeBars
-        } else if has(|rt| matches!(rt, DataRenderType::BoxPlot { .. })) {
+        } else if has(|rt| matches!(rt, DataRenderType::BoxPlot(_))) {
             Self::Distribution
-        } else if has(|rt| matches!(rt, DataRenderType::CategoryBars { .. })) {
+        } else if has(|rt| matches!(rt, DataRenderType::CategoryBars(_))) {
             Self::CategoryBars
-        } else if has(|rt| matches!(rt, DataRenderType::Histogram { .. })) {
+        } else if has(|rt| matches!(rt, DataRenderType::Histogram(_))) {
             Self::Histogram
         } else if has(|rt| matches!(rt, DataRenderType::Xy(XySeries { stem: Some(_), .. }))) {
             Self::Stem

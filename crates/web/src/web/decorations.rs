@@ -71,6 +71,32 @@ pub(crate) fn annotation_kind_name(kind: &renderer::AnnotationKind) -> &'static 
     }
 }
 
+/// The `annotation_preview` JSON of `item` (#312), shared by `FiggyChart`
+/// and the radial chart (#334): `{ kind, visible, drawn, canvas, document }`
+/// from the placed `(canvas, document)` shapes, or `drawn: false` and the
+/// skip `reason`.
+pub(crate) fn annotation_preview_value(
+    item: &renderer::Annotation,
+    placed: Result<(serde_json::Value, serde_json::Value), renderer::AnnotationSkip>,
+) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "kind": annotation_kind_name(&item.kind),
+        "visible": item.visible,
+    });
+    match placed {
+        Ok((canvas, document)) => {
+            value["drawn"] = true.into();
+            value["canvas"] = canvas;
+            value["document"] = document;
+        }
+        Err(reason) => {
+            value["drawn"] = false.into();
+            value["reason"] = format!("{reason:?}").into();
+        }
+    }
+    value
+}
+
 /// The vertex index a polygon handle name (`"v3"`) names.
 pub(crate) fn vertex_handle_index(name: &str) -> Option<usize> {
     name.strip_prefix('v')?.parse().ok()
@@ -233,17 +259,29 @@ impl FiggyChart {
     /// and the z axis of a 3D chart, from the columns' cached statistics
     /// with 5% padding. A chart starts at a `0..1` placeholder range; this
     /// is the call for a first plot. Synchronous, and independent of the
-    /// active layer. A layer without series keeps its ranges. A streamed
-    /// source and a monotonic chart are refused, and a refusal changes
-    /// nothing. `auto_fit_all(padding)` instead measures the active
-    /// layer's drawn extents (error bar ends included) on the GPU.
+    /// active layer. A layer without series keeps its ranges. Then the
+    /// scale of every auto-scaled vector series is fitted to the spacing
+    /// of its arrows and its `auto_scale` flag consumed (#357), so the
+    /// stored series say how long the arrows draw. Then each range link
+    /// without an exit gets the one the layout chooses (#357), written by
+    /// the frame that finds its GPU gather complete. A streamed source and a
+    /// monotonic chart are refused, and a refusal changes nothing.
+    /// `auto_fit_all(padding)` instead measures the active layer's drawn
+    /// extents (error bar ends included) on the GPU.
     /// JS: `chart.fit_ranges()`
     pub fn fit_ranges(&mut self) -> Result<(), JsValue> {
         let mut chart = Chart::new(self.chart_config()?.clone());
+        let mut series = self.chart_series()?.to_vec();
         self.renderer
-            .fit_ranges(&mut chart, self.chart_series()?)
+            .fit_ranges(&mut chart, &mut series)
             .map_err(js_err)?;
-        self.replace_chart_config(chart.config().clone())?;
+        self.replace_chart_state(chart.config().clone(), series)?;
+        // The links' exits in the fitted layout (#357): the gather is
+        // submitted here and the frame that finds it complete writes them.
+        self.renderer
+            .fit_chart_link_exits(self.chart_id)
+            .map_err(js_err)?;
+        self.request_host_redraw();
         Ok(())
     }
 
@@ -288,6 +326,46 @@ impl FiggyChart {
         let fitted = self
             .renderer
             .fit_y_axes_config(&candidate, self.chart_series()?, padding)
+            .map_err(js_err)?;
+        serde_json::to_string(&fitted).map_err(js_err)
+    }
+
+    /// `fit_config` for one layer's chosen axes (#334,
+    /// `Renderer::fit_config_scoped`): the candidate comes back with only
+    /// the axes `scope_json` selects fitted, every other axis exactly as
+    /// given. `scope_json` is `{ "layer": <layer>, "axes": ["x", "y",
+    /// "z"], "linked": "group" | "target", "keep": [{ "layer": <layer>,
+    /// "axis": "x" | "y" | "z" }] }`, a layer written as for
+    /// `set_active_layer` (`"Base"`, `{"Overlay":0}`, `{"Subplot":1}`,
+    /// `{"SubplotOverlay":[1,0]}`). `"z"` is a 3D chart's z axis (its
+    /// `right_y`); on a parallel chart the parallel axes are `"y"`. A
+    /// moved axis that is linked moves its link group. `linked` (default
+    /// `"group"`) reads every series drawn against a linked axis' group,
+    /// or with `"target"` only those drawn in the target's panel (the
+    /// parent chart or one subplot, its overlays included; the group still
+    /// shares the range). `keep` (default none) names axes that hold their
+    /// range, and every axis linked to one holds too. Statistics only:
+    /// error bar ends, heatmap cell half-widths and arrow tips are not
+    /// included (`auto_fit_all` measures drawn extents). The installed
+    /// chart is untouched.
+    ///
+    /// Refused (an exception, nothing changes): the refusals of
+    /// `fit_config`, a scope that is not this JSON (an unknown field, axis
+    /// name or `linked` value), and a `layer` or `keep` layer naming an
+    /// overlay or subplot the candidate does not have (code
+    /// `FitScopeLayer`).
+    /// JS: `chart.fit_config_scoped(JSON.stringify(cfg), JSON.stringify({ layer: "Base", axes: ["x"], linked: "target" }), 0.05)`
+    pub fn fit_config_scoped(
+        &self,
+        config_json: &str,
+        scope_json: &str,
+        padding: f64,
+    ) -> Result<String, JsValue> {
+        let candidate: renderer::Config = serde_json::from_str(config_json).map_err(js_err)?;
+        let scope = crate::fit_scope_from_json(scope_json).map_err(js_err)?;
+        let fitted = self
+            .renderer
+            .fit_config_scoped(&candidate, self.chart_series()?, padding, &scope.scope())
             .map_err(js_err)?;
         serde_json::to_string(&fitted).map_err(js_err)
     }
@@ -430,16 +508,16 @@ impl FiggyChart {
                         union(&map.column)?;
                     }
                 }
-                DataRenderType::Ternary {
+                DataRenderType::Ternary(TernarySeries {
                     scatter: Some(scatter),
                     ..
-                } => {
+                }) => {
                     if let Some(map) = &scatter.point_color_map {
                         union(&map.column)?;
                     }
                 }
                 // A vector's colour map: a column or a grid's columns.
-                DataRenderType::Vector { .. } => match vector_columns(&cfg.render_type) {
+                DataRenderType::Vector(_) => match vector_columns(&cfg.render_type) {
                     Some(VectorColumns::Points { color, .. }) => {
                         if let Some(color) = color {
                             union(color)?;
@@ -454,7 +532,7 @@ impl FiggyChart {
                     }
                     None => {}
                 },
-                DataRenderType::Streamlines { color_map, .. } => {
+                DataRenderType::Streamlines(StreamlineSeries { color_map, .. }) => {
                     if let Some(map) = color_map {
                         union(&map.column)?;
                     }
@@ -478,21 +556,22 @@ impl FiggyChart {
                     }
                 }
                 // A parallel series' colour column maps through the colourbar.
-                DataRenderType::Parallel { color_column, .. } => {
+                DataRenderType::Parallel(ParallelSeries { color_column, .. }) => {
                     if let Some(column) = color_column {
                         union(column)?;
                     }
                 }
                 // An image's colours are its data: the colourbar maps none
                 // of its channels.
-                DataRenderType::RgbImage { .. }
+                DataRenderType::RgbImage(_)
                 | DataRenderType::Xy(renderer::data_config::XySeries { scatter: None, .. })
-                | DataRenderType::Histogram { .. }
-                | DataRenderType::CategoryBars { .. }
-                | DataRenderType::BoxPlot { .. }
-                | DataRenderType::RangeBars { .. }
-                | DataRenderType::Radar { .. }
-                | DataRenderType::Ternary { scatter: None, .. } => {}
+                | DataRenderType::Histogram(_)
+                | DataRenderType::CategoryBars(_)
+                | DataRenderType::BoxPlot(_)
+                | DataRenderType::RangeBars(_)
+                | DataRenderType::RangeLinks(_)
+                | DataRenderType::Radar(_)
+                | DataRenderType::Ternary(TernarySeries { scatter: None, .. }) => {}
             }
         }
         let mut chart = Chart::new(self.chart_config()?.clone());
@@ -571,23 +650,23 @@ impl FiggyChart {
         self.replace_chart_config(config)
     }
 
-    /// Switch the series color rotation: recolors every series in order,
-    /// rebuilds their GPU styles, and keeps legend swatches in sync.
+    /// Switch the series color rotation: applies the palette to the chart
+    /// (`Config::apply_palette`, #357), so series `i` takes the cycle's
+    /// colour `i` in every palette-coloured part (a field, an image, an
+    /// energy-level or a Feynman diagram keeps its colours), rebuilds the
+    /// GPU styles, and redraws the legend symbols of the base chart, its
+    /// overlays and its subplots. Later `add_*_series` calls continue the
+    /// cycle.
     pub fn apply_color_cycle(&mut self, cycle: ColorCycle) -> Result<(), JsValue> {
         let cycle = renderer::ColorCycle::from(cycle);
         let mut series = self.chart_series()?.to_vec();
-        for (i, cfg) in series.iter_mut().enumerate() {
-            cycle.apply_to_series(cfg, i);
-        }
+        let mut config = self.chart_config()?.clone();
+        // The SSOT palette method (#357): series `i` takes colour `i`, and
+        // the legends derived from the series follow.
+        config.apply_palette(&mut series, cycle.colors());
         self.renderer
             .preflight_chart_styles(&series)
             .map_err(js_err)?;
-        let mut config = self.chart_config()?.clone();
-        renderer::config::update_legend_symbols_preserving_text(
-            &mut config.legend.content,
-            &series,
-            config.colorbar.as_ref().map(|bar| &bar.colormap),
-        );
         let count = series.len();
         self.replace_chart_state(config, series)?;
         self.cycle = cycle;
@@ -595,10 +674,35 @@ impl FiggyChart {
         Ok(())
     }
 
-    /// Explicitly rebuild the auto legend from `SeriesConfig.label`.
-    /// Legacy string labels are used only when a series has no rich label.
+    /// Explicitly rebuild the auto legend from `SeriesConfig.label`: every
+    /// auto legend row from the series' label; a series without one gets no
+    /// row.
     pub fn reset_legend_from_series_labels(&mut self) -> Result<(), JsValue> {
-        self.rebuild_legend_from_series_labels()
+        let series = self.chart_series()?;
+        let mut entries: Vec<(SeriesConfig, RichText)> = Vec::new();
+        entries.try_reserve(series.len()).map_err(js_err)?;
+        for cfg in series {
+            if let Some(label) = &cfg.label {
+                entries.push((cfg.clone(), label.clone()));
+            }
+        }
+
+        let mut config = self.chart_config()?.clone();
+        config.legend.content.segments.clear();
+        for (cfg, label) in entries {
+            renderer::config::append_legend_entry_rich(
+                &mut config.legend.content,
+                renderer::config::series_symbol_segments(
+                    &cfg,
+                    config.colorbar.as_ref().map(|bar| &bar.colormap),
+                ),
+                label.segments,
+            );
+        }
+        config.legend.visible = !config.legend.content.segments.is_empty();
+        self.replace_chart_config(config)?;
+        self.legend_auto_managed = true;
+        Ok(())
     }
 
     pub(super) fn set_selected_annotation(&mut self, selected: Option<usize>) {
@@ -981,7 +1085,9 @@ impl FiggyChart {
     /// anywhere, inside the parent chart (an inset), over another panel or
     /// beside every one. The subplot's plot must fit in the frame; an error
     /// leaves the document unchanged. A pointer drag on the frame does the
-    /// same on the base layer.
+    /// same on the base layer. The insets nested in this subplot's plot
+    /// move with it, and an inset follows later moves and resizes of the
+    /// plot it is nested in from where it was put (#392).
     /// JS: `chart.set_subplot_area(0, 120, 80, 320, 240);`
     pub fn set_subplot_area(
         &mut self,
@@ -1092,6 +1198,26 @@ impl FiggyChart {
             renderer::LayerRef::Base,
         )
         .map_err(theme_error)?;
+        theme_to_js(&theme)
+    }
+
+    /// [`Self::theme`] with its series palette replaced by the preset
+    /// `cycle` (#357): the family's chrome and parts with, say, the
+    /// Okabe–Ito or ColorBrewer Set2 colours. Pass it to
+    /// [`Self::apply_custom_theme`]. Refused as [`Self::theme`] refuses the
+    /// name.
+    ///
+    /// Returns a plain object, not a JSON string.
+    #[wasm_bindgen(unchecked_return_type = "FiggyThemeObject")]
+    pub fn theme_with_palette(&self, name: &str, cycle: ColorCycle) -> Result<JsValue, JsValue> {
+        let theme = renderer::theme::Theme::for_chart(
+            name,
+            self.chart_config()?,
+            self.chart_series()?,
+            renderer::LayerRef::Base,
+        )
+        .map_err(theme_error)?
+        .with_palette(renderer::ColorCycle::from(cycle));
         theme_to_js(&theme)
     }
 
@@ -1314,8 +1440,9 @@ impl FiggyChart {
     }
 
     /// An `Annotation` JSON value, checked by the rules a document's
-    /// annotation layer is.
-    fn parse_annotation(json: &str) -> Result<renderer::Annotation, JsValue> {
+    /// annotation layer is. The radial chart's `annotation_preview` reads
+    /// its item through it too (#334).
+    pub(crate) fn parse_annotation(json: &str) -> Result<renderer::Annotation, JsValue> {
         let item: renderer::Annotation = serde_json::from_str(json).map_err(|error| {
             coded_error(
                 &format!("annotation is not an Annotation JSON value: {error}"),
@@ -1358,24 +1485,15 @@ impl FiggyChart {
     pub fn annotation_preview(&self, json: &str) -> Result<String, JsValue> {
         let item = Self::parse_annotation(json)?;
         let value = self.with_shown_document(|shown| {
-            let mut value = serde_json::json!({
-                "kind": annotation_kind_name(&item.kind),
-                "visible": item.visible,
-            });
-            match shown.annotation_preview(&item) {
-                Ok((canvas, document)) => {
-                    value["drawn"] = true.into();
-                    value["canvas"] = annotation_preview_json(&canvas);
-                    value["document"] = document
+            let placed = shown.annotation_preview(&item).map(|(canvas, document)| {
+                (
+                    annotation_preview_json(&canvas, 1.0),
+                    document
                         .as_ref()
-                        .map_or(serde_json::Value::Null, annotation_preview_json);
-                }
-                Err(reason) => {
-                    value["drawn"] = false.into();
-                    value["reason"] = format!("{reason:?}").into();
-                }
-            }
-            Ok(value)
+                        .map_or(serde_json::Value::Null, |d| annotation_preview_json(d, 1.0)),
+                )
+            });
+            Ok(annotation_preview_value(&item, placed))
         })?;
         serde_json::to_string(&value).map_err(js_err)
     }
@@ -1426,11 +1544,19 @@ impl FiggyChart {
     }
 
     /// The displayed geometry of a document and its panels, read-only
-    /// (#312). Without an argument it is the installed document as the
-    /// canvas shows it; with a `Config` JSON it is that candidate, placed
-    /// on this canvas the way `set_config` would place it, and nothing is
+    /// (#312). Without a config it is the installed document as the canvas
+    /// shows it; with a `Config` JSON it is that candidate, placed on this
+    /// canvas the way `set_config` would place it, and nothing is
     /// installed. A candidate whose overlays, subplots or line offsets
     /// cannot be laid out is refused with code `layout`.
+    ///
+    /// `surface_width` and `surface_height` (#334), physical pixels, lay
+    /// the document (or the candidate) out as a canvas of that size would
+    /// show it, the way the chart reports it after `resize(width,
+    /// height)`; the canvas and its surface are not resized. Give both or
+    /// neither: one alone, or a dimension that is not a whole number of
+    /// pixels from 1, is refused with code `invalid_size`. Without them the
+    /// call reads the canvas as before.
     ///
     /// Returns JSON `{ scale, surface, document_area, active_layer, panels }`:
     /// `scale` is canvas pixels per document pixel, `surface` the canvas
@@ -1444,38 +1570,23 @@ impl FiggyChart {
     /// `data_area` its exact data area (`null` without one). An overlay
     /// and a member share their chart's frame and data area.
     /// JS: `const layout = JSON.parse(chart.inspect_document_layout());`
-    pub fn inspect_document_layout(&self, config_json: Option<String>) -> Result<String, JsValue> {
-        let value = match config_json {
-            None => self.with_shown_document(|shown| Ok(shown.layout_json(self.surface_size)))?,
-            Some(json) => {
-                let candidate: renderer::Config = serde_json::from_str(&json).map_err(|error| {
-                    coded_error(
-                        &format!("config is not a Config JSON value: {error}"),
-                        "config_json",
-                        [],
-                    )
-                })?;
-                if !candidate.overlays.is_empty()
-                    || !candidate.subplots.is_empty()
-                    || candidate.has_offset_members()
-                {
-                    candidate.expand().map_err(|error| {
-                        coded_error(
-                            &format!("the candidate's panels cannot be laid out ({error:?})"),
-                            "layout",
-                            [],
-                        )
-                    })?;
-                }
-                let (placed, _, scale) =
-                    renderer::display_config_for_surface(&candidate, self.surface_size);
-                ShownDocument {
-                    logical: &candidate,
-                    placed: &placed,
-                    scale,
-                }
-                .layout_json(self.surface_size)
+    pub fn inspect_document_layout(
+        &self,
+        config_json: Option<String>,
+        surface_width: Option<f64>,
+        surface_height: Option<f64>,
+    ) -> Result<String, JsValue> {
+        let surface =
+            crate::layout_surface(surface_width, surface_height).map_err(layout_query_error)?;
+        let value = match (config_json, surface) {
+            (None, None) => {
+                self.with_shown_document(|shown| Ok(shown.layout_json(self.surface_size)))?
             }
+            (None, Some(surface)) => crate::fitted_layout_json(self.chart_config()?, surface),
+            (Some(json), surface) => crate::fitted_layout_json(
+                &crate::layout_candidate(&json).map_err(layout_query_error)?,
+                surface.unwrap_or(self.surface_size),
+            ),
         };
         serde_json::to_string(&value).map_err(js_err)
     }
@@ -1567,4 +1678,31 @@ impl FiggyChart {
             .collect::<Vec<_>>();
         serde_json::to_string(&values).map_err(js_err)
     }
+}
+
+/// A refused layout query as a JS `Error` with its `code` (#334).
+fn layout_query_error(error: crate::LayoutQueryError) -> JsValue {
+    coded_error(&error.message, error.code, [])
+}
+
+/// The layout `FiggyChart.inspect_document_layout(configJson)` reports for
+/// a candidate `Config` JSON on a canvas whose surface is `surface_width` x
+/// `surface_height` physical pixels, without a chart (#334): no renderer,
+/// GPU device or surface is created, and the result is the JSON a chart
+/// of that surface size reports for the same candidate: a canvas places
+/// its document by its surface size alone, and the result's `scale` is
+/// that fit. Refused with code `config_json` or `layout` as
+/// `inspect_document_layout` refuses a candidate, and with `invalid_size`
+/// for a dimension that is not a whole number of pixels from 1.
+///
+/// JS: `const layout = JSON.parse(inspect_config_layout(cfg, canvas.width, canvas.height));`
+#[wasm_bindgen]
+pub fn inspect_config_layout(
+    config_json: &str,
+    surface_width: f64,
+    surface_height: f64,
+) -> Result<String, JsValue> {
+    let value = crate::config_layout_json(config_json, surface_width, surface_height)
+        .map_err(layout_query_error)?;
+    serde_json::to_string(&value).map_err(js_err)
 }

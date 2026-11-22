@@ -21,34 +21,19 @@
 //!   column, it is the full draw's within one pixel.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::renderer_bgra as renderer;
 
 use renderer::layout::{ChartArea, Rect};
 use renderer::renderer::{MonotonicGroupRef, MonotonicRange};
 use renderer::{
     ChartId, Color, ExportOptions, ExportSource, FiggyError, MappingChange, MonotonicAppend,
     MonotonicChartId, MonotonicInterleaved, MonotonicSlices, MonotonicSource, MonotonicUpdate,
-    RasterImage, Renderer, RendererDevice, SeriesConfig,
+    RasterImage, Renderer, SeriesConfig,
 };
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(test_gpu::device);
-    (device.clone(), queue.clone())
-}
-
-fn renderer() -> Renderer {
-    let (device, queue) = shared_device();
-    Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Bgra8Unorm,
-        64 * 1024 * 1024,
-    )
-    .expect("renderer init")
-}
 
 /// A chart with grid and legend off, so the images hold the series and the
 /// axes only.
@@ -1776,6 +1761,7 @@ fn pixel_of(config: &renderer::Config, x: f64, y: f64) -> [f32; 2] {
 fn pick(r: &mut Renderer, id: MonotonicChartId, at: [f32; 2]) -> Option<renderer::PickedData> {
     r.enable_gpu_picking().expect("picker");
     let config = r.monotonic_config(id).expect("config").clone();
+    harness::show_monotonic_for_pick(r, id);
     r.monotonic_chart(id)
         .expect("chart")
         .pick_data(pick_request(&config, at))
@@ -1788,7 +1774,9 @@ fn pick(r: &mut Renderer, id: MonotonicChartId, at: [f32; 2]) -> Option<renderer
 fn pick_full(r: &mut Renderer, id: ChartId, at: [f32; 2]) -> Option<renderer::PickedData> {
     r.enable_gpu_picking().expect("picker");
     let config = r.chart_config(id).expect("config").clone();
-    r.pick_chart_data(id, pick_request(&config, at))
+    let request = pick_request(&config, at);
+    harness::show_for_pick(r, id, &request);
+    r.pick_chart_data(id, request)
         .expect("pick")
         .resolve_blocking()
         .expect("resolve")
@@ -2110,6 +2098,7 @@ fn overlays_and_subplots_draw_their_envelopes() {
             link_y: None,
             marker: None,
             text_scale: Default::default(),
+            anchor: None,
         }];
         parent
     };

@@ -11,47 +11,28 @@
 //! pure colour, so a colour predicate attributes every pixel to one mark.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::ShowForPick as _;
+use harness::{
+    BLUE, CYAN, GREEN, MAGENTA, RED, is, markers, pixel_rgba as pixel, renderer_rgba as renderer,
+    upload,
+};
+use test_gpu::shared_device;
 
 use renderer::config::{AxisBreak, AxisBreakStyle, AxisBreaks, AxisScale, BreakMark};
-use renderer::data::Column;
-use renderer::data_config::{
-    DataLineStyleConfig, DataScatterStyleConfig, LineFill, LineInterpolation, ScatterShape,
-    XySeries,
-};
+use renderer::data_config::{DataLineStyleConfig, LineFill, LineInterpolation, XySeries};
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
-use renderer::{Chart, Color, DataRenderType, RasterImage, Renderer, RendererDevice, SeriesConfig};
+use renderer::{
+    CategoryBarSeries, Chart, Color, DataRenderType, RasterImage, Renderer, RendererDevice,
+    SeriesConfig,
+};
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 320;
-const RED: Color = Color::from_rgb8(255, 0, 0);
-const BLUE: Color = Color::from_rgb8(0, 0, 255);
-const GREEN: Color = Color::from_rgb8(0, 255, 0);
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(test_gpu::device);
-    (device.clone(), queue.clone())
-}
-
-fn renderer() -> Renderer {
-    let (device, queue) = shared_device();
-    Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Rgba8Unorm,
-        4 * 1024 * 1024,
-    )
-    .expect("renderer init")
-}
-
-fn upload(r: &mut Renderer, id: &str, data: Vec<f64>) {
-    r.add_column(id, &Column { data }).unwrap();
-}
-
 /// A bare chart: x over 0..10, y over `y_min..y_max` cut by `cuts`.
 fn config(y_min: f64, y_max: f64, cuts: &[(f64, f64)]) -> renderer::Config {
     let mut config = renderer::default::default_config();
@@ -92,32 +73,6 @@ fn config(y_min: f64, y_max: f64, cuts: &[(f64, f64)]) -> renderer::Config {
     config
 }
 
-fn markers(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
-    SeriesConfig {
-        series_id: id.into(),
-        source_id: None,
-        label: None,
-        x_column: x.into(),
-        y_column: y.into(),
-        z_column: None,
-        render_type: DataRenderType::Xy(XySeries {
-            scatter: Some(DataScatterStyleConfig {
-                point_color: color,
-                point_shape: ScatterShape::SquareFilled,
-                point_size: 8.0,
-                point_style_table: None,
-                point_style_index_column: None,
-                point_style_overrides: None,
-                point_color_map: None,
-                point_size_map: None,
-            }),
-            line: None,
-            errors: None,
-            stem: None,
-        }),
-    }
-}
-
 fn line(id: &str, x: &str, y: &str, color: Color, fill: Option<LineFill>) -> SeriesConfig {
     SeriesConfig {
         series_id: id.into(),
@@ -155,23 +110,6 @@ fn export(
     )
     .block_on()
     .unwrap()
-}
-
-fn pixel(img: &RasterImage, x: u32, y: u32) -> [u8; 4] {
-    let i = ((y * img.width + x) * 4) as usize;
-    [
-        img.rgba[i],
-        img.rgba[i + 1],
-        img.rgba[i + 2],
-        img.rgba[i + 3],
-    ]
-}
-
-fn is(color: Color) -> impl Fn([u8; 4]) -> bool {
-    let [r, g, b] = [color.r, color.g, color.b].map(|c| (c * 255.0).round() as i32);
-    move |p| {
-        (p[0] as i32 - r).abs() < 40 && (p[1] as i32 - g).abs() < 40 && (p[2] as i32 - b).abs() < 40
-    }
 }
 
 /// The data area at `scale`, in image pixels: the export lays out the
@@ -429,7 +367,13 @@ fn pick_at(
         display_scale: scale,
         max_distance_px: 6.0 * scale,
     };
-    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let hit = test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap();
     r.remove_chart(id).unwrap();
     match hit {
         Some(renderer::PickedData::Point {
@@ -472,8 +416,9 @@ fn a_pick_hits_what_each_piece_draws_and_nothing_in_a_gap() {
         let on_line = |y: f32| (x0 + (x1 - x0) * (y - y0) / (y1 - y0), y);
         let gap = gap_rows(&config, scale, 1.0);
         let below = on_line(gap.end as f32 + 4.0 * scale);
+        // The line's ink hits; the selection is the nearest datum (#381).
         assert!(
-            matches!(pick_at(&mut r, &config, &series, below, scale), Some((ref id, _)) if id == "l"),
+            pick_at(&mut r, &config, &series, below, scale).is_some(),
             "{scale}x the line below the gap"
         );
         let middle = on_line((gap.start + gap.end) as f32 / 2.0);
@@ -856,8 +801,6 @@ fn a_streamed_source_on_a_broken_axis_is_refused() {
     r.remove_chart(id).unwrap();
 }
 
-const MAGENTA: Color = Color::from_rgb8(255, 0, 255);
-const CYAN: Color = Color::from_rgb8(0, 255, 255);
 const BLACK: Color = Color::from_rgb8(0, 0, 0);
 
 /// A line in black with `color` markers on its points: the kind a line
@@ -938,6 +881,7 @@ fn overlays_subplots_and_line_offsets_draw_their_pieces() {
             link_y: None,
             marker: None,
             text_scale: Default::default(),
+            anchor: None,
         });
         document.line_offsets = Some(renderer::data_config::LineOffsets {
             series: vec!["lo0".into(), "lo1".into()],
@@ -1256,7 +1200,7 @@ fn category_bars_cross_a_value_axis_cut() {
                 x_column: x.into(),
                 y_column: y.into(),
                 z_column: None,
-                render_type: DataRenderType::CategoryBars {
+                render_type: DataRenderType::CategoryBars(CategoryBarSeries {
                     color: RED,
                     style: CategoryBarStyle {
                         material: renderer::Material::Flat,
@@ -1267,7 +1211,7 @@ fn category_bars_cross_a_value_axis_cut() {
                     labels: Default::default(),
                     label_format: Default::default(),
                     overrides: None,
-                },
+                }),
             }];
             for scale in [1.0f32, 2.0] {
                 let img = export(&mut r, &config, &series, scale);
@@ -1460,6 +1404,7 @@ fn layered_document_with(layer: &str, feature: Feature) -> (renderer::Config, Ve
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     });
     let series = vec![
         markers("base", "ax", "ay", RED),
@@ -1526,7 +1471,13 @@ fn a_feature_on_any_layer_selects_the_full_shaders(feature: Feature) {
         display_scale: 1.0,
         max_distance_px: 6.0,
     };
-    test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap();
     let mut base_only = config(0.0, 100.0, &[]);
     base_only.left_y.breaks = None;
     screen(&mut r, &base_only, &series[..1]);
@@ -1555,11 +1506,23 @@ fn a_feature_on_any_layer_selects_the_full_shaders(feature: Feature) {
         let mut r = layered_renderer();
         r.enable_gpu_picking().unwrap();
         let id = r.register_chart(plain.clone(), series.clone()).unwrap();
-        test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        test_gpu::block_on(
+            r.shown(id, &request)
+                .pick_chart_data(id, request)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap();
         assert_eq!(r.shader_set(), ShaderSet::Basic, "{tag}");
         r.set_chart_config(id, with.clone()).unwrap();
         assert_eq!(r.shader_set(), ShaderSet::Full, "{tag}: set_chart_config");
-        test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        test_gpu::block_on(
+            r.shown(id, &request)
+                .pick_chart_data(id, request)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap();
 
         // The same through `set_chart_state`.
         let mut r = layered_renderer();
@@ -1726,10 +1689,11 @@ fn picks_answer_the_same_through_either_shader_set() {
     };
     let before = answers(&mut r, &plain);
     assert_eq!(r.shader_set(), ShaderSet::Basic);
-    // Both markers, the line at its middle, and nothing off the line.
+    // Both markers, the line's ink at its middle (selecting the nearest
+    // datum, #381), and nothing off the line.
     assert_eq!(before[0], Some(("m".into(), 0)));
     assert_eq!(before[1], Some(("m".into(), 1)));
-    assert!(matches!(&before[2], Some((id, _)) if id == "l"));
+    assert!(before[2].is_some());
     assert_eq!(before[3], None);
 
     let cut = answers(&mut r, &broken);
@@ -1780,7 +1744,8 @@ fn picks_answer_the_same_once_a_probability_or_polar_chart_was_picked() {
         assert_eq!(r.shader_set(), ShaderSet::Basic, "{feature:?}");
         assert_eq!(before[0], Some(("m".into(), 0)));
         assert_eq!(before[1], Some(("m".into(), 1)));
-        assert!(matches!(&before[2], Some((id, _)) if id == "l"));
+        // The line's ink, selecting the nearest datum (#381).
+        assert!(before[2].is_some());
         assert_eq!(before[3], None);
 
         pick_at(&mut r, &with, &series, (40.0, 40.0), 1.0);
@@ -1859,9 +1824,9 @@ fn a_fit_is_the_same_through_either_shader_set() {
         r
     };
     let fit = |r: &mut Renderer, config: &renderer::Config| {
-        let series = vec![markers("m", "x", "y", RED)];
+        let mut series = vec![markers("m", "x", "y", RED)];
         let mut chart = Chart::new(config.clone());
-        r.fit_ranges(&mut chart, &series).unwrap();
+        r.fit_ranges(&mut chart, &mut series).unwrap();
         r.ensure_errorbar_extent_engine_blocking().unwrap();
         let id = r.register_chart(config.clone(), series).unwrap();
         let ticket = r.begin_auto_fit_all(id, 0.0).unwrap();

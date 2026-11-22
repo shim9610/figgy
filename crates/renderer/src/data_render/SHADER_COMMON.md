@@ -58,6 +58,7 @@ To change shared shader code:
 | `category_bars.wgsl` (§2.4, §5.13) | bar |
 | `box_plot.wgsl` (§2.5, §5.15) | bar |
 | `range_bars.wgsl` (§2.6, §5.18) | bar |
+| `range_links.wgsl` (§5.18) | bar |
 | `violin.wgsl` (§2.5, §5.19) | bar |
 | `field_paint.wgsl` (§5, §5.21, §5.25) | field, surface mesh, triangle mesh, triangle surface |
 | `surface_mesh/surface_params.wgsl`, `surface_mesh/surface_entry.wgsl` (§5.21) | surface mesh (with `surface_input_grid.wgsl`), triangle surface (with `tri_mesh/mesh_input.wgsl` and `surface_input_mesh.wgsl`) |
@@ -333,7 +334,7 @@ A `DataRenderType::RangeBars` series (§5.18) reads the category bar lanes
 of §2.4 for its bodies: its look is a `CategoryBarStyle`, so the CPU
 writer is `style.rs::PrimitiveStyle::from_category_bars` with the series
 colour. `color_premul` is the fill under `RangeColor::Single` (and the
-fallback of a part or a state with no colour of its own). The part
+fallback of a part, a state or a row with no colour of its own). The part
 colours and widths are not `Style` lanes but the series' bar style slots
 (§5.18), which the pick reads too. The selected bar's highlight
 (`vs_range_bar_selection`) reads a per-selection `Style` built from the
@@ -514,6 +515,20 @@ as its first parameter (`line_stroke_vertex`, `step_prefix_px`). Reading a
 member (`transform.pixel_to_ndc`) is not a read of the whole. The arithmetic
 is unchanged. `a_draw_function_reads_the_whole_transform_once`
 (`shader_assembly.rs`) holds every fragment outside `gpu_pick/` to it.
+
+**One projection per placement helper**
+([#363](https://github.com/shim9610/figgy/issues/363)). A software GPU
+compiler (Chromium's SwiftShader) pays for every inlined copy of
+`data_to_ndc`, and with the full set's axis cuts, probability, log and polar
+paths each copy is large. A helper that projects several points, or one point
+per orientation branch, calls it once inside a short loop and picks the
+arguments and the result component with `select`: `box_slot` (the slot's two
+edges, either orientation), `box_along`, `category_bar` (the bar's two ends
+and the slot's two edges), the range bar's two ends, the violin pick's two
+curve ends, and the value label's radar spoke ends and member search. The
+values are the same as one call per branch; with the full set the violin
+pick kernel compiled in 53.1 s before and 1.6 s after
+(`ci/shader-compilation.md`).
 
 ---
 
@@ -968,7 +983,7 @@ it: its dashes pick as a solid stroke and its
 sketch wobble as the envelope `±amplitude_px`. In a dash gap the hit distance
 runs along the stroke to the nearer dash of the same piece. A Milkyway
 ribbon is never dashed; its strip and the star field scattered along it pick
-as one rectangle of the larger half extent (`gpu_pick/engine.rs::
+as one rectangle of the larger half extent (`gpu_pick/engine/query.rs::
 milkyway_line_half_extent`), since the star positions are hashed per slot.
 
 CPU twin: `cpu_twin::line_segment_pick` (precise strokes and dashes) with
@@ -1353,8 +1368,8 @@ fn stem_end_ndc(t: Transform, g: ErrorBarSegment, at_a: bool, flags: u32) -> vec
 The radial chart draws each slice as a solid: an extruded sector, its
 footprint rounded at its corners and walls, seen by an orthographic camera
 tilted about the x axis, and ray-marched per pixel. The draw (`radial.wgsl`,
-`scene` and the moving inside glyphs of `label_pixel`) shades the sector a
-pixel's ray reaches first, and the radial pick module (`radial_pick.wgsl`)
+`coverage` and the moving inside glyphs of `label_pixel`) shades the sector
+a pixel's ray reaches first, and the radial pick module (`radial_pick.wgsl`)
 answers which slice that is: both run the same functions over the same
 storage layout, so the pick is the draw's own geometry and occlusion.
 
@@ -1385,10 +1400,35 @@ fn hit_pixel(pixel: vec2<f32>, s: Sector) -> Hit
 `hit_pixel` returns the hit of the ray through a physical pixel, `t` its
 distance from the camera, or `t = 10000` for a miss; a pixel is drawn, and
 picked, as the sector with the smallest `t`, the first one on a tie.
-The loops that choose a sector by index (the pick, and the draw's moving
-inside glyphs) count the winner from 1, with 0 for none: Metal compiles a
-0-based `winner = i` as a constant 0, so every pick would answer sector 0
-(#63).
+The loops that choose a sector by index (the pick, the draw's `coverage`
+and its moving inside glyphs) count the winner from 1, with 0 for none:
+Metal compiles a 0-based `winner = i` as a constant 0, so every pick would
+answer sector 0 (#63).
+
+`hit_sector` marches to the surface and takes the six-sample normal once,
+at the point the march stopped. The draw supersamples coverage and shades
+once per surface (#349), in this order, for a pixel outside the Flat fast
+path (`flat_pixel`, #41):
+
+1. `floor_shadow` once, at the pixel centre: a soft blur, it shades the
+   background samples.
+2. For each sample of the `size.w` × `size.w` grid (2 × 2), in row order,
+   `coverage` at the sample's own position: the nearest sector, or the
+   background. Coverage, and with it every edge, is per sample.
+3. The lit material (`sector_surface`) once for the samples that hit one
+   sector with one normal (within about 2.5 degrees), at the first of them.
+   An interior pixel of a face evaluates one material; samples across a
+   bevel or a crease keep their own normal and highlight.
+4. The outline (`outlined`) per sample, at its own position and hit, so the
+   ink keeps its antialiasing.
+5. Each sample's colour is added in sample order, so a pixel whose samples
+   all take the Flat colour is bit-identical to the fast path.
+
+Only appearance moves with this order: which sector each sample hits, the
+geometry, the fast path, the labels and the pick are as before. A unit test
+(`shading_tolerance_tests` in `radial.rs`) compares it with every sample
+shaded at its own position (`tests/support/radial_per_sample.wgsl`) and pins
+the difference.
 
 Rust twin: `radial::Sector` (`radial.rs`), built per slice by
 `radial_layout.rs`; `mirrored_struct_layouts_match_their_rust_twins` holds
@@ -1568,7 +1608,7 @@ every record lane is `BOX_LANE_ABSENT` and no box draws or picks.
 | `0..9` | the f32 lane bases of the record's fields in `BOX_PLOT_RECORD` order (median, q1, q3, whisker_low, whisker_high, mean, sample_count, ci_low, ci_high); `BOX_LANE_ABSENT` (`0xffffffff`) for an absent optional field |
 | `9`, `10` | the lane bases of the outlier column's values and offsets (`BOX_LANE_OUTLIER_VALUES`, `_OFFSETS`), `BOX_LANE_ABSENT` without one |
 | `11`, `12` | the outlier groups (one per category) and the longest group (`ragged_stats().max_group`) |
-| `BOX_LANE_BOX_WIDTH` (13) | the box's share of its slot as `f32` bits: 1 for a plain box, a violin's `box_width` (0 hides the box); `box_layout` narrows the box about its middle |
+| `BOX_LANE_BOX_WIDTH` (13) | the box's share of its slot as `f32` bits: 1 for a plain box, a violin's `box_width` (0 hides the box); `box_layout` narrows the box about its middle (`box_narrowed`, which a caller holding the full `box_slot` place applies itself) |
 | `BOX_LANE_VIOLIN_CURVES` (14..18) | each violin half's curve values and offsets lanes, `BOX_LANE_ABSENT` without one: the value label clears the curves' ends (§5.17) |
 
 | Member of `CategoryBarParams` | Meaning for a box plot |
@@ -1679,7 +1719,7 @@ group, and `category_lanes[k]` member `k`'s value column).
 
 | Binding | Contents |
 |---|---|
-| 4 | `ValueLabelParams` uniform (CPU twin `data_render/value_label.rs::ValueLabelParamsGpu`, 128 B) |
+| 4 | `ValueLabelParams` uniform (CPU twin `data_render/value_label.rs::ValueLabelParamsGpu`, 192 B) |
 | 5 | the atlas texture |
 | 6 | its filtering sampler |
 | 7 | `value_label_cells: array<vec4<f32>>`, read-only storage: one cell per label in each of `shape.w` blocks (one block but for a radar series, which has one per member of its label group), sized by the series' labels and its group and written straight into its mapping at prepare (`data_render::value_label_cells`, `create_value_label_data`); the cell widths are the atlas bake's |
@@ -1695,10 +1735,11 @@ the members.
 | `atlas` | the atlas geometry (§5.16) |
 | `shape` | `(kind, labels, rank, count)`: `VALUE_LABEL_KIND_BARS` (0), `_BOXES` (1), `_RADAR` (2) or `_RANGE` (3), and the label count: one per category in axis order, as many as the axis has categories and `labels.text` has strings, or for range bars one per string (a label per row), any number; each block of binding 7 holds that many cells. For a radar series `rank` and `count` are its rank among the members of its label group (the panel's radar series that draw value labels, in series order) and their count (`RadarLabelGroup`, #272): binding 7 holds `count` blocks, block `rank` this series'. `0` and `1` for the other kinds |
 | `metrics` | `(gap, baseline, font size, scale)`: the gap between the anchor and the label (bars 6, boxes 10 logical px at the render scale; radar `max(4 logical px, 0.25 em)` past the vertex's marker), the text baseline's height above the content's bottom edge, the font size, all in render pixels, and render pixels per logical pixel |
-| `selection_color`, `selection` | the selection box: the model's `SELECTION_COLOR` premultiplied, and `(SELECTION_STROKE_WIDTH, SELECTION_PADDING, 0, 0)` at the render scale |
+| `selection_color`, `selection` | the selection box: the model's `SELECTION_COLOR` premultiplied, and `(SELECTION_STROKE_WIDTH, SELECTION_PADDING, contrast, 0)` at the render scale, `contrast` 1 when the labels draw in contrast ink |
 | `radar` | a radar series' `(visual gap, 0, ray x, ray y)`: the visual gap two labels keep (the model's `visual_gap_for` of the label font, 2 px at 18 px, #272) in render pixels, and the radius axis' ray, a unit vector y down |
 | `ring` | a radar series' box of the drawn ring (radius) labels in the ray's frame from the polar centre, as fractions of the outer radius: `(along min, along max, across min, across max)`, across toward the ring labels' side; empty (`x > y`) without ring labels |
-| `value_label_cells[b * labels + i]` | label `i` of block `b`: `(width, placement, offset x, offset y)`: the content width of string `i`'s cell (0 for an empty string or a label its placement hides: a bar's or box's `None`, from the series or its override), the placement (`VALUE_LABEL_OUTSIDE` 0, `_INSIDE` 1, `_AUTO` 2; for a radar label the reach of its vertex's marker in render pixels, `radar_marker_reach`: half a circle's size, half a square's diagonal, at least half the outline width) and `labels.offsets[i]` (the drag offset) in render pixels, x right and y down. A radar block `b` is member `b`'s own cells, written from its own atlas and strings |
+| `ink_dark`, `ink_light`, `ink_back`, `ink_base` | a range bar series' contrast ink (#357, `labels.contrast_ink`): the dark and the light ink, the plot background (`plot_background`, else `background`, else white) and the series colour, straight RGB with alpha 1; zero without contrast ink |
+| `value_label_cells[b * labels + i]` | label `i` of block `b`: `(width, placement, offset x, offset y)`: the content width of string `i`'s cell (0 for an empty string or a label its placement hides: a bar's or box's `None`, from the series or its override), the placement (`VALUE_LABEL_OUTSIDE` 0, `_INSIDE` 1, `_AUTO` 2, `_INSIDE_OR_BESIDE` 3; for a radar label the reach of its vertex's marker in render pixels, `radar_marker_reach`: half a circle's size, half a square's diagonal, at least half the outline width) and `labels.offsets[i]` (the drag offset) in render pixels, x right and y down. A radar block `b` is member `b`'s own cells, written from its own atlas and strings |
 
 `value_label_place(row)` is the content box of label `row` in chart-area
 render pixels (y down), shared by the draw, the selection box and the
@@ -1712,6 +1753,8 @@ pick:
   bar (baseline `0.32` font sizes below the middle); `AUTO` is outside a
   grouped bar and inside a stack segment that fits it (`8` logical px
   narrower and `1.4` font sizes lower than the segment), else nothing;
+  `INSIDE_OR_BESIDE` (#357) is `INSIDE` on a bar that fits it by the same
+  measure and `OUTSIDE` otherwise, flip rule included;
 - a box's label (#272): beside its median line, `gap` past the side of
   the box's slot (`box_slot`, its full width before a violin narrows it)
   away from its group's centre, the right of a vertical box and above a
@@ -1770,6 +1813,20 @@ that `pixel_to_ndc` spans), so the rule reads only the uniform and the
 pool, and the pick sees it through the same `value_label_place`. What
 still overflows after the flip is clipped by the data-area scissor.
 
+**Contrast ink** (#357). A range bar series with `labels.contrast_ink`
+bakes its atlas in white, so the atlas' alpha is the glyph coverage, and
+`fs_value_label` paints each covered pixel in whichever of `ink_dark` and
+`ink_light` has the higher WCAG contrast ratio with what lies under that
+pixel (the dark one on a tie). The vertex stage passes the label's range
+bar (`range_bar`, its rect), the bar's fill under the series' colour mode
+(`range_fill`, from `ink_base` and the style slots) and its progress split
+(`range_progress`, the remaining opacity of `RANGE_SLOT_PROGRESS`); a pixel
+on the bar's rect reads the fill, past the split the fill at the remaining
+opacity over `ink_back`, and any other pixel `ink_back`. So a label across
+a split changes ink at the split, and a label beside its bar or dragged
+off it reads the plot. Every value is computed on every draw; nothing per
+label is stored.
+
 The box is then moved by the drag offset and its origin rounded to the
 pixel grid, so `label_quad` samples the atlas texel for texel
 (`texel_exact`). Only the labels of a radar label group displace each
@@ -1807,8 +1864,8 @@ as follows (CPU writer: `renderer/series.rs::range_bar_params`;
 | `RANGE_LANE_LOW` (2), `RANGE_LANE_HIGH` (3) | the whiskers' low and high columns, `BOX_LANE_ABSENT` without whiskers |
 | `RANGE_LANE_COLOR` (4) | the total flag column of `RangeColor::Direction` or the state column of `RangeColor::State`, `BOX_LANE_ABSENT` without one |
 | `RANGE_LANE_PROGRESS` (5) | the progress column, `BOX_LANE_ABSENT` without progress |
-| `RANGE_LANE_COLOR_MODE` (6) | `RANGE_COLOR_SINGLE` (0), `_DIRECTION` (1) or `_STATE` (2) |
-| `RANGE_LANE_STATES` (7) | the number of state styles: style slots `RANGE_SLOT_STATES..` |
+| `RANGE_LANE_COLOR_MODE` (6) | `RANGE_COLOR_SINGLE` (0), `_DIRECTION` (1), `_STATE` (2) or `_ROW` (3) |
+| `RANGE_LANE_STATES` (7) | the number of state styles, or of row colours under `RANGE_COLOR_ROW`: style slots `RANGE_SLOT_STATES..` |
 
 | Member of `CategoryBarParams` | Meaning for a range bar series |
 |---|---|
@@ -1821,7 +1878,8 @@ as follows (CPU writer: `renderer/series.rs::range_bar_params`;
 
 The part colours are the series' bar style map's slots (group 2,
 bindings 5–7; CPU writer `renderer/style.rs::range_bar_style_map`, written
-straight into the slot buffer's mapping, sized by the states); range bars
+straight into the slot buffer's mapping, sized by the states or row
+colours); range bars
 have no per-bar overrides. A slot with a zero mask sets nothing:
 
 | Slot | Lanes |
@@ -1830,7 +1888,7 @@ have no per-bar overrides. A slot with a zero mask sets nothing:
 | `RANGE_SLOT_CONNECTOR` (1) | fill = the connector colour, gap = its width px |
 | `RANGE_SLOT_UP` (2), `_DOWN` (3), `_TOTAL` (4) | fill = the direction and total colours of `RangeColor::Direction` |
 | `RANGE_SLOT_PROGRESS` (5) | width ratio = the remaining opacity of `RangeProgress` |
-| `RANGE_SLOT_STATES + k` | fill = the colour of state `k` of `RangeColor::State` |
+| `RANGE_SLOT_STATES + k` | fill = the colour of state `k` of `RangeColor::State`, or row colour `k` of `RangeColor::ByRow` |
 
 One instance draws `RANGE_BAR_VERTICES` (18): three quads in paint order,
 the whisker (a flat stroke rect from the low to the high value at the
@@ -1844,10 +1902,12 @@ parts. The body's fill follows the colour mode: the series colour; the
 up colour when the end pair is at least the start pair (compared high word
 first) and the down colour otherwise, the total colour where the flag
 reads 1; or the style of the state `round(v)`, the series colour past the
-styles. With progress, the body past `start + p · (end − start)` (`p`
+styles; or row colour `row % count` of `RangeColor::ByRow` (the series
+colour without row colours). With progress, the body past `start + p · (end − start)` (`p`
 clamped to `0..=1`, the difference taken on the pairs so a time axis keeps
 its precision; a NaN `p` draws the bar whole) is drawn at the remaining
-opacity. The renderer compares the given ends and maps a given state.
+opacity. The renderer compares the given ends, maps a given state and
+maps the row index to a colour.
 
 `vs_range_bar_selection` / `fs_range_bar_selection` draw the picked bar's
 body ring and emphasis as a category bar's (one quad, the body). The
@@ -1855,11 +1915,80 @@ compute entry `pick_range_bar` answers, per bar, the nearest of its body
 (the rounded-rect distance), its whisker and its connector (their rect
 distances), each from the function its draw uses, within the pick
 distance, as a `DATA_PICK_KIND_HISTOGRAM_BIN` candidate whose index is the
-row; a connector is a candidate of the bar it leaves. A bar's value label
+row and whose `index1` is the bar's drawn length along the value axis in
+render pixels (f32 bits, `PickedData::HistogramBin::extent_px`, a display
+parameter); a connector is a candidate of the bar it leaves. A bar's value label
 (`VALUE_LABEL_KIND_RANGE`, §5.17) is placed at the body's end by the
 category bar rule, a range bar counting as grouped. Nothing per bar is
 stored anywhere; the CPU keeps the lane bases, the part colours of the
 configuration and the columns' scalar statistics (the fit).
+
+#### Dependency links
+
+The links of a `DataRenderType::RangeLinks` series (#357) are drawn by
+[`common/range_links.wgsl`](common/range_links.wgsl), spliced right after
+`range_bars.wgsl`. A link series binds the group 3 of the range bar series
+it names: that series' `CategoryBarParams` at binding 9 and its lane table
+at binding 10, extended by a fixed head of four entries (`RANGE_LINK_LANES`,
+12) and then three entries per SSOT link (`RANGE_LINK_STRIDE`). The CPU
+writer `renderer/series.rs::range_link_data` writes the table straight into
+the mapped buffer when the series is prepared, on an SSOT change. The links
+take no pool column (the series is DataLess), and `range_bar(row)` is
+exactly the bar that series draws.
+
+| Entry of `category_lanes` | Meaning for a link series |
+|---|---|
+| 0 to 7 | the bars' own, as above |
+| `RANGE_LANE_LINK_COUNT` (8) | the link count, any number |
+| `RANGE_LANE_LINK_WIDTH` (9), `_HEAD` (10), `_INSET` (11) | the stroke width, the chevron's length and the default exit inset in render pixels, as f32 bits |
+| `RANGE_LINK_LANES + i · RANGE_LINK_STRIDE` (12 + 3i) .. +2 | link `i`: its `from` row, its `to` row, and its stored exit, a fraction of the predecessor's drawn length, as f32 bits (NaN for a link without one) |
+
+The geometry sits in the lane table rather than `Style` because the pick
+compute binds no `Style`; the draw, the highlight and the pick read one
+route. One instance is one link and draws `RANGE_LINK_VERTICES` (6): one
+quad over the route's bounding box, whose fragments rebuild the route from
+the link's index and cover by distance to its centre line (half the
+stroke, antialiased over one pixel), so overlapping parts never blend
+twice. The route follows the web Gantt convention and is built on every
+draw from the two bars, with the value axis signed so the successor runs
+forward:
+
+- The exit is on the predecessor's edge facing the successor's row: the
+  link's stored fraction mapped onto the predecessor's drawn span from its
+  first end (#357), or, for a link without one (no layout has run),
+  `inset` in from that end, kept on the bar. The layout chooses the
+  fraction from the two bars (`RangeLinkSeries::chosen_exit_offset`).
+  When the successor starts too soon for the last leg and its head, the
+  exit moves back to `successor start − head − 4 px`, so the route never
+  turns back through a bar. The tip gap and the lead are
+  `RANGE_LINK_TIP_GAP_PX` and `RANGE_LINK_LEAD_PX`, mirrored by the
+  model's constants of the same names.
+- The first leg runs across to the successor's centre line. It turns
+  through one quarter arc of 4 logical pixels, fitted to both legs.
+- The last leg runs along the centre line to 1.5 px before the successor's
+  start.
+- The head is an open chevron of two arms `head` pixels long.
+
+Links leaving one bar share their trunk. Bars on one centre line (tasks on
+one row) get a straight link out of the predecessor's last end, so no
+stroke runs inside a bar whose unfinished part is translucent. A row that is NaN, negative or
+past the bars' row count, or a bar that draws nothing, draws no link. The
+colour is the series' `Style` colour; nothing per link is stored. A link
+series draws just before its bars whatever its place in the list
+(`data_config::series_draw_order`), so the bars cover the link ends.
+
+`vs_range_link_selection` / `fs_range_link_selection` draw the picked
+link's route in the selection colour, its stroke widened by the
+selection's width on each side. The compute entry `pick_range_links`
+answers the nearest point of the route (legs, corner or chevron) within half the stroke plus the pick
+distance, as a `DATA_PICK_KIND_HISTOGRAM_BIN` candidate whose index is the
+link's row and whose `index1` is its predecessor's drawn length in render
+pixels (f32 bits, the route's `span`): the span a stored fraction is
+mapped onto, which the exit drag divides its pixels by (`extent_px`). The route's lengths (the tip gap,
+the last leg before the head, the same-row test, the corner) are logical
+pixels scaled by `range_link_scale()`, with the stroke, head and inset the
+CPU scales. The route is appearance: it reads the values the bars are
+drawn from, and the user reads no value computed from them.
 
 ### 5.19 Violins and raw points (group 3, bindings 8 to 10)
 
@@ -1947,7 +2076,9 @@ point's index and the series salt, the same on every draw and pick, so a
 point never moves while the chart is panned, resized or exported.
 
 The point picker places such a point through the exact variant
-`PICK_VARIANT_CATEGORY_JITTER` (256): `pick_category_jitter_px` measures the
+`PICK_VARIANT_CATEGORY_JITTER` (256), and the nearest-datum pick (#381)
+whenever the series has a category slot: `pick_category_jitter_px` (the
+fragment `gpu_pick/category_place.wgsl`, spliced by both) measures the
 slot of the point's category position as the draw does, from
 `PickQueryParams.category` (group width, gap in logical pixels, jitter,
 offset) and `.category_slot` (member, members, horizontal, seed), and
@@ -2190,8 +2321,8 @@ under `PARALLEL_COLOR` (`nan_color` where non-finite), `style.color_premul`
 otherwise; `fs_parallel` is `line_fragment_color` with it.
 `vs_parallel_selected` is the same geometry in `style.color_premul` (the
 selection's style as group 1): the picked row's segments are redrawn over
-every series body. The pipelines are `TargetPipelines.line_parallel` /
-`line_parallel_selection` (`create_line_parallel_pipeline_with_sample_count`,
+every series body. The pipelines are `PrecisePipeline::LineParallel` /
+`LineParallelSelection` (`create_line_pipeline` with no vertex slots,
 layouts `[transform, style, —, parallel]`).
 
 `pick_parallel` (compute, the data pick query of `data_pick.wgsl` as

@@ -1,8 +1,11 @@
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::col as col_f64;
+use test_gpu::shared_device;
 
 use std::hash::{Hash, Hasher};
-use std::sync::OnceLock;
 use std::time::Duration;
 
 use renderer::data::COLUMN_VALUE_BYTES;
@@ -15,10 +18,6 @@ use renderer::{
 use wgpu::{BufferDescriptor, BufferUsages};
 
 const DEMO_IDS: [&str; 4] = ["demo_x", "demo_sin", "demo_t", "demo_rc"];
-
-fn col_f64(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
 
 fn demo_columns() -> [Column<f64>; 4] {
     [
@@ -74,19 +73,8 @@ fn final_state(
     Ok((config, final_series()))
 }
 
-fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
-    DEVICE
-        .get_or_init(|| {
-            let (device, queue) = test_gpu::device();
-            Some((device, queue))
-        })
-        .as_ref()
-        .map(|(device, queue)| (device.clone(), queue.clone()))
-}
-
 fn try_renderer(capacity: u64) -> Option<Renderer> {
-    let (device, queue) = shared_device()?;
+    let (device, queue) = shared_device();
     Some(
         Renderer::try_new(
             RendererDevice::new(device, queue).expect("figgy poll thread"),
@@ -178,7 +166,7 @@ fn dropping_load_demo_preserves_public_pool_chart_and_gpu_bytes() {
         eprintln!("no GPU adapter; skipping load-demo guard-drop assertions");
         return;
     };
-    let (device, queue) = shared_device().unwrap();
+    let (device, queue) = shared_device();
     let old = col_f64(vec![1.0, 2.0, 3.0]);
     renderer.add_column("survivor", &old).unwrap();
     for id in DEMO_IDS {
@@ -275,7 +263,7 @@ fn commit_from_fragmented_existing_backup_is_complete_and_repeatable() {
         eprintln!("no GPU adapter; skipping load-demo commit assertions");
         return;
     };
-    let (device, queue) = shared_device().unwrap();
+    let (device, queue) = shared_device();
     let old = col_f64(vec![1.0, 2.0]);
     renderer.add_column("survivor", &old).unwrap();
     renderer.add_column("hole", &old).unwrap();

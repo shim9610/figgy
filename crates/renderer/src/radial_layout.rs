@@ -163,6 +163,33 @@ struct Circle<'a> {
     /// The inner radius of the band as a fraction of `radius`.
     hole: f32,
     max_explode: f32,
+    /// The ring whose inside labels move outside when too small to read,
+    /// and, per ring, the labels that did (#357): on the outermost ring (or
+    /// a pie or donut) always, on an inner sunburst ring only with
+    /// `InnerLabelFallback::Outside`.
+    eligible: usize,
+    demoted: Demoted,
+}
+
+/// Per ring and node, whether its inside label moved outside (#357). Sized
+/// by the approved sunburst limits (`MAX_SUNBURST_DEPTH` rings of
+/// `MAX_RADIAL_SLICES` nodes).
+type Demoted = [[bool; MAX_RADIAL_SLICES]; model::radial::MAX_SUNBURST_DEPTH];
+
+/// The outside labels of one side of a circle, at most every node of every
+/// ring: each one's leader anchor, ring and node.
+type SideLabels = (
+    [((f32, f32), usize, usize); MAX_RADIAL_SLICES * model::radial::MAX_SUNBURST_DEPTH],
+    usize,
+);
+
+/// Whether `demoted` moves node `index` of ring `group` outside.
+fn is_demoted(demoted: &Demoted, group: usize, index: usize) -> bool {
+    demoted
+        .get(group)
+        .and_then(|ring| ring.get(index))
+        .copied()
+        .unwrap_or(false)
 }
 impl<'a> Circle<'a> {
     fn len(&self) -> usize {
@@ -190,8 +217,13 @@ impl<'a> Circle<'a> {
         })?;
         Some((self.start + a as f32 * TAU, self.start + b as f32 * TAU))
     }
-    /// The label placement of node `index`.
+    /// The label placement of node `index`: its own ([`placement`]), or
+    /// `Outside` for an inside label too small to read that moved outside
+    /// (#357).
     fn placement(&self, index: usize, slice: &RadialSlice) -> RadialLabels {
+        if is_demoted(&self.demoted, self.group, index) {
+            return RadialLabels::Outside;
+        }
         placement(
             self.chart,
             RadialTarget {
@@ -244,16 +276,17 @@ fn circle<'a>(chart: &'a RadialChart, area: RectF, g: usize) -> Result<Circle<'a
     // one outer radius) with its effective label placement.
     let nodes = || {
         let plain = slices.map(|slices| {
-            slices
-                .iter()
-                .map(move |s| (s, placement(chart, RadialTarget { group: g, index: 0 }, s)))
+            slices.iter().enumerate().map(move |(index, s)| {
+                let target = RadialTarget { group: g, index };
+                (s, target, placement(chart, target, s))
+            })
         });
         let tree = slices.is_none().then(|| {
             (0..chart.group_count()).flat_map(move |group| {
                 (0..chart.group_len(group)).filter_map(move |index| {
                     let target = RadialTarget { group, index };
                     let s = chart.slice(target)?;
-                    Some((s, placement(chart, target, s)))
+                    Some((s, target, placement(chart, target, s)))
                 })
             })
         });
@@ -263,37 +296,26 @@ fn circle<'a>(chart: &'a RadialChart, area: RectF, g: usize) -> Result<Circle<'a
             .chain(tree.into_iter().flatten())
     };
     let max_explode = nodes()
-        .filter(|(s, _)| s.value > 0.0)
-        .map(|(s, _)| s.explode)
+        .filter(|(s, _, _)| s.value > 0.0)
+        .map(|(s, _, _)| s.explode)
         .fold(0.0, f32::max);
-    // The automatic area already reserves 24 logical pixels at both
-    // outer edges (and either side of the split). Keep the original
-    // default geometry while leaving room for all eight resize handles.
-    let mut margin = 0.0;
-    if nodes().any(|(_, p)| p == RadialLabels::Outside) {
-        let max_label = nodes()
-            .filter(|(s, p)| s.value > 0.0 && *p == RadialLabels::Outside)
-            .flat_map(|(s, _)| text_lines(s))
-            .map(|line| width(chart, line, chart.font_size))
-            .fold(0.0, f32::max);
-        margin = max_label + 12.0;
-    }
     let sn = chart.style.tilt_degrees.to_radians().sin();
     // Reserve the maximum lift even at rest: interaction must not resize the chart.
     let max_lift = nodes()
-        .map(|(s, _)| s.style.as_ref().unwrap_or(&chart.style).hover_lift)
+        .map(|(s, _, _)| s.style.as_ref().unwrap_or(&chart.style).hover_lift)
         .fold(0.0, f32::max);
     let max_depth = nodes()
-        .map(|(s, _)| s.style.as_ref().unwrap_or(&chart.style).depth)
+        .map(|(s, _, _)| s.style.as_ref().unwrap_or(&chart.style).depth)
         .fold(chart.style.depth, f32::max);
-    let shadow_margin = if nodes().any(|(s, _)| s.style.as_ref().unwrap_or(&chart.style).shadow) {
+    let shadow_margin = if nodes().any(|(s, _, _)| s.style.as_ref().unwrap_or(&chart.style).shadow)
+    {
         0.55
     } else {
         0.25
     };
     let extent = nodes()
-        .filter(|(s, _)| s.value > 0.0)
-        .map(|(s, _)| {
+        .filter(|(s, _, _)| s.value > 0.0)
+        .map(|(s, _, _)| {
             let style = s.style.as_ref().unwrap_or(&chart.style);
             let tilt = style.tilt_degrees.to_radians();
             2.0 * tilt.cos() * (1.0 + max_explode)
@@ -301,16 +323,125 @@ fn circle<'a>(chart: &'a RadialChart, area: RectF, g: usize) -> Result<Circle<'a
                 + shadow_margin
         })
         .fold(0.0, f32::max);
-    // Labels cannot consume the entire chart. Keep the existing geometry
-    // when it fits, and cap their reserved margin on a crowded canvas.
-    margin = margin.min(((right - left) * 0.5 - 40.0 * (1.0 + max_explode)).max(0.));
-    let radius =
-        ((right - left - 2.0 * margin) / (2.0 * (1.0 + max_explode))).min((bottom - top) / extent);
-    let radius = if !sunburst && g == 1 {
-        radius * 0.76
+    // The ring whose inside labels may move outside (#357): the outermost
+    // ring of a sunburst, whose leaders reach the rim, or the circle itself.
+    let eligible = if sunburst {
+        chart.group_count().saturating_sub(1)
     } else {
-        radius
+        g
     };
+    // The outer radius of the whole circle for the inside labels that
+    // `demoted` moves outside: the outside labels need a margin beside it.
+    let full_radius = |demoted: &Demoted| -> f32 {
+        let effective = |target: RadialTarget, p: RadialLabels| {
+            if is_demoted(demoted, target.group, target.index) {
+                RadialLabels::Outside
+            } else {
+                p
+            }
+        };
+        // The automatic area already reserves 24 logical pixels at both
+        // outer edges (and either side of the split). Keep the original
+        // default geometry while leaving room for all eight resize handles.
+        let mut margin = 0.0;
+        if nodes().any(|(_, t, p)| effective(t, p) == RadialLabels::Outside) {
+            let max_label = nodes()
+                .filter(|(s, t, p)| s.value > 0.0 && effective(*t, *p) == RadialLabels::Outside)
+                .flat_map(|(s, _, _)| text_lines(s))
+                .map(|line| width(chart, line, chart.font_size))
+                .fold(0.0, f32::max);
+            margin = max_label + 12.0;
+        }
+        // Labels cannot consume the entire chart. Keep the existing geometry
+        // when it fits, and cap their reserved margin on a crowded canvas.
+        margin = margin.min(((right - left) * 0.5 - 40.0 * (1.0 + max_explode)).max(0.));
+        let radius = ((right - left - 2.0 * margin) / (2.0 * (1.0 + max_explode)))
+            .min((bottom - top) / extent);
+        if !sunburst && g == 1 {
+            radius * 0.76
+        } else {
+            radius
+        }
+    };
+    // An inside label of the eligible ring that would be drawn below the
+    // readable minimum moves outside with a leader (#357); the outside
+    // labels' margin shrinks the circle, so the test runs again until no
+    // more labels move. Each pass moves at least one label or stops.
+    let mut demoted: Demoted = [[false; MAX_RADIAL_SLICES]; model::radial::MAX_SUNBURST_DEPTH];
+    let mut radius = full_radius(&demoted);
+    let eligible_start = if sunburst || g == 0 {
+        chart.start_angle_degrees.rem_euclid(360.0).to_radians()
+    } else {
+        start
+    };
+    // The rings whose small labels move outside: the eligible one, and on
+    // a sunburst that asks for it every inner ring too.
+    let pull_inner =
+        sunburst && chart.inner_label_fallback == model::radial::InnerLabelFallback::Outside;
+    let rings = if pull_inner {
+        0..chart.group_count()
+    } else {
+        eligible..eligible + 1
+    };
+    loop {
+        let mut moved = demoted;
+        for ring in rings.clone().take(model::radial::MAX_SUNBURST_DEPTH) {
+            let (band_inner, band_outer) = if sunburst {
+                ring_band(kind.inner_radius(), ring, chart.group_count())
+            } else {
+                (kind.inner_radius(), 1.0)
+            };
+            for index in 0..chart.group_len(ring).min(MAX_RADIAL_SLICES) {
+                let target = RadialTarget { group: ring, index };
+                let Some(slice) = (match slices {
+                    Some(slices) if ring == g => slices.get(index),
+                    _ => chart.slice(target),
+                }) else {
+                    continue;
+                };
+                // An inner ring's `Outside` draws inside its band (#140),
+                // so its effective placement is the one tested.
+                if moved[ring][index]
+                    || slice.value <= 0.0
+                    || placement(chart, target, slice) != RadialLabels::Inside
+                {
+                    continue;
+                }
+                let Some((from, to)) = chart.node_span(target) else {
+                    continue;
+                };
+                let tilt = slice
+                    .style
+                    .as_ref()
+                    .unwrap_or(&chart.style)
+                    .tilt_degrees
+                    .to_radians();
+                let outer = radius * band_outer;
+                let hole = band_inner / band_outer;
+                let band = Band {
+                    outer,
+                    inner: outer * hole,
+                    centre: outer * ((hole + 1.0) * 0.5).max(0.6),
+                    start: eligible_start + from as f32 * TAU,
+                    span: (to - from) as f32 * TAU,
+                    tilt,
+                };
+                if !label_fits(chart, slice, band, 1.0) {
+                    moved[ring][index] = true;
+                }
+            }
+        }
+        if moved == demoted {
+            break;
+        }
+        let shrunk = full_radius(&moved);
+        // Moving labels outside never makes the chart too small to draw.
+        if shrunk < 32.0 {
+            break;
+        }
+        demoted = moved;
+        radius = shrunk;
+    }
     if radius < 32.0 {
         return Err(RadialError::Invalid(
             crate::RuleKind::RadialDataAreaTooSmall,
@@ -338,6 +469,8 @@ fn circle<'a>(chart: &'a RadialChart, area: RectF, g: usize) -> Result<Circle<'a
         radius,
         hole,
         max_explode,
+        eligible,
+        demoted,
     })
 }
 
@@ -443,6 +576,24 @@ fn plain_line(
     color: Color,
     scale: f32,
 ) {
+    plain_line_turned(sink, family, text, x, y, size, color, scale, None);
+}
+
+/// [`plain_line`] turned by `rotation` (degrees about a centre, logical
+/// pixels), the rotation every sink and hit test reads from the placed
+/// text.
+#[allow(clippy::too_many_arguments)]
+fn plain_line_turned(
+    sink: &mut dyn Sink,
+    family: &str,
+    text: &str,
+    x: f32,
+    y: f32,
+    size: f32,
+    color: Color,
+    scale: f32,
+    rotation: Option<(f32, (f32, f32))>,
+) {
     if text.is_empty() || color.a == 0. {
         return;
     }
@@ -469,7 +620,8 @@ fn plain_line(
                 ascent: m.ascent / scale,
                 descent: m.descent / scale,
             },
-            rotation: None,
+            rotation,
+            outline: None,
         },
     );
 }
@@ -493,9 +645,226 @@ fn inside_label_ink(slice: [f32; 4], label_color: crate::Color) -> crate::Color 
     }
 }
 
+/// The scale (at most 1) that fits an inside label's horizontal box,
+/// `width` by `height` physical pixels, on the face of sector `s` with its
+/// centre at radius `at` (a fraction of the sector's outer radius), along
+/// the sector's bisector (#357).
+///
+/// The box is measured in the sector's own frame: on the face (the top
+/// view, the screen height divided by the tilt's cosine) its extent along
+/// the bisector is `width |cos θ| + height |sin θ|` and across it
+/// `width |sin θ| + height |cos θ|`, for the bisector's angle θ. The
+/// extent along the bisector stays within the band's thickness and above
+/// the inner radius, the extent across it within the arc through its
+/// centre, all with a 5 % allowance, and the box's outer corners within
+/// the outer radius. A label at the top or bottom of a thin ring
+/// runs along the ring and keeps its size; one at its side runs across the
+/// band and is held to its thickness.
+#[cfg(test)]
+fn inside_fit(s: &Sector, at: f32, width: f32, height: f32) -> f32 {
+    inside_fit_at(s, at, s.arc[0] + s.arc[1] * 0.5, width, height)
+}
+
+/// [`inside_fit`] for a label centred at `angle` within the sector's arc
+/// instead of on its bisector (#357): the box is held along and across the
+/// radius through `angle`, and the arc from `angle` to the nearer edge holds
+/// half its width across. At the bisector it is [`inside_fit`].
+#[cfg(test)]
+fn inside_fit_at(s: &Sector, at: f32, angle: f32, width: f32, height: f32) -> f32 {
+    let outer = s.geometry[2];
+    let band = Band {
+        outer,
+        inner: outer * s.geometry[3],
+        centre: outer * at,
+        start: s.arc[0],
+        span: s.arc[1],
+        tilt: s.arc[2],
+    };
+    band.fit(angle, width, height)
+}
+
+/// The face an inside label is fitted to: a band between two radii over
+/// an arc, in one unit of length (logical or physical pixels) and radians.
+#[derive(Clone, Copy)]
+struct Band {
+    outer: f32,
+    inner: f32,
+    /// The radius the label's centre sits on.
+    centre: f32,
+    start: f32,
+    span: f32,
+    tilt: f32,
+}
+
+impl Band {
+    /// The scale at which a `width` × `height` horizontal box centred at
+    /// `angle` fits the band ([`inside_fit_at`]), at most 1.
+    fn fit(&self, angle: f32, width: f32, height: f32) -> f32 {
+        let (outer, inner, centre) = (self.outer, self.inner, self.centre);
+        let height = height / self.tilt.cos().max(0.05);
+        let (c, n) = (angle.cos().abs(), angle.sin().abs());
+        // Half extents along and across the radius, at full size.
+        let along = (width * c + height * n).max(1.0) * 0.5;
+        let across = (width * n + height * c).max(1.0) * 0.5;
+        let slack = 1.05;
+        let mut fit = ((outer - inner) * slack / (2.0 * along)).min(1.0);
+        // The inner edge stays outside the hole or the ring inside.
+        fit = fit.min((centre - inner).max(0.0) * slack / along);
+        // The arc from the box's centre to the nearer edge holds half its
+        // width across the radius.
+        let to_edge = (angle - self.start)
+            .min(self.start + self.span - angle)
+            .max(0.0);
+        fit = fit.min(to_edge * centre * slack / across);
+        // The outer corners stay inside the rim:
+        // `(centre + k along)² + (k across)² <= outer²`.
+        let a = along * along + across * across;
+        let b = 2.0 * centre * along;
+        let c0 = centre * centre - outer * outer * slack * slack;
+        if c0 < 0.0 {
+            fit = fit.min((-b + (b * b - 4.0 * a * c0).sqrt()) / (2.0 * a));
+        }
+        fit.max(0.0)
+    }
+
+    /// [`inside_anchor`] on this band: the angle, the fit, and whether the
+    /// label is drawn upright (rotated a quarter turn).
+    fn anchor(&self, width: f32, height: f32) -> (f32, f32, bool) {
+        let best_of = |w: f32, h: f32| {
+            let mid = self.start + self.span * 0.5;
+            let mut best = (mid, self.fit(mid, w, h));
+            for stop in &INSIDE_STOPS[1..] {
+                let angle = mid + stop * self.span;
+                let fit = self.fit(angle, w, h);
+                if fit > best.1 * 1.05 + 1e-6 {
+                    best = (angle, fit);
+                }
+            }
+            best
+        };
+        let (angle, fit) = best_of(width, height);
+        // A label that cannot keep its size horizontally may read upright,
+        // bottom to top as a y axis title does, where its lines then run
+        // along a thin ring at its side (#357). Flat charts only: on a
+        // tilted face an upright label would lean with the view.
+        if fit < 1.0 && self.tilt == 0.0 {
+            let (up_angle, up_fit) = best_of(height, width);
+            if up_fit > fit * 1.05 + 1e-6 {
+                return (up_angle, up_fit, true);
+            }
+        }
+        (angle, fit, false)
+    }
+}
+
+/// Where along its arc an inside label is tried, as offsets from the
+/// bisector in fractions of the arc, nearest first (#357).
+const INSIDE_STOPS: [f32; 19] = [
+    0.0, -0.05, 0.05, -0.1, 0.1, -0.15, 0.15, -0.2, 0.2, -0.25, 0.25, -0.3, 0.3, -0.35, 0.35, -0.4,
+    0.4, -0.45, 0.45,
+];
+
+/// The angle along a sector's arc where an inside label of `width` ×
+/// `height` fits largest, and that fit (#357). A horizontal label on the
+/// bisector of a wide slice at the side of a thin ring runs across the ring
+/// and is held to its thickness; sliding it along the arc towards the top
+/// or bottom lets it run along the ring. The bisector is kept unless a
+/// stop fits at least 5% larger; among those, the nearest to the bisector
+/// that fits largest wins. A label still smaller than its size may read
+/// upright instead (`true`). A display parameter: the label's text, colour
+/// and slice do not change.
+fn inside_anchor(s: &Sector, at: f32, width: f32, height: f32) -> (f32, f32, bool) {
+    let outer = s.geometry[2];
+    Band {
+        outer,
+        inner: outer * s.geometry[3],
+        centre: outer * at,
+        start: s.arc[0],
+        span: s.arc[1],
+        tilt: s.arc[2],
+    }
+    .anchor(width, height)
+}
+
+/// The smallest size an inside label is drawn at, logical pixels (#357):
+/// a label that would have to shrink below it to fit its slice's face
+/// moves outside with a leader when its slice is on the outermost ring
+/// (`Circle::placement`), and is hidden (not drawn, not hit) on an inner
+/// sunburst ring, instead of being drawn too small to read. A chart whose
+/// own `font_size` is smaller draws at that size. A display parameter: the
+/// label's text and colour do not change.
+pub(crate) const MIN_INSIDE_LABEL_PX: f32 = 12.0;
+
+/// The fitted font size, in physical pixels, of slice `index`'s inside
+/// label on circle `g`, with its sector and the label's centre: the size
+/// that fits the slice's face, or `None` when the slice has no face or the
+/// label would be smaller than [`MIN_INSIDE_LABEL_PX`] (hidden). The emit
+/// and the hit map read the same answer.
+fn inside_label(
+    chart: &RadialChart,
+    f: &Frame,
+    c: &Circle<'_>,
+    g: usize,
+    index: usize,
+) -> Option<InsideLabel> {
+    let scale = f.scale;
+    let s = sector(chart, c, g, index, scale)?;
+    let slice = c.node(index)?;
+    let r = (s.geometry[3] + 1.0) * 0.5;
+    let fs = chart.font_size * scale;
+    let line_count = text_lines(slice).count();
+    let text_width = text_lines(slice)
+        .map(|s| width(chart, s, fs))
+        .fold(0.0, f32::max);
+    // Keep inside glyphs anchored to their slice, so the cached hover
+    // translation and the hit region still agree. Fit the text to the
+    // available face instead of rejecting the chart.
+    let (angle, fit, upright) =
+        inside_anchor(&s, r.max(0.6), text_width, fs * line_count as f32 * 1.2);
+    let fitted = (fs * fit).max(scale);
+    let floor = MIN_INSIDE_LABEL_PX.min(chart.font_size) * scale;
+    (fitted >= floor * (1.0 - 1e-4)).then_some(InsideLabel {
+        sector: s,
+        size: fitted,
+        at: r,
+        angle,
+        upright,
+    })
+}
+
+/// Where and how large an inside label is drawn ([`inside_label`]).
+struct InsideLabel {
+    sector: Sector,
+    /// The font size, physical pixels.
+    size: f32,
+    /// The radius of its centre, as a fraction of the sector's radius.
+    at: f32,
+    /// The angle of its centre along the arc.
+    angle: f32,
+    /// Drawn rotated a quarter turn, reading bottom to top.
+    upright: bool,
+}
+
+/// Whether `slice`'s inside label fits `band` (lengths at `scale`) at no
+/// less than the readable minimum, as [`inside_label`] decides on a sector.
+fn label_fits(chart: &RadialChart, slice: &RadialSlice, band: Band, scale: f32) -> bool {
+    let fs = chart.font_size * scale;
+    let line_count = text_lines(slice).count();
+    if line_count == 0 {
+        return true;
+    }
+    let text_width = text_lines(slice)
+        .map(|s| width(chart, s, fs))
+        .fold(0.0, f32::max);
+    let (_, fit, _) = band.anchor(text_width, fs * line_count as f32 * 1.2);
+    let floor = MIN_INSIDE_LABEL_PX.min(chart.font_size) * scale;
+    (fs * fit).max(scale) >= floor * (1.0 - 1e-4)
+}
+
 /// The inside label of slice `index` of circle `g`: its lines on the
 /// slice's face, at the face's lifted place, or at its unlifted place when
-/// `at_rest` (the raster while the shader lifts the inside glyphs).
+/// `at_rest` (the raster while the shader lifts the inside glyphs). Nothing
+/// when the label is hidden ([`inside_label`]).
 fn emit_inside(
     chart: &RadialChart,
     f: &Frame,
@@ -506,40 +875,34 @@ fn emit_inside(
     sink: &mut dyn Sink,
 ) {
     let scale = f.scale;
-    let Some(s) = sector(chart, c, g, index, scale) else {
+    let Some(InsideLabel {
+        sector: s,
+        size: fs,
+        at: r,
+        angle,
+        upright,
+    }) = inside_label(chart, f, c, g, index)
+    else {
         return;
     };
     let Some(slice) = c.node(index) else {
         return;
     };
-    let mid = s.arc[0] + s.arc[1] * 0.5;
-    let r = (s.geometry[3] + 1.0) * 0.5;
-    let (x, mut y) = projected(&s, mid, r.max(0.6));
+    let (x, mut y) = projected(&s, angle, r.max(0.6));
     if !at_rest {
         y -= s.effects[3];
     }
-    let fs = chart.font_size * scale;
     let line_count = text_lines(slice).count();
-    let text_width = text_lines(slice)
-        .map(|s| width(chart, s, fs))
-        .fold(0.0, f32::max);
-    // Keep inside glyphs anchored to their slice, so the cached hover
-    // translation and the hit region still agree. Fit the text to the
-    // available face instead of rejecting the chart.
-    let available =
-        (s.arc[1] * r * s.geometry[2] * s.arc[2].cos()).min(s.geometry[2] * (1.0 - s.geometry[3]));
-    let fit = (available * 1.05 / text_width.max(1.))
-        .min(available / (fs * line_count as f32 * 1.2))
-        .min(1.);
-    let fs = (fs * fit).max(scale);
     let color = slice
         .label_color
         .unwrap_or_else(|| inside_label_ink(s.color, chart.label_color));
     let offset = chart
         .decorations
         .effective_offset(&DecorationId::RadialLabel(RadialTarget { group: g, index }));
+    // An upright label turns a quarter turn about its centre (#357).
+    let rotation = upright.then_some((-90.0, (x / scale + offset[0], y / scale + offset[1])));
     for (i, line) in text_lines(slice).enumerate() {
-        plain_line(
+        plain_line_turned(
             sink,
             &chart.font_family,
             line,
@@ -548,6 +911,7 @@ fn emit_inside(
             fs / scale,
             color,
             scale,
+            rotation,
         );
     }
 }
@@ -557,42 +921,73 @@ fn emit_inside(
 /// anchor's height, ties in slice order. At most [`MAX_RADIAL_SLICES`].
 fn side_labels(
     chart: &RadialChart,
+    area: RectF,
     c: &Circle<'_>,
     g: usize,
     left_side: bool,
     scale: f32,
-) -> ([((f32, f32), usize); MAX_RADIAL_SLICES], usize) {
-    let mut labels = [((0.0, 0.0), 0); MAX_RADIAL_SLICES];
+) -> SideLabels {
+    let mut labels = [((0.0, 0.0), 0, 0); MAX_RADIAL_SLICES * model::radial::MAX_SUNBURST_DEPTH];
     let mut n = 0;
-    for index in 0..c.len() {
-        let Some(slice) = c.node(index) else {
-            continue;
-        };
-        if c.placement(index, slice) != RadialLabels::Outside {
-            continue;
-        }
-        let Some(s) = sector(chart, c, g, index, scale) else {
-            continue;
-        };
-        let mid = s.arc[0] + s.arc[1] * 0.5;
-        if (mid.cos() < 0.0) != left_side {
-            continue;
-        }
-        let mut anchor = projected(&s, mid, 1.015);
-        // The front silhouette is the bottom of the extruded wall, not the
-        // top rim: leaders must not cross the visible face.
-        if mid.sin() > 0.0 {
-            anchor.1 += s.arc[3] * s.arc[2].sin() * s.geometry[2];
-        }
-        // A validated chart has at most `MAX_RADIAL_SLICES` slices per
-        // circle; the write stays total for any other chart.
-        let Some(slot) = labels.get_mut(n) else {
-            break;
-        };
-        *slot = (anchor, index);
-        n += 1;
+    // A sunburst stacks every ring's outside labels with the outermost
+    // ring's (#357): an inner ring has no stack of its own.
+    let sunburst = chart.is_sunburst();
+    if sunburst && g != c.eligible {
+        return (labels, 0);
     }
-    labels[..n].sort_unstable_by(|a, b| a.0.1.total_cmp(&b.0.1).then(a.1.cmp(&b.1)));
+    let rings = if sunburst {
+        0..chart.group_count()
+    } else {
+        g..g + 1
+    };
+    for ring in rings {
+        let own;
+        let rc = if ring == g {
+            c
+        } else {
+            let Ok(other) = circle(chart, area, ring) else {
+                continue;
+            };
+            own = other;
+            &own
+        };
+        for index in 0..rc.len() {
+            let Some(slice) = rc.node(index) else {
+                continue;
+            };
+            if rc.placement(index, slice) != RadialLabels::Outside {
+                continue;
+            }
+            let Some(s) = sector(chart, rc, ring, index, scale) else {
+                continue;
+            };
+            let mid = s.arc[0] + s.arc[1] * 0.5;
+            if (mid.cos() < 0.0) != left_side {
+                continue;
+            }
+            // The leader starts just past the node's own rim: an inner
+            // ring's leader crosses the outer rings (#357).
+            let mut anchor = projected(&s, mid, 1.015);
+            // The front silhouette is the bottom of the extruded wall, not the
+            // top rim: leaders must not cross the visible face.
+            if mid.sin() > 0.0 {
+                anchor.1 += s.arc[3] * s.arc[2].sin() * s.geometry[2];
+            }
+            // A validated chart has at most `MAX_RADIAL_SLICES` nodes per
+            // ring; the write stays total for any other chart.
+            let Some(slot) = labels.get_mut(n) else {
+                break;
+            };
+            *slot = (anchor, ring, index);
+            n += 1;
+        }
+    }
+    labels[..n].sort_unstable_by(|a, b| {
+        a.0.1
+            .total_cmp(&b.0.1)
+            .then(a.1.cmp(&b.1))
+            .then(a.2.cmp(&b.2))
+    });
     (labels, n)
 }
 
@@ -615,11 +1010,11 @@ fn emit_outside(
     c: &Circle<'_>,
     g: usize,
     left_side: bool,
-    only: Option<usize>,
+    only: Option<RadialTarget>,
     sink: &mut dyn Sink,
 ) {
     let scale = f.scale;
-    let (labels, n) = side_labels(chart, c, g, left_side, scale);
+    let (labels, n) = side_labels(chart, f.area, c, g, left_side, scale);
     let labels = &labels[..n];
     let (top, bottom) = (f.area.y, f.area.y + f.area.height);
     let intervals = n.saturating_sub(1) as f32;
@@ -629,9 +1024,9 @@ fn emit_outside(
     let min = top * scale + fs;
     let max = (bottom * scale - fs * 1.4).max(min);
     let step = (fs * 2.7).min((max - min) / intervals.max(1.));
-    let mut ys = [0.0f32; MAX_RADIAL_SLICES];
+    let mut ys = [0.0f32; MAX_RADIAL_SLICES * model::radial::MAX_SUNBURST_DEPTH];
     let mut prev = min - step;
-    for ((anchor, _), y) in labels.iter().zip(&mut ys) {
+    for ((anchor, _, _), y) in labels.iter().zip(&mut ys) {
         *y = anchor.1.clamp(min, max).max(prev + step);
         prev = *y;
     }
@@ -655,16 +1050,21 @@ fn emit_outside(
         tag: "radial_leader",
     };
     let logical = |x: f32, y: f32| [x / scale, y / scale];
-    for ((anchor, index), y) in labels.iter().zip(ys) {
-        if only.is_some_and(|only| only != *index) {
+    for ((anchor, ring, index), y) in labels.iter().zip(ys) {
+        let target = RadialTarget {
+            group: *ring,
+            index: *index,
+        };
+        if only.is_some_and(|only| only != target) {
             continue;
         }
-        let Some(slice) = c.node(*index) else {
-            continue;
+        let slice = if *ring == g {
+            c.node(*index)
+        } else {
+            chart.slice(target)
         };
-        let target = RadialTarget {
-            group: g,
-            index: *index,
+        let Some(slice) = slice else {
+            continue;
         };
         let tx = elbow + if left_side { -8.0 * scale } else { 8.0 * scale };
         let offset = chart
@@ -749,7 +1149,13 @@ pub(super) fn emit_decoration(
                         return true;
                     };
                     let left = (s.arc[0] + s.arc[1] * 0.5).cos() < 0.0;
-                    emit_outside(chart, &f, &c, t.group, left, Some(t.index), sink);
+                    // A sunburst's outside labels are stacked on its
+                    // outermost ring, an inner ring's pulled-out ones too.
+                    if c.group == c.eligible {
+                        emit_outside(chart, &f, &c, t.group, left, Some(*t), sink);
+                    } else if let Ok(outer) = circle(chart, f.area, c.eligible) {
+                        emit_outside(chart, &f, &outer, c.eligible, left, Some(*t), sink);
+                    }
                 }
                 RadialLabels::None => {}
             }
@@ -835,9 +1241,13 @@ impl Selectable<RadialChart> for RadialDecoration {
     /// and hit, part by part.
     fn outlines_parts(&self, chart: &RadialChart) -> bool {
         match &self.id {
-            DecorationId::RadialLabel(t) => chart
-                .slice(*t)
-                .is_some_and(|s| placement(chart, *t, s) == RadialLabels::Outside),
+            // Where the label is drawn this frame: an inside label too
+            // small to read moves outside (#357).
+            DecorationId::RadialLabel(t) => frame(chart, self.size, self.scale)
+                .ok()
+                .and_then(|f| circle(chart, f.area, t.group).ok())
+                .and_then(|c| c.node(t.index).map(|s| c.placement(t.index, s)))
+                .is_some_and(|p| p == RadialLabels::Outside),
             _ => false,
         }
     }
@@ -1061,7 +1471,12 @@ pub(super) fn layout(
             let Some(slice) = c.node(index) else {
                 continue;
             };
-            if slice.value > 0.0 && c.placement(index, slice) == RadialLabels::Inside {
+            // A hidden inside label (too small to read, #357) is neither
+            // drawn nor hit.
+            if slice.value > 0.0
+                && c.placement(index, slice) == RadialLabels::Inside
+                && inside_label(chart, &f, &c, g, index).is_some()
+            {
                 if let Some(paint) = paint.as_deref_mut() {
                     emit_inside(chart, &f, &c, g, index, inside_at_rest, paint);
                 }
@@ -1075,12 +1490,12 @@ pub(super) fn layout(
             if let Some(paint) = paint.as_deref_mut() {
                 emit_outside(chart, &f, &c, g, left_side, None, paint);
             }
-            let (labels, n) = side_labels(chart, &c, g, left_side, scale);
-            for (_, index) in &labels[..n] {
+            let (labels, n) = side_labels(chart, f.area, &c, g, left_side, scale);
+            for (_, ring, index) in &labels[..n] {
                 register(
                     &mut out.decorations,
                     DecorationId::RadialLabel(RadialTarget {
-                        group: g,
+                        group: *ring,
                         index: *index,
                     }),
                 );
@@ -1151,6 +1566,48 @@ mod title_tests {
             })
             .collect()
     }
+    /// A flat sector of a 200 px ring between `inner` and 1 of it, over
+    /// `span` radians centred on `mid` (screen angle, y down).
+    fn ring_sector(inner: f32, mid: f32, span: f32) -> Sector {
+        let mut s: Sector = bytemuck::Zeroable::zeroed();
+        s.geometry = [0.0, 0.0, 200.0, inner];
+        s.arc = [mid - span * 0.5, span, 0.0, 0.0];
+        s
+    }
+
+    // The inside fit measures a label in its sector's frame (#357): a
+    // horizontal label at the bottom of a thin ring runs along the ring and
+    // keeps its size, the same label at the ring's side runs across the
+    // band and is held to its thickness, and a fitted label's corners stay
+    // inside the rim. The fit no longer bounds both of a label's sides by
+    // the smaller of the arc and the thickness.
+    #[test]
+    fn an_inside_label_fits_along_its_ring() {
+        use std::f32::consts::FRAC_PI_2;
+        // The outer ring of a three-ring sunburst: 0.75..1 of 200 px, a
+        // 50 px band, over 160 degrees.
+        let span = 160f32.to_radians();
+        let (width, height) = (120.0, 2.0 * 16.0 * 1.2);
+        let bottom = ring_sector(0.75, FRAC_PI_2, span);
+        assert_eq!(inside_fit(&bottom, 0.875, width, height), 1.0);
+        let side = ring_sector(0.75, 0.0, span);
+        let fit = inside_fit(&side, 0.875, width, height);
+        assert!(fit * width <= 50.0 * 1.05 + 1e-3, "{fit}");
+        assert!(fit < 0.5, "{fit}");
+        // A label too large for any ring shrinks until its outer corners
+        // are inside the rim.
+        let fit = inside_fit(&bottom, 0.875, 400.0, height);
+        let (along, across) = (fit * height * 0.5, fit * 400.0 * 0.5);
+        assert!(
+            (175.0 + along).hypot(across) <= 200.0 * 1.05 + 1e-2,
+            "{fit}"
+        );
+        // A narrow sector holds a label to its arc.
+        let narrow = ring_sector(0.75, FRAC_PI_2, 0.1);
+        let fit = inside_fit(&narrow, 0.875, width, height);
+        assert!(fit * width <= 0.1 * 175.0 * 1.05 + 1e-3, "{fit}");
+    }
+
     // An inside label without a colour of its own stands off its slice:
     // white on a dark slice, the chart's label colour on a light one, and
     // black on a light slice when the label colour is itself light (a chart

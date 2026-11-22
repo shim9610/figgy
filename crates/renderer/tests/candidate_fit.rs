@@ -1,5 +1,6 @@
 //! Candidate fits and style domain fits (#312): `Renderer::fit_config`,
-//! `Renderer::fit_y_axes_config`, `Renderer::fit_point_size_domain` and
+//! `Renderer::fit_y_axes_config`, the scoped `Renderer::fit_config_scoped`
+//! (#334), `Renderer::fit_point_size_domain` and
 //! `Renderer::fit_vector_scale`, all from the resident columns' cached
 //! statistics, with no chart installed or changed.
 #![cfg(not(target_arch = "wasm32"))]
@@ -7,7 +8,8 @@
 use renderer::config::{AxisOptions, Config};
 use renderer::data_config::{MatrixRef, VectorScale};
 use renderer::{
-    Chart, Color, DataRenderType, FIT_RANGES_PADDING, FiggyError, Renderer, RuleKind, SeriesConfig,
+    CellRef, Chart, Color, DataRenderType, FIT_RANGES_PADDING, FiggyError, FitAxes, FitAxis,
+    FitAxisRef, FitScope, LayerRef, LinkedFitData, Renderer, RuleKind, SeriesConfig, VectorSeries,
 };
 
 /// A headless renderer with columns of eleven values: `t` 0..10, `a`
@@ -96,7 +98,7 @@ fn layered() -> (Config, Vec<SeriesConfig>) {
 #[test]
 fn fit_config_is_the_fit_ranges_path() {
     let renderer = fit_renderer();
-    let (config, series) = layered();
+    let (config, mut series) = layered();
     let before = config.clone();
     let fitted = renderer
         .fit_config(&config, &series, FIT_RANGES_PADDING)
@@ -104,7 +106,7 @@ fn fit_config_is_the_fit_ranges_path() {
     assert_eq!(config, before, "the candidate is not changed");
 
     let mut chart = Chart::new(config.clone());
-    renderer.fit_ranges(&mut chart, &series).unwrap();
+    renderer.fit_ranges(&mut chart, &mut series).unwrap();
     assert_eq!(&fitted, chart.config(), "one fit path");
     assert_range(&fitted.bottom_x, -0.5, 10.5);
     assert_range(&fitted.left_y, -1.1, 1.1);
@@ -122,10 +124,11 @@ fn fit_config_is_the_fit_ranges_path() {
     let none = renderer.fit_config(&config, &series, 0.0).unwrap();
     assert_range(&none.left_y, -1.0, 1.0);
 
-    // A registered chart is untouched by a candidate fit.
+    // A registered chart is untouched by a candidate fit (registered as
+    // given, without its one-time fit).
     let mut renderer = renderer;
     let id = renderer
-        .register_chart(config.clone(), series.clone())
+        .register_chart_as_given(config.clone(), series.clone())
         .unwrap();
     renderer.fit_config(&config, &series, 0.1).unwrap();
     assert_eq!(renderer.chart_config(id).unwrap(), &config);
@@ -299,7 +302,7 @@ fn fit_point_size_domain_takes_the_size_column_extent() {
 /// The scale value of a vector series.
 fn scale_of(series: &SeriesConfig) -> f64 {
     match &series.render_type {
-        DataRenderType::Vector { style, .. } => match style.scale {
+        DataRenderType::Vector(VectorSeries { style, .. }) => match style.scale {
             VectorScale::Pixels { px_per_unit } => px_per_unit,
             VectorScale::Data { factor } => factor,
         },
@@ -321,7 +324,7 @@ fn fit_vector_scale_targets_the_longest_vector() {
     let longest = 30f64.hypot(1.0);
     assert!((scale_of(&points) - 24.0 / longest).abs() < 1e-12);
     let mut expected = before.clone();
-    if let DataRenderType::Vector { style, .. } = &mut expected.render_type {
+    if let DataRenderType::Vector(VectorSeries { style, .. }) = &mut expected.render_type {
         style.scale = VectorScale::Pixels {
             px_per_unit: scale_of(&points),
         };
@@ -400,6 +403,204 @@ fn fit_vector_scale_targets_the_longest_vector() {
     ));
 }
 
+fn style_of(series: &SeriesConfig) -> &renderer::data_config::VectorStyle {
+    match &series.render_type {
+        DataRenderType::Vector(VectorSeries { style, .. }) => style,
+        other => panic!("not a vector field: {other:?}"),
+    }
+}
+
+// An auto-scaled vector series (the constructors' default, #357) fits its
+// longest vector to the spacing between its arrows over the data area, and
+// the fit consumes its `auto_scale` flag; an explicit scale, a data scale,
+// zero vectors and other series stay. A second fit changes nothing, the fit
+// refuses streamed and unknown columns before any write, and it counts
+// every column of a grid.
+#[test]
+fn fit_vector_scales_sizes_auto_scaled_arrows_to_their_spacing() {
+    let renderer = fit_renderer();
+    let chart = Chart::sized(800, 600);
+    let config = chart.config();
+    let area = config.data_area().unwrap().0;
+    let (width, height) = (f64::from(area.width), f64::from(area.height));
+    let mut series = vec![
+        SeriesConfig::vectors("auto", "t", "a", "u", "a"),
+        SeriesConfig::vectors("fixed", "t", "a", "u", "a")
+            .vector_scale(VectorScale::Pixels { px_per_unit: 3.0 }),
+        SeriesConfig::vectors("data", "t", "a", "u", "a")
+            .style_vectors(|style| style.scale = VectorScale::Data { factor: 1.0 }),
+        SeriesConfig::vectors("zero", "t", "a", "zero", "zero"),
+        SeriesConfig::line("l", "t", "a"),
+    ];
+    assert!(style_of(&series[0]).auto_scale, "on by default");
+    assert!(!style_of(&series[1]).auto_scale, "an explicit scale");
+    let before = series.clone();
+    renderer.fit_vector_scales(config, &mut series).unwrap();
+    let style = style_of(&series[0]);
+    assert!(!style.auto_scale, "the first fit consumes the flag");
+    let target = style.auto_scale_target_px(11, width, height).unwrap();
+    assert!((scale_of(&series[0]) - target / 30f64.hypot(1.0)).abs() < 1e-12);
+    assert_eq!(series[1..], before[1..], "only the auto-scaled field moves");
+    let once = series.clone();
+    renderer.fit_vector_scales(config, &mut series).unwrap();
+    assert_eq!(series, once, "the stored scale stays");
+    // Zero vectors had nothing to fit: they keep the flag.
+    assert!(style_of(&series[3]).auto_scale);
+
+    // A grid's arrows are every cell of its `u` columns.
+    let mut grid = vec![SeriesConfig::vectors_grid(
+        "g",
+        "pair",
+        "t",
+        MatrixRef::columns_are_x(["a", "b"]),
+        MatrixRef::columns_are_x(["t", "u"]),
+    )];
+    renderer.fit_vector_scales(config, &mut grid).unwrap();
+    let target = style_of(&grid[0])
+        .auto_scale_target_px(22, width, height)
+        .unwrap();
+    assert!((scale_of(&grid[0]) - target / 200f64.hypot(30.0)).abs() < 1e-12);
+
+    // Refusals change no series, not even the ones before the refused.
+    for bad in ["streamed", "nowhere"] {
+        let mut series = vec![
+            SeriesConfig::vectors("auto", "t", "a", "u", "a"),
+            SeriesConfig::vectors("bad", "t", "a", bad, "a"),
+        ];
+        let kept = series.clone();
+        assert!(matches!(
+            renderer.fit_vector_scales(config, &mut series),
+            Err(FiggyError::ColumnNotResident { .. } | FiggyError::UnknownColumn { .. })
+        ));
+        assert_eq!(series, kept, "{bad}");
+    }
+}
+
+// The installed whole-chart fit (`commit_auto_fit_all`, the WASM
+// `auto_fit_all`) also sizes the chart's auto-scaled arrows, writing the
+// scale into the chart's series and consuming the flag: the SSOT says how
+// long they draw (#357), and a second fit keeps the stored scale.
+#[test]
+fn the_installed_auto_fit_sizes_auto_scaled_arrows() {
+    let mut renderer = fit_renderer();
+    renderer.ensure_errorbar_extent_engine_blocking().unwrap();
+    let series = vec![
+        SeriesConfig::vectors("auto", "t", "a", "u", "a"),
+        SeriesConfig::vectors("fixed", "t", "a", "u", "a")
+            .vector_scale(VectorScale::Pixels { px_per_unit: 3.0 }),
+    ];
+    let id = renderer
+        .register_chart_as_given(Chart::sized(800, 600).config().clone(), series.clone())
+        .unwrap();
+    let fit = |renderer: &mut Renderer| {
+        let ticket = renderer.begin_auto_fit_all(id, 0.05).unwrap();
+        let resolved = ticket.resolve_blocking().unwrap();
+        renderer.commit_auto_fit_all(resolved).unwrap();
+    };
+    fit(&mut renderer);
+    let mut expected = series;
+    renderer
+        .fit_vector_scales(renderer.chart_config(id).unwrap(), &mut expected)
+        .unwrap();
+    let installed = renderer.chart_series(id).unwrap().to_vec();
+    assert_eq!(installed, expected);
+    assert!(scale_of(&installed[0]) > 0.5, "{:?}", installed[0]);
+    assert!(!style_of(&installed[0]).auto_scale, "consumed");
+    assert_eq!(scale_of(&installed[1]), 3.0);
+    fit(&mut renderer);
+    assert_eq!(renderer.chart_series(id).unwrap(), &installed[..]);
+
+    // The registered chart draws what its SSOT says: its PNG export at 1x
+    // and 2x is the export of its config and series held by the caller.
+    let held = Chart::new(renderer.chart_config(id).unwrap().clone());
+    for scale in [1.0, 2.0] {
+        let options = renderer::ExportOptions::panel(scale).with_clear(Color::WHITE);
+        let registered = renderer
+            .export_rgba_blocking(renderer::ExportSource::Registered(id), options)
+            .unwrap();
+        let own = renderer
+            .export_rgba_blocking(renderer::ExportSource::chart(&held, &installed), options)
+            .unwrap();
+        assert_eq!(registered.rgba, own.rgba, "{scale}x");
+    }
+}
+
+// One rule for every renderer-fitted value (#357): registering a new chart
+// (`LayoutState::Fitted`) fits its ranges, layout and vector scales once, by
+// the code `fit_ranges` runs, and stores them; nothing refits them on its
+// own. A `Fixed` document and `register_chart_as_given` are registered as
+// given, and a fit that cannot run refuses the registration.
+#[test]
+fn registration_fits_a_new_chart_once() {
+    let mut renderer = fit_renderer();
+    let series = vec![
+        SeriesConfig::line("l", "t", "b"),
+        SeriesConfig::vectors("v", "t", "a", "u", "a"),
+    ];
+    let config = Chart::sized(800, 600).config().clone();
+    assert!(config.layout_state.is_fitted());
+    let id = renderer
+        .register_chart(config.clone(), series.clone())
+        .unwrap();
+
+    // What the host's own fit gives: the same ranges, layout and scale.
+    let mut held = Chart::new(config.clone());
+    let mut expected = series.clone();
+    renderer.fit_ranges(&mut held, &mut expected).unwrap();
+    assert_eq!(renderer.chart_config(id).unwrap(), held.config());
+    assert_eq!(renderer.chart_series(id).unwrap(), &expected[..]);
+    assert_range(&held.config().bottom_x, -0.5, 10.5);
+    assert_range(&held.config().left_y, -11.05, 210.05);
+    assert!(!style_of(&expected[1]).auto_scale, "the flag is consumed");
+    assert!(scale_of(&expected[1]) > 0.0);
+
+    // Stored, not refitted: a config edit through the registry keeps the
+    // fitted ranges and scale, and the export draws them.
+    let mut edited = renderer.chart_config(id).unwrap().clone();
+    edited.chart_title.text.font_size += 2.0;
+    renderer.set_chart_config(id, edited).unwrap();
+    assert_range(&renderer.chart_config(id).unwrap().left_y, -11.05, 210.05);
+    assert_eq!(renderer.chart_series(id).unwrap(), &expected[..]);
+    let stored = Chart::as_given(renderer.chart_config(id).unwrap().clone());
+    for scale in [1.0, 2.0] {
+        let options = renderer::ExportOptions::panel(scale).with_clear(Color::WHITE);
+        let registered = renderer
+            .export_rgba_blocking(renderer::ExportSource::Registered(id), options)
+            .unwrap();
+        let own = renderer
+            .export_rgba_blocking(renderer::ExportSource::chart(&stored, &expected), options)
+            .unwrap();
+        assert_eq!(registered.rgba, own.rgba, "{scale}x");
+    }
+
+    // The opt-outs: a `Fixed` document and `register_chart_as_given` keep
+    // the SSOT exactly as given, placeholder ranges and flag included.
+    let mut fixed = config.clone();
+    fixed.layout_state = renderer::LayoutState::Fixed;
+    let as_doc = renderer
+        .register_chart(fixed.clone(), series.clone())
+        .unwrap();
+    assert_eq!(renderer.chart_config(as_doc).unwrap(), &fixed);
+    assert_eq!(renderer.chart_series(as_doc).unwrap(), &series[..]);
+    let given = renderer
+        .register_chart_as_given(config.clone(), series.clone())
+        .unwrap();
+    assert_eq!(renderer.chart_config(given).unwrap(), &config);
+    assert_eq!(renderer.chart_series(given).unwrap(), &series[..]);
+    assert_eq!(Chart::as_given(config.clone()).config(), &config);
+
+    // A new chart over a streamed source cannot be fitted (rule 8): the
+    // registration is refused and nothing is registered; as given, it is.
+    let streamed = vec![SeriesConfig::line("s", "t", "streamed")];
+    let charts = renderer.chart_order().len();
+    assert!(matches!(
+        renderer.register_chart(config.clone(), streamed.clone()),
+        Err(FiggyError::ColumnNotResident { id }) if id == "streamed"
+    ));
+    assert_eq!(renderer.chart_order().len(), charts);
+    renderer.register_chart_as_given(config, streamed).unwrap();
+}
+
 // Column-backed series have no count limit (rule 10): a candidate with many
 // series and overlay members fits them all.
 #[test]
@@ -416,4 +617,332 @@ fn a_candidate_with_many_series_fits() {
     let fitted = renderer.fit_config(chart.config(), &series, 0.05).unwrap();
     assert_range(&fitted.left_y, 95.0, 205.0);
     assert_range(&fitted.overlays[0].y_axis, 95.0, 205.0);
+}
+
+/// A parent drawing `a` (x `t` 0..10, y `a` -1..1) with an overlay `o` that
+/// follows its X axis and has a Y axis of its own (x `t`, y `b` 100..200),
+/// and a subplot drawing `s` (x `u` 20..30, y `z` 5..10) whose X axis is
+/// linked to the parent's. Every axis starts at a hand-set range, the links
+/// in step.
+fn linked() -> (Config, Vec<SeriesConfig>) {
+    let series = vec![
+        SeriesConfig::line("a", "t", "a"),
+        SeriesConfig::line("o", "t", "b"),
+        SeriesConfig::line("s", "u", "z"),
+    ];
+    let inner = Chart::placed(320, 0, 320, 240).config().clone();
+    let mut config = Chart::sized(320, 240)
+        .with_overlay(AxisOptions::overlay_y("B", Color::BLACK), &["o"])
+        .with_subplot(renderer::Subplot::new(inner, &["s"]).with_link_x(CellRef::Parent))
+        .config()
+        .clone();
+    let set = |axis: &mut AxisOptions, min: f64, max: f64| {
+        axis.min = min;
+        axis.max = max;
+    };
+    set(&mut config.bottom_x, 2.0, 3.0);
+    set(&mut config.top_x, 2.0, 3.0);
+    set(&mut config.left_y, 4.0, 5.0);
+    set(&mut config.right_y, 4.0, 5.0);
+    set(&mut config.overlays[0].y_axis, 600.0, 700.0);
+    set(&mut config.subplots[0].config.left_y, 8.0, 9.0);
+    set(&mut config.subplots[0].config.right_y, 8.0, 9.0);
+    config.sync_subplot_links(None);
+    (config, series)
+}
+
+fn scope(layer: LayerRef, axes: FitAxes) -> FitScope<'static> {
+    FitScope {
+        layer,
+        axes,
+        linked: LinkedFitData::Group,
+        keep: &[],
+    }
+}
+
+const X: FitAxes = FitAxes {
+    x: true,
+    y: false,
+    z: false,
+};
+const Y: FitAxes = FitAxes {
+    x: false,
+    y: true,
+    z: false,
+};
+
+/// Every Y-side axis of `fitted` is `given`'s.
+#[track_caller]
+fn assert_y_axes_kept(fitted: &Config, given: &Config) {
+    assert_eq!(fitted.left_y, given.left_y);
+    assert_eq!(fitted.right_y, given.right_y);
+    assert_eq!(fitted.overlays[0].y_axis, given.overlays[0].y_axis);
+    let (cell, kept) = (&fitted.subplots[0].config, &given.subplots[0].config);
+    assert_eq!(cell.left_y, kept.left_y);
+    assert_eq!(cell.right_y, kept.right_y);
+}
+
+// An X-only fit moves the parent's X axis and its linked subplot with it,
+// and leaves every Y axis as given. The group reads every series drawn
+// against the link group; the target reads only its own panel's, and the
+// group still shares the range.
+#[test]
+fn fit_config_scoped_moves_only_the_selected_axes() {
+    let renderer = fit_renderer();
+    let (config, series) = linked();
+    let before = config.clone();
+
+    let group = renderer
+        .fit_config_scoped(&config, &series, 0.05, &scope(LayerRef::Base, X))
+        .unwrap();
+    assert_eq!(config, before, "the candidate is not changed");
+    // `a` and `o` span 0..10 and the linked subplot's `s` 20..30.
+    assert_range(&group.bottom_x, -1.5, 31.5);
+    assert_range(&group.top_x, -1.5, 31.5);
+    assert_range(&group.subplots[0].config.bottom_x, -1.5, 31.5);
+    assert_y_axes_kept(&group, &config);
+
+    let target = renderer
+        .fit_config_scoped(
+            &config,
+            &series,
+            0.05,
+            &FitScope {
+                linked: LinkedFitData::Target,
+                ..scope(LayerRef::Base, X)
+            },
+        )
+        .unwrap();
+    assert_range(&target.bottom_x, -0.5, 10.5);
+    assert_range(&target.subplots[0].config.bottom_x, -0.5, 10.5);
+    assert_y_axes_kept(&target, &config);
+
+    // From the subplot, the target is the subplot's panel: `s` alone sets
+    // the group's range.
+    let from_cell = renderer
+        .fit_config_scoped(
+            &config,
+            &series,
+            0.0,
+            &FitScope {
+                linked: LinkedFitData::Target,
+                ..scope(LayerRef::Subplot(0), X)
+            },
+        )
+        .unwrap();
+    assert_range(&from_cell.bottom_x, 20.0, 30.0);
+    assert_range(&from_cell.subplots[0].config.bottom_x, 20.0, 30.0);
+    assert_y_axes_kept(&from_cell, &config);
+
+    // A Y-only fit of the overlay moves its own Y axis alone.
+    let overlay = renderer
+        .fit_config_scoped(&config, &series, 0.05, &scope(LayerRef::Overlay(0), Y))
+        .unwrap();
+    assert_range(&overlay.overlays[0].y_axis, 95.0, 205.0);
+    let mut expected = config.clone();
+    expected.overlays[0].y_axis = overlay.overlays[0].y_axis.clone();
+    assert_eq!(overlay, expected);
+
+    // No axis selected: nothing moves.
+    let none = renderer
+        .fit_config_scoped(
+            &config,
+            &series,
+            0.05,
+            &scope(LayerRef::Base, FitAxes::default()),
+        )
+        .unwrap();
+    assert_eq!(none, config);
+
+    // Every axis of a chart without links or overlays is `fit_config`'s.
+    let plain = Chart::sized(320, 240).config().clone();
+    let only = [SeriesConfig::line("a", "t", "a")];
+    assert_eq!(
+        renderer
+            .fit_config_scoped(&plain, &only, 0.05, &scope(LayerRef::Base, FitAxes::ALL))
+            .unwrap(),
+        renderer.fit_config(&plain, &only, 0.05).unwrap()
+    );
+}
+
+// A kept axis holds its range and every axis linked to it: the subplot's X
+// is the parent's, so keeping the parent X holds the subplot's fit too.
+#[test]
+fn fit_config_scoped_keeps_the_kept_link_groups() {
+    let renderer = fit_renderer();
+    let (config, series) = linked();
+    let subplot_x = scope(LayerRef::Subplot(0), X);
+    let moved = renderer
+        .fit_config_scoped(&config, &series, 0.05, &subplot_x)
+        .unwrap();
+    assert_range(&moved.subplots[0].config.bottom_x, -1.5, 31.5);
+    assert_range(&moved.bottom_x, -1.5, 31.5);
+
+    let keep = [FitAxisRef {
+        layer: LayerRef::Base,
+        axis: FitAxis::X,
+    }];
+    let held = renderer
+        .fit_config_scoped(
+            &config,
+            &series,
+            0.05,
+            &FitScope {
+                keep: &keep,
+                ..subplot_x
+            },
+        )
+        .unwrap();
+    assert_eq!(held, config);
+
+    // Keeping the overlay's Y while fitting the overlay leaves it, and
+    // keeping the subplot's own Y does not hold the parent's.
+    let keep = [FitAxisRef {
+        layer: LayerRef::Overlay(0),
+        axis: FitAxis::Y,
+    }];
+    let held = renderer
+        .fit_config_scoped(
+            &config,
+            &series,
+            0.05,
+            &FitScope {
+                keep: &keep,
+                ..scope(LayerRef::Overlay(0), Y)
+            },
+        )
+        .unwrap();
+    assert_eq!(held, config);
+    let keep = [FitAxisRef {
+        layer: LayerRef::Subplot(0),
+        axis: FitAxis::Y,
+    }];
+    let parent_y = renderer
+        .fit_config_scoped(
+            &config,
+            &series,
+            0.05,
+            &FitScope {
+                keep: &keep,
+                ..scope(LayerRef::Base, Y)
+            },
+        )
+        .unwrap();
+    assert_range(&parent_y.left_y, -1.1, 1.1);
+    assert_eq!(parent_y.subplots[0], config.subplots[0]);
+}
+
+// On a 3D chart a Y-only fit leaves the z axis (`right_y`) as given, and a
+// z-only fit moves it alone.
+#[test]
+fn fit_config_scoped_separates_y_and_z_in_3d() {
+    let renderer = fit_renderer();
+    let mut cube = Chart::sized(320, 240);
+    cube.config_mut()
+        .set_view_3d(Some(renderer::View3d::default()));
+    let mut config = cube.config().clone();
+    config.right_y.min = 40.0;
+    config.right_y.max = 50.0;
+    let points = [SeriesConfig::scatter("p", "t", "a").z("z")];
+    let y = renderer
+        .fit_config_scoped(&config, &points, 0.05, &scope(LayerRef::Base, Y))
+        .unwrap();
+    assert_range(&y.left_y, -1.1, 1.1);
+    assert_eq!(y.right_y, config.right_y);
+    assert_eq!(y.bottom_x, config.bottom_x);
+    let z = FitAxes {
+        z: true,
+        ..FitAxes::default()
+    };
+    let z = renderer
+        .fit_config_scoped(&config, &points, 0.05, &scope(LayerRef::Base, z))
+        .unwrap();
+    assert_range(&z.right_y, 4.75, 10.25);
+    assert_eq!(z.left_y, config.left_y);
+    assert_eq!(z.bottom_x, config.bottom_x);
+}
+
+// Every refusal is an error, the candidate is not changed and an installed
+// chart is untouched.
+#[test]
+fn fit_config_scoped_refuses_what_it_cannot_fit() {
+    let mut renderer = fit_renderer();
+    let (config, series) = linked();
+    let before = config.clone();
+    for layer in [
+        LayerRef::Overlay(1),
+        LayerRef::Subplot(1),
+        LayerRef::SubplotOverlay(0, 0),
+        LayerRef::SubplotOverlay(3, 0),
+    ] {
+        let error = renderer
+            .fit_config_scoped(&config, &series, 0.05, &scope(layer, X))
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                FiggyError::InvalidConfig {
+                    field: "fit_scope",
+                    kind: RuleKind::FitScopeLayer
+                }
+            ),
+            "{layer:?}: {error}"
+        );
+        let keep = [FitAxisRef {
+            layer,
+            axis: FitAxis::Y,
+        }];
+        assert_rule(
+            renderer.fit_config_scoped(
+                &config,
+                &series,
+                0.05,
+                &FitScope {
+                    keep: &keep,
+                    ..scope(LayerRef::Base, X)
+                },
+            ),
+            RuleKind::FitScopeLayer,
+        );
+    }
+    for padding in [-0.1, f64::NAN] {
+        assert_rule(
+            renderer.fit_config_scoped(&config, &series, padding, &scope(LayerRef::Base, X)),
+            RuleKind::FitPadding,
+        );
+    }
+    let mut ghost = config.clone();
+    ghost.overlays[0].series.push("ghost".into());
+    assert_rule(
+        renderer.fit_config_scoped(&ghost, &series, 0.05, &scope(LayerRef::Base, X)),
+        RuleKind::LayerSeriesUnknown,
+    );
+    let streamed = [SeriesConfig::line("a", "t", "streamed")];
+    assert!(matches!(
+        renderer.fit_config_scoped(&Config::default(), &streamed, 0.05, &scope(LayerRef::Base, Y)),
+        Err(FiggyError::ColumnNotResident { id }) if id == "streamed"
+    ));
+    let monotonic = [SeriesConfig::monotonic_line("m", "daq", 0)];
+    assert_rule(
+        renderer.fit_config_scoped(
+            &Config::default(),
+            &monotonic,
+            0.05,
+            &scope(LayerRef::Base, X),
+        ),
+        RuleKind::MonotonicMappingEdit,
+    );
+    assert_eq!(config, before);
+
+    // A registered chart is untouched by a scoped candidate fit. The
+    // registration fits the layout of the config it is given (#357), so
+    // the chart is compared with itself before the candidate fit.
+    let id = renderer
+        .register_chart_as_given(config.clone(), series.clone())
+        .unwrap();
+    let registered = renderer.chart_config(id).unwrap().clone();
+    renderer
+        .fit_config_scoped(&config, &series, 0.05, &scope(LayerRef::Base, FitAxes::ALL))
+        .unwrap();
+    assert_eq!(renderer.chart_config(id).unwrap(), &registered);
 }

@@ -12,6 +12,9 @@ mod ssot_invalidation;
 #[path = "overlay_layer_tests.rs"]
 mod overlay_layers;
 
+#[path = "range_link_readiness_tests.rs"]
+mod range_link_readiness;
+
 #[path = "subplot_tests.rs"]
 mod subplots;
 
@@ -737,7 +740,7 @@ fn a_streamed_histogram_is_refused_before_anything_is_allocated() {
             })
             .unwrap();
         let mut series = declaration("h", x_id, y_id);
-        series.render_type = DataRenderType::Histogram {
+        series.render_type = DataRenderType::Histogram(HistogramSeries {
             bar: DataBarStyleConfig {
                 fill_color: Color::new(0.0, 0.8, 0.0, 1.0),
                 border_color: Color::new(0.0, 0.0, 0.0, 1.0),
@@ -748,7 +751,7 @@ fn a_streamed_histogram_is_refused_before_anything_is_allocated() {
                 orientation: orientation.clone(),
                 bar_style_overrides: None,
             },
-        };
+        });
         let config = crate::default::default_config();
         let chart = renderer
             .register_chart(config.clone(), vec![series])
@@ -2142,21 +2145,22 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                         prefix_error_column(err_y);
                     }
                     DataRenderType::Xy(_)
-                    | DataRenderType::Histogram { .. }
+                    | DataRenderType::Histogram(_)
                     | DataRenderType::Field(_)
-                    | DataRenderType::RgbImage { .. }
-                    | DataRenderType::CategoryBars { .. }
-                    | DataRenderType::BoxPlot { .. }
-                    | DataRenderType::RangeBars { .. }
-                    | DataRenderType::Radar { .. }
-                    | DataRenderType::Ternary { .. }
-                    | DataRenderType::Parallel { .. }
+                    | DataRenderType::RgbImage(_)
+                    | DataRenderType::CategoryBars(_)
+                    | DataRenderType::BoxPlot(_)
+                    | DataRenderType::RangeBars(_)
+                    | DataRenderType::RangeLinks(_)
+                    | DataRenderType::Radar(_)
+                    | DataRenderType::Ternary(_)
+                    | DataRenderType::Parallel(_)
                     | DataRenderType::EnergyLevels(_)
                     | DataRenderType::TriMesh(_)
                     | DataRenderType::Feynman(_)
                     | DataRenderType::MonotonicLine(_)
-                    | DataRenderType::Streamlines { .. }
-                    | DataRenderType::Vector { .. } => {}
+                    | DataRenderType::Streamlines(_)
+                    | DataRenderType::Vector(_) => {}
                 }
             }
             let resident_id = r.register_chart(chart.config().clone(), resident).unwrap();

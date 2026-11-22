@@ -37,6 +37,7 @@
 use crate::shader_assembly::ShaderSet;
 use std::sync::Arc;
 
+use crate::gpu_compile::{storage_entry, uniform_entry};
 use crate::gpu_memory::{
     ChargeTally, GpuLedger, GpuResourceKind, SharedCharge, charged_buffer, charged_buffer_init,
     shared_charge,
@@ -203,11 +204,31 @@ mod tests {
         let mut sizes = Vec::new();
         plan.visit_sizes(|bytes| sizes.push(bytes));
         assert_eq!(sizes.len(), plan.buffer_count());
+        let bytes = |size: usize| size as u64;
         assert_eq!(sizes[0], 513 * ARC_PAIR_BYTES);
-        // The last is the transform, `ScatterTransform`'s 304 bytes.
-        assert_eq!(&sizes[1..6], &[16, 8, 8, 8, 304]);
-        assert_eq!(&sizes[6..12], &[32; 6]);
-        assert_eq!(&sizes[12..], &[16, 8, 16]);
+        // The two levels of block sums, the total, the carry, then the
+        // transform.
+        assert_eq!(
+            &sizes[1..6],
+            &[
+                2 * ARC_PAIR_BYTES,
+                ARC_PAIR_BYTES,
+                ARC_PAIR_BYTES,
+                ARC_PAIR_BYTES,
+                bytes(std::mem::size_of::<ScatterTransform>()),
+            ]
+        );
+        // Three `ArcParams` uniforms per chunk.
+        assert_eq!(&sizes[6..12], &[bytes(std::mem::size_of::<ArcParams>()); 6]);
+        // The star pass: indirect draw arguments and its two uniforms.
+        assert_eq!(
+            &sizes[12..],
+            &[
+                bytes(std::mem::size_of::<wgpu::util::DrawIndirectArgs>()),
+                bytes(std::mem::size_of::<StarIndirectParams>()),
+                bytes(std::mem::size_of::<StarVsParams>()),
+            ]
+        );
 
         assert!(buffer_plan(1, 0, None, false).is_none());
         assert!(buffer_plan(0, 65_535, None, false).is_none());
@@ -244,20 +265,8 @@ pub const STAR_SLOT_PITCH_FACTOR: f32 = 0.5;
 /// The label of every arc scan compute pipeline.
 pub(crate) const ARC_SCAN_LABEL: &str = "figgy arc scan pipeline";
 
-pub fn create_arc_scan_pipelines(device: &wgpu::Device) -> ArcScanPipelines {
-    let mut noop = |_| {};
-    create_arc_scan_pipelines_observed(device, &mut noop)
-}
-
-pub fn create_arc_scan_pipelines_observed(
-    device: &wgpu::Device,
-    observer: &mut dyn FnMut(InitEvent),
-) -> ArcScanPipelines {
-    create_arc_scan_pipelines_by_set(device, ShaderSet::Full, observer)
-}
-
-/// [`create_arc_scan_pipelines_observed`] from the module assembled for
-/// `cuts` (#299): the renderer's own scan follows its shader set.
+/// The arc scan compute pipelines from the module assembled for `set`
+/// (#299): the renderer's own scan follows its shader set.
 pub(crate) fn create_arc_scan_pipelines_by_set(
     device: &wgpu::Device,
     set: ShaderSet,
@@ -276,48 +285,20 @@ pub(crate) fn create_arc_scan_pipelines_by_set(
         &device,
         &wgpu::BindGroupLayoutDescriptor {
             label: Some("figgy arc transform bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
+            entries: &[uniform_entry(0)],
         },
     );
 
-    let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    };
     let storage_bgl = crate::gpu_compile::bind_group_layout(
         &device,
         &wgpu::BindGroupLayoutDescriptor {
             label: Some("figgy arc storage bgl"),
             entries: &[
-                storage(0, true),  // pool (whole buffer; element bases in params)
-                storage(1, false), // dst
-                storage(2, false), // block sums
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                storage(4, false), // cross-chunk carry (1 element)
+                storage_entry(0, true),  // pool (whole buffer; element bases in params)
+                storage_entry(1, false), // dst
+                storage_entry(2, false), // block sums
+                uniform_entry(3),
+                storage_entry(4, false), // cross-chunk carry (1 element)
             ],
         },
     );
@@ -327,17 +308,8 @@ pub(crate) fn create_arc_scan_pipelines_by_set(
         &wgpu::BindGroupLayoutDescriptor {
             label: Some("figgy bounded arc replay bgl"),
             entries: &[
-                storage(0, false), // canonical sums0 for this natural scan chunk
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
+                storage_entry(0, false), // canonical sums0 for this natural scan chunk
+                uniform_entry(2),
             ],
         },
     );
@@ -350,17 +322,8 @@ pub(crate) fn create_arc_scan_pipelines_by_set(
         &wgpu::BindGroupLayoutDescriptor {
             label: Some("figgy star args bgl"),
             entries: &[
-                storage(0, false), // DrawIndirect args (4 × u32)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
+                storage_entry(0, false), // DrawIndirect args (4 × u32)
+                uniform_entry(1),
             ],
         },
     );
@@ -376,21 +339,11 @@ pub(crate) fn create_arc_scan_pipelines_by_set(
     // The surface data layout's bindings (the camera and params, 4 and 5)
     // visible to the compute stage: `seg_init_3d` reads the camera.
     let view3d_bgl = {
-        let uniform = |binding| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        };
         crate::gpu_compile::bind_group_layout(
             &device,
             &wgpu::BindGroupLayoutDescriptor {
                 label: Some("figgy arc view3d bgl"),
-                entries: &[uniform(4), uniform(5)],
+                entries: &[uniform_entry(4), uniform_entry(5)],
             },
         )
     };
@@ -484,15 +437,8 @@ pub(crate) fn create_arc_scan_pipelines_by_set(
     }
 }
 
-pub async fn create_arc_scan_pipelines_observed_async(
-    device: &wgpu::Device,
-    observer: &mut dyn FnMut(InitEvent),
-) -> Result<ArcScanPipelines, String> {
-    create_arc_scan_pipelines_by_set_async(device, ShaderSet::Full, observer).await
-}
-
-/// [`create_arc_scan_pipelines_observed_async`] from the module assembled
-/// for `cuts` (#299).
+/// [`create_arc_scan_pipelines_by_set`] after the browser's asynchronous
+/// compute prewarm (#299).
 pub(crate) async fn create_arc_scan_pipelines_by_set_async(
     device: &wgpu::Device,
     set: ShaderSet,
@@ -1590,7 +1536,7 @@ mod replay_product_tests {
         let max_workgroups = adapter.limits().max_compute_workgroups_per_dimension;
         assert!(adapter.limits().max_compute_workgroup_size_x >= WG);
         assert!(adapter.limits().max_compute_invocations_per_workgroup >= WG);
-        let pipelines = create_arc_scan_pipelines(&device);
+        let pipelines = create_arc_scan_pipelines_by_set(&device, ShaderSet::Full, &mut |_| {});
         let transform = ScatterTransform {
             data_min: [0.0, 0.0],
             data_max: [100.0, 100.0],

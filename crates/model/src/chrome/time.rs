@@ -1,6 +1,6 @@
 use crate::config::{AxisOptions, AxisScale};
 use crate::format::{
-    FractionalSecondDigits, LabelFormat, TimestampLabelFormat, TimestampLabelMode,
+    CalendarStep, FractionalSecondDigits, LabelFormat, TimestampLabelFormat, TimestampLabelMode,
     TimestampTickPolicy, TimestampUnit, TimestampZone,
 };
 
@@ -19,6 +19,11 @@ pub struct TimestampTick {
 pub struct TimestampTickPlan {
     pub majors: Vec<TimestampTick>,
     pub minor_values: Vec<f64>,
+    /// The labels, each at the value it is drawn at: a major's own value,
+    /// or with `period_labels` the visible centre of its period (#357).
+    /// An empty string draws nothing (a custom label's period with no
+    /// string).
+    pub labels: Vec<TimestampTick>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -78,15 +83,75 @@ where
     F: FnMut(&str) -> f32,
 {
     let cfg = timestamp_format(axis)?;
+    if let Some(step) = cfg.step {
+        if !matches!(axis.scale, AxisScale::Linear) || !crate::tick::walkable_range(axis) {
+            return None;
+        }
+        return forced_step_plan(axis, cfg, step, axis_len_px, &mut measure_extent_px);
+    }
     if !uses_calendar_ticks(axis, cfg) || !crate::tick::walkable_range(axis) {
         return None;
     }
 
     let start = parts_from_value(axis.min, cfg)?;
     let end = parts_from_value(axis.max, cfg)?;
+    // A pattern label never takes a step finer than the finest field it
+    // prints: finer ticks would repeat the same text (#411). A range too
+    // short to hold one tick at that floor keeps the unfloored walk.
+    let floor = match &cfg.label {
+        TimestampLabelMode::Pattern(pattern) => finest_pattern_field(pattern),
+        _ => None,
+    };
+    if let Some(floor) = floor {
+        let plan = walk_candidates(
+            axis,
+            cfg,
+            start,
+            end,
+            Some(floor),
+            axis_len_px,
+            min_gap_px,
+            &mut measure_extent_px,
+        )?;
+        if plan.is_some() {
+            return plan;
+        }
+    }
+    walk_candidates(
+        axis,
+        cfg,
+        start,
+        end,
+        None,
+        axis_len_px,
+        min_gap_px,
+        &mut measure_extent_px,
+    )?
+}
+
+/// Walks the candidates from fine to coarse, skipping those finer than
+/// `floor`, and returns the first whose labels fit (or the coarsest valid
+/// one). The outer `None` is a range the formatter cannot read.
+#[allow(clippy::too_many_arguments)]
+fn walk_candidates<F>(
+    axis: &AxisOptions,
+    cfg: &TimestampLabelFormat,
+    start: DateTimeParts,
+    end: DateTimeParts,
+    floor: Option<u8>,
+    axis_len_px: f32,
+    min_gap_px: f32,
+    measure_extent_px: &mut F,
+) -> Option<Option<TimestampTickPlan>>
+where
+    F: FnMut(&str) -> f32,
+{
     let mut last_valid = None;
 
     for candidate in candidates() {
+        if floor.is_some_and(|floor| step_field_rank(candidate.step) < floor) {
+            continue;
+        }
         let ticks = ticks_for_candidate(axis, cfg, candidate, start, end)?;
         if ticks.is_empty() {
             continue;
@@ -102,15 +167,57 @@ where
             .fold(0.0_f32, f32::max);
         let required = max_extent * count as f32 + min_gap_px * count.saturating_sub(1) as f32;
         last_valid = Some(TimestampTickPlan {
+            labels: ticks.clone(),
             majors: ticks,
             minor_values: Vec::new(),
         });
         if count <= 1 || required <= axis_len_px.max(1.0) {
-            return last_valid;
+            return Some(last_valid);
         }
     }
 
-    last_valid
+    Some(last_valid)
+}
+
+/// The rank of the calendar field a step advances: 0 sub-second, 1 second,
+/// 2 minute, 3 hour, 4 day, 5 month, 6 year. Ranks compare with
+/// [`finest_pattern_field`].
+fn step_field_rank(step: TimeStep) -> u8 {
+    match step {
+        TimeStep::FixedNs(ns) if ns < NS_PER_SECOND => 0,
+        TimeStep::FixedNs(ns) if ns < 60 * NS_PER_SECOND => 1,
+        TimeStep::FixedNs(ns) if ns < 3_600 * NS_PER_SECOND => 2,
+        TimeStep::FixedNs(ns) if ns < SECONDS_PER_DAY as i128 * NS_PER_SECOND => 3,
+        TimeStep::FixedNs(_) => 4,
+        TimeStep::Months(_) => 5,
+        TimeStep::Years(_) => 6,
+    }
+}
+
+/// The rank (as [`step_field_rank`]) of the finest field a label pattern
+/// prints: `%f` sub-second, `%S` second, `%M` minute, `%H` hour, `%d` day,
+/// `%m` and `%b` month, `%Y` year. `None` for a pattern that prints no
+/// field.
+fn finest_pattern_field(pattern: &str) -> Option<u8> {
+    let mut finest: Option<u8> = None;
+    let mut chars = pattern.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            continue;
+        }
+        let rank = match chars.next() {
+            Some('f') => 0,
+            Some('S') => 1,
+            Some('M') => 2,
+            Some('H') => 3,
+            Some('d') => 4,
+            Some('m') | Some('b') => 5,
+            Some('Y') => 6,
+            _ => continue,
+        };
+        finest = Some(finest.map_or(rank, |f| f.min(rank)));
+    }
+    finest
 }
 
 pub fn format_timestamp_numeric_tick(
@@ -373,6 +480,11 @@ fn format_timestamp_with_kind(
     match &cfg.label {
         TimestampLabelMode::Pattern(pattern) => Some(format_custom_pattern(pattern, parts, digits)),
         TimestampLabelMode::Auto => Some(format_auto(parts, kind, start, end, digits)),
+        // Counted in the format's step (#357): a format without one has
+        // no period to count and prints nothing (validation refuses it).
+        TimestampLabelMode::Relative { .. } | TimestampLabelMode::Custom { .. } => {
+            period_text(value, cfg)
+        }
     }
 }
 
@@ -508,6 +620,7 @@ fn format_custom_pattern(pattern: &str, parts: DateTimeParts, digits: u8) -> Str
             Some('M') => out.push_str(&format!("{:02}", parts.minute)),
             Some('S') => out.push_str(&format!("{:02}", parts.second)),
             Some('f') => out.push_str(&fraction_text(parts.nanosecond, digits)),
+            Some('b') => out.push_str(MONTH_NAMES[(parts.month as usize).clamp(1, 12) - 1]),
             Some(other) => {
                 out.push('%');
                 out.push(other);
@@ -516,6 +629,177 @@ fn format_custom_pattern(pattern: &str, parts: DateTimeParts, digits: u8) -> Str
         }
     }
     out
+}
+
+/// The English three-letter month names `%b` prints (#357).
+const MONTH_NAMES: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+// ── Calendar steps (#357) ───────────────────────────────────────────────
+//
+// A forced step numbers its periods with one integer each, in the format's
+// time zone: a day by its local date (days since 1970-01-01), a week by its
+// week-start date, a month by `12 · year + month0`, a quarter by its first
+// month over three, a year by itself. A period's start is local midnight on
+// its first day; the ticks are the starts inside the range.
+
+/// The weekday of a local date (days since 1970-01-01, a Thursday), Monday
+/// 0 to Sunday 6.
+fn weekday_of(days: i64) -> i64 {
+    (days + 3).rem_euclid(7)
+}
+
+/// The index of the period of `step` holding the local date `days`.
+fn period_of_days(step: CalendarStep, days: i64) -> i64 {
+    let (year, month, _) = civil_from_days(days);
+    let total_month = year as i64 * 12 + (month as i64 - 1);
+    match step {
+        CalendarStep::Day => days,
+        CalendarStep::Week { start } => {
+            // The date of the week's start, counted in weeks.
+            div_floor_i64(
+                days - (weekday_of(days) - start.index()).rem_euclid(7) + 3,
+                7,
+            )
+        }
+        CalendarStep::Month => total_month,
+        CalendarStep::Quarter => div_floor_i64(total_month, 3),
+        CalendarStep::Year => year as i64,
+    }
+}
+
+/// The local date (days since 1970-01-01) the period `p` of `step` starts
+/// on.
+fn period_start_days(step: CalendarStep, p: i64) -> Option<i64> {
+    let month_start = |total_month: i64| {
+        let year = i32::try_from(div_floor_i64(total_month, 12)).ok()?;
+        let month0 = total_month.rem_euclid(12);
+        days_from_civil(year, month0 as u8 + 1, 1)
+    };
+    match step {
+        CalendarStep::Day => Some(p),
+        // Week `p` starts on the date `7p - 3`, moved forward to `start`.
+        CalendarStep::Week { start } => {
+            let anchor = p.checked_mul(7)?.checked_sub(3)?;
+            Some(anchor + (start.index() - weekday_of(anchor)).rem_euclid(7))
+        }
+        CalendarStep::Month => month_start(p),
+        CalendarStep::Quarter => month_start(p.checked_mul(3)?),
+        CalendarStep::Year => days_from_civil(i32::try_from(p).ok()?, 1, 1),
+    }
+}
+
+/// The local date of `value` in `cfg`'s time zone.
+fn local_days(value: f64, cfg: &TimestampLabelFormat) -> Option<i64> {
+    let parts = parts_from_value(value, cfg)?;
+    days_from_civil(parts.year, parts.month, parts.day)
+}
+
+/// The value at which period `p` of `step` starts: local midnight.
+fn period_start_value(step: CalendarStep, p: i64, cfg: &TimestampLabelFormat) -> Option<f64> {
+    let (year, month, day) = civil_from_days(period_start_days(step, p)?);
+    value_from_local_parts(
+        DateTimeParts {
+            year,
+            month,
+            day,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            nanosecond: 0,
+        },
+        cfg,
+    )
+}
+
+/// The period of `step` holding `value`.
+fn period_of_value(step: CalendarStep, value: f64, cfg: &TimestampLabelFormat) -> Option<i64> {
+    Some(period_of_days(step, local_days(value, cfg)?))
+}
+
+/// The label kind of an automatic label at a step's boundaries.
+fn step_label_kind(step: CalendarStep) -> AutoLabelKind {
+    match step {
+        CalendarStep::Day | CalendarStep::Week { .. } => AutoLabelKind::Day,
+        CalendarStep::Month | CalendarStep::Quarter => AutoLabelKind::Month,
+        CalendarStep::Year => AutoLabelKind::Year,
+    }
+}
+
+/// The text of a relative or custom label at the period starting at
+/// `value` (#357): `n` whole periods of the format's step from the period
+/// holding the origin. `None` without a step, or for a custom label whose
+/// period has no string.
+fn period_text(value: f64, cfg: &TimestampLabelFormat) -> Option<String> {
+    let step = cfg.step?;
+    let origin = |origin: i64| period_of_value(step, origin as f64, cfg);
+    let n = |o: i64| Some(period_of_value(step, value, cfg)? - origin(o)?);
+    match &cfg.label {
+        TimestampLabelMode::Relative { origin, prefix } => Some(format!("{prefix}{}", n(*origin)?)),
+        TimestampLabelMode::Custom { origin, labels } => {
+            let n = usize::try_from(n(*origin)?).ok()?;
+            labels.get(n).cloned()
+        }
+        TimestampLabelMode::Auto | TimestampLabelMode::Pattern(_) => None,
+    }
+}
+
+/// The plan of a forced calendar step (#357): a major at every period
+/// start inside the axis range and a label per period, on its start or
+/// centred on its part inside the range (`period_labels`). A period label
+/// wider than that part (`measure_extent_px` over `axis_len_px`), such as
+/// a month cut to its last two days at the range's edge, is not drawn.
+/// Like the planner, a range holding more than [`MAX_TIME_TICKS`] periods
+/// draws no ticks: a tick plan is not a data count.
+fn forced_step_plan(
+    axis: &AxisOptions,
+    cfg: &TimestampLabelFormat,
+    step: CalendarStep,
+    axis_len_px: f32,
+    measure_extent_px: &mut dyn FnMut(&str) -> f32,
+) -> Option<TimestampTickPlan> {
+    let (min, max) = (axis.min, axis.max);
+    let eps = range_epsilon(min, max);
+    let first = period_of_value(step, min, cfg)?;
+    let last = period_of_value(step, max, cfg)?;
+    let empty = TimestampTickPlan {
+        majors: Vec::new(),
+        minor_values: Vec::new(),
+        labels: Vec::new(),
+    };
+    let periods = last.checked_sub(first)?.checked_add(1)?;
+    if periods > MAX_TIME_TICKS as i64 {
+        return Some(empty);
+    }
+    let start = parts_from_value(min, cfg)?;
+    let end = parts_from_value(max, cfg)?;
+    let kind = step_label_kind(step);
+    let mut plan = empty;
+    for p in first..=last {
+        let at = period_start_value(step, p, cfg)?;
+        let next = period_start_value(step, p.checked_add(1)?, cfg)?;
+        let text = format_timestamp_with_kind(at, cfg, kind, start, end).unwrap_or_default();
+        let on_tick = at >= min - eps && at <= max + eps;
+        if on_tick {
+            plan.majors.push(TimestampTick {
+                value: at,
+                label: text.clone(),
+            });
+        }
+        let label_at = if cfg.period_labels {
+            let (lo, hi) = (at.max(min), next.min(max));
+            let span_px = ((hi - lo) / (max - min)) as f32 * axis_len_px;
+            let fits = text.is_empty() || measure_extent_px(&text) <= span_px;
+            (hi > lo + eps && fits).then_some(0.5 * (lo + hi))
+        } else {
+            on_tick.then_some(at)
+        };
+        if let Some(value) = label_at {
+            plan.labels.push(TimestampTick { value, label: text });
+        }
+    }
+    Some(plan)
 }
 
 fn fraction_text(nanosecond: u32, digits: u8) -> String {
@@ -762,5 +1046,384 @@ mod tests {
         let labels: Vec<_> = plan.majors.iter().map(|tick| tick.label.as_str()).collect();
         assert!(labels.contains(&"2026-02-01"), "{labels:?}");
         assert!(labels.contains(&"2026-05-01"), "{labels:?}");
+    }
+
+    // ── Calendar steps (#357) ───────────────────────────────────────────
+
+    use crate::format::{CalendarStep, Weekday};
+
+    /// Unix seconds of a UTC date at midnight.
+    fn utc(year: i32, month: u8, day: u8) -> f64 {
+        (days_from_civil(year, month, day).unwrap() * SECONDS_PER_DAY) as f64
+    }
+
+    fn calendar(
+        step: CalendarStep,
+        label: TimestampLabelMode,
+        period_labels: bool,
+    ) -> TimestampLabelFormat {
+        TimestampLabelFormat {
+            label,
+            step: Some(step),
+            period_labels,
+            ..crate::defaults::timestamp_label_format()
+        }
+    }
+
+    fn axis(min: f64, max: f64, format: TimestampLabelFormat) -> AxisOptions {
+        let mut axis = crate::defaults::axis_options_x();
+        axis.min = min;
+        axis.max = max;
+        axis.label_style.format = LabelFormat::Timestamp(format);
+        axis
+    }
+
+    fn plan(axis: &AxisOptions) -> TimestampTickPlan {
+        // Labels measure nothing: every period label fits its period.
+        build_timestamp_tick_plan(axis, 100.0, 8.0, |_| 0.0).unwrap()
+    }
+
+    fn texts(ticks: &[TimestampTick]) -> Vec<&str> {
+        ticks.iter().map(|t| t.label.as_str()).collect()
+    }
+
+    /// An AutoCalendar axis with a pattern label in milliseconds, laid out
+    /// like a vertical axis: each label is 16 px tall on a 700 px axis.
+    fn auto_pattern_plan(min: f64, max: f64, pattern: &str) -> TimestampTickPlan {
+        let mut axis = crate::defaults::axis_options_x();
+        axis.min = min * 1_000.0;
+        axis.max = max * 1_000.0;
+        axis.label_style.format = LabelFormat::Timestamp(TimestampLabelFormat {
+            unit: TimestampUnit::Milliseconds,
+            label: TimestampLabelMode::Pattern(pattern.into()),
+            tick_policy: TimestampTickPolicy::AutoCalendar,
+            ..crate::defaults::timestamp_label_format()
+        });
+        build_timestamp_tick_plan(&axis, 700.0, 8.0, |_| 16.0).unwrap()
+    }
+
+    fn assert_adjacent_labels_differ(plan: &TimestampTickPlan) {
+        for pair in plan.majors.windows(2) {
+            assert_ne!(pair[0].label, pair[1].label, "{:?}", texts(&plan.majors));
+        }
+        assert!(plan.majors.len() <= MAX_TIME_TICKS);
+    }
+
+    /// #411: an eight-month `%Y-%m` axis ticks once a month, not weekly
+    /// with each month printed four or five times.
+    #[test]
+    fn a_month_pattern_never_ticks_finer_than_a_month() {
+        let plan = auto_pattern_plan(utc(1996, 12, 21), utc(1997, 8, 12), "%Y-%m");
+        assert_eq!(
+            texts(&plan.majors),
+            [
+                "1997-01", "1997-02", "1997-03", "1997-04", "1997-05", "1997-06", "1997-07",
+                "1997-08"
+            ]
+        );
+        for (tick, month) in plan.majors.iter().zip(1..) {
+            assert_eq!(tick.value, utc(1997, month, 1) * 1_000.0);
+        }
+        assert_adjacent_labels_differ(&plan);
+    }
+
+    /// Other patterns take their own floor: a year pattern ticks at whole
+    /// years, a date pattern at whole days, a time pattern at whole minutes.
+    #[test]
+    fn each_pattern_floors_the_step_at_its_finest_field() {
+        // Five and a half years would take quarters without the floor.
+        let plan = auto_pattern_plan(utc(2001, 3, 1), utc(2006, 9, 1), "%Y");
+        assert_eq!(
+            texts(&plan.majors),
+            ["2002", "2003", "2004", "2005", "2006"]
+        );
+        assert_adjacent_labels_differ(&plan);
+
+        // Ten days would take half-day ticks without the floor.
+        let plan = auto_pattern_plan(utc(2026, 1, 1), utc(2026, 1, 11), "%Y-%m-%d");
+        assert_eq!(plan.majors.len(), 11);
+        assert_eq!(plan.majors[0].label, "2026-01-01");
+        assert_adjacent_labels_differ(&plan);
+
+        // Four minutes would take 10 s ticks without the floor.
+        let start = utc(2026, 1, 1) + 10.0 * 3_600.0;
+        let plan = auto_pattern_plan(start, start + 240.0, "%H:%M");
+        assert_eq!(
+            texts(&plan.majors),
+            ["10:00", "10:01", "10:02", "10:03", "10:04"]
+        );
+        assert_adjacent_labels_differ(&plan);
+
+        // A pattern with seconds keeps second ticks.
+        let plan = auto_pattern_plan(start, start + 20.0, "%H:%M:%S");
+        assert_eq!(plan.majors.len(), 21);
+        assert_adjacent_labels_differ(&plan);
+    }
+
+    /// The label fit still coarsens past the floor, and a pattern with no
+    /// field, or a range shorter than one floor step, walks as before.
+    #[test]
+    fn the_floor_keeps_the_fit_and_unfloored_fallbacks() {
+        // Forty years of months do not fit: years do.
+        let plan = auto_pattern_plan(utc(1980, 1, 1), utc(2020, 1, 1), "%Y-%m");
+        assert!(plan.majors.len() <= 700 / 24 + 1, "{}", plan.majors.len());
+        assert_adjacent_labels_differ(&plan);
+
+        let plan = auto_pattern_plan(utc(2026, 1, 1), utc(2026, 1, 11), "day");
+        assert!(plan.majors.len() > 11);
+
+        // Ten days inside one month hold no month start.
+        let plan = auto_pattern_plan(utc(2026, 1, 3), utc(2026, 1, 13), "%Y-%m");
+        assert!(!plan.majors.is_empty());
+
+        assert_eq!(finest_pattern_field("%% %Y"), Some(6));
+        assert_eq!(finest_pattern_field("%b %d"), Some(4));
+        assert_eq!(finest_pattern_field("%q"), None);
+    }
+
+    /// A month header: a tick at each 1st inside the range, `%b %Y`, and
+    /// with period labels one label per month centred on its part of the
+    /// range, the partial months at both ends included.
+    #[test]
+    fn a_month_step_ticks_every_first_and_centres_its_periods() {
+        let (min, max) = (utc(2026, 3, 11), utc(2026, 6, 21));
+        let pattern = TimestampLabelMode::Pattern("%b %Y".into());
+        let on_ticks = plan(&axis(
+            min,
+            max,
+            calendar(CalendarStep::Month, pattern.clone(), false),
+        ));
+        let firsts = [utc(2026, 4, 1), utc(2026, 5, 1), utc(2026, 6, 1)];
+        assert_eq!(
+            on_ticks.majors.iter().map(|t| t.value).collect::<Vec<_>>(),
+            firsts
+        );
+        assert_eq!(
+            texts(&on_ticks.labels),
+            ["Apr 2026", "May 2026", "Jun 2026"]
+        );
+        let periods = plan(&axis(
+            min,
+            max,
+            calendar(CalendarStep::Month, pattern, true),
+        ));
+        assert_eq!(
+            periods.majors.iter().map(|t| t.value).collect::<Vec<_>>(),
+            firsts
+        );
+        assert_eq!(
+            texts(&periods.labels),
+            ["Mar 2026", "Apr 2026", "May 2026", "Jun 2026"]
+        );
+        let at: Vec<f64> = periods.labels.iter().map(|t| t.value).collect();
+        assert_eq!(at[0], 0.5 * (min + utc(2026, 4, 1)));
+        assert_eq!(at[1], 0.5 * (utc(2026, 4, 1) + utc(2026, 5, 1)));
+        assert_eq!(at[3], 0.5 * (utc(2026, 6, 1) + max));
+        // A period cut too short for its label at the range's edge draws
+        // none: over 100 px for Mar 1 .. Jun 4, June's three days are about
+        // 3 px, too narrow for a 20 px label; the full months fit.
+        let wide = calendar(
+            CalendarStep::Month,
+            TimestampLabelMode::Pattern("%b".into()),
+            true,
+        );
+        let edge = axis(utc(2026, 3, 1), utc(2026, 6, 4), wide);
+        let narrow = build_timestamp_tick_plan(&edge, 100.0, 8.0, |_| 20.0).unwrap();
+        assert_eq!(texts(&narrow.labels), ["Mar", "Apr", "May"]);
+    }
+
+    /// Weeks start on the chosen weekday at local midnight, in UTC and in a
+    /// fixed offset; days, quarters and years walk their boundaries.
+    #[test]
+    fn every_step_walks_its_local_boundaries() {
+        let auto = TimestampLabelMode::Auto;
+        let (min, max) = (utc(2026, 3, 1), utc(2026, 3, 31));
+        for start in [Weekday::Monday, Weekday::Thursday, Weekday::Sunday] {
+            for zone in [TimestampZone::Utc, TimestampZone::FixedOffsetMinutes(540)] {
+                let mut format = calendar(CalendarStep::Week { start }, auto.clone(), false);
+                format.timezone = zone;
+                let majors = plan(&axis(min, max, format.clone())).majors;
+                assert!(majors.len() >= 4, "{start:?} {zone:?}");
+                for tick in &majors {
+                    let parts = parts_from_value(tick.value, &format).unwrap();
+                    let days = days_from_civil(parts.year, parts.month, parts.day).unwrap();
+                    assert_eq!(weekday_of(days), start.index(), "{start:?} {zone:?}");
+                    assert_eq!((parts.hour, parts.minute, parts.second), (0, 0, 0));
+                }
+                let gaps = majors.windows(2).map(|w| w[1].value - w[0].value);
+                assert!(gaps.into_iter().all(|g| g == 7.0 * 86_400.0));
+            }
+        }
+        let majors = |step, min, max| {
+            plan(&axis(min, max, calendar(step, auto.clone(), false)))
+                .majors
+                .iter()
+                .map(|t| t.value)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            majors(CalendarStep::Day, utc(2026, 2, 27), utc(2026, 3, 2)),
+            [
+                utc(2026, 2, 27),
+                utc(2026, 2, 28),
+                utc(2026, 3, 1),
+                utc(2026, 3, 2)
+            ]
+        );
+        assert_eq!(
+            majors(CalendarStep::Quarter, utc(2025, 12, 5), utc(2026, 10, 2)),
+            [
+                utc(2026, 1, 1),
+                utc(2026, 4, 1),
+                utc(2026, 7, 1),
+                utc(2026, 10, 1)
+            ]
+        );
+        assert_eq!(
+            majors(CalendarStep::Year, utc(2024, 6, 1), utc(2027, 1, 1)),
+            [utc(2025, 1, 1), utc(2026, 1, 1), utc(2027, 1, 1)]
+        );
+    }
+
+    /// Relative labels count whole periods from the origin's period,
+    /// negative before it; custom labels look each period up by the same
+    /// count, and a period with no string has no label but keeps its tick.
+    #[test]
+    fn relative_and_custom_labels_count_periods_from_the_origin() {
+        let origin = utc(2026, 3, 4) as i64; // a Wednesday: its week starts Mar 2
+        let week = CalendarStep::Week {
+            start: Weekday::Monday,
+        };
+        let (min, max) = (utc(2026, 2, 20), utc(2026, 3, 20));
+        let relative = TimestampLabelMode::Relative {
+            origin,
+            prefix: "Week ".into(),
+        };
+        let p = plan(&axis(min, max, calendar(week, relative, false)));
+        assert_eq!(texts(&p.labels), ["Week -1", "Week 0", "Week 1", "Week 2"]);
+        let custom = TimestampLabelMode::Custom {
+            origin,
+            labels: vec!["Kickoff".into(), "Build".into()],
+        };
+        let p = plan(&axis(min, max, calendar(week, custom, false)));
+        assert_eq!(p.majors.len(), 4, "every boundary keeps its tick");
+        assert_eq!(texts(&p.labels), ["", "Kickoff", "Build", ""]);
+        // Months and days count the same way.
+        let months = TimestampLabelMode::Relative {
+            origin,
+            prefix: "Month ".into(),
+        };
+        let p = plan(&axis(
+            utc(2026, 1, 15),
+            utc(2026, 5, 2),
+            calendar(CalendarStep::Month, months, true),
+        ));
+        assert_eq!(
+            texts(&p.labels),
+            ["Month -2", "Month -1", "Month 0", "Month 1", "Month 2"]
+        );
+        let days = TimestampLabelMode::Relative {
+            origin,
+            prefix: "Day ".into(),
+        };
+        let p = plan(&axis(
+            utc(2026, 3, 3),
+            utc(2026, 3, 6),
+            calendar(CalendarStep::Day, days, false),
+        ));
+        assert_eq!(texts(&p.labels), ["Day -1", "Day 0", "Day 1", "Day 2"]);
+    }
+
+    /// Rule 10: custom labels have no count limit; a long axis reads deep
+    /// into a long list.
+    #[test]
+    fn custom_labels_have_no_count_limit() {
+        let origin = utc(2024, 1, 1);
+        let labels: Vec<String> = (0..10_000).map(|i| format!("L{i}")).collect();
+        let custom = TimestampLabelMode::Custom {
+            origin: origin as i64,
+            labels,
+        };
+        let (min, max) = (origin + 9_000.0 * 86_400.0, origin + 9_900.0 * 86_400.0);
+        let p = plan(&axis(min, max, calendar(CalendarStep::Day, custom, false)));
+        assert_eq!(p.labels.first().map(|t| t.label.as_str()), Some("L9000"));
+        assert_eq!(p.labels.last().map(|t| t.label.as_str()), Some("L9900"));
+    }
+
+    #[test]
+    fn b_prints_the_month_name() {
+        let format = TimestampLabelFormat {
+            label: TimestampLabelMode::Pattern("%b %d, %Y %%b".into()),
+            ..crate::defaults::timestamp_label_format()
+        };
+        let text =
+            format_timestamp_numeric_tick(utc(2026, 11, 19), &format, 0.0, 1.0, 1.0).unwrap();
+        assert_eq!(text, "Nov 19, 2026 %b");
+    }
+
+    #[test]
+    fn relative_custom_and_period_labels_need_a_step() {
+        use crate::RuleKind;
+        let mut format = crate::defaults::timestamp_label_format();
+        assert_eq!(format.validate(), Ok(()));
+        format.period_labels = true;
+        assert_eq!(format.validate(), Err(RuleKind::TimestampStepRequired));
+        format.period_labels = false;
+        format.label = TimestampLabelMode::Relative {
+            origin: 0,
+            prefix: "Day ".into(),
+        };
+        assert_eq!(format.validate(), Err(RuleKind::TimestampStepRequired));
+        format.step = Some(CalendarStep::Day);
+        assert_eq!(format.validate(), Ok(()));
+        format.label = TimestampLabelMode::Relative {
+            origin: 0,
+            prefix: "x".repeat(25),
+        };
+        assert_eq!(format.validate(), Err(RuleKind::TimestampRelativePrefix));
+        format.label = TimestampLabelMode::Custom {
+            origin: 0,
+            labels: vec!["ok".into(), "two\nlines".into()],
+        };
+        assert_eq!(format.validate(), Err(RuleKind::TimestampCustomLabel));
+        // The chart's validation reads it on every axis.
+        let mut config = crate::defaults::config();
+        config.top_x.label_style.format = LabelFormat::Timestamp(TimestampLabelFormat {
+            period_labels: true,
+            ..crate::defaults::timestamp_label_format()
+        });
+        assert_eq!(
+            config.validate_chart().unwrap_err().kind,
+            RuleKind::TimestampStepRequired
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn calendar_formats_round_trip_and_older_ones_read_unchanged() {
+        let format = calendar(
+            CalendarStep::Week {
+                start: Weekday::Sunday,
+            },
+            TimestampLabelMode::Custom {
+                origin: 1_772_409_600,
+                labels: vec!["Sprint A".into()],
+            },
+            true,
+        );
+        let json = serde_json::to_string(&format).unwrap();
+        assert_eq!(
+            serde_json::from_str::<TimestampLabelFormat>(&json).unwrap(),
+            format
+        );
+        let plain = crate::defaults::timestamp_label_format();
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(
+            !json.contains("step") && !json.contains("period_labels"),
+            "{json}"
+        );
+        let old: TimestampLabelFormat =
+            serde_json::from_str(r#"{"unit":"Seconds","label":{"Pattern":"%m/%d"}}"#).unwrap();
+        assert_eq!((old.step, old.period_labels), (None, false));
     }
 }

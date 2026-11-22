@@ -179,7 +179,14 @@ overlapping, gapped, empty, past-the-end or mistyped chunk is
 `expected_revision` is the `column_revision(id)` the upload replaces
 (`None` for a new id); a different one, at begin or at commit, and an upload
 begun on another renderer are `FiggyError::StaleStateToken`. Dropping the
-upload cancels it. `Renderer::inspect_streaming_candidate(&config, &series)`
+upload cancels it. Several uploads and a chart's next config and series
+install together with `commit_column_uploads(chart, uploads, state)` (#334):
+each upload is a `BatchSource::Staged(&ColumnUpload)` source of the
+`begin_replace_chart_sources` transaction, checked at commit as
+`commit_column_upload` checks one (`check_column_upload`, revision
+included), so one stale or incomplete upload refuses all of them and
+nothing changes. Without a state the chart keeps its config and series,
+validated against the new columns. `Renderer::inspect_streaming_candidate(&config, &series)`
 applies the rules of `inspect_streaming_capability(chart)` to a candidate
 that no chart holds.
 
@@ -202,6 +209,7 @@ field setters:
 | `set_x_range(...)` / `set_y_range(...)` | Set both axes in the pair, give the partner (`top_x`, `right_y`) the `scale` of the main axis (`bottom_x`, `left_y`), and choose each axis's major spacing, minor count, label format and precision from that scale, so a logarithmic `left_y` puts decades on both edges. The auto-fits and subplot setters do the same. A categorical partner keeps its scale, and on a 3D or ternary chart, where `right_y` is the z or c axis, the partner keeps its own scale and gets the ticks of it. A second value axis with its own scale is an overlay layer (`Config::overlays`); a view state applies each axis's scale as it carries it. The spacing is `tick::axis_major_spacing`: 0.2, 0.5 or 1 × 10^k of the span on a linear axis (5 to 10 major intervals), and on a logarithmic axis 1 decade per major tick up to 6 decades, 2 up to 12, then `ceil(decades / 6)`. On a linear axis an existing timestamp format is kept and any other format, including a polar `Degrees` or `Radians` format, becomes `Decimal`. On a polar chart `set_x_range` only chooses the angle ticks, spokes and labels drawn. Every range helper keeps `log_ticks`: an `Adaptive` logarithmic axis plans its majors from the new range and does not draw the written decade step. |
 | `auto_fit_x*` / `auto_fit_y*` / `auto_fit_colorbar*` | Derive a range from data or supplied extents with padding, then apply the associated tick and label adjustments. These leave a categorical axis (`categories` set) unchanged; `set_x_range` / `set_y_range` set its `category_window` ([#205](https://github.com/shim9610/figgy/issues/205)), the categories it shows, and the full range clears it. |
 | `Renderer::fit_config(&config, &series, padding)` / `fit_y_axes_config(...)` | Return a copy of the candidate `config`, the input and every chart untouched, with the ranges `fit_ranges` would give each layer, by the same code and at the padding given ([#312](https://github.com/shim9610/figgy/issues/312)). The Y variant returns every X axis (`bottom_x`, `top_x`, overlay `x_axis`, in subplots too) as given. A layer naming a series not in `series` is `LayerSeriesUnknown`; a bad padding `FitPadding`; streamed sources and monotonic series are refused as in `fit_ranges`. |
+| `Renderer::fit_config_scoped(&config, &series, padding, &scope)` | `fit_config` for one layer's chosen axes ([#334](https://github.com/shim9610/figgy/issues/334)): only the `FitScope::axes` (`FitAxes { x, y, z }`, `z` a 3D chart's `right_y`, parallel axes as `y`) of `FitScope::layer` move, with their link groups; every other axis comes back as given. `LinkedFitData::Group` reads every series drawn against a linked axis' group; `Target` only the target panel's (the group still shares the range). An axis in `keep` (`FitAxisRef { layer, axis }`), or linked to one, holds its range. Statistics only: error bar ends, heatmap cell half-widths and arrow tips are not included. The refusals are `fit_config`'s, plus `InvalidConfig { field: "fit_scope", kind: FitScopeLayer }` for a scope or kept layer the candidate does not have. |
 | `Renderer::fit_point_size_domain(&mut series)` / `fit_vector_scale(&config, &mut series, target)` | Write one series' `PointSizeMap` domain (`fit_domain`) or `VectorStyle` scale (`fit_scale`, `fit_scale_3d` for a point field `config` draws in 3D) from its columns' cached statistics, nothing read back ([#312](https://github.com/shim9610/figgy/issues/312)). An empty, non-finite or degenerate extent, a missing map, a non-vector series, a bad target and a streamed column are errors that leave the series unchanged. |
 | `with_title(...)` | Replace the title text and grow its band when the measured text is taller than the current band. The band never shrinks. `$…$` spans are TeX ([math in labels](USAGE.md#math-in-labels)). |
 | `with_x_title(...)` / `with_y_title(...)` | Replace the bottom/left axis title text, `$…$` spans as TeX; these helpers do not fit margins. |
@@ -572,10 +580,10 @@ Construction and full Cartesian prewarming are separate operations:
 
 | Entry point | Work performed |
 | --- | --- |
-| `Renderer::try_new` / `try_new_observed` | Validate device capabilities and create the initial column pool, shared layouts/sampler, shader modules, unit quad and axis pipeline. The optional resident data and style, path-length (dash) scan, fit reduction, contour-label and picking pipelines are created on first use. |
+| `Renderer::try_new` | Validate device capabilities and create the initial column pool, shared layouts/sampler, shader modules, unit quad and axis pipeline. The optional resident data and style, path-length (dash) scan, fit reduction, contour-label and picking pipelines are created on first use. |
 | Native `for_window_async` / `for_window_async_observed` | Create and retain instance/adapter/device/queue, configure a surface and optional MSAA target, then initialize the same base renderer resources. |
 | Browser `for_window_async` / `for_window_async_observed` | In addition to window setup, await temporary JavaScript warmup pipelines for the Cartesian render entries. Those temporary pipelines are discarded; they do not populate the renderer's retained optional caches. |
-| `for_window_minimal_async_observed` | In a browser, await no pipeline compile: create the fullscreen textured pipeline directly, issue the asynchronous compile of every resident render pipeline at once and return while the browser compiles them. On native targets it has the same base initialization as the ordinary async constructor. It installs no preparation group. |
+| `for_window_with_shader_set_async_observed` | Start on the given `ShaderSet`. In a browser, await no pipeline compile: create the fullscreen textured pipeline directly, issue the asynchronous compile of every resident render pipeline at once and return while the browser compiles them. On native targets it has the same base initialization as the ordinary async constructor. It installs no preparation group. |
 | `prewarm_all` / `prewarm_all_observed` | Compile and retain the resident Cartesian graphics/style pipelines, contour-label compute, path-length scans, fit reduction and GPU picking machinery for the current renderer/target generation. |
 
 Normal preparation creates missing pipelines lazily. To move that work before
@@ -640,7 +648,10 @@ A host that holds only a built renderer, such as a `WindowedRenderer` from
 device-loss record, the ledger and the budget. `WindowedRenderer::instance()`
 and `adapter()` give the handles another surface on that device is created
 and configured from. Dropping any of these renderers or bundles never destroys
-the device.
+the device while another of them holds it. In the browser, the last holder of
+a device figgy requested itself (`RendererDevice::request_async`, a windowed or
+headless renderer) destroys it on drop, after the work submitted on it (#322);
+a device from `RendererDevice::new` stays the host's and is never destroyed.
 
 ## Render targets, coordinates and output
 
@@ -713,7 +724,7 @@ does not know and rejects enum variants it does not know.
 
 ## Detached Cartesian pipeline preparation
 
-`Renderer::for_window_minimal_async_observed` starts the temporary browser render
+`Renderer::for_window_with_shader_set_async_observed` starts the temporary browser render
 warmup without waiting for it, as described above. A host using detached preparation to gate first use
 must compile and install `PreparationFeature::Basic` (which also includes path-length
 scans and fit reduction), plus the groups needed by its charts. Construction
@@ -731,8 +742,8 @@ per renderer and feature, serialize installation with other renderer calls, and
 ignore results after their renderer has been disposed.
 
 **Background compiles in a browser** ([#299](https://github.com/shim9610/figgy/issues/299)).
-A renderer built by `for_window_minimal_async_observed` (or
-`for_window_with_shader_set_async_observed`) compiles the render pipelines of its
+A renderer built by `for_window_with_shader_set_async_observed` compiles the
+render pipelines of its
 shader set in the background, at most as many at once as the browser reports cores
 (`navigator.hardwareConcurrency`, four when it reports none), and issues what a screen
 frame needs before the rest. The vector, 3D surface and ternary region modules are
@@ -770,13 +781,19 @@ screen frame needed for its own target (`Rgba16Float`, its sample count) through
 second queue, and waits for them before it prepares; its creations then find the
 browser's cache. It also waits for the compute passes the screen's queue has
 scheduled, which do not depend on the target. A pipeline the screen did not draw is created by the export as before.
-The picks' compute pipelines are not in these queues: the bundles compile through
-`enable_gpu_picking_async`, and `WindowedRenderer::compile_pick_pipelines_at` (or
-`Renderer::compile_pick_pipelines_async`) compiles, through
-`createComputePipelineAsync`, each exact pick variant a pick at that position needs
-and has not created yet, then creates it from the browser's cache. The web
-`pick_point` and `pick_data` call it before they submit, so a first pick no longer
-compiles its exact variants on the page's thread. Fit needs nothing of this: `fit_ranges`
+A chart a screen frame draws also queues what its first pick needs (#363, #381),
+ahead of the waiting draw compiles and outside the screen's counts, waits and
+failures: the picker's gate and reduce pipelines while picking is off, the
+nearest-datum kernel of the chart's projection, and the typed data pick kernels of its
+series' families. Each is scheduled once per chart revision and shader set, and the
+frames that follow create each in the picker's cache as its compile resolves. A
+monotonic chart and a chart with a streamed series are not warmed.
+`enable_gpu_picking_async`, `WindowedRenderer::compile_pick_pipelines_at` (or
+`Renderer::compile_pick_pipelines_async`) and `compile_data_pick_pipelines_at` wait for
+a scheduled compile instead of starting their own, and otherwise compile, through
+`createComputePipelineAsync`, what a pick at that position needs and has not created
+yet, then create it from the browser's cache. The web `pick_point` and `pick_data` call
+them before they submit, so a first pick compiles nothing on the page's thread. Fit needs nothing of this: `fit_ranges`
 reads column statistics only, and the GPU auto-fit awaits its compute pipelines through
 `createComputePipelineAsync` already. Natively every frame is complete,
 the counts are zero and both waits resolve at once.
@@ -807,7 +824,7 @@ the cut remap of a broken axis, the probability scale and polar coordinates.
   preparation begun before it is rejected by `install_preparation` like one
   for another target generation. A `PreparedFrame` prepared before it stays
   valid. In a browser, a renderer that started its pipelines' asynchronous
-  compiles when it was built (`for_window_minimal_async_observed`) starts
+  compiles when it was built (`for_window_with_shader_set_async_observed`) starts
   the full set's the same way at the upgrade.
 - **`Renderer::require_shader_set(ShaderSet)`** asks for the upgrade early,
   before such a chart arrives. It only moves up and is idempotent: asking
@@ -817,8 +834,8 @@ the cut remap of a broken axis, the probability scale and polar coordinates.
   `RendererDevice::with_shader_set(ShaderSet::Full)` for the constructors
   that take a device bundle (`Renderer::try_new` and its siblings), and
   `Renderer::for_window_with_shader_set_async_observed(target, size,
-  pool_capacity_bytes, set, observer)` for a window or canvas, which is
-  `for_window_minimal_async_observed` with the set. The other constructors
+  pool_capacity_bytes, set, observer)` for a window or canvas, which
+  returns before any pipeline compile. The other constructors
   are unchanged and start on the basic set.
 
 `PreparationFeature::ALL`, `for_chart(config, series)` and `preparation_ready`

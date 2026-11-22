@@ -251,7 +251,7 @@ impl PrepareContext<'_> {
         let indices = triangles.indices().ok_or_else(|| unknown(member))?;
         let triangle_count = triangles.stats().triangles;
         // On a 3D chart the height column (`z_column`) is the table's third
-        // entry (`MESH_TABLE_HEIGHTS`): the surface reads it, and its epoch
+        // entry (`MESH_HEIGHTS` in `surface_input_mesh.wgsl`): the surface reads it, and its epoch
         // stamps the signature, so a new upload rebuilds the group.
         let height_id = chart_config.drawn_z_column(cfg);
         let height = height_id
@@ -558,9 +558,9 @@ impl PrepareContext<'_> {
             (Some(fill), _) => fill,
             (
                 None,
-                DataRenderType::RgbImage {
+                DataRenderType::RgbImage(RgbImageSeries {
                     shading, opacity, ..
-                },
+                }),
             ) => {
                 image_fill = crate::data_config::FieldFillConfig {
                     mode: crate::data_config::FillMode::Continuous,
@@ -674,7 +674,7 @@ impl PrepareContext<'_> {
                     bar.nan_color,
                 )
             }
-            (None, DataRenderType::RgbImage { range, .. }) => {
+            (None, DataRenderType::RgbImage(RgbImageSeries { range, .. })) => {
                 flags |= data_render::FIELD_FLAG_RGB;
                 let pair = |v: f64| {
                     let (hi, lo) = crate::data::split_f64_to_f32_pair(v);

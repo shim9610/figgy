@@ -6,6 +6,7 @@ use super::{
 };
 use crate::color::Color;
 use crate::material::Material;
+use crate::preset::AxisPreset;
 
 /// `family`'s member for `kind`.
 pub(super) fn member(family: ThemeFamily, kind: ChartKind) -> Theme {
@@ -230,9 +231,13 @@ fn distribution_midnight() -> Theme {
 
 /// The gallery's range bars: green rises, coral falls and blue totals with
 /// small round corners, slate connectors and whiskers, state colours from
-/// the gallery's palette with their unfinished part faded, on white paper.
+/// the gallery's palette with their unfinished part faded, in the open
+/// frame without tick marks on white paper: a timeline's light chrome,
+/// read on the value gridlines.
 fn range_bars_gallery() -> Theme {
     let mut theme = gallery(ChartKind::RangeBars);
+    theme.chrome.axis_preset = AxisPreset::OpenOutward;
+    theme.chrome.ticks = false;
     let total = rgb(34, 104, 198);
     theme.series.palette = palette(ThemeFamily::Gallery);
     theme.series.bars.corner_radius = 3.0;

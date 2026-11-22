@@ -7,13 +7,14 @@
 //! radius or sector fails rather than passes.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{RED, col, count, export_1x as export, is_red_soft as is_red, pixel, save};
+use test_gpu::shared_device;
 
 use renderer::config::AxisScale;
-use renderer::data::Column;
 use renderer::data_config::{BarOrientation, DataBarStyleConfig, LineFill, LineInterpolation};
 use renderer::format::LabelFormat;
 use renderer::layout::{ChartArea, Rect};
@@ -23,33 +24,14 @@ use renderer::pick::cpu_twin::{PointColumnLookup, PointPickOptions, pick_nearest
 use renderer::polar::{AngleUnit, PolarInterpolation, PolarOptions};
 use renderer::{
     Chart, Color, Config, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, FiggyError,
-    OverlayLayer, RasterImage, Renderer, RendererDevice, ScatterShape, SeriesConfig, Subplot,
+    HistogramSeries, OverlayLayer, RasterImage, Renderer, RendererDevice, ScatterShape,
+    SeriesConfig, Subplot,
 };
 #[cfg(feature = "cpu-twin")]
 use renderer::{GpuPickRequest, display_config_for_surface};
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 400;
-
-const RED: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 0.0,
-    a: 1.0,
-};
-
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
 
 fn renderer() -> Renderer {
     let (device, queue) = shared_device();
@@ -187,15 +169,6 @@ fn inward(config: &Config, theta: f64, r: f64, px: f64) -> (f64, f64) {
     (x - dx / len * px, y - dy / len * px)
 }
 
-fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
-    let i = ((y * img.width + x) * 4) as usize;
-    &img.rgba[i..i + 4]
-}
-
-fn is_red(p: &[u8]) -> bool {
-    p[3] > 180 && p[0] > 180 && p[1] < 80 && p[2] < 80
-}
-
 /// The half-transparent fill: red ink at any alpha (the export is not
 /// composited over a background).
 fn is_tinted(p: &[u8]) -> bool {
@@ -208,32 +181,6 @@ fn at(img: &RasterImage, (x, y): (f64, f64)) -> &[u8] {
         (x.round() as i64).clamp(0, img.width as i64 - 1) as u32,
         (y.round() as i64).clamp(0, img.height as i64 - 1) as u32,
     )
-}
-
-fn count(img: &RasterImage, pred: fn(&[u8]) -> bool) -> usize {
-    img.rgba.chunks_exact(4).filter(|p| pred(p)).count()
-}
-
-fn export(renderer: &mut Renderer, chart: &Chart, series: &[SeriesConfig]) -> RasterImage {
-    renderer
-        .export_rgba(
-            renderer::ExportSource::chart(chart, series),
-            renderer::ExportOptions::panel(1.0),
-        )
-        .block_on()
-        .unwrap()
-}
-
-/// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
-fn save(name: &str, image: &RasterImage) {
-    if let Ok(path) = std::env::var("FIGGY_INTERACTION_ARTIFACTS") {
-        std::fs::create_dir_all(&path).unwrap();
-        std::fs::write(
-            std::path::Path::new(&path).join(format!("{name}.png")),
-            renderer::encode_png(image).unwrap(),
-        )
-        .unwrap();
-    }
 }
 
 #[test]
@@ -594,6 +541,8 @@ fn gpu_and_cpu_picking_agree_on_markers_chords_and_arcs() {
             .register_chart(chart.config().clone(), series.clone())
             .unwrap();
         renderer.enable_gpu_picking().unwrap();
+        // A pick hits the ink its on-screen prepare drew (#381).
+        harness::show_for_pick(&mut renderer, id, &pick_request(&chart, (0.0, 0.0), 0.0));
         let config = chart.config();
         let cpu = |at: (f64, f64), max: f32| {
             pick_nearest_point(
@@ -620,9 +569,11 @@ fn gpu_and_cpu_picking_agree_on_markers_chords_and_arcs() {
         // The marker at 200 degrees, half way out. The path ends there too,
         // so either series may answer; the index is the sample's.
         let marker = polar_px(config, 200.0, 0.5);
+        // The GPU pick answers the nearest datum, measured to its centre
+        // (#381).
         let hit = gpu(marker, 2.0).expect("marker hit");
         assert_eq!(hit.point_index, 2, "{hit:?}");
-        assert_eq!(hit.distance_px, 0.0, "{hit:?}");
+        assert!(hit.distance_px < 1e-3, "{hit:?}");
         let cpu_hit = cpu(marker, 2.0).expect("cpu marker hit");
         assert_eq!(cpu_hit.point_index, 2, "{cpu_hit:?}");
         assert_eq!(cpu_hit.distance_px, 0.0, "{cpu_hit:?}");
@@ -637,9 +588,9 @@ fn gpu_and_cpu_picking_agree_on_markers_chords_and_arcs() {
         } else {
             (chord_mid, ring_mid)
         };
-        let hit = gpu(on, 3.0).expect("path hit");
-        assert_eq!(hit.series_id, "path", "arc {on_arc}");
-        assert!(hit.distance_px <= 1.0, "arc {on_arc}: {}", hit.distance_px);
+        // The GPU pick hits the drawn path's ink there and answers the
+        // nearest datum (#381); the CPU twin keeps the exact geometry.
+        assert!(gpu(on, 3.0).is_some(), "arc {on_arc}: path hit");
         let cpu_hit = cpu(on, 3.0).expect("cpu path hit");
         assert_eq!(cpu_hit.series_id, "path");
         assert!(cpu_hit.distance_px <= 1.0, "{}", cpu_hit.distance_px);
@@ -659,6 +610,7 @@ fn gpu_and_cpu_picking_agree_on_markers_chords_and_arcs() {
     let id = renderer
         .register_chart(chart.config().clone(), series.clone())
         .unwrap();
+    harness::show_for_pick(&mut renderer, id, &pick_request(&chart, (0.0, 0.0), 0.0));
     let config = chart.config();
     let inside = polar_px(config, 90.0, 1.0);
     let outside = polar_px(config, 200.0, 0.5);
@@ -705,7 +657,7 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
         x_column: "theta".into(),
         y_column: "r".into(),
         z_column: None,
-        render_type: DataRenderType::Histogram {
+        render_type: DataRenderType::Histogram(HistogramSeries {
             bar: DataBarStyleConfig {
                 fill_color: RED,
                 border_color: Color::BLACK,
@@ -716,7 +668,7 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
                 orientation: BarOrientation::Vertical,
                 bar_style_overrides: None,
             },
-        },
+        }),
     };
     match renderer
         .export_rgba(
@@ -811,6 +763,7 @@ fn polar_and_cartesian_subplots_share_a_document_and_cartesian_pixels_are_unchan
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     });
     let mut polar_points = scatter("polar_points", 8.0);
     polar_points.series_id = "polar_points".into();

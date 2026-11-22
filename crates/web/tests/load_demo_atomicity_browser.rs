@@ -1,25 +1,12 @@
 #![cfg(target_arch = "wasm32")]
 
 use figgy::FiggyChart;
-use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
 
-wasm_bindgen_test_configure!(run_in_browser);
+mod support;
+use support::canvas_800x500 as canvas;
 
-fn canvas() -> web_sys::HtmlCanvasElement {
-    let document = web_sys::window()
-        .expect("window")
-        .document()
-        .expect("document");
-    let canvas = document
-        .create_element("canvas")
-        .expect("canvas element")
-        .dyn_into::<web_sys::HtmlCanvasElement>()
-        .expect("HtmlCanvasElement");
-    canvas.set_width(800);
-    canvas.set_height(500);
-    canvas
-}
+wasm_bindgen_test_configure!(run_in_browser);
 
 fn segment_text(value: &serde_json::Value) -> String {
     value["segments"]

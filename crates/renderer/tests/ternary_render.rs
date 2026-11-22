@@ -8,61 +8,28 @@
 //! component order fails rather than passes.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::{
+    MAGENTA, RED, col, count, is_red_soft as is_red, pixel, renderer_bgra as renderer, rule_of,
+    save,
+};
 
-use std::sync::OnceLock;
-
+use harness::ShowForPick as _;
 use renderer::config::{DataSelectionsConfig, PickedDataRef, TickVisibility};
-use renderer::data::Column;
 use renderer::data_config::LineInterpolation;
 use renderer::layout::{ChartArea, Element, NudgeResult, Rect, Side};
 use renderer::line::LineStylePreset;
 use renderer::{
     Chart, Color, Config, CpuTextMeasure, DataLineStyleConfig, DataRenderType,
-    DataScatterStyleConfig, FitExtent, HitMap, LayerRef, RasterImage, Renderer, RendererDevice,
-    ScatterShape, SeriesConfig, Subplot, TernaryOptions,
+    DataScatterStyleConfig, FiggyError, FitExtent, HitMap, LayerRef, RasterImage, Renderer,
+    RuleKind, ScatterShape, SeriesConfig, Subplot, TernaryOptions, TernarySeries,
 };
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 420;
-
-const RED: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 0.0,
-    a: 1.0,
-};
-
-const MAGENTA: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 1.0,
-    a: 1.0,
-};
-
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
-
-fn renderer() -> Renderer {
-    let (device, queue) = shared_device();
-    Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Bgra8Unorm,
-        64 * 1024 * 1024,
-    )
-    .expect("renderer init")
-}
 
 /// A ternary chart over 0..100 with no grid, legend, axes or labels, so the
 /// only red ink is the series.
@@ -156,12 +123,12 @@ fn ternary(
         x_column: "a".into(),
         y_column: "b".into(),
         z_column: None,
-        render_type: DataRenderType::Ternary {
+        render_type: DataRenderType::Ternary(TernarySeries {
             c_column: "c".into(),
             scatter,
             line,
             region: None,
-        },
+        }),
     }
 }
 
@@ -195,11 +162,6 @@ fn ternary_px(config: &Config, row: [f64; 3], scale: f32) -> (f64, f64) {
     (f64::from(p[0]), f64::from(p[1]))
 }
 
-fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
-    let i = ((y * img.width + x) * 4) as usize;
-    &img.rgba[i..i + 4]
-}
-
 fn at(img: &RasterImage, (x, y): (f64, f64)) -> &[u8] {
     pixel(
         img,
@@ -208,16 +170,8 @@ fn at(img: &RasterImage, (x, y): (f64, f64)) -> &[u8] {
     )
 }
 
-fn is_red(p: &[u8]) -> bool {
-    p[3] > 180 && p[0] > 180 && p[1] < 80 && p[2] < 80
-}
-
 fn is_magenta(p: &[u8]) -> bool {
     p[3] > 180 && p[0] > 180 && p[1] < 80 && p[2] > 180
-}
-
-fn count(img: &RasterImage, pred: fn(&[u8]) -> bool) -> usize {
-    img.rgba.chunks_exact(4).filter(|p| pred(p)).count()
 }
 
 fn export(
@@ -233,18 +187,6 @@ fn export(
         )
         .block_on()
         .unwrap()
-}
-
-/// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
-fn save(name: &str, image: &RasterImage) {
-    if let Ok(path) = std::env::var("FIGGY_INTERACTION_ARTIFACTS") {
-        std::fs::create_dir_all(&path).unwrap();
-        std::fs::write(
-            std::path::Path::new(&path).join(format!("{name}.png")),
-            renderer::encode_png(image).unwrap(),
-        )
-        .unwrap();
-    }
 }
 
 /// The GPU pick at `at` (canvas pixels at `scale`) of a chart registered
@@ -270,7 +212,13 @@ fn pick(
         display_scale: scale,
         max_distance_px: reach,
     };
-    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let hit = test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap();
     r.remove_chart(id).unwrap();
     hit
 }
@@ -502,9 +450,13 @@ fn markers_and_lines_pick_where_they_paint() {
             ternary_px(&config, rows[1], scale),
         );
         let near_a = (a.0 + (b.0 - a.0) * 0.3, a.1 + (b.1 - a.1) * 0.3);
-        assert_eq!(
-            picked_point(pick(&mut r, &config, &path, scale, near_a, 1.0)),
-            Some(("path".into(), 0)),
+        // The chord's ink hits; the selection is the path's nearest datum
+        // (#381), whichever vertex that is.
+        assert!(
+            matches!(
+                picked_point(pick(&mut r, &config, &path, scale, near_a, 1.0)),
+                Some((ref id, _)) if id == "path"
+            ),
             "{scale}x chord"
         );
         // 20 px off the chord, across it.
@@ -640,10 +592,7 @@ fn registration_rejects_what_ternary_does_not_draw() {
     let err = |config: Config, series: Vec<SeriesConfig>| {
         let mut r = renderer();
         upload(&mut r, &[[1.0, 1.0, 1.0]]);
-        match r.register_chart(config, series) {
-            Ok(_) => String::from("registered"),
-            Err(e) => e.to_string(),
-        }
+        r.register_chart(config, series).err()
     };
     let plain = SeriesConfig {
         render_type: DataRenderType::Xy(renderer::data_config::XySeries {
@@ -654,10 +603,24 @@ fn registration_rejects_what_ternary_does_not_draw() {
         }),
         ..ok.clone()
     };
-    assert!(err(bare_config(), vec![plain]).contains("only ternary series"));
+    let refused = err(bare_config(), vec![plain]);
+    assert!(
+        matches!(
+            refused.as_ref().and_then(rule_of),
+            Some(RuleKind::TernaryChartSeriesKind)
+        ),
+        "{refused:?}"
+    );
     let mut rectangular = bare_config();
     rectangular.set_ternary(None);
-    assert!(err(rectangular, vec![ok.clone()]).contains("ternary chart"));
+    let refused = err(rectangular, vec![ok.clone()]);
+    assert!(
+        matches!(
+            refused.as_ref().and_then(rule_of),
+            Some(RuleKind::TernarySeriesNotTernary)
+        ),
+        "{refused:?}"
+    );
     // The axis rules are the chart's, checked where it is drawn, as a
     // polar chart's are.
     let mut unequal = bare_config();
@@ -671,20 +634,24 @@ fn registration_rejects_what_ternary_does_not_draw() {
     assert!(
         drawn
             .as_ref()
-            .is_err_and(|e| e.to_string().contains("same")),
+            .is_err_and(|e| matches!(rule_of(e), Some(RuleKind::TernaryAxisSpan))),
         "{:?}",
         drawn.map(|_| ())
     );
     let missing = SeriesConfig {
-        render_type: DataRenderType::Ternary {
+        render_type: DataRenderType::Ternary(TernarySeries {
             c_column: "missing".into(),
             scatter: Some(marker_style(4.0)),
             line: None,
             region: None,
-        },
+        }),
         ..ok
     };
-    assert!(err(bare_config(), vec![missing]).contains("missing"));
+    let refused = err(bare_config(), vec![missing]);
+    assert!(
+        matches!(&refused, Some(FiggyError::UnknownColumn { id }) if id == "missing"),
+        "{refused:?}"
+    );
 }
 
 /// A ternary subplot draws its triangle in its own cell, beside a
@@ -729,6 +696,74 @@ fn a_ternary_subplot_draws_in_its_own_cell() {
         assert!(p.1 > f64::from(HEIGHT / 2), "in the lower cell");
         assert!(is_red(at(&img, p)), "{row:?} at {p:?}");
     }
+}
+
+/// A registered chart whose root is Cartesian and whose subplot is ternary
+/// (#325): the series is held to its subplot's coordinates, not the
+/// root's, and the registered chart draws and picks it in the subplot.
+#[test]
+fn a_registered_ternary_subplot_beside_a_cartesian_root_draws_and_picks() {
+    let mut r = renderer();
+    let rows = [[70.0, 10.0, 20.0], [10.0, 70.0, 20.0], [20.0, 20.0, 60.0]];
+    upload(&mut r, &rows);
+    let mut parent = renderer::default::default_config();
+    parent.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: WIDTH,
+        height: HEIGHT / 2,
+    });
+    let mut inner = bare_config();
+    inner.chart_area = ChartArea(Rect {
+        x: 0,
+        y: HEIGHT / 2,
+        width: WIDTH,
+        height: HEIGHT / 2,
+    });
+    let cell = inner.clone();
+    parent.subplots.push(Subplot {
+        config: inner,
+        series: vec!["p".into()],
+        ..Subplot::default()
+    });
+    assert!(parent.ternary().is_none(), "the root stays rectangular");
+    let series = [ternary("p", Some(marker_style(8.0)), None)];
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(parent.clone(), series.to_vec())
+        .expect("validated against the ternary subplot");
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::Registered(id),
+            renderer::ExportOptions::document(1.0),
+        )
+        .block_on()
+        .unwrap();
+    for row in rows {
+        let p = ternary_px(&cell, row, 1.0);
+        assert!(is_red(at(&img, p)), "{row:?} at {p:?}");
+    }
+    let p = ternary_px(&cell, rows[1], 1.0);
+    let request = renderer::GpuPickRequest {
+        canvas_position_px: [p.0 as f32, p.1 as f32],
+        display_panel_px: Rect {
+            x: 0,
+            y: 0,
+            width: WIDTH,
+            height: HEIGHT,
+        },
+        display_scale: 1.0,
+        max_distance_px: 6.0,
+    };
+    let hit = test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap();
+    assert_eq!(picked_point(hit), Some(("p".to_string(), 1)));
+    r.remove_chart(id).unwrap();
 }
 
 /// An edge drags along its outward normal (`line_offset`) and ignores the
@@ -927,12 +962,12 @@ fn region(color: Color, opacity: f32) -> renderer::TernaryRegionStyle {
 /// markers and no line.
 fn region_series(id: &str, style: renderer::TernaryRegionStyle) -> SeriesConfig {
     SeriesConfig {
-        render_type: DataRenderType::Ternary {
+        render_type: DataRenderType::Ternary(TernarySeries {
             c_column: "c".into(),
             scatter: None,
             line: None,
             region: Some(style),
-        },
+        }),
         ..ternary(id, None, None)
     }
 }
@@ -1113,12 +1148,12 @@ fn a_region_picks_inside_and_loses_ties_to_marks() {
     let mark = SeriesConfig {
         x_column: "ma".into(),
         y_column: "mb".into(),
-        render_type: DataRenderType::Ternary {
+        render_type: DataRenderType::Ternary(TernarySeries {
             c_column: "mc".into(),
             scatter: Some(marker_style(8.0)),
             line: None,
             region: None,
-        },
+        }),
         ..ternary("mark", None, None)
     };
     for (id, k) in [("ma", 0), ("mb", 1), ("mc", 2)] {
@@ -1186,12 +1221,12 @@ fn overlapping_polygons_cancel_within_a_series_and_stack_across_series() {
     let second = SeriesConfig {
         x_column: "ra".into(),
         y_column: "rb".into(),
-        render_type: DataRenderType::Ternary {
+        render_type: DataRenderType::Ternary(TernarySeries {
             c_column: "rc".into(),
             scatter: None,
             line: None,
             region: Some(region(RED, 1.0)),
-        },
+        }),
         ..ternary("right", None, None)
     };
     let two = [single[0].clone(), second];
@@ -1270,12 +1305,14 @@ fn a_region_alone_registers_and_a_bad_opacity_is_rejected() {
     let alone = region_series("field", region(RED, 0.5));
     assert!(r.register_chart(bare_config(), vec![alone]).is_ok());
     let bad = region_series("field", region(RED, 1.5));
-    let err = r
-        .register_chart(bare_config(), vec![bad])
-        .err()
-        .map(|e| e.to_string())
-        .unwrap_or_default();
-    assert!(err.contains("0..=1"), "{err}");
+    let err = r.register_chart(bare_config(), vec![bad]).err();
+    assert!(
+        matches!(
+            err.as_ref().and_then(rule_of),
+            Some(RuleKind::TernaryRegionStyle)
+        ),
+        "{err:?}"
+    );
 }
 
 /// A region with its outline and markers in one series, beside a marker
@@ -1288,12 +1325,12 @@ fn a_region_with_marks_draws_on_the_export_and_screen_paths() {
     upload(&mut r, &rows);
     let config = bare_config();
     let dressed = SeriesConfig {
-        render_type: DataRenderType::Ternary {
+        render_type: DataRenderType::Ternary(TernarySeries {
             c_column: "c".into(),
             scatter: Some(marker_style(6.0)),
             line: Some(line_style(2.0, LineStylePreset::Solid)),
             region: Some(region(MAGENTA, 1.0)),
-        },
+        }),
         ..ternary("field", None, None)
     };
     let series = [dressed];
@@ -1432,4 +1469,300 @@ fn a_region_with_marks_draws_on_the_export_and_screen_paths() {
     assert!(is_magenta(at(&screen, body)), "screen fill");
     assert!(!is_magenta(at(&screen, hole)), "screen hole");
     assert!(is_red(at(&screen, vertex)), "screen marker over fill");
+}
+
+fn is_blue(p: &[u8]) -> bool {
+    p[3] > 180 && p[0] < 80 && p[1] < 80 && p[2] > 180
+}
+
+/// A colourbar whose every value is `color`, over 0..1: a colour-mapped
+/// marker drawn through it shows which chart's colourbar it read.
+fn flat_colorbar(color: Color) -> renderer::config::ColorBarOptions {
+    let mut bar = renderer::default::default_colorbar_options();
+    bar.colormap = renderer::ColorMap::Custom {
+        stops: vec![color, color],
+    };
+    bar.axis.min = 0.0;
+    bar.axis.max = 1.0;
+    bar
+}
+
+/// The issue's document (#401): a Cartesian root drawing a plain line and no
+/// colourbar, and a ternary subplot drawing a colour-mapped scatter `p`
+/// (colour column `v`) through its own colourbar. `root_bar` and
+/// `subplot_bar` are the two charts' colourbars.
+fn colour_mapped_subplot_document(
+    root_bar: Option<renderer::config::ColorBarOptions>,
+    subplot_bar: Option<renderer::config::ColorBarOptions>,
+) -> (Config, Vec<SeriesConfig>) {
+    let mut parent = renderer::default::default_config();
+    parent.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: WIDTH,
+        height: HEIGHT / 2,
+    });
+    parent.legend.visible = false;
+    parent.colorbar = root_bar;
+    let mut inner = bare_config();
+    inner.chart_area = ChartArea(Rect {
+        x: 0,
+        y: HEIGHT / 2,
+        width: WIDTH,
+        height: HEIGHT / 2,
+    });
+    inner.colorbar = subplot_bar;
+    parent.subplots.push(Subplot {
+        config: inner,
+        series: vec!["p".into()],
+        ..Subplot::default()
+    });
+    let mut style = marker_style(10.0);
+    style.point_color_map = Some(renderer::data_config::PointColorMap { column: "v".into() });
+    let series = vec![
+        SeriesConfig::line("root", "a", "b"),
+        ternary("p", Some(style), None),
+    ];
+    (parent, series)
+}
+
+const SUBPLOT_ROWS: [[f64; 3]; 3] = [[70.0, 10.0, 20.0], [10.0, 70.0, 20.0], [20.0, 20.0, 60.0]];
+
+fn upload_subplot_columns(r: &mut Renderer) {
+    upload(r, &SUBPLOT_ROWS);
+    r.remove_column("v").expect("remove");
+    r.add_columns(&[(
+        "v",
+        &col(vec![0.0, 0.5, 1.0]) as &dyn renderer::ColumnSource,
+    )])
+    .expect("upload v");
+}
+
+/// The GPU pick of registered chart `id` at document pixel `at`, 1x.
+fn pick_registered(
+    r: &mut Renderer,
+    id: renderer::ChartId,
+    at: (f64, f64),
+) -> Option<renderer::PickedData> {
+    let request = renderer::GpuPickRequest {
+        canvas_position_px: [at.0 as f32, at.1 as f32],
+        display_panel_px: Rect {
+            x: 0,
+            y: 0,
+            width: WIDTH,
+            height: HEIGHT,
+        },
+        display_scale: 1.0,
+        max_distance_px: 6.0,
+    };
+    test_gpu::block_on(
+        r.shown(id, &request)
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap()
+}
+
+/// #401: a colour-mapped ternary scatter in a subplot is held to the
+/// subplot's own colourbar, not the root's. The issue's document — a
+/// Cartesian root line without a colourbar and the subplot with one —
+/// registers, draws its markers in the subplot's colours at 1x and 2x, picks
+/// them, rings the picked one, round-trips through serde to the same image,
+/// and installs through the column transaction (the WASM `set_state` +
+/// `commit` path). With a root colourbar of another colour beside it, the
+/// markers still read the subplot's.
+#[test]
+fn a_colour_mapped_ternary_subplot_reads_its_own_colorbar_beside_a_root_without_one() {
+    let mut r = renderer();
+    upload_subplot_columns(&mut r);
+    let (mut parent, series) = colour_mapped_subplot_document(
+        None,
+        Some(flat_colorbar(renderer::Color::from_rgb8(0, 0, 255))),
+    );
+    parent.picked_data = Some(DataSelectionsConfig {
+        refs: vec![PickedDataRef::Point {
+            source_id: None,
+            series_id: "p".into(),
+            point_index: 1,
+        }],
+        highlight_color: MAGENTA,
+        outline_width_px: 3.0,
+        point_radius_extra_px: 3.0,
+        ..DataSelectionsConfig::default()
+    });
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(parent.clone(), series.clone())
+        .expect("the subplot's colourbar colours its scatter");
+    let registered = r.chart_config(id).unwrap().clone();
+    assert!(registered.colorbar.is_none(), "the root keeps no colourbar");
+    let cell = registered.subplots[0].config.clone();
+    let mut images = Vec::new();
+    for scale in [1.0f32, 2.0] {
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::Registered(id),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        save(&format!("ternary-subplot-colorbar-{scale}x"), &img);
+        assert_eq!(
+            (img.width, img.height),
+            (
+                (WIDTH as f32 * scale) as u32,
+                (HEIGHT as f32 * scale) as u32
+            )
+        );
+        for row in SUBPLOT_ROWS {
+            let p = ternary_px(&cell, row, scale);
+            assert!(
+                p.1 > f64::from(HEIGHT / 2) * f64::from(scale),
+                "in the lower cell"
+            );
+            assert!(is_blue(at(&img, p)), "{scale}x: {row:?} at {p:?}");
+        }
+        // The picked marker's ring, around its marker only.
+        let (cx, cy) = ternary_px(&cell, SUBPLOT_ROWS[1], scale);
+        let (mut near, mut far) = (0, 0);
+        for (i, p) in img.rgba.chunks_exact(4).enumerate() {
+            if !is_magenta(p) {
+                continue;
+            }
+            let (x, y) = (
+                (i as u32 % img.width) as f64 + 0.5,
+                (i as u32 / img.width) as f64 + 0.5,
+            );
+            if (x - cx).hypot(y - cy) < 24.0 * f64::from(scale) {
+                near += 1;
+            } else {
+                far += 1;
+            }
+        }
+        assert!(
+            near > 20,
+            "{scale}x: {near} ring pixels at the picked marker"
+        );
+        assert_eq!(far, 0, "{scale}x: ring pixels away from the picked marker");
+        images.push(img.rgba);
+    }
+    for (k, row) in SUBPLOT_ROWS.iter().enumerate() {
+        let hit = pick_registered(&mut r, id, ternary_px(&cell, *row, 1.0));
+        assert_eq!(picked_point(hit), Some(("p".to_string(), k)), "{row:?}");
+    }
+
+    // A document saved and read back registers and draws the same image.
+    #[cfg(feature = "serde")]
+    {
+        let config_json = serde_json::to_string(&registered).unwrap();
+        let series_json = serde_json::to_string(r.chart_series(id).unwrap()).unwrap();
+        let config: Config = serde_json::from_str(&config_json).unwrap();
+        let read: Vec<SeriesConfig> = serde_json::from_str(&series_json).unwrap();
+        assert_eq!(config, registered);
+        assert_eq!(serde_json::to_string(&config).unwrap(), config_json);
+        let again = r.register_chart(config, read).expect("read back");
+        for (scale, before) in [1.0f32, 2.0].into_iter().zip(&images) {
+            let img = r
+                .export_rgba(
+                    renderer::ExportSource::Registered(again),
+                    renderer::ExportOptions::document(scale),
+                )
+                .block_on()
+                .unwrap();
+            assert!(
+                img.rgba == *before,
+                "{scale}x: the read-back document draws the same"
+            );
+        }
+        r.remove_chart(again).unwrap();
+    }
+    r.remove_chart(id).unwrap();
+
+    // The issue's install path: a chart holding the plain root line takes
+    // the combined document through a column transaction's state.
+    let mut root_only = parent.clone();
+    root_only.subplots.clear();
+    root_only.picked_data = None;
+    let id = r
+        .register_chart(root_only, vec![series[0].clone()])
+        .unwrap();
+    r.commit_column_uploads(id, Vec::new(), Some((parent.clone(), series.clone())))
+        .expect("the transaction's state holds against the subplot's colourbar");
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::Registered(id),
+            renderer::ExportOptions::document(1.0),
+        )
+        .block_on()
+        .unwrap();
+    let cell = r.chart_config(id).unwrap().subplots[0].config.clone();
+    assert!(is_blue(at(&img, ternary_px(&cell, SUBPLOT_ROWS[0], 1.0))));
+    r.remove_chart(id).unwrap();
+
+    // A root colourbar of another colour does not colour the subplot's
+    // markers: they read their own chart's.
+    let (both, series) = colour_mapped_subplot_document(
+        Some(flat_colorbar(renderer::Color::from_rgb8(0, 255, 0))),
+        Some(flat_colorbar(renderer::Color::from_rgb8(0, 0, 255))),
+    );
+    let id = r.register_chart(both, series).unwrap();
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::Registered(id),
+            renderer::ExportOptions::document(1.0),
+        )
+        .block_on()
+        .unwrap();
+    let cell = r.chart_config(id).unwrap().subplots[0].config.clone();
+    for row in SUBPLOT_ROWS {
+        assert!(is_blue(at(&img, ternary_px(&cell, row, 1.0))), "{row:?}");
+    }
+    r.remove_chart(id).unwrap();
+}
+
+/// #401, the converse: a root colourbar alone does not satisfy a subplot's
+/// colour-mapped scatter whose own chart has none. Registration, a state
+/// edit and the column transaction refuse it with the existing rule, and a
+/// refused transaction leaves the chart as it was.
+#[test]
+fn a_root_colorbar_does_not_satisfy_a_subplot_scatter_without_one() {
+    let mut r = renderer();
+    upload_subplot_columns(&mut r);
+    let (parent, series) = colour_mapped_subplot_document(
+        Some(flat_colorbar(renderer::Color::from_rgb8(0, 0, 255))),
+        None,
+    );
+    let refused = |error: &FiggyError| {
+        assert!(
+            matches!(
+                error,
+                FiggyError::InvalidSeriesConfig {
+                    series_id,
+                    kind: RuleKind::ScatterColorMapNeedsColorbar,
+                } if series_id == "p"
+            ),
+            "{error}"
+        );
+    };
+    refused(
+        &r.register_chart(parent.clone(), series.clone())
+            .unwrap_err(),
+    );
+    let mut root_only = parent.clone();
+    root_only.subplots.clear();
+    let id = r
+        .register_chart(root_only, vec![series[0].clone()])
+        .unwrap();
+    let before = r.chart_config(id).unwrap().clone();
+    refused(
+        &r.set_chart_state(id, parent.clone(), series.clone())
+            .unwrap_err(),
+    );
+    refused(
+        &r.commit_column_uploads(id, Vec::new(), Some((parent, series)))
+            .unwrap_err(),
+    );
+    assert_eq!(r.chart_config(id).unwrap(), &before);
+    r.remove_chart(id).unwrap();
 }

@@ -12,13 +12,13 @@
 // every part is built here on every draw, pick, highlight and label from
 // the series' columns, read by their pool lanes from its lane table
 // (`category_lanes`, §5.18). The renderer compares the two given ends to
-// choose a direction colour and maps a state index to a style; it computes
-// no value the user reads as data. Nothing per bar is stored anywhere else.
+// choose a direction colour, maps a state index to a style and a row index
+// to a row colour; it computes no value the user reads as data. Nothing per bar is stored anywhere else.
 
 // Lane table entries: the f32 lane bases of the end, start, low, high,
 // colour (the total flag or the state index) and progress columns
 // (`BOX_LANE_ABSENT` for an absent column), then the colour mode and the
-// state style count.
+// state style count (the row colour count under `RANGE_COLOR_ROW`).
 const RANGE_LANE_END: u32 = 0u;
 const RANGE_LANE_START: u32 = 1u;
 const RANGE_LANE_LOW: u32 = 2u;
@@ -28,14 +28,16 @@ const RANGE_LANE_PROGRESS: u32 = 5u;
 const RANGE_LANE_COLOR_MODE: u32 = 6u;
 const RANGE_LANE_STATES: u32 = 7u;
 
-// `RANGE_LANE_COLOR_MODE` values: `RangeColor::{Single, Direction, State}`.
+// `RANGE_LANE_COLOR_MODE` values: `RangeColor::{Single, Direction, State,
+// ByRow}`.
 const RANGE_COLOR_SINGLE: u32 = 0u;
 const RANGE_COLOR_DIRECTION: u32 = 1u;
 const RANGE_COLOR_STATE: u32 = 2u;
+const RANGE_COLOR_ROW: u32 = 3u;
 
 // The series' style slots: the whisker (fill, gap = width), the connector
 // (fill, gap = width), the up, down and total fills, the progress (width
-// ratio = the remaining opacity), then one fill per state.
+// ratio = the remaining opacity), then one fill per state or per row colour.
 const RANGE_SLOT_WHISKER: u32 = 0u;
 const RANGE_SLOT_CONNECTOR: u32 = 1u;
 const RANGE_SLOT_UP: u32 = 2u;
@@ -109,8 +111,13 @@ fn range_bar(row: u32, resolved: ResolvedBarStyle) -> RangeBar {
     if (!place.valid) {
         return out;
     }
-    let a = box_along(out.position, out.start);
-    let b = box_along(out.position, out.end);
+    // Both ends through one inlined projection (#363).
+    var ends = vec2<f32>(0.0);
+    for (var k = 0u; k < 2u; k = k + 1u) {
+        ends[k] = box_along(out.position, select(out.start, out.end, k == 1u));
+    }
+    let a = ends.x;
+    let b = ends.y;
     if (!bar_finite(a) || !bar_finite(b) || a == b) {
         return out;
     }
@@ -153,9 +160,17 @@ fn range_stroke_width(k: u32) -> f32 {
 
 /// The fill of row `row`'s bar under the series' colour mode: the series
 /// colour (`base`), the direction of its given ends, the total colour where
-/// its flag reads 1, or its state's style.
+/// its flag reads 1, its state's style, or its row's colour (row `i` takes
+/// colour `i % count`; none draws `base`).
 fn range_fill(row: u32, bar: RangeBar, base: vec4<f32>) -> vec4<f32> {
     let mode = range_lane(RANGE_LANE_COLOR_MODE);
+    if (mode == RANGE_COLOR_ROW) {
+        let count = range_lane(RANGE_LANE_STATES);
+        if (count == 0u) {
+            return base;
+        }
+        return range_slot_fill(RANGE_SLOT_STATES + row % count, base);
+    }
     let flag = box_value(RANGE_LANE_COLOR, row);
     if (mode == RANGE_COLOR_DIRECTION) {
         if (flag.ok && box_sum(flag.pair) == 1.0) {
@@ -449,7 +464,9 @@ fn range_pick_row(row: u32) -> DataPickCandidate {
         data_pick_query.data.y,
         DATA_PICK_KIND_HISTOGRAM_BIN,
         row,
-        0u,
+        // The bar's drawn length along the value axis in render pixels
+        // (f32 bits): a display parameter, not data.
+        bitcast<u32>(abs(bar.end_px - bar.start_px)),
         0u,
         best,
         row,

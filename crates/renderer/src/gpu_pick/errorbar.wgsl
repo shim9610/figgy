@@ -101,14 +101,26 @@ fn pick_errorbar_candidate(point_index: u32, x: vec2<f32>, y: vec2<f32>) -> Pick
     let amp = max(style_params.x, 0.0);
     let seed = (u32(style_params.z) ^ pick_query_params.styled.z) + pick_styled_index(point_index);
     var best = PICK_F32_MAX;
-    for (var seg = 0u; seg < 6u; seg = seg + 1u) {
+    // One loop over (quad, end): each quad's end A, then its end B, which
+    // measures the quad. One projection call serves both ends, since a
+    // software GPU compiler pays for every inlined copy (#363).
+    var a_up = vec2<f32>(0.0);
+    for (var step = 0u; step < 12u; step = step + 1u) {
+        let seg = step / 2u;
         if !errorbar_segment_enabled(eb.y, seg) {
             continue;
         }
         let g = errorbar_segment(seg, sample, stroke);
-        let a_up = pick_data_px(g.a.x, g.a.y) + g.a_px;
-        let b_up = pick_data_px(g.b.x, g.b.y) + g.b_px;
-        if !pick_is_finite(a_up.x) || !pick_is_finite(a_up.y) || !pick_is_finite(b_up.x) || !pick_is_finite(b_up.y) {
+        let at_b = (step & 1u) != 0u;
+        // `select_point(b, a, pick_a)`: B at end B.
+        let end = select_point(g.a, g.b, at_b);
+        let end_up = pick_data_px(end.x, end.y) + select(g.a_px, g.b_px, at_b);
+        if !at_b {
+            a_up = end_up;
+            continue;
+        }
+        let b_up = end_up;
+        if !(pick_is_finite(a_up.x) & pick_is_finite(a_up.y) & pick_is_finite(b_up.x) & pick_is_finite(b_up.y)) {
             continue;
         }
         var d = PICK_F32_MAX;
@@ -165,9 +177,14 @@ fn pick_stem_candidate(point_index: u32, x: vec2<f32>, y: vec2<f32>) -> PickCand
         half = errorbar_jet_stroke(width_px, 0.0).stem_half;
     }
     let g = stem_segment(x, y, pick_query_params.stem.xy, info.y, half);
-    let a_up = stem_end_ndc(t, g, true, info.y) / t.pixel_to_ndc;
-    let b_up = stem_end_ndc(t, g, false, info.y) / t.pixel_to_ndc;
-    if !pick_is_finite(a_up.x) || !pick_is_finite(a_up.y) || !pick_is_finite(b_up.x) || !pick_is_finite(b_up.y) {
+    // Both ends from one `stem_end_ndc` call in a loop (#363).
+    var ends = array<vec2<f32>, 2>();
+    for (var end = 0u; end < 2u; end = end + 1u) {
+        ends[end] = stem_end_ndc(t, g, end == 0u, info.y) / t.pixel_to_ndc;
+    }
+    let a_up = ends[0];
+    let b_up = ends[1];
+    if !(pick_is_finite(a_up.x) & pick_is_finite(a_up.y) & pick_is_finite(b_up.x) & pick_is_finite(b_up.y)) {
         return pick_invalid_candidate(series_order);
     }
     var disp_a = 0.0;

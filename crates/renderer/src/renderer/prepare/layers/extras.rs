@@ -135,7 +135,7 @@ impl PrepareContext<'_> {
                                 .and_then(|series| series.value_labels.clone()))
                         },
                     )?,
-                    pipelines.bar_value_label.as_ref(),
+                    pipelines.precise(PrecisePipeline::ValueLabel),
                 ) {
                     (Some(data), Some(labels), Some(pipeline)) => {
                         Some(data_render::ColumnValueLabelLayer {
@@ -144,7 +144,7 @@ impl PrepareContext<'_> {
                             labels,
                             data,
                             selected: selected_value_label(chart_config, cfg)
-                                .zip(pipelines.bar_value_label_selection.as_ref()),
+                                .zip(pipelines.precise(PrecisePipeline::ValueLabelSelection)),
                         })
                     }
                     _ => None,
@@ -180,7 +180,7 @@ impl PrepareContext<'_> {
         // picked row (a point selection of this series) is redrawn in
         // the selection's style over every body.
         let parallel = if primitives.parallel && phase.is_none() {
-            let value_map = match rt.parallel().and_then(|p| p.color_column) {
+            let value_map = match rt.parallel().and_then(|p| p.color_column.as_deref()) {
                 Some(_) => {
                     &self
                         .value_map_cache
@@ -210,7 +210,7 @@ impl PrepareContext<'_> {
             )
             .into_iter()
             .next()
-            .zip(pipelines.line_parallel_selection.as_ref())
+            .zip(pipelines.precise(PrecisePipeline::LineParallelSelection))
             .and_then(|(visual, pipeline)| {
                 let row = u32::try_from(visual.point_index).ok()?;
                 let style = PrimitiveStyle::from_color_with_width(
@@ -229,12 +229,9 @@ impl PrepareContext<'_> {
                 })
             });
             Some(data_render::ColumnParallelLayer {
-                pipeline: pipelines
-                    .line_parallel
-                    .as_ref()
-                    .ok_or(FiggyError::internal(
-                        "prepare ensured the parallel pipeline",
-                    ))?,
+                pipeline: pipelines.precise(PrecisePipeline::LineParallel).ok_or(
+                    FiggyError::internal("prepare ensured the parallel pipeline"),
+                )?,
                 transform_bg: &view.transform_bg,
                 style_bg: &series.style.line_bg,
                 data,

@@ -30,23 +30,6 @@ impl Renderer {
         Self::try_new_with_sample_count(gpu, surface_format, pool_capacity_bytes, 1)
     }
 
-    /// Initialize the same base resources as [`Self::try_new`] and report
-    /// timestamp-free startup stage boundaries to `observer`.
-    pub fn try_new_observed(
-        gpu: RendererDevice,
-        surface_format: wgpu::TextureFormat,
-        pool_capacity_bytes: u64,
-        observer: &mut dyn FnMut(InitEvent),
-    ) -> Result<Self> {
-        Self::try_new_with_sample_count_observed(
-            gpu,
-            surface_format,
-            pool_capacity_bytes,
-            1,
-            observer,
-        )
-    }
-
     pub(in crate::renderer) fn try_new_with_sample_count(
         gpu: RendererDevice,
         surface_format: wgpu::TextureFormat,
@@ -217,6 +200,8 @@ impl Renderer {
             arc_cache: HashMap::new(),
             resident_displays: Vec::new(),
             resident_display_serial: 0,
+            ink_masks: Vec::new(),
+            ink_mask_pipeline: None,
             monotonic: super::monotonic::MonotonicState::new(),
             field_cache: HashMap::new(),
             value_map_cache: HashMap::new(),
@@ -233,6 +218,8 @@ impl Renderer {
             frame_settled: 0,
             #[cfg(test)]
             arc_chunk_override: None,
+            #[cfg(test)]
+            pending_series_override: None,
             space_bg: None,
             surface_format,
             gpu_ledger,
@@ -390,6 +377,8 @@ impl Renderer {
             arc_cache: HashMap::new(),
             resident_displays: Vec::new(),
             resident_display_serial: 0,
+            ink_masks: Vec::new(),
+            ink_mask_pipeline: None,
             monotonic: super::monotonic::MonotonicState::new(),
             field_cache: HashMap::new(),
             value_map_cache: HashMap::new(),
@@ -406,6 +395,8 @@ impl Renderer {
             frame_settled: 0,
             #[cfg(test)]
             arc_chunk_override: None,
+            #[cfg(test)]
+            pending_series_override: None,
             space_bg: None,
             surface_format,
             gpu_ledger,

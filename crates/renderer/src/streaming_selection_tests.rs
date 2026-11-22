@@ -566,6 +566,7 @@ fn stream_selection_preserves_data_ticket_and_atomically_replaces_ordered_suffix
         .outline_width_px += 0.5;
     r.set_chart_config(id, chart.config().clone()).unwrap();
     r.wait_idle().unwrap();
+    crate::renderer::tests::settle_gpu_retirement(&mut r);
     let bytes = r.gpu_memory_usage().total_bytes();
     let _ = r.set_memory_budget(Some(bytes));
     assert!(r.request_stream_selection_ranges(id).is_err());

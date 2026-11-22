@@ -4,8 +4,8 @@
 //! on a `FiggyChart`'s device (one device, one ledger, the parent's and the
 //! child's disposal and a device loss), the export background override at
 //! DPR 1 and 2 and two export scales, the generated slice labels after a
-//! value or format edit with a save and reopen, and the decoration position
-//! reset.
+//! value or format edit with a save and reopen, the decoration position
+//! reset, and the read-only annotation preview at DPR 1 and 2 (#334).
 
 use figgy::{FiggyChart, FiggyRadialChart};
 use renderer::Color;
@@ -14,6 +14,9 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::*;
 use web_sys::HtmlCanvasElement;
+
+mod support;
+use support::{code, json, rect, turn};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -95,17 +98,6 @@ fn devices_requested() -> u32 {
 fn total_bytes(parent: &FiggyChart) -> u64 {
     let status: serde_json::Value = serde_json::from_str(&parent.gpu_memory_status()).unwrap();
     status["total_bytes"].as_u64().unwrap()
-}
-
-/// One timer turn of 20 ms.
-async fn turn() {
-    let promise = js_sys::Promise::new(&mut |resolve, _| {
-        web_sys::window()
-            .unwrap()
-            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 20)
-            .unwrap();
-    });
-    JsFuture::from(promise).await.unwrap();
 }
 
 /// Poll `future` once, so the work it starts is submitted before the test
@@ -517,4 +509,253 @@ async fn a_decoration_position_resets_to_the_layout() {
     let error = chart.reset_decoration_position(&id).err().unwrap();
     assert!(message(&error).contains("drag_annotation"), "{error:?}");
     chart.frame().unwrap();
+}
+
+// --- 5. Annotation preview (#334) ---
+
+fn close(a: [f64; 4], b: [f64; 4]) -> bool {
+    a.iter().zip(b).all(|(a, b)| (a - b).abs() <= 1e-3)
+}
+
+fn note(anchor: renderer::Anchor, text: &str) -> renderer::Annotation {
+    renderer::Annotation::new(renderer::AnnotationKind::Text {
+        anchor,
+        text: renderer::text::RichText::plain(text, Color::BLACK, 14.0, ""),
+        box_style: Some(Default::default()),
+        align: Default::default(),
+    })
+}
+
+/// The preview of a text box and of a shape is where the layer draws the
+/// item once it is added, in document and canvas pixels at DPR 1 and 2;
+/// previewing changes neither the document nor the selection, and an item
+/// the radial raster skips reports the reason its warning gives.
+#[wasm_bindgen_test(async)]
+async fn an_annotation_preview_is_where_the_layer_draws_the_item() {
+    use renderer::{Anchor, AnnotationKind};
+    for dpr in [1u32, 2] {
+        let mut chart = radial(dpr).await;
+        // A selected annotation and a picked slice, which a preview keeps.
+        let selected = chart
+            .add_annotation(
+                &serde_json::to_string(&note(Anchor::Ratio { x: 0.1, y: 0.9 }, "kept")).unwrap(),
+            )
+            .unwrap();
+        chart.select_annotation(Some(selected)).unwrap();
+        chart.frame().unwrap();
+        let shape = renderer::Annotation::new(AnnotationKind::Rect {
+            from: Anchor::Ratio { x: 0.55, y: 0.6 },
+            to: Anchor::Ratio { x: 0.8, y: 0.3 },
+            style: Default::default(),
+        });
+        let text = note(Anchor::Ratio { x: 0.3, y: 0.25 }, "peak");
+        for (item, kind, shape_name) in [(&text, "Text", "text"), (&shape, "Rect", "polygon")] {
+            let item = serde_json::to_string(item).unwrap();
+            let document = chart.get_document().unwrap();
+            let listed = chart.annotations().unwrap();
+            let preview = json(&chart.annotation_preview(&item).unwrap());
+            assert_eq!(chart.get_document().unwrap(), document, "{dpr}");
+            assert_eq!(chart.annotations().unwrap(), listed, "{dpr}");
+            assert_eq!(chart.selected_annotation(), Some(selected), "{dpr}");
+            assert_eq!(preview["kind"], kind);
+            assert_eq!(preview["drawn"], true);
+            assert_eq!(preview["visible"], true);
+            assert_eq!(preview["canvas"]["shape"], shape_name);
+            assert_eq!(preview["document"]["shape"], shape_name);
+            let bounds = rect(&preview["document"]["bounds"]);
+            assert!(
+                close(
+                    rect(&preview["canvas"]["bounds"]),
+                    bounds.map(|v| v * f64::from(dpr))
+                ),
+                "{dpr}: {preview}"
+            );
+
+            // Added, the drawn item's selection box (document pixels) is
+            // the preview's bounds padded by the selection padding, and the
+            // item answers a hit inside them.
+            let index = chart.add_annotation(&item).unwrap();
+            chart.frame().unwrap();
+            let drawn = json(&chart.annotations().unwrap());
+            let entry = drawn
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["index"] == index)
+                .unwrap_or_else(|| panic!("{dpr}: {drawn}"));
+            let pad = renderer::select::SELECTION_PADDING as f64;
+            let [x, y, w, h] = bounds;
+            assert!(
+                close(
+                    rect(&entry["rect"]),
+                    [x - pad, y - pad, w + 2.0 * pad, h + 2.0 * pad]
+                ),
+                "{dpr}: {entry} vs {bounds:?}"
+            );
+            let center = ((x + w / 2.0) as f32, (y + h / 2.0) as f32);
+            assert_eq!(
+                chart.hit_annotation(center.0, center.1),
+                Some(index),
+                "{dpr}"
+            );
+            // The preview of an item already in the document is unchanged
+            // by adding it.
+            assert_eq!(
+                json(&chart.annotation_preview(&item).unwrap()),
+                preview,
+                "{dpr}"
+            );
+            chart.remove_annotation(index).unwrap();
+            chart.frame().unwrap();
+        }
+        assert_eq!(chart.selected_annotation(), Some(selected));
+
+        // The radial chart has no value axes: a reference line is skipped
+        // with the reason its warning gives once added.
+        let line =
+            serde_json::to_string(&renderer::Annotation::new(AnnotationKind::ReferenceLine {
+                axis: renderer::AnnotationAxis::X,
+                value: 1.0,
+                style: Default::default(),
+                label: None,
+            }))
+            .unwrap();
+        let skipped = json(&chart.annotation_preview(&line).unwrap());
+        assert_eq!(skipped["kind"], "ReferenceLine");
+        assert_eq!(skipped["drawn"], false);
+        assert_eq!(skipped["reason"], "NoValueAxis");
+        assert!(skipped.get("canvas").is_none(), "{skipped}");
+        let index = chart.add_annotation(&line).unwrap();
+        chart.frame().unwrap();
+        let warnings = json(&chart.annotation_warnings().unwrap());
+        let warning = warnings
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["index"] == index)
+            .unwrap_or_else(|| panic!("{warnings}"));
+        assert_eq!(warning["reason"], skipped["reason"], "{warnings}");
+        chart.remove_annotation(index).unwrap();
+
+        // A hidden item is placed as it is drawn once shown.
+        let mut hidden = text.clone();
+        hidden.visible = false;
+        let hidden = json(
+            &chart
+                .annotation_preview(&serde_json::to_string(&hidden).unwrap())
+                .unwrap(),
+        );
+        assert_eq!(hidden["visible"], false);
+        assert_eq!(
+            hidden["canvas"],
+            json(
+                &chart
+                    .annotation_preview(&serde_json::to_string(&text).unwrap())
+                    .unwrap()
+            )["canvas"]
+        );
+
+        // Malformed input is refused with a code.
+        let error = chart.annotation_preview("{").unwrap_err();
+        assert_eq!(code(&error).as_deref(), Some("annotation_json"));
+        let mut bad = text.clone();
+        bad.id = "a\u{7}b".into();
+        let error = chart
+            .annotation_preview(&serde_json::to_string(&bad).unwrap())
+            .unwrap_err();
+        assert_eq!(code(&error).as_deref(), Some("annotation_invalid"));
+        chart.frame().unwrap();
+    }
+}
+
+/// The palette presets in the browser (#357): a new line series takes the
+/// default cycle's next colour, written into the series; a theme takes a
+/// preset through `theme_with_palette`; and the radial chart applies a
+/// family's radial member with a preset's colours.
+#[wasm_bindgen_test(async)]
+async fn palette_presets_reach_the_browser() {
+    use figgy::ColorCycle;
+    let mut parent = FiggyChart::create(canvas(1)).await.unwrap();
+    parent.register_column_f64("px", &[0.0, 1.0, 2.0]).unwrap();
+    parent.register_column_f64("py", &[1.0, 2.0, 3.0]).unwrap();
+    for id in ["a", "b", "c"] {
+        parent.add_line_series(id, "px", "py", 2.0, id).unwrap();
+    }
+    let series: Vec<renderer::SeriesConfig> =
+        serde_json::from_str(&parent.get_series().unwrap()).unwrap();
+    for (k, item) in series.iter().enumerate() {
+        let renderer::DataRenderType::Xy(xy) = &item.render_type else {
+            panic!("a line series");
+        };
+        assert_eq!(
+            xy.line.as_ref().unwrap().line_color,
+            renderer::ColorCycle::DEFAULT.color(k),
+            "series {k}"
+        );
+    }
+    let object = parent
+        .theme_with_palette("gallery", ColorCycle::Set2)
+        .unwrap();
+    let theme = json(&String::from(js_sys::JSON::stringify(&object).unwrap()));
+    assert_eq!(
+        theme["series"]["palette"].as_array().unwrap().len(),
+        renderer::ColorCycle::Set2.len()
+    );
+    parent
+        .apply_custom_theme(
+            parent
+                .theme_with_palette("gallery", ColorCycle::Set2)
+                .unwrap(),
+        )
+        .unwrap();
+    let themed: Vec<renderer::SeriesConfig> =
+        serde_json::from_str(&parent.get_series().unwrap()).unwrap();
+    let renderer::DataRenderType::Xy(xy) = &themed[2].render_type else {
+        panic!("a line series");
+    };
+    assert_eq!(
+        xy.line.as_ref().unwrap().line_color,
+        renderer::ColorCycle::Set2.color(2)
+    );
+
+    let mut pie = radial(1).await;
+    pie.apply_theme_with_palette("gallery", ColorCycle::Dark2)
+        .unwrap();
+    let document = read(&pie);
+    assert_eq!(
+        document.slices[0].color,
+        renderer::ColorCycle::Dark2.color(0)
+    );
+    assert_eq!(
+        document.slices[1].color,
+        renderer::ColorCycle::Dark2.color(1)
+    );
+    assert!(
+        pie.apply_theme_with_palette("nope", ColorCycle::Dark2)
+            .is_err()
+    );
+    assert_eq!(read(&pie), document, "a refusal changes nothing");
+}
+
+/// The browser's `ColorCycle` mirrors every model cycle in order (#357).
+#[wasm_bindgen_test]
+fn color_cycle_mirrors_every_model_cycle() {
+    use figgy::ColorCycle as Web;
+    let web = [
+        Web::Classic,
+        Web::Vivid,
+        Web::Balanced,
+        Web::ColorblindSafe,
+        Web::Monochrome,
+        Web::Tableau10,
+        Web::Set2,
+        Web::Dark2,
+        Web::Plotly,
+        Web::HighContrast,
+    ];
+    assert_eq!(web.len(), renderer::ColorCycle::ALL.len());
+    for (web, model) in web.into_iter().zip(renderer::ColorCycle::ALL) {
+        assert_eq!(renderer::ColorCycle::from(web), model);
+        assert_eq!(figgy::color_cycle_css(web).len(), model.len());
+    }
 }

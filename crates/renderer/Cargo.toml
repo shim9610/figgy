@@ -1,6 +1,6 @@
 [package]
 name = "figgy-renderer"
-version = "0.19.0-beta.1"
+version = "0.19.0-beta.2"
 edition = "2024"
 rust-version = "1.99"
 description = "Native Rust chart renderer combining wgpu data rendering with CPU-rasterized axes and text."
@@ -25,7 +25,7 @@ default-target = "x86_64-unknown-linux-gnu"
 targets = ["wasm32-unknown-unknown"]
 
 [dependencies]
-model = { package = "figgy-model", path = "../model", version = "=0.13.0-beta.1", default-features = false }
+model = { package = "figgy-model", path = "../model", version = "=0.13.0-beta.2", default-features = false }
 
 bytemuck = { version = "1.19", features = ["derive"] }
 # Atomic ownership handoff for GPU resources awaiting submission/completion.
@@ -62,11 +62,6 @@ js-sys = "0.3"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Window"] }
-
-# iced 0.14 still requires wgpu 27. Its integration source stays under
-# unsupported/; re-wire it when iced ships a wgpu 30 release.
-# iced = { version = "0.14", optional = true, features = ["wgpu"] }
-# iced_wgpu = { version = "0.14", optional = true }
 
 [dev-dependencies]
 # The crate's own tests enable `cpu-twin`, so the CPU picker in

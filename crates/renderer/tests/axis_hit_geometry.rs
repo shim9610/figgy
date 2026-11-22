@@ -4,7 +4,7 @@
 //! within the grab slack of its ink. Covers a thick line, ticks on both
 //! sides, detached axes and ticks longer than the ray's minimum grab strip.
 
-use renderer::axis_render::try_raster_chart_to_rgba;
+use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at};
 use renderer::config::TickVisibility;
 use renderer::layout::{ChartArea, Rect, Side};
 use renderer::{
@@ -45,8 +45,11 @@ fn bare_config() -> Config {
 
 /// The pixels the axis adds: the raster of `cfg` against `hidden`.
 fn axis_ink(cfg: &Config, hidden: &Config) -> Vec<u8> {
-    let shown = try_raster_chart_to_rgba(cfg).unwrap();
-    let without = try_raster_chart_to_rgba(hidden).unwrap();
+    let shown = try_raster_chart_layer_to_rgba_with_selection_at(cfg, AxisLayerKind::All, &[], 1.0)
+        .unwrap();
+    let without =
+        try_raster_chart_layer_to_rgba_with_selection_at(hidden, AxisLayerKind::All, &[], 1.0)
+            .unwrap();
     shown
         .chunks_exact(4)
         .zip(without.chunks_exact(4))

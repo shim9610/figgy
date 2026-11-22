@@ -36,7 +36,7 @@ Copy the complete [line example](https://github.com/shim9610/figgy/blob/master/c
 into `src/main.rs` and run `cargo run`. It creates a headless renderer, uploads two
 columns, draws axes and a sine wave, and writes a 960 × 600 `line.png` without opening
 a window. The example sets its ranges by hand; `Renderer::fit_ranges(&mut chart,
-&series)` fits every axis the series use to the registered columns in one call,
+&mut series)` fits every axis the series use to the registered columns in one call,
 as the [quick start](https://github.com/shim9610/figgy#quick-start) does. A chart
 starts at a `0..1` placeholder range, so a first plot needs one or the other.
 The crate root page of the API documentation shows the example after this
@@ -62,7 +62,7 @@ Hosts that already own a matching wgpu 30 device/queue can share them through
 | Colour images (imshow) | `Renderer` | An `RgbImage` series: three channel grids on one lattice mapped from a `range`, no colourbar; [colour images](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#colour-images-imshow) |
 | Parallel coordinates | `Renderer` | A `Parallel` series on a chart with `Config.parallel`: one column per axis, one polyline per row, each axis its own range; [parallel coordinates](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#parallel-coordinates) |
 | Pies and donuts, including 3D/material styles | `RadialRenderer` | `RadialChart` with its slice values in the model; [radial guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADIAL.md) |
-| Sunbursts (nested rings) | `RadialRenderer` | A flat `RadialChart` whose slices carry `children`, each ring over its parent's span; [radial guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADIAL.md#선버스트중첩-고리) |
+| Sunbursts (nested rings) | `RadialRenderer` | A flat `RadialChart` whose slices carry `children`, each ring over its parent's span; [radial guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADIAL.md#sunbursts-nested-rings) |
 | Individual, grouped and stacked bars | `Renderer` | `CategoryBars` series over a categorical axis, or a legacy `CategoricalChart` read by `Config::from_categorical`; [bar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md); on a polar chart the bars fan around the centre as a [rose](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md#roses-polar-bars) |
 | Grouped/notched boxes and outliers | `Renderer` | `BoxPlot` series over a categorical axis, reading a record of supplied statistics and a ragged outlier column, or a legacy `BoxPlotChart` read by `Config::from_boxplot`; [boxplot guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/BOXPLOT.md) |
 | Radar (spider) charts | `Renderer` with `Config.polar` | `Radar` series over a categorical angle axis, one value column per series, or a legacy `RadarChart` read by `Config::from_radar`; [radar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md) |
@@ -78,8 +78,8 @@ The renderer re-exports model types: most applications do not need a separate
 sources or streamed data. Categorical bars and box plots are `Renderer`
 series over a categorical axis, and radar series over the categorical angle
 axis of a polar chart; the legacy `CategoricalChart`, `BoxPlotChart` and
-`RadarChart` documents are deprecated readers for this release, removed in the
-next milestone. Both renderers can share a
+`RadarChart` documents are kept as readers for documents written before 0.13.
+Both renderers can share a
 `RendererDevice`; each maintains its own resource budget. Vector fields, point
 colour and size maps, area fills, step lines, overlay axes and subplots are
 `Renderer` features declared in `SeriesConfig` and `Config`; see the

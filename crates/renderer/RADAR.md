@@ -9,9 +9,8 @@ a marker at every vertex.
 The values are the host's and enter through `ColumnSource`, one column per
 series; streamed sources are rejected. `RadarChart` is the document format of
 the releases up to 0.12; `Config::from_radar` reads it as such a chart
-([Opening a legacy document](#opening-a-legacy-document)). It is kept as a
-deprecated document reader for this release and is removed in the next
-milestone.
+([Opening a legacy document](#opening-a-legacy-document)). It is kept as the
+reader for documents written before 0.13.
 
 ## Series and uploads
 
@@ -26,7 +25,8 @@ A `Radar` series reads two columns, each with one value per category:
 use renderer::config::Category;
 use renderer::polar::{GridShape, PolarOptions};
 use renderer::{
-    Chart, Color, Column, DataRenderType, LayerRef, RadarSeriesStyle, Renderer, SeriesConfig,
+    Chart, Color, Column, DataRenderType, LayerRef, RadarPolygonSeries, RadarSeriesStyle, Renderer,
+    SeriesConfig,
 };
 /// A host column (NaN is a missing value); the renderer measures its range.
 fn column(data: Vec<f64>) -> Column<f64> {
@@ -57,11 +57,11 @@ let series = vec![SeriesConfig {
     x_column: "categories".into(),
     y_column: "release1".into(),
     z_column: None,
-    render_type: DataRenderType::Radar {
+    render_type: DataRenderType::Radar(RadarPolygonSeries {
         color: Color::from_rgb8(60, 110, 200),
         style: RadarSeriesStyle::default(),
         labels: Default::default(),
-    },
+    }),
 }];
 // Fit the radius axis to the values; the angle axis keeps its categories.
 let mut chart = Chart::new(config);
@@ -189,7 +189,6 @@ warning.
 ## Opening a legacy document
 
 ```rust,no_run
-# #![allow(deprecated)]
 use renderer::radar::RadarChart;
 use renderer::{Chart, LayerRef, Renderer, config::Config};
 # fn open(r: &mut Renderer, document: &RadarChart) -> Result<(), Box<dyn std::error::Error>> {
@@ -237,10 +236,20 @@ indices (`radar.positions`) first, then one value column per series
   `active_layer` and `annotations` carry over.
 - Not carried: `hovered` (transient), a selected whole series (a selection
   names a vertex), `style.emphasis_brightness` (a picked vertex is shown
-  with the picked ring instead), `background` (the host's clear colour), an explicit
-  `decorations.data_area` and the decoration selection. The data label offsets become the series' `labels.offsets`.
+  with the picked ring instead), `background` (the host's clear colour) and
+  the decoration selection. The data label offsets become the series'
+  `labels.offsets`.
+- An explicit `decorations.data_area` becomes the plot area through the
+  margins (`Config::fit_legacy_data_area`, edges rounded to whole pixels;
+  #334); one the layout cannot hold keeps the automatic layout and is
+  reported as dropped with the reason.
 
-`FiggyChart.set_radar_document(json)` opens a document in the browser. In
+`FiggyChart.set_radar_document(json, options?)` opens a document in the
+browser and returns the conversion report (`{ config, series, uploads,
+columns, notes }`), which `convert_radar_document(json, {chart_area})`
+previews without a chart; its `{ "refuse": [...] | "any" }` option refuses
+a lossy document with `code: "conversion_loss"` before anything changes
+(#334; see [WASM.md](WASM.md#model-api)). In
 this release, the `"radar"` family of `FiggyBoundedChart` returns an error
 that names this method.
 
@@ -259,7 +268,7 @@ cargo test --locked -p figgy-renderer --features serde --test radar_series_rende
 `Renderer`가 시리즈마다 닫힌 외곽선, 중심까지의 채움, 꼭짓점 마커를 그린다.
 값은 호스트가 시리즈마다 열 하나로 `ColumnSource`를 거쳐 올린다. 스트리밍 소스는 거부한다.
 0.12까지의 문서 형식인 `RadarChart`는 `Config::from_radar`로 이 차트로 읽는다.
-`RadarChart`는 이번 릴리스에서 문서 리더로만 남아 사용 중단(deprecated)되며, 다음 마일스톤에서 제거된다.
+`RadarChart`는 0.13 이전에 쓰인 문서를 읽는 리더로 남는다.
 
 `Radar` 시리즈의 `x_column`은 범주 번호 열(`0, 1, …, n - 1`), `y_column`은 범주별 반지름 축
 (`left_y`) 값이며 빠진 값은 NaN으로 둔다. 두 열 모두 범주 수만큼 값이 있어야 하고, 렌더러가
@@ -328,6 +337,6 @@ cargo test --locked -p figgy-renderer --features serde --test radar_series_rende
 빈 필드는 차트 스타일로 채우고(`RadarSeriesStyle::resolved_from`), 차트의 라벨 설정과 값에서
 적은 라벨 문자열을 모든 시리즈에 넣는다. 글꼴과 글자색은 범주·고리 라벨과 범례로, 선택한
 꼭짓점은 선택 상태로, 제목·범례·고리 라벨의 이동량은 해당 오프셋으로, 스포크 라벨 하나의 이동량은 그 범주의 `label_offset`(스포크 기준 좌표, #309)으로 옮긴다. 호버, 시리즈 전체
-선택, 차트 스타일의 `emphasis_brightness`(고른 꼭짓점은 선택 고리로 강조한다), 배경, 명시한 그리기 영역은 옮기지 않는다. 데이터 라벨 이동량은 시리즈의 `labels.offsets`가 된다. 브라우저에서는
-`FiggyChart.set_radar_document(json)`로 문서를 연다. 이번 릴리스에서 `FiggyBoundedChart`의 `"radar"` 계열은
+선택, 차트 스타일의 `emphasis_brightness`(고른 꼭짓점은 선택 고리로 강조한다), 배경은 옮기지 않는다. 명시한 그리기 영역(`decorations.data_area`)은 여백을 맞춰 그리기 영역이 되고(가장자리는 정수 픽셀로 반올림; #334), 레이아웃에 들어가지 않으면 자동 레이아웃을 유지하고 이유와 함께 dropped로 보고한다. 데이터 라벨 이동량은 시리즈의 `labels.offsets`가 된다. 브라우저에서는
+`FiggyChart.set_radar_document(json, options?)`로 문서를 열고 변환 보고서(`{ config, series, uploads, columns, notes }`)를 받는다. 차트 없이 이 보고서를 미리 보려면 `convert_radar_document(json, {chart_area})`를 쓴다. `{ "refuse": [...] | "any" }` 옵션을 주면 손실이 있는 문서를 아무것도 바꾸기 전에 `code: "conversion_loss"`로 거부한다(#334, [WASM.md](WASM.md#model-api) 참고). 이번 릴리스에서 `FiggyBoundedChart`의 `"radar"` 계열은
 이 메서드를 안내하는 오류를 돌려준다.

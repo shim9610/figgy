@@ -491,6 +491,67 @@ fn pick_inputs_follow_the_active_layer() {
     assert_eq!(subset, series);
 }
 
+/// A layered document squeezed below its margins draws its base panel
+/// alone, with every series on it (`expand_for_render`'s fallback): its
+/// nearest pick plans each series once, on that panel, instead of once per
+/// layer, which the registry refused as a duplicate series (#381). The
+/// public entries refuse such a document, so the test writes it past them.
+#[test]
+fn a_squeezed_layered_chart_plans_each_series_once() {
+    let mut r = renderer();
+    r.enable_gpu_picking().unwrap();
+    let config = two_overlay_config();
+    let id = r.register_chart(config.clone(), three_series()).unwrap();
+    let mut squeezed = config;
+    squeezed.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 30,
+        height: 20,
+    });
+    assert!(squeezed.expand().is_err(), "no data area at this size");
+    assert_eq!(expand_for_render(&squeezed).unwrap().len(), 1);
+    r.chart_states.get_mut(&id).unwrap().config = squeezed;
+    for active in [LayerRef::Base, LayerRef::Overlay(1)] {
+        r.chart_states
+            .get_mut(&id)
+            .unwrap()
+            .config
+            .set_active_layer(active);
+        let pick = r
+            .pick_chart_nearest(
+                id,
+                GpuPickRequest {
+                    canvas_position_px: [15.0, 10.0],
+                    display_panel_px: Rect {
+                        x: 0,
+                        y: 0,
+                        width: 30,
+                        height: 20,
+                    },
+                    display_scale: 1.0,
+                    max_distance_px: 4.0,
+                },
+            )
+            .expect("each series is planned once")
+            .resolve_blocking()
+            .unwrap();
+        let mut ids: Vec<_> = pick
+            .per_series
+            .iter()
+            .map(|datum| datum.series_id.as_str())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["s0", "s1", "s2"], "{active:?}");
+        assert!(
+            pick.per_series
+                .iter()
+                .all(|datum| datum.layer == LayerRef::Base),
+            "every series is on the base panel: {active:?}"
+        );
+    }
+}
+
 // The document export composites every layer; the panel export keeps the
 // base panel. For a document without overlays the two are byte-identical.
 #[test]
@@ -886,7 +947,14 @@ fn offset_pick(
         display_scale: 1.0,
         max_distance_px,
     };
-    crate::test_gpu::block_on(r.pick_chart(id, request).unwrap().resolve()).unwrap()
+    // A pick hits the ink its on-screen prepare drew (#381).
+    crate::test_gpu::block_on(
+        r.shown_for_pick(id, &request)
+            .pick_chart(id, request)
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap()
 }
 
 // The members draw exactly where a host-shifted copy draws, at 1x and 2x,
@@ -1147,7 +1215,8 @@ fn offset_picks_take_the_painted_member_first() {
     let at = offset_px(&config, 0.3, 0.6, 1.0);
     let on = offset_pick(&mut r, id, at, 10.0).unwrap();
     assert_eq!((on.series_id.as_str(), on.point_index), ("m0", 1));
-    assert_eq!(on.distance_px, 0.0, "the cursor is on m0's line");
+    // The nearest datum is measured to its centre (#381).
+    assert!(on.distance_px < 1e-3, "the cursor is on m0's point");
     let near = offset_pick(&mut r, id, at, 1.0).unwrap();
     assert_eq!(near.series_id, "m0", "only the bottom member is in reach");
     // Between `m0` and `m1`, 2.5 px above `m0`'s peak and 1.5 px below

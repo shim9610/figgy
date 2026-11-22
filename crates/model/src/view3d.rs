@@ -20,7 +20,7 @@
 use crate::config::{AxisOptions, AxisScale, Config};
 use crate::data_config::{
     DataRenderType, FillMode, GridLayout, LineInterpolation, MatrixOrientation, MatrixRef,
-    SeriesConfig,
+    SeriesConfig, VectorSeries,
 };
 use crate::material::Material;
 use crate::{Color, ColumnId};
@@ -338,14 +338,8 @@ fn label_band(axis: &AxisOptions) -> f32 {
 }
 
 /// The axis of box direction `k`: 0 x `bottom_x`, 1 y `left_y`, 2 z
-/// `right_y`.
-pub fn box_axis(config: &Config, k: usize) -> &AxisOptions {
-    match k {
-        0 => &config.bottom_x,
-        1 => &config.left_y,
-        _ => &config.right_y,
-    }
-}
+/// `right_y`. The same slots a ternary chart reads its components on.
+pub use crate::ternary::ternary_axis as box_axis;
 
 impl Config {
     /// The camera matrix of this 3D chart, when it is one and has a data
@@ -578,10 +572,10 @@ impl Config {
         panel.view_3d()?;
         match &series.render_type {
             DataRenderType::Xy(_)
-            | DataRenderType::Vector {
+            | DataRenderType::Vector(VectorSeries {
                 components: crate::data_config::VectorComponents::Points { .. },
                 ..
-            }
+            })
             | DataRenderType::TriMesh(_) => series.z_column.as_deref().filter(|z| !z.is_empty()),
             _ => None,
         }
@@ -629,7 +623,9 @@ impl Config {
                 }
                 // A 3D vector field (#211): one arrow per row from
                 // `(x, y, z_column)` along `(u, v, w)`.
-                DataRenderType::Vector { components, .. } if self.view_3d().is_some() => {
+                DataRenderType::Vector(VectorSeries { components, .. })
+                    if self.view_3d().is_some() =>
+                {
                     match components {
                         crate::data_config::VectorComponents::Grid { .. } => {
                             return Err(crate::RuleKind::View3dGridVector);
@@ -645,10 +641,10 @@ impl Config {
                     }
                     continue;
                 }
-                DataRenderType::RgbImage { .. } if self.view_3d().is_some() => {
+                DataRenderType::RgbImage(_) if self.view_3d().is_some() => {
                     return Err(crate::RuleKind::View3dImage);
                 }
-                DataRenderType::Parallel { .. } if self.view_3d().is_some() => {
+                DataRenderType::Parallel(_) if self.view_3d().is_some() => {
                     return Err(crate::RuleKind::View3dParallel);
                 }
                 // A trisurf (#210): its own rules are
@@ -987,20 +983,21 @@ mod tests {
             head_width_px: 6.0,
             min_length_px: 0.0,
             color_map: None,
+            auto_scale: false,
         }
     }
 
     fn vector_3d(z: Option<&str>, w: Option<&str>) -> SeriesConfig {
         SeriesConfig {
             z_column: z.map(Into::into),
-            render_type: DataRenderType::Vector {
+            render_type: DataRenderType::Vector(VectorSeries {
                 components: crate::data_config::VectorComponents::Points {
                     u: "u".into(),
                     v: "v".into(),
                     w: w.map(Into::into),
                 },
                 style: vector_style(),
-            },
+            }),
             ..heatmap(None)
         }
     }
@@ -1028,13 +1025,13 @@ mod tests {
             Err(crate::RuleKind::View3dVectorWithoutW)
         );
         let grid = SeriesConfig {
-            render_type: DataRenderType::Vector {
+            render_type: DataRenderType::Vector(VectorSeries {
                 components: crate::data_config::VectorComponents::Grid {
                     u: matrix(2),
                     v: matrix(2),
                 },
                 style: vector_style(),
-            },
+            }),
             ..heatmap(None)
         };
         assert_eq!(

@@ -656,7 +656,7 @@ fn every_axis_the_decoration_layer_walks_is_reported() {
 #[test]
 fn warnings_follow_the_raster_frame_of_an_offset_chart_area() {
     let drawn = |cfg: &Config| {
-        try_raster_chart_layer_to_rgba(cfg, AxisLayerKind::Decoration)
+        try_raster_chart_layer_to_rgba_with_selection_at(cfg, AxisLayerKind::Decoration, &[], 1.0)
             .unwrap()
             .chunks_exact(4)
             .any(|px| px[3] != 0)
@@ -685,7 +685,10 @@ fn warnings_follow_the_raster_frame_of_an_offset_chart_area() {
 
     // No raster at all for an empty chart area, and no warnings.
     cfg.chart_area.0.width = 0;
-    assert!(try_raster_chart_layer_to_rgba(&cfg, AxisLayerKind::Decoration).is_err());
+    assert!(
+        try_raster_chart_layer_to_rgba_with_selection_at(&cfg, AxisLayerKind::Decoration, &[], 1.0)
+            .is_err()
+    );
     assert!(tick_warnings(&cfg).is_empty());
 }
 
@@ -1098,6 +1101,14 @@ fn fitted_numeric_labels_fit_default_title_and_colorbar_bands() {
                     axis.major_tick_length,
                     (ls.label_offset_x, ls.label_offset_y),
                     metrics,
+                    measure_plain_text(
+                        crate::layout::TICK_ROW_REFERENCE,
+                        &ls.label_font,
+                        ls.font_size,
+                        false,
+                        false,
+                        fp,
+                    ),
                 ),
                 metrics,
             )
@@ -1153,7 +1164,9 @@ fn raster_produces_expected_size_and_nonzero() {
     let w = config.chart_area.0.width as usize;
     let h = config.chart_area.0.height as usize;
 
-    let rgba = try_raster_chart_to_rgba(&config).unwrap();
+    let rgba =
+        try_raster_chart_layer_to_rgba_with_selection_at(&config, AxisLayerKind::All, &[], 1.0)
+            .unwrap();
     assert_eq!(rgba.len(), w * h * 4, "buffer size must be w*h*4");
 
     // Background is transparent, so any axis/label pixel must lift alpha above 0.
@@ -1182,15 +1195,25 @@ fn selection_overlay_rasters_blue_box() {
         .selection_box(&config, &CpuTextMeasure::for_style(&config.draw_style))
         .expect("data area selection box");
 
-    let plain = try_raster_chart_layer_to_rgba(&config, AxisLayerKind::Decoration).unwrap();
+    let plain = try_raster_chart_layer_to_rgba_with_selection_at(
+        &config,
+        AxisLayerKind::Decoration,
+        &[],
+        1.0,
+    )
+    .unwrap();
     assert!(
         !has_selection_blue(&plain),
         "no blue-dominant pixels expected without a selection overlay"
     );
 
-    let selected =
-        try_raster_chart_layer_to_rgba_with_selection(&config, AxisLayerKind::Decoration, &[sel])
-            .unwrap();
+    let selected = try_raster_chart_layer_to_rgba_with_selection_at(
+        &config,
+        AxisLayerKind::Decoration,
+        &[sel],
+        1.0,
+    )
+    .unwrap();
     assert!(
         has_selection_blue(&selected),
         "selection overlay must contribute blue-dominant pixels"
@@ -1207,8 +1230,9 @@ fn selection_overlay_skips_grid_layer() {
     let sel = DataAreaElement
         .selection_box(&config, &CpuTextMeasure::for_style(&config.draw_style))
         .unwrap();
-    let grid = try_raster_chart_layer_to_rgba_with_selection(&config, AxisLayerKind::Grid, &[sel])
-        .unwrap();
+    let grid =
+        try_raster_chart_layer_to_rgba_with_selection_at(&config, AxisLayerKind::Grid, &[sel], 1.0)
+            .unwrap();
     assert!(!has_selection_blue(&grid));
 }
 
@@ -1237,8 +1261,10 @@ fn sketch_mode_diverges_from_precise() {
     let mut precise = sketched.clone();
     precise.draw_style = DrawStyle::Precise;
     for layer in [AxisLayerKind::Grid, AxisLayerKind::Decoration] {
-        let a = try_raster_chart_layer_to_rgba(&precise, layer).unwrap();
-        let b = try_raster_chart_layer_to_rgba(&sketched, layer).unwrap();
+        let a =
+            try_raster_chart_layer_to_rgba_with_selection_at(&precise, layer, &[], 1.0).unwrap();
+        let b =
+            try_raster_chart_layer_to_rgba_with_selection_at(&sketched, layer, &[], 1.0).unwrap();
         assert_ne!(
             a, b,
             "{layer:?} raster must change when sketch mode is enabled"
@@ -1251,8 +1277,8 @@ fn sketch_mode_diverges_from_precise() {
 fn sketch_mode_is_deterministic() {
     let cfg = sketch_test_config(0);
     for layer in [AxisLayerKind::Grid, AxisLayerKind::Decoration] {
-        let a = try_raster_chart_layer_to_rgba(&cfg, layer).unwrap();
-        let b = try_raster_chart_layer_to_rgba(&cfg, layer).unwrap();
+        let a = try_raster_chart_layer_to_rgba_with_selection_at(&cfg, layer, &[], 1.0).unwrap();
+        let b = try_raster_chart_layer_to_rgba_with_selection_at(&cfg, layer, &[], 1.0).unwrap();
         assert_eq!(a, b, "{layer:?} sketch raster must be deterministic");
     }
 }
@@ -1261,8 +1287,20 @@ fn sketch_mode_is_deterministic() {
 #[test]
 fn sketch_seed_changes_raster() {
     for layer in [AxisLayerKind::Grid, AxisLayerKind::Decoration] {
-        let a = try_raster_chart_layer_to_rgba(&sketch_test_config(0), layer).unwrap();
-        let b = try_raster_chart_layer_to_rgba(&sketch_test_config(1), layer).unwrap();
+        let a = try_raster_chart_layer_to_rgba_with_selection_at(
+            &sketch_test_config(0),
+            layer,
+            &[],
+            1.0,
+        )
+        .unwrap();
+        let b = try_raster_chart_layer_to_rgba_with_selection_at(
+            &sketch_test_config(1),
+            layer,
+            &[],
+            1.0,
+        )
+        .unwrap();
         assert_ne!(a, b, "{layer:?} raster must depend on the sketch seed");
     }
 }
@@ -1308,12 +1346,19 @@ fn selection_overlay_stays_precise_in_sketch_mode() {
     );
 
     let layer = AxisLayerKind::Decoration;
-    let base_p = try_raster_chart_layer_to_rgba(&precise, layer).unwrap();
-    let with_p =
-        try_raster_chart_layer_to_rgba_with_selection(&precise, layer, std::slice::from_ref(&sel))
-            .unwrap();
-    let base_s = try_raster_chart_layer_to_rgba(&sketched, layer).unwrap();
-    let with_s = try_raster_chart_layer_to_rgba_with_selection(&sketched, layer, &[sel]).unwrap();
+    let base_p =
+        try_raster_chart_layer_to_rgba_with_selection_at(&precise, layer, &[], 1.0).unwrap();
+    let with_p = try_raster_chart_layer_to_rgba_with_selection_at(
+        &precise,
+        layer,
+        std::slice::from_ref(&sel),
+        1.0,
+    )
+    .unwrap();
+    let base_s =
+        try_raster_chart_layer_to_rgba_with_selection_at(&sketched, layer, &[], 1.0).unwrap();
+    let with_s =
+        try_raster_chart_layer_to_rgba_with_selection_at(&sketched, layer, &[sel], 1.0).unwrap();
 
     // Bytes the selection overlay touched (with vs without selection).
     let footprint = |base: &[u8], with: &[u8]| -> Vec<usize> {
@@ -1397,7 +1442,8 @@ fn strip_rect(cfg: &Config) -> RectF {
 }
 
 fn raster(cfg: &Config) -> Vec<u8> {
-    try_raster_chart_to_rgba(cfg).expect("colourbar raster")
+    try_raster_chart_layer_to_rgba_with_selection_at(cfg, AxisLayerKind::All, &[], 1.0)
+        .expect("colourbar raster")
 }
 
 fn pixel_at(rgba: &[u8], x: f32, y: f32) -> [u8; 4] {
@@ -1990,8 +2036,9 @@ fn a_polar_tick_label_selection_boxes_each_label() {
             other => panic!("{side:?}: polar tick labels outline their parts, got {other:?}"),
         }
         let layer = AxisLayerKind::Decoration;
-        let base = try_raster_chart_layer_to_rgba(&cfg, layer).unwrap();
-        let with = try_raster_chart_layer_to_rgba_with_selection(&cfg, layer, &[sel]).unwrap();
+        let base = try_raster_chart_layer_to_rgba_with_selection_at(&cfg, layer, &[], 1.0).unwrap();
+        let with =
+            try_raster_chart_layer_to_rgba_with_selection_at(&cfg, layer, &[sel], 1.0).unwrap();
         let touched = |x: f32, y: f32| {
             let i = (y.round() as usize * width + x.round() as usize) * 4;
             base[i..i + 4] != with[i..i + 4]
@@ -2598,7 +2645,7 @@ const ADAPTIVE_LABEL_TABLE: &str = r#"1e-9..1e9 @120 Bottom | Power: 10^-9 10^-3
 1e0..1e2 @960 Bottom | Power: 10^0 2×10^0 5×10^0 10^1 2×10^1 5×10^1 10^2 | Sci: 1e0 2e0 5e0 1e1 2e1 5e1 1e2 | Dec: 1 2 5 10 20 50 100 | Plain: 1 2 5 10 20 50 100
 1e0..1e2 @960 Left | Power: 10^0 2×10^0 5×10^0 10^1 2×10^1 5×10^1 10^2 | Sci: 1e0 2e0 5e0 1e1 2e1 5e1 1e2 | Dec: 1 2 5 10 20 50 100 | Plain: 1 2 5 10 20 50 100
 3e3..8e5 @120 Bottom | Power: 10^4 10^5 | Sci: 1e4 1e5 | Dec: 10000 100000 | Plain: 10000 100000
-3e3..8e5 @120 Left | Power: 10^4 10^5 | Sci: 1e4 1e5 | Dec: 10000 100000 | Plain: 10000 100000
+3e3..8e5 @120 Left | Power: 10^4 10^5 | Sci: 5e3 1e4 2e4 5e4 1e5 2e5 5e5 | Dec: 5000 10000 20000 50000 100000 200000 500000 | Plain: 5000 10000 20000 50000 100000 200000 500000
 3e3..8e5 @240 Bottom | Power: 10^4 10^5 | Sci: 5e3 1e4 2e4 5e4 1e5 2e5 5e5 | Dec: 10000 100000 | Plain: 10000 100000
 3e3..8e5 @240 Left | Power: 5×10^3 10^4 2×10^4 5×10^4 10^5 2×10^5 5×10^5 | Sci: 5e3 1e4 2e4 5e4 1e5 2e5 5e5 | Dec: 5000 10000 20000 50000 100000 200000 500000 | Plain: 5000 10000 20000 50000 100000 200000 500000
 3e3..8e5 @480 Bottom | Power: 5×10^3 10^4 2×10^4 5×10^4 10^5 2×10^5 5×10^5 | Sci: 5e3 1e4 2e4 5e4 1e5 2e5 5e5 | Dec: 5000 10000 20000 50000 100000 200000 500000 | Plain: 5000 10000 20000 50000 100000 200000 500000
@@ -2631,16 +2678,12 @@ const ADAPTIVE_LABEL_TABLE: &str = r#"1e-9..1e9 @120 Bottom | Power: 10^-9 10^-3
 2.1e4..2.9e4 @960 Left | Power:  | Sci:  | Dec:  | Plain: 
 "#;
 
-/// The cells whose labels differ at 2x: the digit box of a plain label is
-/// 9 px tall at 12 px and 17 px at 24 px (glyph metrics do not scale
-/// linearly), so the 5e3 and 1e4 labels of a 120 px axis are 5.9 px apart
-/// against the half-em 6 px at 1x and clear it at 2x. The half-em rule and
-/// the measurement are the stride's, unchanged by the ladder.
-const ADAPTIVE_2X_EXCEPTIONS: [&str; 3] = [
-    "3e3..8e5 @120 Left Sci",
-    "3e3..8e5 @120 Left Dec",
-    "3e3..8e5 @120 Left Plain",
-];
+/// The cells whose labels differ at 2x: none. The layout measures unhinted
+/// glyph metrics, which scale linearly (#357), so a 120 px axis keeps the
+/// same labels at 1x and 2x. (Hinted metrics made the digit box of a plain
+/// label 9 px tall at 12 px and 17 px at 24 px, so three cells of the
+/// 3e3..8e5 range at 120 px once dropped labels at 1x only.)
+const ADAPTIVE_2X_EXCEPTIONS: [&str; 0] = [];
 
 /// Whatever the pixels, the labels kept are a ladder's labels or every n-th
 /// of them, with half an em between neighbours, on every side, inverted and

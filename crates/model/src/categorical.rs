@@ -8,10 +8,9 @@
 //! [`CategoricalChart`] document still parses and validates here, and
 //! `Config::from_categorical` turns it into that chart and the uploads of its
 //! values. Stable category and series ids identify edits and selections;
-//! values follow category order. The type is deprecated and is removed in
-//! the next milestone.
-// The module defines the deprecated reader type and its tests use it.
-#![allow(deprecated)]
+//! values follow category order. The type is the reader for documents
+//! written before 0.13.
+
 use crate::Color;
 #[cfg(test)]
 use crate::Material;
@@ -27,10 +26,8 @@ pub use crate::data_config::{
     CategoryBarDirection, CategoryBarLabelFormat, CategoryBarLabels, CategoryBarMode,
     CategoryBarOverride, CategoryBarStyle, CategoryBarTarget,
 };
-#[deprecated(
-    since = "0.13.0",
-    note = "part of the CategoricalChart document reader; removed with it in the next milestone"
-)]
+
+/// Part of the [`CategoricalChart`] reader for documents written before 0.13.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BarSeries {
@@ -58,17 +55,11 @@ impl BarSeries {
         }
     }
 }
-/// The former bar material enum, now the shared [`Material`](crate::Material). Bars reject
-/// the materials [`Material::supported_on_flat_body`](crate::Material::supported_on_flat_body) excludes.
-#[deprecated(since = "0.13.0", note = "use Material")]
-pub type CategoryBarMaterial = crate::Material;
-/// A legacy categorical bar chart document. [`Self::validate`] checks it,
+
+/// The reader for categorical bar chart documents written before 0.13.
+/// [`Self::validate`] checks it,
 /// and `Config::from_categorical` opens it as a Cartesian chart of category
 /// bar series.
-#[deprecated(
-    since = "0.13.0",
-    note = "a document reader only: open it with Config::from_categorical; removed in the next milestone"
-)]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
@@ -131,6 +122,17 @@ pub struct CategoricalChart {
     pub bar_gap: f32,
     pub font_family: String,
     pub font_size: f32,
+    /// The text sizes by role (#357, [`crate::DocumentTextSizes`]): the
+    /// title, the axis titles, the tick labels and the legend. `None` (key
+    /// absent in JSON, every document written before the field) draws every
+    /// text at `font_size` and the title half as large again; the Rust
+    /// `Default` sets the documented Cartesian chart's sizes
+    /// ([`crate::DocumentTextSizes::CARTESIAN`]).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub text_sizes: Option<crate::DocumentTextSizes>,
     pub text_color: Color,
     pub background: Color,
 }
@@ -168,15 +170,22 @@ impl CategoricalChart {
     pub fn active_layer(&self) -> crate::LayerRef {
         self.active_layer.bounded()
     }
+    /// The text sizes the document draws with (#357): `text_sizes`, or every
+    /// role at `font_size` with the title half as large again
+    /// ([`crate::DocumentTextSizes::resolved`]).
+    pub fn resolved_text_sizes(&self) -> crate::DocumentTextSizes {
+        crate::DocumentTextSizes::resolved(self.text_sizes.as_ref(), self.font_size)
+    }
+
     pub fn resolved_title(&self) -> crate::BoundedTitleOptions {
-        self.chart_title.clone().unwrap_or_else(|| {
-            crate::BoundedTitleOptions::from_legacy(
-                &self.title,
-                &self.font_family,
-                self.font_size,
-                self.text_color,
-            )
-        })
+        crate::BoundedTitleOptions::resolved(
+            self.chart_title.as_ref(),
+            &self.title,
+            &self.font_family,
+            self.font_size,
+            self.text_sizes.as_ref(),
+            self.text_color,
+        )
     }
 
     pub fn value(&self, target: &CategoryBarTarget) -> Option<f64> {
@@ -229,7 +238,8 @@ impl CategoricalChart {
         }
         bar_material(&self.style)?;
         if !style(&self.style)
-            || !range(self.font_size, 8.0, 32.0)
+            || !(range(self.font_size, 8.0, 32.0)
+                && self.text_sizes.is_none_or(|sizes| sizes.is_valid()))
             || !range(self.group_width, 0.1, 0.95)
             || !range(self.bar_gap, 0.0, 24.0)
             || !color(self.text_color, false)

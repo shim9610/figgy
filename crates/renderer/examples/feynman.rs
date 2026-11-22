@@ -20,8 +20,8 @@ use VertexRole::{Incoming, Internal, Outgoing};
 use gallery::Result;
 use renderer::theme::ThemeFamily;
 use renderer::{
-    Anchor, Annotation, AnnotationKind, AnnotationLineStyle, Color, Renderer, SeriesConfig,
-    ShapeStyle,
+    Anchor, Annotation, AnnotationKind, AnnotationLineStyle, Chart, Color, Renderer, SeriesConfig,
+    ShapeStyle, default,
     feynman::{
         FeynmanSeries, FeynmanVertex, MomentumArrow, MomentumSide, ParticleLine, Propagator,
         VertexRole,
@@ -30,7 +30,7 @@ use renderer::{
     theme::ChartKind,
 };
 use std::path::Path;
-use styled::{background, export, save, scene_chart, themed};
+use styled::{SIZE, background, export, save, themed};
 
 /// A label: its content, in the look the theme gives it.
 fn tex(text: &str) -> RichText {
@@ -227,13 +227,20 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
     let theme = ThemeFamily::WarmPaper.theme(ChartKind::Feynman);
     let bg = background(&theme);
     let chrome = &theme.chrome;
-    let mut chart = scene_chart("Feynman diagrams / six processes", "", "");
+    let diagrams = diagrams();
+    let mut specs: Vec<SeriesConfig> = (diagrams.iter().enumerate())
+        .map(|(k, (_, diagram))| SeriesConfig::feynman(format!("diagram-{k}"), diagram.clone()))
+        .collect();
+    // The default config in the frame of a Feynman chart: no axes, ticks,
+    // tick labels or grid (#357).
+    let mut chart = Chart::new(default::config_for_series(&mut specs))
+        .with_area(0, 0, SIZE.0, SIZE.1)
+        .with_title("Feynman diagrams / six processes");
     chart.set_x_range(0., 3.);
     chart.set_y_range(0., 2.);
     let config = chart.config_mut();
     config.legend.visible = false;
-    let mut specs = Vec::new();
-    for (k, (caption, diagram)) in diagrams().into_iter().enumerate() {
+    for (k, (caption, _)) in diagrams.iter().enumerate() {
         let (x, y) = ((k % 3) as f64, if k < 3 { 1. } else { 0. });
         // A card under each diagram in the theme's box colours, its
         // caption at the top left in the theme's ink.
@@ -275,7 +282,6 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
                 box_style: None,
                 align: Default::default(),
             }));
-        specs.push(SeriesConfig::feynman(format!("diagram-{k}"), diagram));
     }
     themed(&mut chart, &theme, &mut specs)?;
     let image = export(r, &mut chart, &specs, bg)?;

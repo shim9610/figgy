@@ -273,7 +273,10 @@ impl renderer::sink::Sink for FindLabel {
     fn text(&mut self, _: renderer::sink::Slot, text: &renderer::sink::PlacedText<'_>) {
         // A plain label or a rich one (a power of ten): its first character.
         let lead = match text.text {
-            renderer::sink::TextRef::Rich(rich) => rich.segments.first().map(|s| s.text),
+            renderer::sink::TextRef::Rich(rich)
+            | renderer::sink::TextRef::ScaledRich { text: rich, .. } => {
+                rich.segments.first().map(|s| s.text)
+            }
             renderer::sink::TextRef::Plain { text, .. } => text.chars().next(),
         };
         if self.found.is_none() && lead == Some(self.lead) {
@@ -936,4 +939,70 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         Some("line")
     );
     assert_eq!(chart_config(&chart), before);
+}
+
+/// A press on empty plot space selects the data area and starts its drag
+/// (`HitMap`: the background answers where no element above it does), and
+/// a missed data pick there answers the nearest datum without touching that
+/// selection: `pick_point` is a separate host call (#381).
+#[wasm_bindgen_test(async)]
+async fn a_missed_pick_on_empty_plot_space_keeps_the_data_area_selected() {
+    let mut chart = FiggyChart::create(canvas())
+        .await
+        .expect("FiggyChart.create");
+    chart.register_column_f32("px", &[0.0, 1.0]).unwrap();
+    chart.register_column_f32("py", &[0.0, 0.0]).unwrap();
+    chart
+        .add_line_series("line", "px", "py", 2.0, "line")
+        .unwrap();
+    let mut config = chart_config(&chart);
+    for axis in [&mut config.bottom_x, &mut config.top_x] {
+        axis.min = 0.0;
+        axis.max = 1.0;
+    }
+    for axis in [&mut config.left_y, &mut config.right_y] {
+        axis.min = 0.0;
+        axis.max = 1.0;
+    }
+    chart
+        .set_config(&serde_json::to_string(&config).unwrap())
+        .unwrap();
+    chart.series_ready().await.expect("the line draws");
+    let canvas_rect = |chart: &FiggyChart| -> [f64; 4] {
+        let area: serde_json::Value =
+            serde_json::from_str(&chart.data_area_rect().expect("data area")).unwrap();
+        let rect = &area["canvas"];
+        [0, 1, 2, 3].map(|i| rect[i].as_f64().unwrap())
+    };
+    let [x, y, w, h] = canvas_rect(&chart);
+    // The line runs along the bottom edge; the upper left quarter is empty.
+    let (px, py) = ((x + w * 0.25) as f32, (y + h * 0.25) as f32);
+    assert_eq!(
+        chart.hit_test(px, py).unwrap().as_deref(),
+        Some("data_area")
+    );
+    assert!(chart.on_press(px, py).expect("press the plot"));
+    assert!(chart.has_selection().unwrap());
+    let before = chart.get_config().unwrap();
+
+    let missed = chart.pick_point(px, py, 2.0).await.expect("pick");
+    let missed: serde_json::Value =
+        serde_json::from_str(&missed.as_string().expect("a miss answers JSON")).unwrap();
+    assert!(missed["series_id"].is_null(), "{missed}");
+    assert_eq!(missed["nearest"][0]["series_id"], "line", "{missed}");
+    assert!(
+        chart.has_selection().unwrap(),
+        "the miss kept the selection"
+    );
+    assert_eq!(
+        chart.get_config().unwrap(),
+        before,
+        "the miss changed nothing"
+    );
+
+    // The data area is still the selection: the drag moves it.
+    chart.on_move(12.0, 8.0).expect("drag the plot");
+    chart.on_release().unwrap();
+    let [x2, y2, _, _] = canvas_rect(&chart);
+    assert!((x2, y2) != (x, y), "the plot area moved: {x2},{y2}");
 }

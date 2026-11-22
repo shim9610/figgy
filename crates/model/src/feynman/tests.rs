@@ -625,6 +625,149 @@ fn a_document_round_trips_with_its_defaults_omitted() {
     );
 }
 
+#[cfg(feature = "serde")]
+#[test]
+fn the_label_scale_round_trips_and_defaults_when_omitted() {
+    assert_eq!(crate::defaults::feynman_style().label_scale, 1.5);
+    // A style other than the default writes the scale only when it differs.
+    let mut diagram = s_channel();
+    diagram.style.width = 3.0;
+    let json = serde_json::to_string(&diagram).unwrap();
+    assert!(json.contains("\"style\""), "{json}");
+    assert!(!json.contains("label_scale"), "{json}");
+    let back: FeynmanSeries = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, diagram);
+    diagram.style.label_scale = 2.0;
+    let json = serde_json::to_string(&diagram).unwrap();
+    assert!(json.contains("\"label_scale\":2.0"), "{json}");
+    let back: FeynmanSeries = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, diagram);
+    assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    // A style written before the field existed reads the default scale,
+    // and a document without a style reads the whole default style.
+    let older = r#"{"vertices":[],"propagators":[],"style":{"color":{"r":0.0,"g":0.0,"b":0.0,"a":1.0},"width":1.5,"wave":{"amplitude":4.0,"wavelength":12.0},"coil":{"amplitude":5.0,"wavelength":9.0},"head_length":9.0,"head_width":7.0,"dot_radius":3.0,"loop_radius":18.0,"fan_step":90.0,"picked":{"color":{"r":0.0,"g":0.0,"b":0.0,"a":1.0},"width_extra_px":2.0}}}"#;
+    let older: FeynmanSeries = serde_json::from_str(older).unwrap();
+    assert_eq!(older.style.label_scale, 1.5);
+    assert_eq!(older.style.width, 1.5);
+    let bare: FeynmanSeries = serde_json::from_str(r#"{"vertices":[],"propagators":[]}"#).unwrap();
+    assert_eq!(bare.style, crate::defaults::feynman_style());
+}
+
+#[test]
+fn the_label_scale_is_validated() {
+    for scale in [0.25, 1.0, 4.0] {
+        let mut diagram = s_channel();
+        diagram.style.label_scale = scale;
+        assert_eq!(diagram.validate(), Ok(()), "{scale}");
+    }
+    for scale in [0.2, 4.5, f32::NAN, f32::INFINITY] {
+        let mut diagram = s_channel();
+        diagram.style.label_scale = scale;
+        assert_eq!(
+            diagram.validate(),
+            Err(crate::RuleKind::FeynmanSizes),
+            "{scale}"
+        );
+    }
+}
+
+/// Every text a sink receives: its rect, its rich text's stored size and
+/// the factor it is drawn at.
+#[derive(Default)]
+struct Texts(Vec<(RectF, f32, f32)>);
+impl Sink for Texts {
+    fn text(&mut self, _: Slot, text: &PlacedText<'_>) {
+        let (rich, scale) = text.text.rich().expect("a Feynman label is rich text");
+        self.0.push((text.rect(), rich.font_size, scale));
+    }
+    fn stroke(&mut self, _: Slot, _: [f32; 2], _: [f32; 2], _: &StrokeStyle<'_>) {}
+    fn rect(&mut self, _: Slot, _: RectF, _: Option<Color>, _: Option<crate::sink::Border<'_>>) {}
+    fn triangle(&mut self, _: Slot, _: [[f32; 2]; 3], _: Color) {}
+    fn path(&mut self, _: Slot, _: &[PathSegment], _: &StrokeStyle<'_>) {}
+    fn polygon(&mut self, _: Slot, _: &[[f32; 2]], _: Option<Color>, _: Option<&StrokeStyle<'_>>) {}
+    fn ramp(&mut self, _: Slot, _: RectF, _: &crate::config::ColorBarOptions) {}
+}
+
+#[test]
+fn labels_are_measured_drawn_and_picked_at_the_label_scale() {
+    let mut diagram = s_channel();
+    diagram.propagators[2].label = Some(RichText::plain("γ", Color::BLACK, 12.0, ""));
+    diagram.vertices[0].label = Some(RichText::plain("e", Color::BLACK, 12.0, ""));
+    let space = space();
+    let drawn = |diagram: &FeynmanSeries| {
+        let mut texts = Texts::default();
+        diagram.emit(&space, None, &Fixed, &mut texts).unwrap();
+        texts.0
+    };
+    diagram.style.label_scale = 1.0;
+    let plain = drawn(&diagram);
+    diagram.style.label_scale = 2.0;
+    let scaled = drawn(&diagram);
+    assert_eq!(plain.len(), 2);
+    assert_eq!(scaled.len(), 2);
+    for ((one, size_one, factor_one), (two, size_two, factor_two)) in plain.iter().zip(&scaled) {
+        // The stored text keeps its size; the sink is told the factor and
+        // the placed extents are the scaled ones.
+        assert_eq!((*size_one, *factor_one), (12.0, 1.0));
+        assert_eq!((*size_two, *factor_two), (12.0, 2.0));
+        assert_eq!(two.width, 2.0 * one.width);
+        assert_eq!(two.height, 2.0 * one.height);
+    }
+    // The label's rect is the one the pick, the bounds and the picked box
+    // use: a point inside the scaled block but outside the unscaled one
+    // picks the label.
+    let placement = diagram.placed(&space, None).unwrap();
+    let label = placement
+        .label(FeynmanLabelPart::Propagator, 2, &Fixed)
+        .unwrap();
+    let rect = label.rect();
+    assert_eq!(rect, scaled[0].0);
+    assert!(matches!(label.text, TextRef::ScaledRich { scale: 2.0, .. }));
+    // The far corner from the line: the unscaled block, placed the same
+    // way, ends half the scaled block's size short of it.
+    let corner = [rect.x + rect.width - 1.0, rect.y + 1.0];
+    assert_eq!(
+        diagram
+            .pick(&space, &Fixed, corner, 0.0)
+            .unwrap()
+            .map(|(hit, _)| hit),
+        Some(FeynmanHit::Label(FeynmanLabelPart::Propagator, 2))
+    );
+    diagram.style.label_scale = 1.0;
+    assert!(
+        diagram
+            .pick(&space, &Fixed, corner, 0.0)
+            .unwrap()
+            .is_none_or(|(hit, _)| hit != FeynmanHit::Label(FeynmanLabelPart::Propagator, 2)),
+        "the unscaled label does not reach the corner"
+    );
+    // A picked label is boxed around its scaled block.
+    diagram.style.label_scale = 2.0;
+    let hit = FeynmanHit::Label(FeynmanLabelPart::Propagator, 2);
+    let mut boxes = Vec::new();
+    diagram
+        .emit(
+            &space,
+            Some(hit),
+            &Fixed,
+            &mut Parts(&mut |part| {
+                if let DrawnPart::Polygon { points, .. } = part {
+                    boxes.push(points);
+                }
+            }),
+        )
+        .unwrap();
+    let outline = boxes.last().expect("the picked label is boxed");
+    assert_eq!(outline[0], [rect.x - LABEL_BOX_GAP, rect.y - LABEL_BOX_GAP]);
+    assert_eq!(
+        outline[2],
+        [
+            rect.x + rect.width + LABEL_BOX_GAP,
+            rect.y + rect.height + LABEL_BOX_GAP
+        ]
+    );
+}
+
 /// x and y over `min..min + span` on a 200 × 100 px plot at (0, 0).
 fn zoomed(min: [f64; 2], span: f64) -> PixelSpace {
     let axis = |min: f64| AxisSpace {
@@ -710,7 +853,10 @@ fn zooming_in_a_million_times_draws_and_picks_with_bounded_work() {
     let (ordinary, _) = emitted(&every_particle_between(0.2, 0.8, 0.2, 0.1), &space());
     // A millionth of the axis about the middle: the lines run about 1.2e8
     // px across a 200 px plot, 10 px apart.
-    let diagram = every_particle_between(0.2, 0.8, 0.5 - 2.5e-7, 1e-7);
+    let mut diagram = every_particle_between(0.2, 0.8, 0.5 - 2.5e-7, 1e-7);
+    // A coil of 4 px reaches 9.3 px from its line, short of the photon 10 px
+    // below it, so each line picks on its own path.
+    diagram.style.coil.amplitude = 4.0;
     let space = zoomed([0.5 - 5e-7, 0.5 - 5e-7], 1e-6);
     let (segments, parts) = emitted(&diagram, &space);
     assert!(parts > 0, "something is drawn");
@@ -1009,4 +1155,115 @@ fn spans_never_overflow_for_lines_and_arcs_crossing_a_plot() {
 
 fn scale_v(a: [f32; 2], s: f32) -> [f32; 2] {
     [a[0] * s, a[1] * s]
+}
+
+/// A measure whose extents grow with the text's size, as a face's do.
+struct Sized;
+impl MeasureText for Sized {
+    fn measure_rich(&self, rt: &RichText) -> TextExtents {
+        TextExtents {
+            width: rt.segments.len() as f32 * 0.6 * rt.font_size,
+            ascent: 0.8 * rt.font_size,
+            descent: 0.3 * rt.font_size,
+        }
+    }
+}
+
+/// x and y over 0..1 on a 400 × 400 px plot at (0, 0), y up.
+fn square() -> PixelSpace {
+    let axis = AxisSpace {
+        map: AxisMap::Linear { min: 0.0, max: 1.0 },
+        inverted: false,
+        breaks: BreakMap::IDENTITY,
+    };
+    let rect = RectF {
+        x: 0.0,
+        y: 0.0,
+        width: 400.0,
+        height: 400.0,
+    };
+    PixelSpace {
+        panel: rect,
+        plot: rect,
+        x: axis,
+        y: axis,
+    }
+}
+
+/// #411: an external vertex's label box clears its leg's ink and marker
+/// by the label gap, for every label size and leg slope and for a straight
+/// and a wavy leg; it moves out only as far as that takes; it picks where
+/// it is drawn; and a host's offset still moves it from there.
+#[test]
+fn external_labels_clear_their_legs_at_any_size_and_slope() {
+    let space = square();
+    for particle in [ParticleLine::Fermion, ParticleLine::Photon] {
+        for degrees in (0..360).step_by(15) {
+            for size in [8.0f32, 12.0, 25.0, 40.0] {
+                let angle = (degrees as f64).to_radians();
+                let mut diagram = FeynmanSeries {
+                    vertices: vec![
+                        FeynmanVertex {
+                            at: Some([0.5, 0.5]),
+                            ..vertex("v", VertexRole::Internal)
+                        },
+                        FeynmanVertex {
+                            at: Some([0.5 + 0.3 * angle.cos(), 0.5 + 0.3 * angle.sin()]),
+                            label: Some(RichText::plain("μ⁺", Color::BLACK, size, "")),
+                            ..vertex("x", VertexRole::Outgoing)
+                        },
+                    ],
+                    propagators: vec![line("p", "v", "x", particle)],
+                    ..crate::defaults::feynman_series()
+                };
+                let case = format!("{particle:?} {degrees}° {size} px");
+                let placed = diagram.placed(&space, None).unwrap();
+                let label = placed
+                    .label(FeynmanLabelPart::Vertex, 1, &Sized)
+                    .expect("drawn");
+                let rect = label.rect();
+                let centre = [rect.x + rect.width / 2.0, rect.y + rect.height / 2.0];
+                let half = [rect.width / 2.0, rect.height / 2.0];
+                let (v, x) = (placed.px(0).unwrap(), placed.px(1).unwrap());
+                let need = placed.envelope(0).max(placed.marker_radius(1)) + LABEL_GAP;
+                let gap = box_segment_distance(centre, half, v, x);
+                assert!(gap >= need - 0.01, "{case}: {gap} < {need}");
+                // Moved no further than it takes: the box is at its
+                // default place (half its size beyond the marker and the
+                // gap, along the outward direction), or the gap is met to
+                // a fraction of a pixel.
+                let out = placed.outward(1);
+                let reach = placed.marker_radius(1) + LABEL_GAP;
+                let default = [
+                    x[0] + out[0] * (reach + half[0]),
+                    x[1] + out[1] * (reach + half[1]),
+                ];
+                let at_default =
+                    (centre[0] - default[0]).abs() < 1e-3 && (centre[1] - default[1]).abs() < 1e-3;
+                assert!(
+                    at_default || gap < need + 0.1,
+                    "{case}: pushed further than it takes ({gap} for {need})"
+                );
+                drop(placed);
+                // The pick hits the label where it is drawn.
+                assert_eq!(
+                    diagram
+                        .pick(&space, &Sized, centre, 0.0)
+                        .unwrap()
+                        .map(|(hit, _)| hit),
+                    Some(FeynmanHit::Label(FeynmanLabelPart::Vertex, 1)),
+                    "{case}"
+                );
+                // A drag adds to the cleared place.
+                diagram.drag_label(FeynmanLabelPart::Vertex, 1, 7.0, -5.0);
+                let placed = diagram.placed(&space, None).unwrap();
+                let moved = placed
+                    .label(FeynmanLabelPart::Vertex, 1, &Sized)
+                    .unwrap()
+                    .rect();
+                assert!((moved.x - rect.x - 7.0).abs() < 1e-3, "{case}");
+                assert!((moved.y - rect.y + 5.0).abs() < 1e-3, "{case}");
+            }
+        }
+    }
 }

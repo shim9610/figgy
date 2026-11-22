@@ -278,6 +278,30 @@ pub fn tick_text(
         let text = format_tick_power(shown, ls.significant_digits, ls);
         let metrics = measure.measure_rich(&text);
         (NumericTickText::Power(text), metrics)
+    } else if let LabelFormat::Auto(auto) = &ls.format
+        && auto.notation == crate::format::ExponentNotation::Power
+    {
+        // The automatic form's exponent ticks typeset as `Power` does
+        // (#357); its plain ticks stay plain text.
+        let (min, max) = axis.shown_range();
+        let written = format_tick_auto(
+            shown,
+            auto,
+            ls.significant_digits,
+            &axis.scale,
+            effective_major_spacing(axis),
+            min,
+            max,
+        );
+        if written.exponent.is_some() {
+            let text = format_tick_auto_power(&written, ls);
+            let metrics = measure.measure_rich(&text);
+            (NumericTickText::Power(text), metrics)
+        } else {
+            let text = written.mantissa;
+            let metrics = measure.measure_plain(&text, &ls.label_font, ls.font_size);
+            (NumericTickText::Plain(text), metrics)
+        }
     } else {
         let (min, max) = axis.shown_range();
         let text = format_tick_value(
@@ -331,6 +355,7 @@ pub fn place_centered(
         origin: centered_origin(center, m),
         extents: m,
         rotation: None,
+        outline: None,
     };
     sink.text(Slot::Above, &placed);
 }
@@ -1123,7 +1148,6 @@ mod tests {
     /// antenna pattern (ray up through the 90° label), a compass rose (ray
     /// at 45° under its label), a sector in radians, a clockwise heatmap
     /// with a hole, and a radar document with value labels.
-    #[allow(deprecated)]
     fn example_charts() -> Vec<(&'static str, Config)> {
         use std::f64::consts::PI;
         let degrees = || LabelFormat::Degrees;

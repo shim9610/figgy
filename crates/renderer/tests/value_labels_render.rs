@@ -14,13 +14,17 @@
 //! from the one text stack (`measure_plain_text`).
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    BLUE, MAGENTA, RED, SCALES, col, is_blue_rgba as is_blue, is_red_rgba as is_red,
+    pixel_rgba as pixel, value_px,
+};
+use test_gpu::shared_device;
 
 use renderer::config::{Category, TickVisibility};
-use renderer::data::Column;
 use renderer::data_config::{
     BarGroups, BoxPlotLabels, BoxPlotSeriesLabels, BoxPlotStyle, CategoryBarDirection,
     CategoryBarLabels, CategoryBarMode, CategoryBarSeriesLabels, CategoryBarStyle,
@@ -31,35 +35,17 @@ use renderer::raster::Canvas;
 use renderer::select::{SELECTION_PADDING, SELECTION_STROKE_WIDTH};
 use renderer::text_render::{FontPolicy, draw_plain_text, measure_plain_text};
 use renderer::{
-    BOX_PLOT_RECORD, Chart, Color, ColumnSource, DataRenderType, DataSelectionsConfig,
-    GpuPickRequest, Material, PickedData, PickedDataRef, RadarLabels, RadarMarker,
-    RadarSeriesLabels, RadarSeriesStyle, RaggedSource, RasterImage, RecordSource, Renderer,
-    RendererDevice, SeriesConfig, Subplot,
+    BOX_PLOT_RECORD, BoxSeries, CategoryBarSeries, Chart, Color, ColumnSource, DataRenderType,
+    DataSelectionsConfig, GpuPickRequest, Material, PickedData, PickedDataRef, RadarLabels,
+    RadarMarker, RadarPolygonSeries, RadarSeriesLabels, RadarSeriesStyle, RaggedSource,
+    RasterImage, RecordSource, Renderer, RendererDevice, SeriesConfig, Subplot,
 };
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 320;
-const RED: Color = Color::from_rgb8(255, 0, 0);
-const BLUE: Color = Color::from_rgb8(0, 0, 255);
-const MAGENTA: Color = Color::from_rgb8(255, 0, 255);
 /// The bar values over the categories a, b, c.
 const ONE: [f64; 3] = [10.0, 20.0, 5.0];
 const TWO: [f64; 3] = [20.0, 10.0, 15.0];
-const SCALES: [f32; 2] = [1.0, 2.0];
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
-
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
 /// One box: whisker low, q1, median, q3, whisker high.
 type Stats = [f64; 5];
 const BOXES: [Stats; 3] = [
@@ -205,7 +191,7 @@ fn bars(
         x_column: x.into(),
         y_column: y.into(),
         z_column: None,
-        render_type: DataRenderType::CategoryBars {
+        render_type: DataRenderType::CategoryBars(CategoryBarSeries {
             color,
             style: CategoryBarStyle {
                 material: Material::Flat,
@@ -220,26 +206,10 @@ fn bars(
             },
             label_format: Default::default(),
             overrides: None,
-        },
+        }),
     }
 }
 
-fn pixel(img: &RasterImage, x: u32, y: u32) -> [u8; 4] {
-    let i = ((y * img.width + x) * 4) as usize;
-    [
-        img.rgba[i],
-        img.rgba[i + 1],
-        img.rgba[i + 2],
-        img.rgba[i + 3],
-    ]
-}
-
-fn is_red(p: [u8; 4]) -> bool {
-    p[3] > 200 && p[0] > 200 && p[1] < 60 && p[2] < 60
-}
-fn is_blue(p: [u8; 4]) -> bool {
-    p[3] > 200 && p[2] > 200 && p[0] < 60 && p[1] < 60
-}
 /// Label ink over a transparent background: magenta at any coverage.
 fn is_label(p: [u8; 4]) -> bool {
     p[3] > 60 && p[1] < 40 && p[0] > p[3] / 2 && p[2] > p[3] / 2
@@ -295,22 +265,6 @@ fn slot(
             let h = da.height as f32 / 3.0;
             let y1 = (da.y + da.height) as f32 - h * k as f32;
             (0, s(y1 - h), s(WIDTH as f32), s(y1))
-        }
-    }
-}
-
-/// Value `v` as an export-pixel coordinate along the value axis.
-fn value_px(chart: &Chart, direction: CategoryBarDirection, v: f64, scale: f32) -> f32 {
-    let config = chart.config();
-    let da = config.data_area().expect("data area");
-    match direction {
-        CategoryBarDirection::Vertical => {
-            let t = (v - config.left_y.min) / (config.left_y.max - config.left_y.min);
-            ((da.y + da.height) as f32 - t as f32 * da.height as f32) * scale
-        }
-        CategoryBarDirection::Horizontal => {
-            let t = (v - config.bottom_x.min) / (config.bottom_x.max - config.bottom_x.min);
-            (da.x as f32 + t as f32 * da.width as f32) * scale
         }
     }
 }
@@ -664,7 +618,7 @@ fn boxes(direction: CategoryBarDirection, text: &[&str]) -> SeriesConfig {
         x_column: "pos".into(),
         y_column: "box".into(),
         z_column: None,
-        render_type: DataRenderType::BoxPlot {
+        render_type: DataRenderType::BoxPlot(BoxSeries {
             color: RED,
             style,
             labels: BoxPlotSeriesLabels {
@@ -676,7 +630,7 @@ fn boxes(direction: CategoryBarDirection, text: &[&str]) -> SeriesConfig {
             overrides: None,
             violin: None,
             points: None,
-        },
+        }),
     }
 }
 
@@ -769,7 +723,7 @@ fn box_labels_sit_beside_the_median() {
         first.series_id = "box-a".into();
         let mut second = boxes(direction, &["", "31", ""]);
         second.series_id = "box-b".into();
-        if let DataRenderType::BoxPlot {
+        if let DataRenderType::BoxPlot(BoxSeries {
             color,
             style: _,
             labels: _,
@@ -777,7 +731,7 @@ fn box_labels_sit_beside_the_median() {
             overrides: _,
             violin: _,
             points: _,
-        } = &mut second.render_type
+        }) = &mut second.render_type
         {
             *color = BLUE;
         }
@@ -841,7 +795,7 @@ fn radar_series(id: &str, column: &str, values: &[f64], placement: RadarLabels) 
         x_column: "cat".into(),
         y_column: column.into(),
         z_column: None,
-        render_type: DataRenderType::Radar {
+        render_type: DataRenderType::Radar(RadarPolygonSeries {
             color: RED,
             style: RadarSeriesStyle {
                 line_width_px: Some(2.0),
@@ -859,7 +813,7 @@ fn radar_series(id: &str, column: &str, values: &[f64], placement: RadarLabels) 
                 text: values.iter().map(|v| format!("{v}")).collect(),
                 ..RadarSeriesLabels::default()
             },
-        },
+        }),
     }
 }
 
@@ -1032,7 +986,7 @@ fn two_radars() -> Vec<SeriesConfig> {
 fn only_label(series: &[SeriesConfig], k: usize, i: usize) -> Vec<SeriesConfig> {
     let mut out = series.to_vec();
     for (j, s) in out.iter_mut().enumerate() {
-        if let DataRenderType::Radar { labels, .. } = &mut s.render_type {
+        if let DataRenderType::Radar(RadarPolygonSeries { labels, .. }) = &mut s.render_type {
             labels.offsets = (0..labels.text.len())
                 .map(|c| {
                     if j == k && c == i {
@@ -1404,6 +1358,7 @@ fn overlay_and_subplot_bar_series_draw_their_labels_in_their_panels() {
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     });
     let mut sub_bars = bars(
         "sub",

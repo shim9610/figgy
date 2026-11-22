@@ -25,7 +25,7 @@ const {chromium} = require('playwright');
   try {
     // Driver selection is explicit. This script never forces SwiftShader on a
     // hardware machine. GPU-less CI may supply its existing browser wrapper.
-    browser = await chromium.launch({headless: true, executablePath: process.env.BROWSER_EXECUTABLE_PATH || undefined, args: ['--enable-unsafe-webgpu']});
+    browser = await chromium.launch({headless: true, executablePath: process.env.BROWSER_EXECUTABLE_PATH || undefined, args: ['--enable-unsafe-webgpu', ...(process.env.BROWSER_ARGS || '').split(/\s+/).filter(Boolean)]});
     report.browser = browser.version();
     const page = await browser.newPage();
     await page.goto(`http://127.0.0.1:${server.address().port}`);

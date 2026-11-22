@@ -26,10 +26,11 @@
 
 use crate::annotation::{AnnotationAxis, AnnotationSpace};
 use crate::color::Color;
-use crate::data_config::{MAX_VALUE_LABEL_OFFSET, SeriesConfig};
+use crate::data_config::SeriesConfig;
+use crate::energy_levels::{color_ok, offset_ok};
 use crate::layout::{NudgeReject, NudgeResult, RectF};
 use crate::sink::{PathSegment, PlacedText, Sink, Slot, StrokeStyle, TextRef};
-use crate::text::{MeasureText, RichText};
+use crate::text::{MeasureText, RichText, TextExtents};
 use std::f32::consts::PI;
 
 /// A Feynman diagram: its vertices, its propagators and their look. See the
@@ -358,6 +359,19 @@ pub struct FeynmanStyle {
     pub fan_step: f32,
     /// How the picked part is drawn.
     pub picked: FeynmanPicked,
+    /// The factor every vertex, propagator and momentum label is drawn at,
+    /// `0.25..=4`: a label's stored size (its `RichText` sizes, the host's
+    /// data) times this is the size measured, placed, drawn, picked and
+    /// exported. An appearance choice of the series; the stored labels keep
+    /// their sizes.
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            default = "crate::defaults::feynman_label_scale",
+            skip_serializing_if = "is_default_label_scale"
+        )
+    )]
+    pub label_scale: f32,
 }
 
 /// How the picked vertex, propagator or label of a Feynman series is drawn:
@@ -402,6 +416,7 @@ impl FeynmanStyle {
             || !finite_in(self.dot_radius, 0.0, 64.0)
             || !finite_in(self.loop_radius, 2.0, 512.0)
             || !finite_in(self.fan_step, 0.0, 120.0)
+            || !finite_in(self.label_scale, 0.25, 4.0)
         {
             return Err(crate::RuleKind::FeynmanSizes);
         }
@@ -453,6 +468,11 @@ fn is_zero_offset(offset: &[f32; 2]) -> bool {
 }
 
 #[cfg(feature = "serde")]
+fn is_default_label_scale(scale: &f32) -> bool {
+    *scale == crate::defaults::feynman_label_scale()
+}
+
+#[cfg(feature = "serde")]
 fn is_false(v: &bool) -> bool {
     !*v
 }
@@ -466,20 +486,8 @@ fn finite_in(v: f32, lo: f32, hi: f32) -> bool {
     v.is_finite() && (lo..=hi).contains(&v)
 }
 
-fn color_ok(color: Color) -> bool {
-    [color.r, color.g, color.b, color.a]
-        .iter()
-        .all(|c| c.is_finite() && (0.0..=1.0).contains(c))
-}
-
 fn rich_ok(text: Option<&RichText>) -> bool {
     text.is_none_or(|t| t.validate_math().is_ok() && t.within_limits())
-}
-
-fn offset_ok(offset: [f32; 2]) -> bool {
-    offset
-        .iter()
-        .all(|v| v.is_finite() && v.abs() <= MAX_VALUE_LABEL_OFFSET)
 }
 
 // Working memory (#234, rule 3).
@@ -1172,7 +1180,8 @@ impl FeynmanSeries {
     /// Move the label of row `index` of `part` by `(dx, dy)` logical pixels
     /// (x right, y down). Rejected for a row past the end, a missing
     /// momentum arrow, a non-finite delta or an offset past
-    /// [`MAX_VALUE_LABEL_OFFSET`]; nothing changes then.
+    /// [`MAX_VALUE_LABEL_OFFSET`](crate::data_config::MAX_VALUE_LABEL_OFFSET);
+    /// nothing changes then.
     pub fn drag_label(
         &mut self,
         part: FeynmanLabelPart,
@@ -1510,7 +1519,7 @@ impl FeynmanSeries {
                 if let Some(text) = placed.label(part, index, measure) {
                     offer(
                         FeynmanHit::Label(part, index),
-                        rect_distance(cursor, text.rect()),
+                        crate::select::rect_distance(&text.rect(), cursor[0], cursor[1]),
                     );
                 }
             }
@@ -1940,11 +1949,30 @@ fn segment_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
     len(sub(p, lerp(a, b, t)))
 }
 
-/// The distance from `p` to `rect`, zero inside it.
-fn rect_distance(p: [f32; 2], rect: RectF) -> f32 {
-    let dx = (rect.x - p[0]).max(p[0] - (rect.x + rect.width)).max(0.0);
-    let dy = (rect.y - p[1]).max(p[1] - (rect.y + rect.height)).max(0.0);
-    dx.hypot(dy)
+/// The distance from the box of half-size `half` about `centre` to the
+/// segment `a`–`b`, zero where they meet.
+fn box_segment_distance(centre: [f32; 2], half: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    let (x0, y0) = (centre[0] - half[0], centre[1] - half[1]);
+    let (x1, y1) = (centre[0] + half[0], centre[1] + half[1]);
+    let rect = RectF {
+        x: x0,
+        y: y0,
+        width: x1 - x0,
+        height: y1 - y0,
+    };
+    if clip_line(a, b, rect).is_some() {
+        return 0.0;
+    }
+    let to_box = |p: [f32; 2]| {
+        let dx = (x0 - p[0]).max(p[0] - x1).max(0.0);
+        let dy = (y0 - p[1]).max(p[1] - y1).max(0.0);
+        dx.hypot(dy)
+    };
+    [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+        .into_iter()
+        .map(|corner| segment_distance(corner, a, b))
+        .chain([to_box(a), to_box(b)])
+        .fold(f32::INFINITY, f32::min)
 }
 
 /// A placed propagator: its base path, its ends, whether it is a loop and
@@ -1981,6 +2009,13 @@ pub(crate) struct Placed<'s> {
 
 /// The gap between a part and its label, logical pixels.
 const LABEL_GAP: f32 = 6.0;
+/// The segments an external label's leg is sampled with, over the half
+/// nearest its vertex (#411). A sampling resolution, not a count limit.
+const LEG_SAMPLES: usize = 8;
+/// The bisection steps that find how far an external label moves out to
+/// clear its leg (#411): the bound halves each step, so 24 steps resolve
+/// far below a pixel.
+const PUSH_STEPS: u32 = 24;
 /// The gap between a line and its momentum arrow, logical pixels.
 const MOMENTUM_GAP: f32 = 6.0;
 /// The share of a line its momentum arrow spans, centred.
@@ -2425,22 +2460,105 @@ impl Placed<'_> {
                 )
             }
         };
-        let extents = measure.measure_rich(text);
+        // Drawn at `style.label_scale` times its stored size: the measure
+        // scales with the size (as an export at another scale draws it), so
+        // the extents measured once here are the ones every sink places,
+        // draws, bounds and hit tests.
+        let scale = series.style.label_scale;
+        let measured = measure.measure_rich(text);
+        let extents = TextExtents {
+            width: measured.width * scale,
+            ascent: measured.ascent * scale,
+            descent: measured.descent * scale,
+        };
         // The block's centre sits half its size beyond the anchor, along
         // `direction`, so its near side touches the anchor.
         let centre = [
             anchor[0] + direction[0] * extents.width / 2.0,
             anchor[1] + direction[1] * extents.height() / 2.0,
         ];
+        // An external vertex's text box keeps a gap from its leg's ink
+        // (#411); the host's offset applies on top.
+        let centre = match part {
+            FeynmanLabelPart::Vertex => self.clear_of_leg(
+                index,
+                centre,
+                direction,
+                [extents.width / 2.0, extents.height() / 2.0],
+            ),
+            _ => centre,
+        };
         Some(PlacedText {
-            text: TextRef::Rich(text),
+            text: if scale == 1.0 {
+                TextRef::Rich(text)
+            } else {
+                TextRef::ScaledRich { text, scale }
+            },
             origin: (
                 centre[0] - extents.width / 2.0 + offset[0],
                 centre[1] + (extents.ascent - extents.descent) / 2.0 + offset[1],
             ),
             extents,
             rotation: None,
+            outline: None,
         })
+    }
+
+    /// The centre of external vertex `index`'s label box (half-size
+    /// `half`, the measured width and ascent plus descent) given its
+    /// default `centre`, moved along `out` only as far as it takes for the
+    /// box to clear its one leg's ink and marker by [`LABEL_GAP`] (#411).
+    /// The leg is sampled over the half nearest the vertex, so a bent or
+    /// steep leg is covered as well as a straight one, at any label size.
+    /// A box that already clears it, or a vertex with no single leg, keeps
+    /// its centre. A display parameter: nothing is stored (rule 1).
+    fn clear_of_leg(
+        &self,
+        index: usize,
+        centre: [f32; 2],
+        out: [f32; 2],
+        half: [f32; 2],
+    ) -> [f32; 2] {
+        let &[[other, propagator]] = self.topology.around(index) else {
+            return centre;
+        };
+        if other == index {
+            return centre;
+        }
+        let (Some(geometry), Some((from, _))) =
+            (self.geometry(propagator), self.topology.ends_of(propagator))
+        else {
+            return centre;
+        };
+        let need = self.envelope(propagator).max(self.marker_radius(index)) + LABEL_GAP;
+        let along = |k: usize| {
+            let t = 0.5 * k as f64 / LEG_SAMPLES as f64;
+            geometry.base.point(if from == index { t } else { 1.0 - t })
+        };
+        let clearance = |c: [f32; 2]| {
+            (0..LEG_SAMPLES)
+                .map(|k| box_segment_distance(c, half, along(k), along(k + 1)))
+                .fold(f32::INFINITY, f32::min)
+        };
+        if clearance(centre) >= need {
+            return centre;
+        }
+        let at = |t: f32| add(centre, scale(out, t));
+        // Moving out by the gap and the box's size clears a leg that runs
+        // away from `out`; a leg that does not is left at that bound.
+        let (mut lo, mut hi) = (0.0f32, need + 2.0 * (half[0] + half[1]));
+        if clearance(at(hi)) < need {
+            return at(hi);
+        }
+        for _ in 0..PUSH_STEPS {
+            let mid = (lo + hi) / 2.0;
+            if clearance(at(mid)) < need {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        at(hi)
     }
 
     /// How far a propagator's label sits from its base path on `side`: past

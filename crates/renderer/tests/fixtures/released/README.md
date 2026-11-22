@@ -17,7 +17,7 @@ its default and edited. Only the 0.11.0 edited `Config` differs from its
 
 The 0.12.1 set covers the four charts of the former bounded group only:
 `RadialChart`, `CategoricalChart`, `BoxPlotChart` and `RadarChart`, each at its
-default and edited (the last three are read by the deprecated readers since
+default and edited (the last three are read by the document readers since
 model 0.13.0). Radar and the legacy rich `chart_title` shipped in 0.12.0 without a
 fixture. Each edited 0.12.1 document is its 0.11.0 twin parsed by 0.12.1
 (radar, new in 0.12.0, is built field by field) with every field added since

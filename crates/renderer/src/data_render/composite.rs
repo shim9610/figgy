@@ -380,7 +380,7 @@ pub(crate) fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &Seri
             pass.set_bind_group(2, &category.style_map, &[]);
             pass.set_bind_group(3, &category.bind_group, &[]);
             pass.draw(
-                0..CATEGORY_BAR_VERTICES,
+                0..selection.vertices,
                 selection.instance..selection.instance.saturating_add(selection.instances),
             );
             continue;
@@ -553,9 +553,27 @@ pub(crate) fn issue_series_bodies(
     pass: &mut wgpu::RenderPass<'_>,
     series_list: &[SeriesLayers<'_>],
 ) {
+    issue_series_fills(pass, series_list);
+    issue_series_bodies_without_fills(pass, series_list);
+}
+
+/// The first step of [`issue_series_bodies`]: every series' fill, under
+/// every series' body.
+pub(crate) fn issue_series_fills(
+    pass: &mut wgpu::RenderPass<'_>,
+    series_list: &[SeriesLayers<'_>],
+) {
     for s in series_list {
         issue_series_fill(pass, s);
     }
+}
+
+/// The second step of [`issue_series_bodies`]: every series' body over the
+/// fills.
+pub(crate) fn issue_series_bodies_without_fills(
+    pass: &mut wgpu::RenderPass<'_>,
+    series_list: &[SeriesLayers<'_>],
+) {
     for s in series_list {
         issue_series_data(pass, s);
     }

@@ -1,101 +1,40 @@
 //! Creating the precise (unstyled) pipeline variants a frame's items need.
 
-mod bars;
-mod entries;
-mod fields;
-mod lines;
-mod markers;
-mod vectors;
-
 use super::*;
 
 /// The precise pipelines a frame's items need, read from their configs,
-/// series and picks before any pipeline is created.
+/// series and picks before any pipeline is created: a set of each kind
+/// family, indexed by its kind (#341).
 struct PreciseNeeds {
-    parallel: bool,
-    parallel_selection: bool,
-    vector_points: bool,
-    vector_grid: bool,
-    vector_path: bool,
-    field: bool,
-    contour: bool,
-    mesh: bool,
-    mesh_contour: bool,
-    mesh_selection: bool,
-    contour_label: bool,
-    line: bool,
-    line_mapped: bool,
-    area: bool,
-    scatter: bool,
-    errorbar: bool,
-    stem: bool,
-    bar: bool,
-    bar_mapped: bool,
-    bar_selection: bool,
-    bar_selection_mapped: bool,
-    category_bars: bool,
-    category_bar_selection: bool,
-    box_plot: bool,
-    box_plot_selection: bool,
-    range_bars: bool,
-    range_bar_selection: bool,
-    violin: bool,
-    violin_selection: bool,
-    box_points: bool,
-    box_point_selection: bool,
-    value_labels: bool,
-    value_label_selection: bool,
-    field_selection: bool,
-    scatter_mapped: bool,
-    errorbar_mapped: bool,
-    pick_ring: bool,
-    pick_ring_mapped: bool,
+    precise: [bool; PRECISE_PIPELINES],
     ternary: [bool; TERNARY_PIPELINES],
     view3d: [bool; VIEW3D_PIPELINES],
+    tri_mesh: [bool; data_render::tri_mesh::TriMeshPass::ALL.len()],
 }
 
 impl PreciseNeeds {
+    fn has(&self, kind: PrecisePipeline) -> bool {
+        self.precise[kind as usize]
+    }
+
+    /// Add `kind` when `needed`.
+    fn add(&mut self, kind: PrecisePipeline, needed: bool) {
+        self.precise[kind as usize] |= needed;
+    }
+
     fn scan(items: &[PanelDraw<'_>]) -> Self {
-        let mut need_parallel = false;
-        let mut need_parallel_selection = false;
-        let mut need_vector_points = false;
-        let mut need_vector_grid = false;
-        let mut need_vector_path = false;
-        let mut need_field = false;
-        let mut need_contour = false;
-        let mut need_mesh = false;
-        let mut need_mesh_contour = false;
-        let mut need_mesh_selection = false;
-        let mut need_contour_label = false;
-        let mut need_line = false;
-        let mut need_line_mapped = false;
-        let mut need_area = false;
-        let mut need_scatter = false;
-        let mut need_errorbar = false;
-        let mut need_stem = false;
-        let mut need_bar = false;
-        let mut need_bar_mapped = false;
-        let mut need_bar_selection = false;
-        let mut need_bar_selection_mapped = false;
-        let mut need_category_bars = false;
-        let mut need_category_bar_selection = false;
-        let mut need_box_plot = false;
-        let mut need_box_plot_selection = false;
-        let mut need_range_bars = false;
-        let mut need_range_bar_selection = false;
-        let mut need_violin = false;
-        let mut need_violin_selection = false;
-        let mut need_box_points = false;
-        let mut need_box_point_selection = false;
-        let mut need_value_labels = false;
-        let mut need_value_label_selection = false;
-        let mut need_field_selection = false;
-        let mut need_scatter_mapped = false;
-        let mut need_errorbar_mapped = false;
-        let mut need_pick_ring = false;
-        let mut need_pick_ring_mapped = false;
-        let mut need_ternary = [false; TERNARY_PIPELINES];
-        let mut need_view3d = [false; VIEW3D_PIPELINES];
+        use PrecisePipeline as K;
+        use data_render::tri_mesh::TriMeshPass;
+        let mut needs = Self {
+            precise: [false; PRECISE_PIPELINES],
+            ternary: [false; TERNARY_PIPELINES],
+            view3d: [false; VIEW3D_PIPELINES],
+            tri_mesh: [false; TriMeshPass::ALL.len()],
+        };
+        // A selected grid cell or contour level draws through the field
+        // selection, which compiles with its labelled twin.
+        let mut field_selection = false;
+        let mut contour_label = false;
         for item in items {
             let typed_picks = item
                 .chart_config
@@ -115,9 +54,9 @@ impl PreciseNeeds {
                     .any(|picked| matches!(picked, PickedDataRef::HistogramBin { .. }))
             });
             if let Some(config) = typed_picks {
-                need_pick_ring |= typed_point;
-                need_bar_selection |= typed_bin;
-                need_field_selection |= config.refs.iter().any(|picked| {
+                needs.add(K::PickRing, typed_point);
+                needs.add(K::BarSelection, typed_bin);
+                field_selection |= config.refs.iter().any(|picked| {
                     matches!(
                         picked,
                         PickedDataRef::MatrixCell { .. } | PickedDataRef::ContourLevel { .. }
@@ -127,8 +66,10 @@ impl PreciseNeeds {
             // The area fill is drawn under every style's line with the one
             // precise area pipeline.
             for series in item.series {
-                need_area |=
-                    series_has_line_fill(&item.chart_config.draw_style, &series.config.render_type);
+                needs.add(
+                    K::Area,
+                    series_has_line_fill(&item.chart_config.draw_style, &series.config.render_type),
+                );
             }
             if style_variant(&item.chart_config.draw_style).is_some() {
                 continue;
@@ -138,18 +79,20 @@ impl PreciseNeeds {
                     &item.chart_config.draw_style,
                     &series.config.render_type,
                 );
-                need_field |= primitives.field;
+                needs.add(K::Field, primitives.field);
                 // A contour is the field quad through a different fragment entry
                 // point, so it needs no line pipeline at all any more.
-                need_contour |= primitives.contour;
+                needs.add(K::Contour, primitives.contour);
                 // A mesh on a 3D chart draws through the surface pipelines
                 // (`ensure_surface_pipelines`), not the flat mesh ones.
                 let mesh_flat = item.chart_config.view_3d().is_none();
-                need_mesh |= primitives.mesh && mesh_flat;
-                need_mesh_contour |= primitives.mesh_contour && mesh_flat;
+                needs.tri_mesh[TriMeshPass::Fill as usize] |= primitives.mesh && mesh_flat;
+                needs.tri_mesh[TriMeshPass::Contour as usize] |=
+                    primitives.mesh_contour && mesh_flat;
                 // A picked triangle or level redraws through the mesh's
                 // selection entry (#210).
-                need_mesh_selection |= (primitives.mesh || primitives.mesh_contour)
+                needs.tri_mesh[TriMeshPass::Selection as usize] |= (primitives.mesh
+                    || primitives.mesh_contour)
                     && mesh_flat
                     && typed_picks.is_some_and(|config| {
                         config.refs.iter().any(|picked| {
@@ -160,50 +103,64 @@ impl PreciseNeeds {
                             )
                         })
                     });
-                need_line |= primitives.line;
+                needs.add(K::Line, primitives.line);
                 // Streamline arrowheads draw through the path vector pipeline.
-                need_vector_path |= primitives.line
-                    && series
-                        .config
-                        .render_type
-                        .streamlines()
-                        .is_some_and(|streamlines| streamlines.arrows.is_some());
-                need_line_mapped |= primitives.line
-                    && series
-                        .config
-                        .render_type
-                        .streamlines()
-                        .is_some_and(|streamlines| streamlines.color_map.is_some());
-                need_contour_label |=
+                needs.add(
+                    K::VectorPath,
+                    primitives.line
+                        && series
+                            .config
+                            .render_type
+                            .streamlines()
+                            .is_some_and(|streamlines| streamlines.arrows.is_some()),
+                );
+                needs.add(
+                    K::LineMapped,
+                    primitives.line
+                        && series
+                            .config
+                            .render_type
+                            .streamlines()
+                            .is_some_and(|streamlines| streamlines.color_map.is_some()),
+                );
+                contour_label |=
                     primitives.contour && series_wants_contour_labels(&series.config.render_type);
                 // A parallel series' rows, and the picked row's redraw when
                 // a point is picked (#141).
-                need_parallel |= primitives.parallel;
-                need_parallel_selection |= primitives.parallel && typed_point;
-                need_scatter |= primitives.scatter;
-                need_bar |= primitives.bar;
-                need_category_bars |= primitives.category_bars;
-                need_category_bar_selection |= primitives.category_bars && typed_bin;
-                need_box_plot |= primitives.box_plot;
-                need_box_plot_selection |= primitives.box_plot && typed_bin;
-                need_range_bars |= primitives.range_bars;
-                need_range_bar_selection |= primitives.range_bars && typed_bin;
-                need_violin |= primitives.violin;
-                need_violin_selection |= primitives.violin && typed_bin;
-                need_box_points |= primitives.box_points;
-                need_box_point_selection |= primitives.box_points && typed_point;
+                needs.add(K::LineParallel, primitives.parallel);
+                needs.add(K::LineParallelSelection, primitives.parallel && typed_point);
+                needs.add(K::Scatter, primitives.scatter);
+                needs.add(K::Bar, primitives.bar);
+                needs.add(K::CategoryBar, primitives.category_bars);
+                needs.add(
+                    K::CategoryBarSelection,
+                    primitives.category_bars && typed_bin,
+                );
+                needs.add(K::BoxPlot, primitives.box_plot);
+                needs.add(K::BoxPlotSelection, primitives.box_plot && typed_bin);
+                needs.add(K::RangeBar, primitives.range_bars);
+                needs.add(K::RangeBarSelection, primitives.range_bars && typed_bin);
+                needs.add(K::RangeLink, primitives.range_links);
+                needs.add(K::RangeLinkSelection, primitives.range_links && typed_bin);
+                needs.add(K::Violin, primitives.violin);
+                needs.add(K::ViolinSelection, primitives.violin && typed_bin);
+                needs.add(K::BoxPoints, primitives.box_points);
+                needs.add(K::BoxPointSelection, primitives.box_points && typed_point);
                 // Value labels compile with any label the series can show;
                 // `Emphasized` radar labels with or without a selection.
                 let labels =
                     data_render::value_label_kind(&series.config.render_type, true).is_some();
-                need_value_labels |= labels;
-                need_value_label_selection |= labels
-                    && typed_picks.is_some_and(|config| {
-                        config.refs.iter().any(|picked| {
-                            matches!(picked, PickedDataRef::ValueLabel { series_id, .. }
-                                if *series_id == series.config.series_id)
-                        })
-                    });
+                needs.add(K::ValueLabel, labels);
+                needs.add(
+                    K::ValueLabelSelection,
+                    labels
+                        && typed_picks.is_some_and(|config| {
+                            config.refs.iter().any(|picked| {
+                                matches!(picked, PickedDataRef::ValueLabel { series_id, .. }
+                                    if *series_id == series.config.series_id)
+                            })
+                        }),
+                );
                 let vector_3d = item.chart_config.drawn_z_column(series.config).is_some()
                     && extract_vector(&series.config.render_type).is_some();
                 if primitives.vector
@@ -211,114 +168,80 @@ impl PreciseNeeds {
                     && let Some((components, _)) = extract_vector(&series.config.render_type)
                 {
                     match components.grid() {
-                        Some(_) => need_vector_grid = true,
-                        None => need_vector_points = true,
+                        Some(_) => needs.add(K::VectorGrid, true),
+                        None => needs.add(K::VectorPoints, true),
                     }
                     // A selected grid cell draws through the field selection
                     // pipeline; a selected point anchor through the ring.
                 }
-                need_field_selection |= primitives.vector
+                field_selection |= primitives.vector
                     && typed_picks.is_some_and(|config| {
                         config
                             .refs
                             .iter()
                             .any(|picked| matches!(picked, PickedDataRef::MatrixCell { .. }))
                     });
-                need_bar_mapped |= primitives.bar && series.style.bar_map.is_some();
+                needs.add(
+                    K::BarMapped,
+                    primitives.bar && series.style.bar_map.is_some(),
+                );
                 // The outline takes the mapped entry exactly when the draw does.
-                need_bar_selection_mapped |=
-                    primitives.bar && series.style.bar_map.is_some() && typed_bin;
-                need_errorbar |= has_errorbar(&series.config.render_type);
-                need_stem |= has_stem(&series.config.render_type);
+                needs.add(
+                    K::BarSelectionMapped,
+                    primitives.bar && series.style.bar_map.is_some() && typed_bin,
+                );
+                needs.add(K::Errorbar, has_errorbar(&series.config.render_type));
+                needs.add(K::ErrorbarStem, has_stem(&series.config.render_type));
                 // `has_index` only means a style-index column is bound.
                 // Sparse `*_style_overrides` still need the mapped shader.
                 if primitives.scatter && series.style.scatter_map.is_some() {
-                    need_scatter_mapped = true;
-                    if typed_point {
-                        need_pick_ring_mapped = true;
-                    }
+                    needs.add(K::ScatterMapped, true);
+                    needs.add(K::PickRingMapped, typed_point);
                 }
                 // A ternary series draws through the ternary entries.
                 if series.config.render_type.ternary_c_column().is_some() {
                     let mapped = series.style.scatter_map.is_some();
                     let ring = typed_point;
-                    need_ternary[TernaryPipeline::Line as usize] |= primitives.line;
-                    need_ternary[TernaryPipeline::Scatter as usize] |=
-                        primitives.scatter && !mapped;
-                    need_ternary[TernaryPipeline::ScatterMapped as usize] |=
+                    let ternary = &mut needs.ternary;
+                    ternary[TernaryPipeline::Line as usize] |= primitives.line;
+                    ternary[TernaryPipeline::Scatter as usize] |= primitives.scatter && !mapped;
+                    ternary[TernaryPipeline::ScatterMapped as usize] |=
                         primitives.scatter && mapped;
-                    need_ternary[TernaryPipeline::Ring as usize] |=
+                    ternary[TernaryPipeline::Ring as usize] |=
                         primitives.scatter && !mapped && ring;
-                    need_ternary[TernaryPipeline::RingMapped as usize] |=
+                    ternary[TernaryPipeline::RingMapped as usize] |=
                         primitives.scatter && mapped && ring;
                 }
-                if has_errorbar(&series.config.render_type) && series.style.errorbar_map.is_some() {
-                    need_errorbar_mapped = true;
-                }
+                needs.add(
+                    K::ErrorbarMapped,
+                    has_errorbar(&series.config.render_type) && series.style.errorbar_map.is_some(),
+                );
                 // A scatter or line series on a 3D chart draws through the
                 // 3D entries (#132); its picks compile when it is picked.
                 if item.chart_config.view_3d().is_some() && series.config.z_column.is_some() {
                     let mapped = series.style.scatter_map.is_some();
                     let ring = typed_point;
-                    need_view3d[View3dPipeline::Line as usize] |= primitives.line;
-                    need_view3d[View3dPipeline::Scatter as usize] |= primitives.scatter && !mapped;
-                    need_view3d[View3dPipeline::ScatterMapped as usize] |=
-                        primitives.scatter && mapped;
-                    need_view3d[View3dPipeline::Ring as usize] |=
-                        primitives.scatter && !mapped && ring;
-                    need_view3d[View3dPipeline::RingMapped as usize] |=
+                    let view3d = &mut needs.view3d;
+                    view3d[View3dPipeline::Line as usize] |= primitives.line;
+                    view3d[View3dPipeline::Scatter as usize] |= primitives.scatter && !mapped;
+                    view3d[View3dPipeline::ScatterMapped as usize] |= primitives.scatter && mapped;
+                    view3d[View3dPipeline::Ring as usize] |= primitives.scatter && !mapped && ring;
+                    view3d[View3dPipeline::RingMapped as usize] |=
                         primitives.scatter && mapped && ring;
                 }
                 // A point vector on a 3D chart draws its arrows through the
                 // camera (#211); its picked anchor through the 3D ring.
                 if vector_3d {
-                    need_view3d[View3dPipeline::Vector as usize] |= primitives.vector;
-                    need_view3d[View3dPipeline::Ring as usize] |= primitives.vector && typed_point;
+                    needs.view3d[View3dPipeline::Vector as usize] |= primitives.vector;
+                    needs.view3d[View3dPipeline::Ring as usize] |= primitives.vector && typed_point;
                 }
             }
         }
-        Self {
-            parallel: need_parallel,
-            parallel_selection: need_parallel_selection,
-            vector_points: need_vector_points,
-            vector_grid: need_vector_grid,
-            vector_path: need_vector_path,
-            field: need_field,
-            contour: need_contour,
-            mesh: need_mesh,
-            mesh_contour: need_mesh_contour,
-            mesh_selection: need_mesh_selection,
-            contour_label: need_contour_label,
-            line: need_line,
-            line_mapped: need_line_mapped,
-            area: need_area,
-            scatter: need_scatter,
-            errorbar: need_errorbar,
-            stem: need_stem,
-            bar: need_bar,
-            bar_mapped: need_bar_mapped,
-            bar_selection: need_bar_selection,
-            bar_selection_mapped: need_bar_selection_mapped,
-            category_bars: need_category_bars,
-            category_bar_selection: need_category_bar_selection,
-            box_plot: need_box_plot,
-            box_plot_selection: need_box_plot_selection,
-            range_bars: need_range_bars,
-            range_bar_selection: need_range_bar_selection,
-            violin: need_violin,
-            violin_selection: need_violin_selection,
-            box_points: need_box_points,
-            box_point_selection: need_box_point_selection,
-            value_labels: need_value_labels,
-            value_label_selection: need_value_label_selection,
-            field_selection: need_field_selection,
-            scatter_mapped: need_scatter_mapped,
-            errorbar_mapped: need_errorbar_mapped,
-            pick_ring: need_pick_ring,
-            pick_ring_mapped: need_pick_ring_mapped,
-            ternary: need_ternary,
-            view3d: need_view3d,
-        }
+        needs.add(K::FieldSelection, field_selection);
+        needs.add(K::FieldSelectionLabelled, field_selection);
+        needs.add(K::ContourLabelled, contour_label);
+        needs.add(K::ContourLabel, contour_label);
+        needs
     }
 }
 
@@ -343,67 +266,56 @@ impl TargetPipelines {
         items: &[PanelDraw<'_>],
     ) {
         let needs = PreciseNeeds::scan(items);
-        self.create_line_pipelines(
-            &needs,
-            device,
-            transform_bgl,
-            style_bgl,
-            point_value_map_bgl,
-            parallel_bgl,
-            surface_format,
-        );
-        self.create_field_pipelines(
-            &needs,
-            device,
-            transform_bgl,
-            style_bgl,
-            data_selection_bgl,
-            field_bgl,
-            label_pipelines,
-            surface_format,
-        );
-        self.create_bar_pipelines(
-            &needs,
+        let layouts = PreciseLayouts {
             device,
             transform_bgl,
             style_bgl,
             per_point_style_map_bgl,
-            category_bar_data_bgl,
-            surface_format,
-        );
-        self.create_vector_pipelines(
-            &needs,
-            device,
-            transform_bgl,
-            style_bgl,
+            point_value_map_bgl,
             data_selection_bgl,
             field_bgl,
             vector_bgl,
+            category_bar_data_bgl,
+            parallel_bgl,
             star_data_bgl,
             label_pipelines,
             surface_format,
-        );
-        self.create_marker_pipelines(
-            &needs,
-            device,
-            transform_bgl,
-            style_bgl,
-            per_point_style_map_bgl,
-            point_value_map_bgl,
-            surface_format,
-        );
-        self.create_entry_pipelines(
-            &needs,
-            device,
-            transform_bgl,
-            style_bgl,
-            per_point_style_map_bgl,
-            point_value_map_bgl,
-            surface_bgl,
-            view3d_value_map_bgl,
-            vector_bgl,
-            surface_format,
-        );
+        };
+        for kind in PrecisePipeline::ALL {
+            if needs.has(kind) {
+                self.ensure_precise(kind, &layouts);
+            }
+        }
+        if needs.has(PrecisePipeline::Bar) || needs.has(PrecisePipeline::BarMapped) {
+            self.ensure_bar_envelope(&layouts);
+        }
+        for pass in data_render::tri_mesh::TriMeshPass::ALL {
+            if needs.tri_mesh[pass as usize] {
+                self.ensure_tri_mesh_pass(device, layouts.tri_mesh(pass), surface_format, pass);
+            }
+        }
+        for kind in TernaryPipeline::ALL {
+            if needs.ternary[kind as usize] {
+                self.ensure_ternary(kind, &layouts);
+            }
+        }
+        for kind in View3dPipeline::ALL {
+            if needs.view3d[kind as usize] {
+                self.ensure_view3d_pass(
+                    device,
+                    [
+                        transform_bgl,
+                        style_bgl,
+                        per_point_style_map_bgl,
+                        surface_bgl,
+                        view3d_value_map_bgl,
+                        vector_bgl,
+                    ],
+                    surface_format,
+                    kind,
+                );
+            }
+        }
     }
 }
 
@@ -433,17 +345,31 @@ fn style_pipeline_labels(key: StyleKey) -> &'static [&'static str] {
 
 impl PreciseNeeds {
     /// The labels of the render pipelines these needs create, as the
-    /// pipeline constructors name them, the vector, ternary and 3D entries
-    /// included.
+    /// pipeline constructors name them, the histogram envelope, the
+    /// triangle mesh, ternary and 3D entries included. A labelled contour
+    /// waits for its labelled pass only, and a selection's labelled twin is
+    /// not waited for.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     fn labels(&self, mut each: impl FnMut(&'static str)) {
-        for (needed, label) in [
-            (self.vector_points, "figgy vector points pipeline"),
-            (self.vector_grid, "figgy vector grid pipeline"),
-            (self.vector_path, "figgy vector path pipeline"),
-        ] {
-            if needed {
-                each(label);
+        use PrecisePipeline as K;
+        for kind in PrecisePipeline::ALL {
+            let waited = match kind {
+                K::Contour => !self.has(K::ContourLabelled),
+                K::FieldSelectionLabelled => false,
+                _ => true,
+            };
+            if self.has(kind) && waited {
+                each(kind.label());
+            }
+        }
+        if self.has(K::Bar) || self.has(K::BarMapped) {
+            each("histogram envelope fill");
+            // The envelope's compute pass, created with the fill.
+            each(data_render::bar_envelope::ENVELOPE_SCAN_LABEL);
+        }
+        for pass in data_render::tri_mesh::TriMeshPass::ALL {
+            if self.tri_mesh[pass as usize] {
+                each(pass.label());
             }
         }
         for kind in TernaryPipeline::ALL {
@@ -455,87 +381,6 @@ impl PreciseNeeds {
             if self.view3d[kind as usize] {
                 each(kind.label());
             }
-        }
-        let table: [(bool, &'static str); 37] = [
-            (self.parallel, "figgy line parallel pipeline"),
-            (
-                self.parallel_selection,
-                "figgy selected parallel row pipeline",
-            ),
-            (self.field, "figgy field columnar pipeline"),
-            (
-                self.contour && !self.contour_label,
-                "figgy field contour pipeline",
-            ),
-            (
-                self.contour && self.contour_label,
-                "figgy labelled field contour pipeline",
-            ),
-            (self.mesh, "figgy triangle mesh field pipeline"),
-            (self.mesh_contour, "figgy triangle mesh contour pipeline"),
-            (self.mesh_selection, "figgy selected triangle mesh pipeline"),
-            (self.contour_label, "figgy contour label pipeline"),
-            (self.line, "figgy line columnar pipeline"),
-            (self.line_mapped, "figgy line mapped pipeline"),
-            (self.area, "figgy line area pipeline"),
-            (self.scatter, "figgy scatter columnar pipeline"),
-            (self.errorbar, "figgy errorbar columnar pipeline"),
-            (self.stem, "figgy stem pipeline"),
-            (self.bar, "figgy bar columnar pipeline"),
-            (self.bar_mapped, "figgy mapped bar columnar pipeline"),
-            (self.bar || self.bar_mapped, "histogram envelope fill"),
-            // The envelope's compute pass, created with the fill.
-            (
-                self.bar || self.bar_mapped,
-                data_render::bar_envelope::ENVELOPE_SCAN_LABEL,
-            ),
-            (self.bar_selection, "figgy selected histogram bin pipeline"),
-            (
-                self.bar_selection_mapped,
-                "figgy selected mapped histogram bin pipeline",
-            ),
-            (self.category_bars, "figgy category bar columnar pipeline"),
-            (
-                self.category_bar_selection,
-                "figgy selected category bar columnar pipeline",
-            ),
-            (self.box_plot, "figgy box plot columnar pipeline"),
-            (
-                self.box_plot_selection,
-                "figgy selected box plot columnar pipeline",
-            ),
-            (self.range_bars, "figgy range bar columnar pipeline"),
-            (
-                self.range_bar_selection,
-                "figgy selected range bar columnar pipeline",
-            ),
-            (self.violin, "figgy violin columnar pipeline"),
-            (
-                self.violin_selection,
-                "figgy selected violin columnar pipeline",
-            ),
-            (self.box_points, "figgy box points columnar pipeline"),
-            (
-                self.box_point_selection,
-                "figgy selected box point columnar pipeline",
-            ),
-            (self.value_labels, "figgy value label pipeline"),
-            (
-                self.value_label_selection,
-                "figgy value label selection pipeline",
-            ),
-            (self.field_selection, "figgy selected field data pipeline"),
-            (self.scatter_mapped, "figgy scatter mapped pipeline"),
-            (self.errorbar_mapped, "figgy errorbar mapped pipeline"),
-            (self.pick_ring, "figgy picked point ring pipeline"),
-        ];
-        for (needed, label) in table {
-            if needed {
-                each(label);
-            }
-        }
-        if self.pick_ring_mapped {
-            each("figgy picked point mapped ring pipeline");
         }
     }
 }
@@ -631,52 +476,13 @@ mod label_tests {
             .filter_map(|p| p["descriptor"]["label"].as_str().map(str::to_owned))
             .collect();
         let mut needs = super::PreciseNeeds::scan(&[]);
-        // Every need at once.
-        macro_rules! all {
-            ($($field:ident),*) => { $(needs.$field = true;)* };
-        }
-        all!(
-            parallel,
-            parallel_selection,
-            field,
-            contour,
-            mesh,
-            mesh_contour,
-            mesh_selection,
-            line,
-            line_mapped,
-            area,
-            scatter,
-            errorbar,
-            stem,
-            bar,
-            bar_mapped,
-            bar_selection,
-            bar_selection_mapped,
-            category_bars,
-            category_bar_selection,
-            box_plot,
-            box_plot_selection,
-            range_bars,
-            range_bar_selection,
-            violin,
-            violin_selection,
-            box_points,
-            box_point_selection,
-            value_labels,
-            value_label_selection,
-            field_selection,
-            scatter_mapped,
-            errorbar_mapped,
-            pick_ring,
-            pick_ring_mapped
-        );
+        // Every need at once, without labels and then with them.
+        needs.precise = [true; super::PRECISE_PIPELINES];
+        needs.precise[super::PrecisePipeline::ContourLabelled as usize] = false;
         let mut waited = Vec::new();
         needs.labels(|label| waited.push(label));
-        needs.contour_label = true;
-        needs.vector_points = true;
-        needs.vector_grid = true;
-        needs.vector_path = true;
+        needs.precise = [true; super::PRECISE_PIPELINES];
+        needs.tri_mesh = [true; 3];
         needs.ternary = [true; super::TERNARY_PIPELINES];
         needs.view3d = [true; super::VIEW3D_PIPELINES];
         needs.labels(|label| waited.push(label));

@@ -5,9 +5,8 @@ Cartesian `Renderer`, which also draws categorical bars
 ([CATEGORICAL.md](CATEGORICAL.md)), box plots ([BOXPLOT.md](BOXPLOT.md)) and
 radar charts as polar radar series ([RADAR.md](RADAR.md)); the legacy
 categorical, box plot and radar documents of releases up to 0.12 are read into
-those charts by the deprecated readers `Config::from_categorical`,
-`Config::from_boxplot` and `Config::from_radar`, which are removed in the next
-milestone. The radial chart (`RadialRenderer`), the DataLess chart, is a
+those charts by the readers `Config::from_categorical`,
+`Config::from_boxplot` and `Config::from_radar`. The radial chart (`RadialRenderer`), the DataLess chart, is a
 separate renderer: it
 returns immutable prepared frames, charges the GPU ledger of the
 `RendererDevice` it is built from and spends that bundle's budget, as every
@@ -205,15 +204,20 @@ all affected series, and that chart's replacement `Config` in the same
 transaction. The web facade uses this combined boundary for its
 auto-managed-versus-free-edited legend policy.
 
-Exact GPU picking is chart-aware. Call
+GPU picking is chart-aware. Call
 `enable_gpu_picking()` once, optionally call
 `prepare_gpu_picking_for_chart(chart_id)` to make a chart first-pick-ready, and
 submit through `pick_chart(chart_id, GpuPickRequest)` or
 `WindowedRenderer::pick_chart_at`. The renderer derives axis transforms and the
 data-area clip from its authoritative `Config`. Picking reads the GPU
-column pool directly.
-Use `pick_chart_data` / `WindowedRenderer::pick_chart_data_at` for the tagged
-point, histogram-bin, matrix-cell, and contour-level result.
+column pool directly. A registered chart's pick answers every series' nearest
+datum and decides the hit from the drawn ink: the series owning the ink nearest
+to the cursor within reach, read from the ink mask the chart's on-screen
+prepare draws, so a pick before the first on-screen prepare hits nothing
+(#381, [Pick hit: the ink mask](#pick-hit-the-ink-mask)).
+Use `pick_chart_data` / `WindowedRenderer::pick_chart_data_at` for the typed
+hit (histogram bin, body, bar, matrix cell, contour level, value label or
+DataLess element) next to that pick.
 
 ![Renderer frame preparation, referenced-state validation, stale-frame recovery and submission order](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/prepared-frame-en.png)
 
@@ -255,6 +259,21 @@ dashed, sketch and Milkyway lines is derived from the GPU pool by compute scans.
 Nonresident registration instead retains logical source metadata and bounded
 GPU work; its host must keep the original range provider available for exact
 replay. The renderer does not retain a full CPU copy of that source.
+
+### Synchronization and locks
+
+Product code takes no lock (rule 4 of the repository's `CLAUDE.md`):
+mutation runs behind `&mut self`, retired GPU handles go through an atomic
+queue, the poll thread holds counters and a park token, and the registered
+fonts are read from an `ArcSwap` snapshot. The one approved exception is the
+font registration `Mutex` in `src/text_render.rs` (`FontRegistry::registered`),
+decided by the maintainer in #160 on 2026-11-15. It maps each registered byte
+string to the families its first registration reported and is held only
+inside `register_font_bytes`, which it also serializes, so the same bytes are
+parsed and published once. Lookups never take it: they read the
+`ArcSwap<RegisteredFonts>` snapshot. The `FONT_REGISTRATION_TEST_LOCK` beside
+it is compiled only for tests. Any other lock still needs the maintainer's
+approval in its issue.
 
 ### Memory accounting and release
 
@@ -316,9 +335,9 @@ rejects creation/readiness; it cannot publish a successful first-frame event.
 
 | Surface | Contract |
 |---|---|
-| Raw `FiggyChart` | In a wasm browser, `create` / `create_with_progress` / `create_with_options` await no pipeline compile (#299). They create the fullscreen textured pipeline directly and start the asynchronous compile of every resident render pipeline of the starting shader set (`"basic"` by default, `"full"` through `create_with_options({ shaders: "full" })`) through the renderer's `CompileQueue`: `createRenderPipelineAsync` on the same `GPUDevice`, at most `navigator.hardwareConcurrency` compiles in flight (4 if it reports none), what the screen needs first. The results stay in the browser's cache, where the synchronous creation of the same pipeline finds them. Creation then submits and awaits the first empty-chart frame. A frame leaves out a series whose pipelines are still compiling and draws again when they finish; `first_frame_ready`, `series_ready` and `pipelines_ready` wait on those compiles. The vector, 3D surface and ternary region modules and the compute scans compile on demand. Production renderer-owned optional render/style and arc/fit/picker/contour compute caches remain lazy. `prewarm_all_with_progress(callback)` publishes those actual wgpu caches with `{ scope, stage, phase }` progress; `prewarm_all()` performs the same work without a callback. `warm_up()` is a first-frame compatibility alias, not full prewarm. Creation does not enable the production picker: `prewarm_gpu_picking()` explicitly enables it and prepares the current chart, while retries and `pick_point` / `pick_data` reuse the same renderer-owned path and sticky activation error. |
+| Raw `FiggyChart` | In a wasm browser, `create` / `create_with_progress` / `create_with_options` await no pipeline compile (#299). They create the fullscreen textured pipeline directly and start the asynchronous compile of every resident render pipeline of the starting shader set (`"basic"` by default, `"full"` through `create_with_options({ shaders: "full" })`) through the renderer's `CompileQueue`: `createRenderPipelineAsync` on the same `GPUDevice`, at most `navigator.hardwareConcurrency` compiles in flight (4 if it reports none), what the screen needs first. The results stay in the browser's cache, where the synchronous creation of the same pipeline finds them. Creation then submits and awaits the first empty-chart frame. A frame leaves out a series whose pipelines are still compiling and draws again when they finish; `first_frame_ready`, `series_ready` and `pipelines_ready` wait on those compiles. The vector, 3D surface and ternary region modules and the compute scans compile on demand. Production renderer-owned optional render/style and arc/fit/picker/contour compute caches remain lazy. `prewarm_all_with_progress(callback)` publishes those actual wgpu caches with `{ scope, stage, phase }` progress; `prewarm_all()` performs the same work without a callback. Creation does not enable the production picker: `prewarm_gpu_picking()` explicitly enables it and prepares the current chart, while retries and `pick_point` / `pick_data` reuse the same renderer-owned path and sticky activation error. Each chart a frame draws schedules what its first pick needs and the picker has not created, on the same queue when its config or series revision or the shader set moved, ahead of the waiting render compiles (#363, #381): the picker's gate and reduce pipelines while the picker is not enabled, the nearest-datum kernel of its projection and the typed data pick kernels of its series' families; no exact variant, and nothing for a monotonic chart or a chart with a streamed series. A later frame enables the picker and creates each pipeline in the picker's cache once its compile resolves, and a pick before that waits for the scheduled compile instead of starting its own. On a full-shader admission the picker is enabled again the same way instead of synchronously, so a wasm Rust host calls `enable_gpu_picking_async` before picking after a shader-set switch, as `FiggyChart` does. |
 | `<figgy-chart>` startup | The `web.create / first frame / finished` progress event and `figgy-ready` are published before background picker prewarm begins. A prewarm failure emits `figgy-error` with `operation: "prewarm_gpu_picking"` and `recoverable: true`; the fulfilled `ready` promise and rendering loop remain valid. |
-| Async serialization | One generation+kernel operation token covers connect/create, `prewarm_all_with_progress` / `prewarm_all` and picker prewarm, export, `first_frame_ready` / `warm_up`, `series_ready` / `pipelines_ready`, stream cancellation, extent preparation, resident async fit, and pick. The facade's two full-prewarm methods pass through this generation-aware operation gate. While `busy`, rAF drawing and pointer/proxy kernel access do not enter wasm; only the latest resize and a pending pointer release are retained and applied after settlement. Streaming `auto_fit_all()` instead requests renderer-owned fitting and awaits its stream job without holding this token: the fit itself does not set `busy`, so the scheduler can keep calling the kernel and reconcile the latest chart state. An independent operation may still set `busy`. |
+| Async serialization | One generation+kernel operation token covers connect/create, `prewarm_all_with_progress` / `prewarm_all` and picker prewarm, export, `first_frame_ready`, `series_ready` / `pipelines_ready`, stream cancellation, extent preparation, resident async fit, and pick. The facade's two full-prewarm methods pass through this generation-aware operation gate. While `busy`, rAF drawing and pointer/proxy kernel access do not enter wasm; only the latest resize and a pending pointer release are retained and applied after settlement. Streaming `auto_fit_all()` instead requests renderer-owned fitting and awaits its stream job without holding this token: the fit itself does not set `busy`, so the scheduler can keep calling the kernel and reconcile the latest chart state. An independent operation may still set `busy`. |
 | Disconnect/reconnect | Disconnect invalidates the generation and cancels its rAF/observer. A kernel borrowed by an active operation is freed only after that operation settles. Its stale settlement cannot clear, resize, release, or free the new generation's kernel. |
 
 The `<figgy-chart>` facade enforces that gate; wasm-bindgen itself checks borrows and
@@ -396,7 +415,7 @@ the sole issuer of its checked revisions:
 | host `redraw_pending` | Host-only surface state such as clear color changed; draw without duplicating chart state |
 
 Browser frame flow, simplified from `FiggyChart::frame` in
-[`crates/web/src/web/chart.rs`](https://github.com/shim9610/figgy/blob/master/crates/web/src/web/chart.rs):
+[`crates/web/src/web/chart/frame.rs`](https://github.com/shim9610/figgy/blob/master/crates/web/src/web/chart/frame.rs):
 
 ```rust
 renderer.sync_external_invalidations()?;
@@ -544,10 +563,10 @@ Every module that places data is assembled twice from one fragment list (`assemb
 - The rule is enforced where a pipeline is used, not only where a chart arrives: resolving a frame's items (frame and export), the arc scan, the contour label anchors and the two pick entries refuse such a chart on basic shaders with an internal error, so an entry that did not admit its chart fails instead of drawing it without the feature. The basic twins also draw nothing for a transform with a probability code or the polar flag (`prob_in_domain`, `polar_sample_valid` and `polar_fragment_visible` are false there).
 - Streaming is not extended to broken axes, probability axes or polar charts (rule 8), so a streamed chart is placed the same by either set. A break added to a streaming chart is a view change that ends the stream, and its restart is refused with `StreamedBreak`; a probability axis and polar coordinates are refused the same way by their own rules.
 - In a browser the startup warm-up schedules the render pipelines of the renderer's starting set (basic by default) in the background; the vector, 3D surface and ternary region modules and the compute scans compile on demand. The prewarm contract (`shader_pipeline_contract.json`) stores each pipeline once, under the basic source, and a full module finds its descriptors through its twin (`shader_assembly::contract_source`).
-- The public single-pipeline builders (`create_line_columnar_pipeline`, `create_vector_pipeline`, `create_arc_scan_pipelines`, `ContourLabelPipelines::new` and the others) and the `*_SHADER` constants keep the full module: a host may draw any transform through them.
+- `ContourLabelPipelines::new` and the public `*_SHADER` constants keep the full module: a host may draw any transform through them. The renderer keeps no other public single-pipeline builder (#341); its pipelines are built from its own shader set.
 - Besides the two assemblies, a draw function reads the whole `transform` uniform once (`let tf = transform;`) and passes that to the shared functions: each read of the whole uniform is compiled as its own copy of the struct (SHADER_COMMON §4).
 - A host can choose. `Renderer::require_shader_set(ShaderSet::Full)` makes the move early, before such a chart arrives; it only moves up and is idempotent. To start on the full set, the host gives the device bundle `RendererDevice::with_shader_set(ShaderSet::Full)` (for `Renderer::try_new` and its siblings) or builds a window or canvas renderer with `Renderer::for_window_with_shader_set_async_observed`; such a renderer creates and compiles no module of the basic set.
-- In a browser, a renderer that started the asynchronous compile of its render pipelines when it was built (`for_window_minimal_async_observed` or `for_window_with_shader_set_async_observed`) schedules the full set's render pipelines on its `CompileQueue` at the move; the basic compiles not issued yet end as superseded. At most as many compiles as the browser reports cores are in flight, what the screen needs first. Until a series' pipelines have compiled, a frame leaves that series out (`frame_complete`, `series_ready`) and the chart fills in as they finish.
+- In a browser, a renderer that started the asynchronous compile of its render pipelines when it was built (`for_window_with_shader_set_async_observed`) schedules the full set's render pipelines on its `CompileQueue` at the move; the basic compiles not issued yet end as superseded. At most as many compiles as the browser reports cores are in flight, what the screen needs first. Until a series' pipelines have compiled, a frame leaves that series out (`frame_complete`, `series_ready`) and the chart fills in as they finish.
 
 ### Triangle meshes on the GPU
 
@@ -556,6 +575,26 @@ A `TriMesh` series ([#210](https://github.com/shim9610/figgy/issues/210), [guide
 - Draw: one instance per triangle, three vertices, no vertex buffer (`TRI_MESH_SHADER_BY_SET` for the renderer's current set; `TRI_MESH_SHADER` is its full assembly). The vertex stage reads the triangle's indices and vertices, drops a triangle with an index past the drawn count or an unplaceable vertex, and the fragment blends the values barycentrically; contour lines are the level set of each triangle's linear interpolant. On a 3D chart `TRI_SURFACE_SHADER` places the vertices through the camera, and the floor contours are the mesh module's floor entries.
 - Pick: on a flat chart a one-workgroup compute scan over every triangle (`pick_tri_mesh`, `GpuDataPickGeometry::TriMesh`) answers the triangle under the cursor, or a contour over it; on a 3D chart the 1×1 ID pass writes kind 2 for the surface and the floor-contour word for its levels. Both read the draw's own group 2 snapshot.
 - The CPU keeps only the pool's scalar statistics of the index column (count, smallest and largest index); registration checks the largest index against the vertex count. Streamed sources are refused with an explicit error.
+
+### Nearest-datum pick
+
+`Renderer::pick_chart_nearest` ([#381](https://github.com/shim9610/figgy/issues/381)) answers every series' datum nearest to the cursor and the nearest of them, with no pick reach and without reading any style.
+- Kernels: one compute kernel per column kind (`gpu_pick/nearest_entry.wgsl`, the xy kind), assembled with one placement fragment per projection: `nearest_project_2d.wgsl` places a datum with the draw's own `pick_data_px` (logarithmic, broken and probability axes, polar coordinates) or `pick_ternary_px`, and a box plot's or violin's raw point jittered in its slot as drawn (`pick_category_jitter_px`, the shared `gpu_pick/category_place.wgsl`); `nearest_project_3d.wgsl` splices the shared `common/project_3d.wgsl` and the panel's camera premultiplied by the map from the cursor's pixel onto clip space, as the 3D ID pick does. Two pipelines per shader set, whatever the styles.
+- Registry: the point picker's slots, dispatch layout, per-workgroup candidates and per-series reduction (`pick_reduce_candidates`), into each slot's result buffer. One registry holds every pickable layer at the cursor (the base layer and its overlays, or the subplot under the cursor and its overlays); each slot carries its panel's transform, chart rectangle and camera (`NearestSlot`). The readback holds one candidate per series; the panel's nearest is chosen from them on the CPU (an exact tie to the active layer, then to the series drawn later).
+- Results live in storage buffers: no render target, so MSAA and integer formats do not apply. A monotonic series' row maps to its logical sample index through the shared envelope. Streamed sources are refused.
+
+### Pick hit: the ink mask
+
+`Renderer::pick_chart` ([#381](https://github.com/shim9610/figgy/issues/381)) is the nearest-datum pick above plus a hit decided by drawn pixels: the cursor hits when the chart's data layer has ink within `request.max_distance_px` canvas pixels of it, and the series that owns the nearest inked texel decides what is hit (series-owner mask, approved in [#381](https://github.com/shim9610/figgy/issues/381#issuecomment-7059272495)).
+- Mask: one `InkMask` per panel of each chart drawn on screen (`src/renderer/frame/ink_mask.rs`): `R32Uint`, one sample, panel-sized at the display scale. Each texel holds the slot of the topmost series that inked it (a channel above 1/255), its index in the mask's `owners` plus one, and 0 for no ink. `owners` lists the panel's series identities in drawing order, shared with the picks that read the mask. Every draw style, overlay, subplot and line offset member has one; ownership only, no colour. The slot is 32 bits, so a panel's series count is not capped (rule 10).
+- Drawing: the on-screen prepare of a registered chart (`prepare_registered_resident`, so also `prepare_monotonic` and the mixed prepare) checks each panel's mask against the resident display's key (`ResidentDisplayKey`) and draws it again only when it changed. It draws each series on its own into a transient transparent target with the panel composite (`draw_panel_composite`, one series through `PieceSeries::series`) and its own pipelines, in the frame's order: every series' fill (`CompositeSteps::Fills`, with the ternary region fills; a series without one is skipped), then every series' body (`CompositeSteps::Bodies`). After each pass it runs `ink_mask.wgsl`, which writes the series' slot (its instance index) where the target has ink and discards elsewhere. Later passes overwrite earlier ones, so the topmost owner remains: a marker over a later series' fill keeps the marker's series. A 3D panel keeps its depth from series to series (`PanelCompositeTargets::depth_carried`), so a surface behind an earlier one leaves that one the owner. The data pipelines have no variants or branches for this; only the resolve pass changed. The passes are submitted in batches of 64 series passes per command buffer (`INK_MASK_PASSES_PER_SUBMIT`), so no command buffer grows with the series count; the batch size is not a cap. Exports and picks never draw it.
+- Identity: keyed by `ChartId` and panel index (issued number), not by the view; a chart shown in several views has the mask of its most recent on-screen prepare. Masks go with `remove_chart` or a panel the chart no longer draws as. A live chart's mask is in use, so `release_unused_pool_memory` keeps it.
+- Read: the pick copies the (2r+1)² texel window around the cursor of each mask in the searched layer group into one readback (`InkRead`, 4 bytes per texel) and takes the inked texel whose square is nearest to the cursor within the reach; an exact tie goes to the active layer's mask, then to the panel drawn later, then to the higher slot. The owner (`PickResult::owner`: layer and series) decides the hit: `hit` is the owner's nearest datum (from `per_series`) when the owner has point data, `None` for a body or fill owner. `GpuPickTicket::resolve` answers the hit, `resolve_full` the hit, the owner and every series' nearest datum.
+- Cost: 4 bytes per panel pixel per layer (a 480×360 panel: 691,200 bytes), charged as a panel texture; the transient data-layer targets live until their submission completes. Recording a mask takes one panel pass and one resolve pass per series, plus one of each per series with a fill, on a display key change only, never per pick or hover (`tests/pick_owner.rs::the_last_of_many_series_owns_the_ink` prints the first prepare's time for 1, 300 and 5,000 series). Measured on lavapipe with a 96×72 panel, the first prepare took 189–230 ms for 1 series, 391–401 ms for 300 and 3.36–3.46 s for 5,000, against 184–265 ms, 333–361 ms and 1.10–1.35 s with the coverage mask: about 0.45 ms per series there.
+
+### Typed data pick (#381 phase 4)
+
+`Renderer::pick_chart_data` runs the registered chart's pick (`pick_chart_inked`: the nearest datum and the ink owner) and the typed data kernels side by side, and never compares their distances. `DataPickResult::picked` follows the ink owner: its nearest datum for a series with point data (line, scatter, vector, ternary region, box plot points), its typed hit for a body or fill series (bars, bins, cells, boxes); with no ink in reach, the typed hit alone (value labels and DataLess series are not in the masks). The typed kernels run for the active layer (or the subplot at the cursor). The group's other layers with a body or fill series are encoded at submission and not run (`EncodedDataPick`); when the ink owner is a body series on one of them, the ticket submits that layer's encoded pick alone while it resolves, and `picked` is its typed hit (approved in [#381](https://github.com/shim9610/figgy/issues/381#issuecomment-7062589668)). No other layer's kernels run, and no shader is added. `point` and `data` (the picked layer's typed hit) keep both answers. Streamed displays keep the exact query (rule 8); its resident dispatch (`GpuPickEngine::pick_with_arcs`) is test support for the shared exact kernels.
 
 ### Monotonic-x lines (M4 envelope)
 
@@ -733,7 +772,7 @@ lines, split connectors and annotation overlay through the same sink
 
 ---
 
-아래 구조 설명은 직교 좌표 `Renderer`의 네이티브 렌더링, 데이터 소유권, GPU 메모리와 프레임 갱신 판단을 다룬다. 범주형 막대([CATEGORICAL.md](CATEGORICAL.md)), 박스플롯([BOXPLOT.md](BOXPLOT.md)), 레이더 차트(극좌표 레이더 시리즈, [RADAR.md](RADAR.md))도 직교 좌표 `Renderer`가 그린다. 0.12까지의 범주형 막대·박스플롯·레이더 문서는 사용 중단된 리더(`Config::from_categorical`, `Config::from_boxplot`, `Config::from_radar`)가 이 차트들로 읽으며, 이 리더는 다음 마일스톤에서 제거할 예정이다. DataLess 차트인 원형 차트는 별도 렌더러(`RadialRenderer`)가 그린다. 이 렌더러는 변경할 수 없는 준비 프레임을 반환하고, 자신을 만든 `RendererDevice`의 GPU 장부에 기록하며 그 묶음의 예산을 쓴다. 같은 묶음에서 만든 렌더러는 모두 이 장부와 예산(`gpu_memory_usage()`, `set_memory_budget(Option<u64>)`)을 함께 쓰므로, 묶음의 어느 렌더러에서 읽어도 묶음 전체의 합계가 나온다. 원형 렌더러는 컬럼 풀·자동 범위 맞춤 작업·스트리밍을 쓰지 않는다. 자세한 내용은 [RADIAL.md](RADIAL.md)를 참고한다. 실행 가능한 예제는 [README](https://github.com/shim9610/figgy/blob/master/README.ko.md)에서 시작한다.
+아래 구조 설명은 직교 좌표 `Renderer`의 네이티브 렌더링, 데이터 소유권, GPU 메모리와 프레임 갱신 판단을 다룬다. 범주형 막대([CATEGORICAL.md](CATEGORICAL.md#한국어-사용법)), 박스플롯([BOXPLOT.md](BOXPLOT.md)), 레이더 차트(극좌표 레이더 시리즈, [RADAR.md](RADAR.md))도 직교 좌표 `Renderer`가 그린다. 0.12까지의 범주형 막대·박스플롯·레이더 문서는 리더(`Config::from_categorical`, `Config::from_boxplot`, `Config::from_radar`)가 이 차트들로 읽는다. DataLess 차트인 원형 차트는 별도 렌더러(`RadialRenderer`)가 그린다. 이 렌더러는 변경할 수 없는 준비 프레임을 반환하고, 자신을 만든 `RendererDevice`의 GPU 장부에 기록하며 그 묶음의 예산을 쓴다. 같은 묶음에서 만든 렌더러는 모두 이 장부와 예산(`gpu_memory_usage()`, `set_memory_budget(Option<u64>)`)을 함께 쓰므로, 묶음의 어느 렌더러에서 읽어도 묶음 전체의 합계가 나온다. 원형 렌더러는 컬럼 풀·자동 범위 맞춤 작업·스트리밍을 쓰지 않는다. 자세한 내용은 [RADIAL.md](RADIAL.md#한국어-사용법)를 참고한다. 실행 가능한 예제는 [README](https://github.com/shim9610/figgy/blob/master/README.ko.md)에서 시작한다.
 
 | 구성 요소 | 역할 |
 |---|---|
@@ -821,7 +860,7 @@ lines, split connectors and annotation overlay through the same sink
 
 컬럼 교체·제거·재배치는 풀, 차트, 리비전, 피킹 캐시를 먼저 준비하고 성공했을 때만 반영한다. 동기 준비 과정에서 오류가 나면 기존 상태를 유지하며, 마지막 반영 단계에서는 새 메모리를 할당하지 않는다. `remove_column`은 해당 컬럼을 참조하는 모든 등록 시리즈를 함께 제거하지만 `Config::legend`는 바꾸지 않는다. 범례까지 함께 바꾸려면 `remove_column_with_chart_config`를 사용한다. 이 호출은 풀, 영향을 받는 모든 시리즈, 해당 차트의 새 `Config`를 하나의 트랜잭션으로 반영한다. 웹 래퍼는 자동 범례와 직접 편집한 범례를 구분해 이 API를 사용한다.
 
-GPU 피킹은 차트 ID를 받는 API로 제공한다. `enable_gpu_picking()`을 한 번 호출하고, 필요하면 첫 선택 전에 `prepare_gpu_picking_for_chart(chart_id)`로 준비한다. 이후 `pick_chart(chart_id, GpuPickRequest)` 또는 `WindowedRenderer::pick_chart_at`을 호출한다. 축 변환과 데이터 영역 자르기는 렌더러가 `Config`에서 계산한다. 피킹은 GPU 컬럼 풀을 직접 읽는다. 점·히스토그램 구간·행렬 셀·등고선 레벨을 구분하는 결과가 필요하면 `pick_chart_data` / `WindowedRenderer::pick_chart_data_at`을 사용한다.
+GPU 피킹은 차트 ID를 받는 API로 제공한다. `enable_gpu_picking()`을 한 번 호출하고, 필요하면 첫 선택 전에 `prepare_gpu_picking_for_chart(chart_id)`로 준비한다. 이후 `pick_chart(chart_id, GpuPickRequest)` 또는 `WindowedRenderer::pick_chart_at`을 호출한다. 축 변환과 데이터 영역 자르기는 렌더러가 `Config`에서 계산한다. 피킹은 GPU 컬럼 풀을 직접 읽는다. 등록 차트의 픽은 시리즈마다 가장 가까운 데이터를 답하고, 적중 여부는 그려진 잉크로 정한다. 사거리 안에서 커서에 가장 가까운 잉크를 가진 시리즈가 적중 대상이며, 이 잉크는 차트를 화면에 준비할 때 그리는 잉크 마스크에서 읽는다. 그래서 첫 화면 준비 전에 픽하면 아무것도 적중하지 않는다(#381, [픽 적중: 잉크 마스크](#픽-적중-잉크-마스크)). 히스토그램 구간·몸체·막대·행렬 셀·등고선 레벨·값 라벨·DataLess 요소 같은 typed 적중이 필요하면 `pick_chart_data` / `WindowedRenderer::pick_chart_data_at`을 사용한다.
 
 ![Renderer의 프레임 준비, 참조 상태 검증, 오래된 프레임의 재준비와 명령 제출 순서](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/prepared-frame-kr.png)
 
@@ -848,6 +887,18 @@ GPU 피킹은 차트 ID를 받는 API로 제공한다. `enable_gpu_picking()`을
 개수는 읽지 않는다. 그 오류는 호스트 호출이 보고한다. `tools/loom-poller`가 loom으로
 프로토콜을 검증한다. `RendererDevice::blocking`은 스레드 없는 묶음을 만든다.
 
+### 동기화와 잠금
+
+제품 코드는 잠금을 쓰지 않는다(저장소 `CLAUDE.md`의 규칙 4). 변경은 `&mut self` 뒤에서
+일어나고, 회수할 GPU 핸들은 원자적 대기열로 넘기며, poll 스레드는 카운터와 park 토큰만 쓰고,
+등록된 글꼴은 `ArcSwap` 스냅숏으로 읽는다. 승인된 예외는 `src/text_render.rs`의 글꼴 등록
+`Mutex`(`FontRegistry::registered`) 하나뿐이며, 관리자가 2026-11-15에 #160에서 결정했다. 이
+맵은 등록된 바이트열마다 첫 등록 때 나온 패밀리 이름을 기억한다. 잠금은 `register_font_bytes`
+안에서만 잡고, 등록을 하나씩 처리하게 해서 같은 바이트열을 한 번만 파싱하고 게시한다. 조회는
+이 잠금을 잡지 않고 `ArcSwap<RegisteredFonts>` 스냅숏을 읽는다. 옆에 있는
+`FONT_REGISTRATION_TEST_LOCK`은 테스트에서만 컴파일된다. 이 밖의 잠금은 지금도 해당 이슈에서
+관리자 승인을 받아야 한다.
+
 ### 메모리 계상과 회수
 
 ![공유 GPU 자원의 참조, 마지막 참조 해제 후 회수 대기와 GPU 완료 후 집계 해제](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/gpu-resource-lifetime-kr.png)
@@ -866,7 +917,7 @@ GPU 피킹은 차트 ID를 받는 API로 제공한다. `enable_gpu_picking()`을
 
 | API·상태 | 동작 규칙 |
 |---|---|
-| 저수준 `FiggyChart` | 브라우저의 wasm에서 `create` / `create_with_progress` / `create_with_options`는 파이프라인 컴파일을 기다리지 않는다(#299). 전체 화면 텍스처 파이프라인은 바로 만들고, 시작 셰이더 세트(기본값 `"basic"`, `create_with_options({ shaders: "full" })`이면 `"full"`)의 상주 렌더링 파이프라인 전체는 렌더러의 `CompileQueue`로 비동기 컴파일을 시작한다. 같은 `GPUDevice`에서 `createRenderPipelineAsync`를 쓰고, 동시에 진행하는 컴파일은 `navigator.hardwareConcurrency`개까지(값이 없으면 4개)이며, 화면에 필요한 것부터 보낸다. 결과는 브라우저 캐시에 남아 같은 파이프라인을 동기로 만들 때 그대로 쓰인다. 그 뒤 빈 차트의 첫 프레임을 제출하고 완료를 기다린다. 파이프라인이 아직 컴파일 중인 시리즈는 프레임에서 빠지고, 컴파일이 끝나면 다시 그린다. `first_frame_ready`, `series_ready`, `pipelines_ready`는 이 컴파일을 기다린다. 벡터·3D 곡면·삼각 좌표 영역 모듈과 컴퓨트 스캔은 필요할 때 컴파일한다. 선택적인 렌더링·스타일 자원과 경로 길이·범위·피킹·등고선 컴퓨트 캐시는 필요할 때 만든다. `prewarm_all_with_progress(callback)`은 이를 실제 wgpu 캐시에 생성하며 `{ scope, stage, phase }`를 알린다. `prewarm_all()`은 콜백 없이 같은 작업을 한다. `warm_up()`은 첫 프레임 대기용 호환 메서드이며 전체 사전 준비가 아니다. 생성 시 피킹을 켜지는 않으며, `prewarm_gpu_picking()`으로 활성화하고 현재 차트를 준비한다. 재시도와 `pick_point` / `pick_data`도 저장된 활성화 오류를 포함한 같은 렌더러 상태를 사용한다. |
+| 저수준 `FiggyChart` | 브라우저의 wasm에서 `create` / `create_with_progress` / `create_with_options`는 파이프라인 컴파일을 기다리지 않는다(#299). 전체 화면 텍스처 파이프라인은 바로 만들고, 시작 셰이더 세트(기본값 `"basic"`, `create_with_options({ shaders: "full" })`이면 `"full"`)의 상주 렌더링 파이프라인 전체는 렌더러의 `CompileQueue`로 비동기 컴파일을 시작한다. 같은 `GPUDevice`에서 `createRenderPipelineAsync`를 쓰고, 동시에 진행하는 컴파일은 `navigator.hardwareConcurrency`개까지(값이 없으면 4개)이며, 화면에 필요한 것부터 보낸다. 결과는 브라우저 캐시에 남아 같은 파이프라인을 동기로 만들 때 그대로 쓰인다. 그 뒤 빈 차트의 첫 프레임을 제출하고 완료를 기다린다. 파이프라인이 아직 컴파일 중인 시리즈는 프레임에서 빠지고, 컴파일이 끝나면 다시 그린다. `first_frame_ready`, `series_ready`, `pipelines_ready`는 이 컴파일을 기다린다. 벡터·3D 곡면·삼각 좌표 영역 모듈과 컴퓨트 스캔은 필요할 때 컴파일한다. 선택적인 렌더링·스타일 자원과 경로 길이·범위·피킹·등고선 컴퓨트 캐시는 필요할 때 만든다. `prewarm_all_with_progress(callback)`은 이를 실제 wgpu 캐시에 생성하며 `{ scope, stage, phase }`를 알린다. `prewarm_all()`은 콜백 없이 같은 작업을 한다. 생성 시 피킹을 켜지는 않으며, `prewarm_gpu_picking()`으로 활성화하고 현재 차트를 준비한다. 재시도와 `pick_point` / `pick_data`도 저장된 활성화 오류를 포함한 같은 렌더러 상태를 사용한다. 프레임이 그리는 차트는 설정·시리즈 리비전이나 셰이더 세트가 바뀌면 첫 픽에 필요한데 피커가 아직 만들지 않은 파이프라인을 같은 큐에서 대기 중인 렌더링 컴파일보다 앞에 올린다(#363, #381). 피커가 꺼져 있으면 gate·reduce 파이프라인을, 차트 투영에 맞는 최근접 데이터 커널과 시리즈 계열에 맞는 typed 데이터 픽 커널을 올린다. exact 변형은 올리지 않으며, 단조 차트와 스트리밍 시리즈가 있는 차트는 아무것도 올리지 않는다. 컴파일이 끝나면 다음 프레임이 피커를 켜고 각 파이프라인을 피커 캐시에 만든다. 그 전에 픽하면 따로 컴파일하지 않고 예약된 컴파일을 기다린다. full 셰이더로 바뀔 때도 피커를 동기로 다시 만들지 않고 같은 방식으로 다시 켜므로, wasm Rust 호스트는 셰이더 세트가 바뀐 뒤 픽하기 전에 `FiggyChart`처럼 `enable_gpu_picking_async`를 부른다. |
 | `<figgy-chart>` 시작 | `web.create / first frame / finished`와 `figgy-ready`를 알린 뒤 백그라운드 피킹 준비를 시작한다. 실패하면 `operation: "prewarm_gpu_picking"`, `recoverable: true`인 `figgy-error`를 보낸다. 이미 완료된 `ready`와 렌더링 루프는 유지한다. |
 | 비동기 호출 직렬화 | 연결 세대와 커널을 확인하는 작업 토큰으로 생성, 전체 사전 준비, 피킹 준비, 출력, 첫 프레임 대기, `series_ready` / `pipelines_ready`, 스트림 취소, 범위 엔진 준비, 상주 자동 범위 맞춤과 피킹을 직렬화한다. 작업 중에는 rAF·포인터·대리 호출이 WASM에 접근하지 않으며 마지막 크기 변경과 포인터 해제만 보관했다가 종료 후 적용한다. 스트리밍 `auto_fit_all()`은 이 토큰 없이 렌더러에 범위 계산을 요청하고 스트림 완료를 기다린다. 스트리밍 실행기가 커널 호출을 계속하고 최신 차트 상태 요청을 반영한다. 범위 계산 자체는 busy를 켜지 않지만 별도 작업이 실행 중이면 busy일 수 있다. |
 | 연결 해제·재연결 | 연결 해제 시 이전 세대를 무효화하고 rAF와 관찰자를 정리한다. 작업 중인 커널은 작업 종료 후 해제한다. 이전 세대의 완료 처리는 새 토큰·커널에 영향을 주거나 새 세대의 크기 변경·포인터 해제·객체 해제를 수행하지 않는다. |
@@ -927,7 +978,7 @@ pool 컬럼 (x, y) ──┐                       Transform uniform (304 B writ
 | 호스트의 `view_dirty` | 화면 크기·DPR로 미리보기 배치가 바뀌면 축 이미지를 갱신하고 다시 그린다. |
 | 호스트의 `redraw_pending` | 배경색 등 화면 상태가 바뀌면 차트 설정을 복제하지 않고 다시 그린다. |
 
-브라우저의 프레임 처리 순서는 다음과 같다. [`crates/web/src/web/chart.rs`](https://github.com/shim9610/figgy/blob/master/crates/web/src/web/chart.rs)의 `FiggyChart::frame`을 줄인 예시다.
+브라우저의 프레임 처리 순서는 다음과 같다. [`crates/web/src/web/chart/frame.rs`](https://github.com/shim9610/figgy/blob/master/crates/web/src/web/chart/frame.rs)의 `FiggyChart::frame`을 줄인 예시다.
 
 ```rust
 renderer.sync_external_invalidations()?;
@@ -1034,10 +1085,10 @@ annotation_selection_dirty = false;
 - 이 규칙은 차트가 들어오는 곳뿐 아니라 파이프라인을 쓰는 곳에서도 확인한다. 프레임 항목을 확정하는 단계(프레임과 이미지 출력), 경로 길이 계산, 등고선 라벨 위치 계산, 두 피킹 진입점은 `Basic` 셰이더에서 이런 차트를 내부 오류로 거부한다. 그래서 차트를 알리지 않은 진입점은 그 기능 없이 그리는 대신 실패한다. 기본 세트의 짝 조각도 확률 눈금 코드나 극좌표 표시가 있는 변환에는 아무것도 그리지 않는다(`prob_in_domain`, `polar_sample_valid`, `polar_fragment_visible`이 거짓이다).
 - 스트리밍은 끊긴 축, 확률 축, 극좌표 차트를 지원하지 않으므로(규칙 8) 스트리밍 차트는 어느 세트로도 같은 자리에 그린다. 스트리밍 중인 차트에 끊김을 넣으면 데이터를 놓는 자리가 바뀌므로 스트림이 끝나고, 다시 시작하려 하면 `StreamedBreak`로 거부한다. 확률 축과 극좌표도 각자의 규칙으로 똑같이 거부한다.
 - 브라우저에서 시작할 때 하는 사전 준비는 렌더러의 시작 세트(기본값은 `Basic`)의 렌더링 파이프라인을 백그라운드 컴파일 일정에 올린다. 벡터·3D 곡면·삼각 좌표 영역 모듈과 컴퓨트 스캔은 필요할 때 컴파일한다. 사전 준비 계약(`shader_pipeline_contract.json`)은 파이프라인마다 `Basic` 소스 아래에 한 번만 저장하고, `Full` 모듈은 짝이 되는 모듈을 통해 디스크립터를 찾는다(`shader_assembly::contract_source`).
-- 공개된 단일 파이프라인 생성 함수(`create_line_columnar_pipeline`, `create_vector_pipeline`, `create_arc_scan_pipelines`, `ContourLabelPipelines::new` 등)와 `*_SHADER` 상수는 `Full` 모듈을 그대로 쓴다. 호스트가 이 함수들로 어떤 변환이든 그릴 수 있기 때문이다.
+- `ContourLabelPipelines::new`와 공개된 `*_SHADER` 상수는 `Full` 모듈을 그대로 쓴다. 호스트가 이것들로 어떤 변환이든 그릴 수 있기 때문이다. 그 밖의 공개 단일 파이프라인 생성 함수는 두지 않으며(#341), 렌더러의 파이프라인은 자신의 셰이더 세트로 만든다.
 - 두 세트와 별개로, 그리기 함수는 `transform` 유니폼 전체를 한 번만 읽어(`let tf = transform;`) 공통 함수에 넘긴다. 유니폼 전체를 읽을 때마다 컴파일러가 구조체 사본을 따로 만들기 때문이다(SHADER_COMMON §4).
 - 호스트가 직접 고를 수도 있다. `Renderer::require_shader_set(ShaderSet::Full)`은 그런 차트가 오기 전에 미리 올린다. 올리기만 하고 여러 번 불러도 결과가 같다. 처음부터 전체 세트로 만들려면 장치 묶음에 `RendererDevice::with_shader_set(ShaderSet::Full)`을 주거나(`Renderer::try_new` 계열), 창과 캔버스에는 `Renderer::for_window_with_shader_set_async_observed`를 쓴다. 이렇게 만든 렌더러는 기본 세트의 모듈을 만들지도 컴파일하지도 않는다.
-- 브라우저에서 만들 때 렌더링 파이프라인의 비동기 컴파일을 시작해 둔 렌더러(`for_window_minimal_async_observed`나 `for_window_with_shader_set_async_observed`)는 전체 세트로 올라갈 때 전체 세트의 렌더링 파이프라인을 자신의 `CompileQueue`에 올린다. 아직 보내지 않은 `Basic` 컴파일은 대체됨(superseded)으로 끝난다. 동시에 진행하는 컴파일은 브라우저가 알려 주는 코어 수까지이며, 화면에 필요한 것부터 보낸다. 시리즈의 파이프라인이 컴파일되기 전까지 프레임은 그 시리즈를 빼고 그리며(`frame_complete`, `series_ready`), 컴파일이 끝나는 대로 차트가 채워진다.
+- 브라우저에서 만들 때 렌더링 파이프라인의 비동기 컴파일을 시작해 둔 렌더러(`for_window_with_shader_set_async_observed`)는 전체 세트로 올라갈 때 전체 세트의 렌더링 파이프라인을 자신의 `CompileQueue`에 올린다. 아직 보내지 않은 `Basic` 컴파일은 대체됨(superseded)으로 끝난다. 동시에 진행하는 컴파일은 브라우저가 알려 주는 코어 수까지이며, 화면에 필요한 것부터 보낸다. 시리즈의 파이프라인이 컴파일되기 전까지 프레임은 그 시리즈를 빼고 그리며(`frame_complete`, `series_ready`), 컴파일이 끝나는 대로 차트가 채워진다.
 
 ### GPU의 삼각 메시 처리
 
@@ -1046,6 +1097,26 @@ annotation_selection_dirty = false;
 - 그리기: 삼각형마다 인스턴스 하나, 정점 셋이며 정점 버퍼는 없다(렌더러의 현재 세트에 맞는 `TRI_MESH_SHADER_BY_SET`. `TRI_MESH_SHADER`는 그 전체 세트 조립본이다). 정점 단계가 삼각형의 인덱스와 정점을 읽고, 그리는 개수를 넘는 인덱스나 놓을 수 없는 정점이 있는 삼각형은 버린다. 조각 단계는 값을 무게중심 좌표로 섞고, 등고선은 삼각형마다 선형 보간의 등위선이다. 3D 차트에서는 `TRI_SURFACE_SHADER`가 정점을 카메라로 놓고, 바닥 등고선은 메시 모듈의 바닥 진입점이 그린다.
 - 피킹: 평면 차트에서는 워크그룹 하나짜리 계산 셰이더가 모든 삼각형을 훑어(`pick_tri_mesh`, `GpuDataPickGeometry::TriMesh`) 커서 아래의 삼각형이나 그 위의 등고선을 답한다. 3D 차트에서는 1×1 ID 패스가 표면에 종류 2를, 바닥 등고선에 등고선 단어를 쓴다. 둘 다 그리기와 같은 그룹 2 스냅샷을 읽는다.
 - CPU는 인덱스 컬럼의 스칼라 통계(개수, 가장 작은 인덱스와 가장 큰 인덱스)만 갖는다. 등록할 때 가장 큰 인덱스를 정점 개수와 비교한다. 스트리밍 계열은 명시적인 오류로 거부한다.
+
+### 최근접 데이터 픽
+
+`Renderer::pick_chart_nearest`([#381](https://github.com/shim9610/figgy/issues/381))는 커서에 가장 가까운 데이터를 시리즈마다 하나씩, 그리고 그중 가장 가까운 것을 돌려준다. 픽 반경이 없고 스타일을 읽지 않는다.
+- 커널: 열 종류마다 compute 커널 하나(`gpu_pick/nearest_entry.wgsl`, xy 종류)를 두고, 투영마다 배치 조각 하나를 붙여 조립한다. `nearest_project_2d.wgsl`은 그리기와 같은 `pick_data_px`(로그·끊긴·확률 축, 극좌표)나 `pick_ternary_px`로 놓고 박스 플롯·바이올린의 원시 점은 그려진 대로 칸 안에서 흩뜨려 놓는다(`pick_category_jitter_px`, 공유 `gpu_pick/category_place.wgsl`). `nearest_project_3d.wgsl`은 공유 `common/project_3d.wgsl`과 커서 픽셀을 클립 공간에 맞춘 패널 카메라를 쓴다(3D ID 픽과 같은 방식). 스타일과 관계없이 셰이더 세트마다 파이프라인 둘이다.
+- 레지스트리: 점 피커의 슬롯, 디스패치 배치, 워크그룹별 후보, 시리즈별 리듀스를 그대로 쓴다. 커서 위의 픽 가능한 레이어(기본 레이어와 오버레이, 또는 커서 아래 서브플롯과 그 오버레이)를 레지스트리 하나에 담고, 슬롯마다 자기 패널의 변환·차트 영역·카메라를 둔다(`NearestSlot`). 읽어 오는 값은 시리즈마다 후보 하나이고, 패널 전체의 최근접은 CPU에서 고른다(거리가 같으면 활성 레이어, 그다음 나중에 그린 시리즈).
+- 결과는 저장 버퍼에 있어 렌더 타깃이 없으므로 MSAA와 정수 포맷 제약이 없다. 단조 시리즈의 행은 공유 엔벌로프로 논리 샘플 인덱스가 된다. 스트리밍 소스는 거부한다.
+
+### 픽 적중: 잉크 마스크
+
+`Renderer::pick_chart`([#381](https://github.com/shim9610/figgy/issues/381))는 위의 최근접 데이터 픽에, 그려진 픽셀로 정하는 적중을 더한다. 차트의 데이터 레이어에 커서로부터 `request.max_distance_px` 캔버스 픽셀 안에 잉크가 있으면 적중이고, 가장 가까운 잉크 텍셀을 가진 시리즈가 무엇이 적중했는지 정한다(시리즈 소유 마스크, [#381](https://github.com/shim9610/figgy/issues/381#issuecomment-7059272495)에서 승인).
+- 마스크: 화면에 그린 차트의 패널마다 `InkMask` 하나(`src/renderer/frame/ink_mask.rs`). `R32Uint`, 샘플 하나, 디스플레이 배율의 패널 크기다. 텍셀마다 그 자리에 잉크(채널 하나라도 1/255 초과)를 남긴 맨 위 시리즈의 슬롯, 곧 마스크 `owners` 안의 순번에 1을 더한 값을 담고, 잉크가 없으면 0이다. `owners`는 패널의 시리즈 식별자를 그리는 순서대로 담으며, 마스크를 읽는 픽과 함께 쓴다. 모든 그리기 스타일, 오버레이, 서브플롯, 줄 오프셋 멤버가 하나씩 가진다. 소유만 담고 색은 없다. 슬롯이 32비트라 패널의 시리즈 수에 상한이 없다(규칙 10).
+- 그리기: 등록 차트의 화면 prepare(`prepare_registered_resident`, 그래서 `prepare_monotonic`과 혼합 prepare도)가 패널 마스크를 상주 디스플레이 키(`ResidentDisplayKey`)와 비교해 바뀌었을 때만 다시 그린다. 시리즈를 하나씩 자기 파이프라인으로 패널 합성(`draw_panel_composite`, `PieceSeries::series`로 시리즈 하나)에 따라 임시 투명 타깃에 그린다. 순서는 프레임과 같아서, 먼저 모든 시리즈의 채움(`CompositeSteps::Fills`, 삼각 영역 채움 포함, 채움이 없는 시리즈는 건너뜀)을, 그다음 모든 시리즈의 몸체(`CompositeSteps::Bodies`)를 그린다. 패스마다 `ink_mask.wgsl`을 돌린다. 이 패스는 타깃에 잉크가 있는 곳에 그 시리즈의 슬롯(인스턴스 번호)을 쓰고 나머지는 버린다. 나중 패스가 앞 패스를 덮어쓰므로 맨 위 소유자가 남는다. 뒤 시리즈의 채움 위에 있는 점 기호는 그 점 기호의 시리즈가 소유한다. 3D 패널은 시리즈 사이에 깊이를 이어 가므로(`PanelCompositeTargets::depth_carried`) 앞 표면 뒤에 가린 표면은 소유자를 바꾸지 않는다. 데이터 파이프라인에는 변형도 분기도 없고 바뀐 것은 해석 패스뿐이다. 패스는 명령 버퍼 하나에 시리즈 패스 64개씩 묶어 제출하므로(`INK_MASK_PASSES_PER_SUBMIT`) 시리즈 수만큼 명령 버퍼 하나가 길어지지 않는다. 묶음 크기는 상한이 아니다. 내보내기와 픽은 마스크를 그리지 않는다.
+- 식별: 뷰가 아니라 `ChartId`와 패널 번호(발급 번호)로 찾는다. 한 차트를 여러 뷰에 띄우면 가장 최근 화면 prepare의 마스크를 쓴다. `remove_chart`나 차트가 더 이상 그리지 않는 패널에서 지워진다. 살아 있는 차트의 마스크는 쓰는 중이므로 `release_unused_pool_memory`는 남겨 둔다.
+- 읽기: 픽은 찾는 레이어 묶음의 마스크마다 커서 둘레 (2r+1)² 텍셀 창을 읽기 버퍼 하나(`InkRead`, 텍셀당 4바이트)로 복사하고, 사거리 안에서 커서에 가장 가까운 잉크 텍셀을 고른다. 거리가 같으면 활성 레이어의 마스크, 그다음 나중에 그린 패널, 그다음 큰 슬롯이 이긴다. 그 소유자(`PickResult::owner`: 레이어와 시리즈)가 적중을 정한다. 소유자가 점 데이터 시리즈면 `hit`는 그 시리즈의 최근접 데이터(`per_series`에서)이고, 몸체나 채움 시리즈면 `None`이다. `GpuPickTicket::resolve`는 적중을, `resolve_full`은 적중·소유자·시리즈별 최근접 데이터를 돌려준다.
+- 비용: 레이어마다 패널 픽셀당 4바이트(480×360 패널이면 691,200바이트)이고 패널 텍스처로 장부에 잡힌다. 임시 데이터 레이어 타깃은 제출이 끝날 때까지만 산다. 마스크 기록은 시리즈마다 패널 패스 하나와 해석 패스 하나(채움이 있는 시리즈는 하나씩 더)이며, 디스플레이 키가 바뀔 때만 돌고 픽이나 호버마다 돌지 않는다(`tests/pick_owner.rs::the_last_of_many_series_owns_the_ink`가 시리즈 1·300·5,000개의 첫 prepare 시간을 출력한다). lavapipe와 96×72 패널에서 첫 prepare는 시리즈 1개 189–230 ms, 300개 391–401 ms, 5,000개 3.36–3.46 s였고, 덮임 마스크 때는 184–265 ms, 333–361 ms, 1.10–1.35 s였다. 그 환경에서 시리즈 하나에 약 0.45 ms다.
+
+### typed 데이터 픽(#381 4단계)
+
+`Renderer::pick_chart_data`는 등록 차트의 픽(`pick_chart_inked`: 최근접 데이터와 잉크 소유자)과 typed 데이터 커널을 나란히 돌리고, 두 거리를 비교하지 않는다. `DataPickResult::picked`는 잉크 소유자를 따른다. 점 데이터 시리즈(선, 산점, 벡터, 삼각 영역, 박스플롯 점)면 그 최근접 데이터, 몸체나 채움 시리즈(막대, 구간, 셀, 박스)면 그 typed 적중이다. 사거리 안에 잉크가 없으면 typed 적중만 답한다(값 라벨과 DataLess 시리즈는 마스크에 없다). typed 커널은 활성 레이어(또는 커서 아래 서브플롯)에 돈다. 같은 묶음의 다른 레이어 중 몸체나 채움 시리즈가 있는 레이어는 제출할 때 인코딩만 하고 돌리지 않는다(`EncodedDataPick`). 잉크 소유자가 그중 한 레이어의 몸체 시리즈면, 티켓이 해석하는 동안 그 레이어의 인코딩만 제출하고 `picked`는 그 typed 적중이 된다([#381](https://github.com/shim9610/figgy/issues/381#issuecomment-7062589668)에서 승인). 다른 레이어의 커널은 돌지 않고 셰이더도 늘지 않는다. `point`와 `data`에는 두 답이 그대로 남는다. 스트리밍 화면은 exact 질의를 유지한다(규칙 8). 그 상주 디스패치(`GpuPickEngine::pick_with_arcs`)는 공유 exact 커널을 검증하는 테스트 지원 코드다.
 
 ### 단조 x 선(M4 엔벌로프)
 

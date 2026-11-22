@@ -51,7 +51,7 @@ impl PrepareContext<'_> {
             // the mapped line pipeline with the value map
             // `ensure_value_map_scratch` resolved (precise only, never
             // streamed).
-            let value_map = match rt.streamlines().and_then(|s| s.color_map) {
+            let value_map = match rt.streamlines().and_then(|s| s.color_map.as_ref()) {
                 Some(map) if styled.is_none() && phase.is_none() => {
                     let scratch = self.value_map_cache.get(cfg.series_id.as_str()).ok_or(
                         FiggyError::internal(
@@ -81,8 +81,7 @@ impl PrepareContext<'_> {
                         .ok_or(FiggyError::internal("prepare ensured the 3D line pipeline"))?
                 } else if value_map.is_some() {
                     pipelines
-                        .line_mapped
-                        .as_ref()
+                        .precise(PrecisePipeline::LineMapped)
                         .ok_or(FiggyError::internal("prepare ensured mapped line pipeline"))?
                 } else if ternary_c.is_some() {
                     pipelines.ternary[TernaryPipeline::Line as usize]
@@ -184,8 +183,7 @@ impl PrepareContext<'_> {
             };
             Some(data_render::ColumnAreaLayer {
                 pipeline: pipelines
-                    .area
-                    .as_ref()
+                    .precise(PrecisePipeline::Area)
                     .ok_or(FiggyError::internal("prepare ensured line area pipeline"))?,
                 transform_bg: &view.transform_bg,
                 style_bg: series.style.area_bg.as_ref().ok_or_else(|| {

@@ -2,12 +2,15 @@
 //! CPU and composited in the data slot. Every test exports at 1x and 2x.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/playground_scenes.rs"]
 mod scenes;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    BLUE, MID_GREEN as GREEN, ORANGE, RED, export, is_orange, pixel, renderer_rgba as renderer,
+};
 
 use renderer::config::{AxisBreak, AxisBreakStyle, AxisBreaks, BreakMark, Category};
 use renderer::energy_levels::{
@@ -16,31 +19,11 @@ use renderer::energy_levels::{
 use renderer::layout::{ChartArea, Rect};
 use renderer::{
     Chart, Color, DataRenderType, DataSelectionsConfig, PickedDataRef, RasterImage, Renderer,
-    RendererDevice, SeriesConfig,
+    SeriesConfig,
 };
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 320;
-const RED: Color = Color::from_rgb8(255, 0, 0);
-const BLUE: Color = Color::from_rgb8(0, 0, 255);
-const GREEN: Color = Color::from_rgb8(0, 200, 0);
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(test_gpu::device);
-    (device.clone(), queue.clone())
-}
-
-fn renderer() -> Renderer {
-    let (device, queue) = shared_device();
-    Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Rgba8Unorm,
-        4 * 1024 * 1024,
-    )
-    .expect("renderer init")
-}
-
 fn level(id: &str, column: &str, energy: f64) -> EnergyLevel {
     EnergyLevel {
         id: id.into(),
@@ -69,6 +52,7 @@ fn transition(id: &str, lower: &str, upper: &str) -> Transition {
         label_offset: [0.0; 2],
         value: None,
         x_offset: 0.0,
+        color: None,
         wavelength: None,
         wavelength_uncertainty: None,
         intensity: String::new(),
@@ -163,11 +147,6 @@ fn chart() -> Chart {
     chart
 }
 
-fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
-    let i = ((y * img.width + x) * 4) as usize;
-    &img.rgba[i..i + 4]
-}
-
 fn is_red(p: &[u8]) -> bool {
     p[3] > 200 && p[0] > 200 && p[1] < 80 && p[2] < 80
 }
@@ -195,15 +174,6 @@ fn near(img: &RasterImage, (x, y): (u32, u32), r: u32, pred: fn(&[u8]) -> bool) 
     (y.saturating_sub(r)..=(y + r).min(img.height - 1)).any(|py| {
         (x.saturating_sub(r)..=(x + r).min(img.width - 1)).any(|px| pred(pixel(img, px, py)))
     })
-}
-
-fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], scale: f32) -> RasterImage {
-    r.export_rgba(
-        renderer::ExportSource::chart(chart, series),
-        renderer::ExportOptions::panel(scale),
-    )
-    .block_on()
-    .unwrap()
 }
 
 #[test]
@@ -241,6 +211,54 @@ fn levels_limits_and_transitions_draw_where_their_values_place_them() {
         // Nothing far from every part.
         assert!(!near(&img, at(&chart, 0.0, 70.0, scale), s, is_red));
     }
+}
+
+/// A registered chart whose root has a numeric X axis and whose subplot
+/// is categorical (#325): the series is held to the subplot's axis, and
+/// the registered chart draws it there.
+#[test]
+fn a_registered_categorical_subplot_beside_a_numeric_root_draws_its_levels() {
+    let mut r = renderer();
+    let mut root = renderer::default::default_config();
+    root.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: WIDTH,
+        height: HEIGHT,
+    });
+    assert!(root.bottom_x.categories.is_none(), "the root stays numeric");
+    let mut cell = chart().config().clone();
+    cell.chart_area = ChartArea(Rect {
+        x: 0,
+        y: HEIGHT,
+        width: WIDTH,
+        height: HEIGHT,
+    });
+    let placed = Chart::new(cell.clone());
+    root.subplots.push(renderer::Subplot {
+        config: cell,
+        series: vec!["he".into()],
+        ..renderer::Subplot::default()
+    });
+    let list = vec![series("he", records())];
+    let id = r
+        .register_chart(root, list)
+        .expect("validated against the categorical subplot");
+    for scale in [1.0f32, 2.0] {
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::Registered(id),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        let s = (2.0 * scale).ceil() as u32;
+        for (x, y) in [(0.0, 20.0), (1.0, 40.0)] {
+            let left = at(&placed, x - 0.25, y, scale);
+            assert!(near(&img, left, s, is_red), "{scale}x level at ({x}, {y})");
+        }
+    }
+    r.remove_chart(id).unwrap();
 }
 
 #[test]
@@ -700,6 +718,7 @@ fn chart_with_inset() -> Chart {
         link_y: None,
         marker: None,
         text_scale: Default::default(),
+        anchor: None,
     });
     chart
 }
@@ -850,6 +869,7 @@ fn nested_and_overlapping_insets_draw_and_pick_in_tree_order() {
             link_y: None,
             marker: None,
             text_scale: Default::default(),
+            anchor: None,
         }
     };
     const GREEN: Color = Color::from_rgb8(190, 235, 190);
@@ -1051,7 +1071,7 @@ fn a_crowd_collapses_instead_of_fanning_out() {
     for k in 0..12 {
         levels
             .levels
-            .push(labelled(&format!("c{k}"), "b", 20.0 + 4.0 * k as f64));
+            .push(labelled(&format!("c{k}"), "b", 20.0 + 3.5 * k as f64));
     }
     levels.levels.push(labelled("alone", "b", 92.0));
     let (space, measure) = layout_of(&chart, &levels);
@@ -1113,7 +1133,7 @@ fn crowded_labels_stack_apart_and_dense_runs_collapse() {
     for k in 0..5 {
         levels
             .levels
-            .push(labelled(&format!("a{k}"), "b", 20.0 + 3.0 * k as f64));
+            .push(labelled(&format!("a{k}"), "b", 20.0 + 3.5 * k as f64));
     }
     for k in 0..20 {
         levels
@@ -1232,7 +1252,7 @@ fn a_band_fills_its_run_and_answers_picks() {
 // and 2x; the parent's plot beside the inset stays the parent's.
 #[test]
 fn a_subplot_frame_selects_and_its_box_lies_inside_the_frame() {
-    use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection};
+    use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at};
     use renderer::layout::RectF;
     let r = renderer();
     let chart = chart_with_inset();
@@ -1283,13 +1303,18 @@ fn a_subplot_frame_selects_and_its_box_lies_inside_the_frame() {
         }
         // Rastered into the inset's own panel, the highlight is drawn.
         let panel = scaled.config().subplot_config(0).unwrap();
-        let plain =
-            try_raster_chart_layer_to_rgba_with_selection(&panel, AxisLayerKind::Decoration, &[])
-                .unwrap();
-        let selected = try_raster_chart_layer_to_rgba_with_selection(
+        let plain = try_raster_chart_layer_to_rgba_with_selection_at(
+            &panel,
+            AxisLayerKind::Decoration,
+            &[],
+            1.0,
+        )
+        .unwrap();
+        let selected = try_raster_chart_layer_to_rgba_with_selection_at(
             &panel,
             AxisLayerKind::Decoration,
             std::slice::from_ref(&sb),
+            1.0,
         )
         .unwrap();
         let changed = plain
@@ -1818,6 +1843,179 @@ fn a_label_on_the_next_column_moves_to_its_other_side() {
     assert!(labels_on_other_columns(&placement, &levels, &levels.style, &measure).is_empty());
 }
 
+/// Whether segments `a` and `b` cross away from their ends.
+fn segments_cross(a: ([f32; 2], [f32; 2]), b: ([f32; 2], [f32; 2])) -> bool {
+    let side = |p: [f32; 2], q: [f32; 2], r: [f32; 2]| {
+        (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+    };
+    let (d1, d2) = (side(b.0, b.1, a.0), side(b.0, b.1, a.1));
+    let (d3, d4) = (side(a.0, a.1, b.0), side(a.0, a.1, b.1));
+    d1 * d2 < -1e-3 && d3 * d4 < -1e-3
+}
+
+// #357: in the He, Ar and Cu scenes, at their own size and at 800x600, the
+// arrows of a bundle (the transitions between the same two columns) never
+// cross, no two arrow ends on one level meet (they are at least a step
+// apart, or spread evenly over a stroke too short for that), and every end
+// stays on its level's stroke. The scenes export at 1x and 2x.
+#[test]
+fn bundled_arrows_spread_along_their_levels_without_crossing() {
+    let mut r = renderer();
+    let mut found = Vec::new();
+    for kind in [
+        scenes::SceneKind::EnergyLevels,
+        scenes::SceneKind::EnergyLevelsAr,
+        scenes::SceneKind::EnergyLevelsCu,
+    ] {
+        for size in [None, Some((800, 600))] {
+            let scene = scenes::build(&mut r, kind, 1_000).expect("scene");
+            let mut chart = Chart::new(scene.config.clone());
+            if let Some((w, h)) = size {
+                chart.set_area(0, 0, w, h);
+                chart.fit_layout();
+            }
+            let name = format!("{kind:?} {size:?}");
+            each_level_panel(
+                chart.config(),
+                &scene.series,
+                |placement, levels, records, measure| {
+                    let style = &levels.style;
+                    let layout = placement.layout(records, style, measure);
+                    let row = |id: &str| records.levels.iter().position(|l| l.id == id);
+                    let column = |id: &str| row(id).map(|i| records.levels[i].column.clone());
+                    let mut drawn = Vec::new();
+                    for (index, t) in records.transitions.iter().enumerate() {
+                        let Some(arrow) = placement.transition_arrow(&layout, index) else {
+                            continue;
+                        };
+                        let (Some(lower), Some(upper)) = (row(&t.lower), row(&t.upper)) else {
+                            continue;
+                        };
+                        // Each end lies on its level's stroke.
+                        for (end, level) in [
+                            (arrow.0, upper),
+                            (arrow.1, lower),
+                            (arrow.0, lower),
+                            (arrow.1, upper),
+                        ] {
+                            if let Some((a, b)) = placement.level_stroke(records, style, level)
+                                && (end[1] - a[1]).abs() < 0.5
+                                && t.x_offset == 0.0
+                                && (end[0] < a[0].min(b[0]) - 0.5 || end[0] > a[0].max(b[0]) + 0.5)
+                            {
+                                found.push(format!(
+                                    "{name}: {} leaves level {}",
+                                    t.id, records.levels[level].id
+                                ));
+                            }
+                        }
+                        drawn.push((index, (column(&t.lower), column(&t.upper)), arrow));
+                    }
+                    for (i, (a, bundle_a, arrow_a)) in drawn.iter().enumerate() {
+                        for (b, bundle_b, arrow_b) in &drawn[i + 1..] {
+                            let (ta, tb) = (&records.transitions[*a], &records.transitions[*b]);
+                            if bundle_a == bundle_b && segments_cross(*arrow_a, *arrow_b) {
+                                found.push(format!("{name}: {} crosses {}", ta.id, tb.id));
+                            }
+                            // No two ends on one level meet.
+                            for p in [arrow_a.0, arrow_a.1] {
+                                for q in [arrow_b.0, arrow_b.1] {
+                                    if (p[0] - q[0]).abs() < 1.0 && (p[1] - q[1]).abs() < 0.5 {
+                                        found.push(format!(
+                                            "{name}: {} and {} meet at {p:?}",
+                                            ta.id, tb.id
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+            );
+            for scale in [1.0, 2.0] {
+                let options = renderer::ExportOptions::panel(scale).with_clear(Color::WHITE);
+                let image = r
+                    .export_rgba_blocking(
+                        renderer::ExportSource::chart(&chart, &scene.series),
+                        options,
+                    )
+                    .expect("export");
+                assert_eq!(
+                    image.width,
+                    (chart.config().chart_area.0.width as f32 * scale) as u32,
+                    "{name} {scale}x"
+                );
+            }
+        }
+    }
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+// #411: two upper levels in columns a and c emit to one lower level in b.
+// The two arrivals tie on their candidate end offset; the one from the
+// left takes the left end and the one from the right the right end, in
+// both record orders, so the shafts never cross above b. The geometry
+// and the 1x and 2x exports are the same whichever transition is listed
+// first.
+#[test]
+fn arrivals_at_one_level_take_the_side_they_come_from_in_any_order() {
+    use renderer::energy_levels::LevelPlacement;
+    let records = |right_first: bool| {
+        let mut transitions = vec![
+            transition("left", "lower", "upper_a"),
+            transition("right", "lower", "upper_c"),
+        ];
+        if right_first {
+            transitions.reverse();
+        }
+        EnergyLevelSeries {
+            levels: vec![
+                level("upper_a", "a", 60.0),
+                level("lower", "b", 20.0),
+                level("upper_c", "c", 60.0),
+            ],
+            transitions,
+            ..EnergyLevelSeries::default()
+        }
+    };
+    let mut r = renderer();
+    let mut drawn = Vec::new();
+    for right_first in [false, true] {
+        let levels = records(right_first);
+        let chart = chart();
+        let (space, measure) = layout_of(&chart, &levels);
+        let placement = LevelPlacement {
+            space: &space,
+            categories: chart.config().bottom_x.categories.as_deref().unwrap(),
+            view: LevelView::Main,
+            colorbar: None,
+            picked: None,
+        };
+        let layout = placement.layout(&levels, &levels.style, &measure);
+        let arrow = |id: &str| {
+            let index = levels.transitions.iter().position(|t| t.id == id).unwrap();
+            placement.transition_arrow(&layout, index).expect("drawn")
+        };
+        // Emission: from the upper level (`.0`) to the lower (`.1`).
+        let (left, right) = (arrow("left"), arrow("right"));
+        assert!(
+            left.1[0] < right.1[0],
+            "right_first {right_first}: {left:?} {right:?}"
+        );
+        assert!(!segments_cross(left, right), "{left:?} {right:?}");
+        let series = [series("e", levels.clone())];
+        let images: Vec<_> = [1.0, 2.0]
+            .into_iter()
+            .map(|scale| export(&mut r, &chart, &series, scale))
+            .collect();
+        drawn.push(((left, right), images));
+    }
+    assert_eq!(drawn[0].0, drawn[1].0, "the same arrows in both orders");
+    for (a, b) in drawn[0].1.iter().zip(&drawn[1].1) {
+        assert!(a.rgba == b.rgba, "the same image in both orders");
+    }
+}
+
 // #248: in the He, Ar, Cu, U and every-level Ar scenes no drawn level or
 // band label lies on another column's level stroke or band fill, on a limit
 // line, or on another label, and no transition label on another label.
@@ -1851,15 +2049,122 @@ fn scene_level_labels_stay_off_other_columns() {
     assert!(all.is_empty(), "{all:#?}");
 }
 
+/// Every level and band label of the series in `config` that lies on a
+/// stroke or fill of its own column's neighbours, on a limit line or on
+/// another label, described per `name`.
+fn scene_collisions(name: &str, config: &renderer::Config, series: &[SeriesConfig]) -> Vec<String> {
+    let mut found = Vec::new();
+    each_level_panel(config, series, |placement, levels, records, measure| {
+        found.extend(
+            labels_on_other_columns(placement, records, &levels.style, measure)
+                .into_iter()
+                .map(|f| format!("{name}: {f}")),
+        );
+    });
+    found
+}
+
+fn slot_fractions(series: &[SeriesConfig]) -> Vec<f32> {
+    series
+        .iter()
+        .filter_map(|s| s.render_type.energy_levels())
+        .map(|l| l.style.level.slot_fraction)
+        .collect()
+}
+
+// #357: registration narrows each Grotrian series' strokes once so its level
+// labels fit before the next column, at the scene's size and in an 800x600
+// chart; the value is written to the SSOT, a second fit keeps it, and the
+// `as_given` opt-out and a `Fixed` document keep the stored share. The
+// registered chart exports at 1x and 2x as its stored document does.
+#[test]
+fn registration_fits_the_level_slots_once() {
+    let mut r = renderer();
+    let mut all = Vec::new();
+    let mut narrowed = 0;
+    for kind in [
+        scenes::SceneKind::EnergyLevels,
+        scenes::SceneKind::EnergyLevelsAr,
+        scenes::SceneKind::EnergyLevelsCu,
+    ] {
+        for size in [None, Some((800, 600))] {
+            let scene = scenes::build(&mut r, kind, 1_000).expect("scene");
+            // A new document keeps its layout fitted, as the gallery's do.
+            let mut config = scene.config.clone();
+            config.layout_state = renderer::LayoutState::Fitted;
+            let mut chart = Chart::new(config);
+            if let Some((w, h)) = size {
+                chart.set_area(0, 0, w, h);
+                chart.fit_layout();
+            }
+            let name = format!("{kind:?} {size:?}");
+            let given = slot_fractions(&scene.series);
+            let id = r
+                .register_chart(chart.config().clone(), scene.series.clone())
+                .expect("register");
+            let config = r.chart_config(id).unwrap().clone();
+            let series = r.chart_series(id).unwrap().to_vec();
+            let fitted = slot_fractions(&series);
+            for (g, f) in given.iter().zip(&fitted) {
+                assert!(f <= g && *f >= 0.35f32.min(*g), "{name}: {g} -> {f}");
+                if f < g {
+                    narrowed += 1;
+                }
+            }
+            all.extend(scene_collisions(&name, &config, &series));
+
+            // A second fit keeps the stored share.
+            let mut held = Chart::new(config.clone());
+            let mut again = series.clone();
+            r.fit_ranges(&mut held, &mut again).unwrap();
+            assert_eq!(slot_fractions(&again), fitted, "{name}: refit");
+
+            // The opt-outs keep the share as given.
+            let as_given = r
+                .register_chart_as_given(chart.config().clone(), scene.series.clone())
+                .expect("register as given");
+            assert_eq!(
+                slot_fractions(r.chart_series(as_given).unwrap()),
+                given,
+                "{name}: as given"
+            );
+            let mut fixed = chart.config().clone();
+            fixed.layout_state = renderer::LayoutState::Fixed;
+            let fixed = r.register_chart(fixed, scene.series.clone()).unwrap();
+            assert_eq!(
+                slot_fractions(r.chart_series(fixed).unwrap()),
+                given,
+                "{name}: fixed"
+            );
+
+            if size.is_some() {
+                let stored = Chart::as_given(config.clone());
+                for scale in [1.0, 2.0] {
+                    let options = renderer::ExportOptions::panel(scale).with_clear(Color::WHITE);
+                    let registered = r
+                        .export_rgba_blocking(renderer::ExportSource::Registered(id), options)
+                        .unwrap();
+                    let own = r
+                        .export_rgba_blocking(
+                            renderer::ExportSource::chart(&stored, &series),
+                            options,
+                        )
+                        .unwrap();
+                    assert_eq!(registered.rgba, own.rgba, "{name} {scale}x");
+                }
+            }
+            for chart in [id, as_given, fixed] {
+                r.remove_chart(chart).unwrap();
+            }
+        }
+    }
+    assert!(narrowed > 0, "some scene is narrowed");
+    assert!(all.is_empty(), "{all:#?}");
+}
+
 // Wavelength labels and the corner note (#258) -------------------------
 
 const MAGENTA: Color = Color::from_rgb8(255, 0, 255);
-const ORANGE: Color = Color::from_rgb8(255, 128, 0);
-
-fn is_orange(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && (90..170).contains(&p[1]) && p[2] < 60
-}
-
 /// The pixels of `img` inside the logical `rect` drawn at `scale` for which
 /// `pred` holds.
 fn ink_in(
@@ -2001,6 +2306,427 @@ fn a_wavelength_label_draws_picks_and_drags_like_a_host_label() {
     // A host label wins over the formatted one.
     levels.transitions[0].label = Some(renderer::text::RichText::plain("He", BLUE, 14.0, ""));
     assert_eq!(transition_label(&chart, &levels).unwrap().0, "He");
+}
+
+/// The arrow of transition 0 of `levels` in the main view of `chart`, at
+/// 1x, tail then tip.
+fn transition_0_arrow(chart: &Chart, levels: &EnergyLevelSeries) -> ([f32; 2], [f32; 2]) {
+    use renderer::energy_levels::LevelPlacement;
+    let (space, measure) = layout_of(chart, levels);
+    let placement = LevelPlacement {
+        space: &space,
+        categories: chart.config().bottom_x.categories.as_deref().unwrap_or(&[]),
+        view: LevelView::Main,
+        colorbar: chart.config().colorbar.as_ref(),
+        picked: None,
+    };
+    let layout = placement.layout(levels, &levels.style, &measure);
+    placement
+        .transition_arrow(&layout, 0)
+        .expect("the arrow is drawn")
+}
+
+/// The pixel `t` of the way along `arrow`, at `scale`.
+fn along(arrow: ([f32; 2], [f32; 2]), t: f32, scale: f32) -> (u32, u32) {
+    let (a, b) = arrow;
+    (
+        ((a[0] + (b[0] - a[0]) * t) * scale) as u32,
+        ((a[1] + (b[1] - a[1]) * t) * scale) as u32,
+    )
+}
+
+/// The mean colour of the 3 x 3 pixels around `p`.
+fn mean_rgb(img: &RasterImage, p: (u32, u32)) -> [f32; 3] {
+    let mut sum = [0.0f32; 3];
+    for dy in 0..3 {
+        for dx in 0..3 {
+            let px = pixel(img, p.0 + dx - 1, p.1 + dy - 1);
+            for c in 0..3 {
+                sum[c] += f32::from(px[c]) / 255.0 / 9.0;
+            }
+        }
+    }
+    sum
+}
+
+// #357: an arrow's colour is its own (`Transition.color`), else its
+// wavelength's (`color_by_wavelength`), else its value's through the colour
+// bar (`color_by_value`), else the style's; the wavelength is never
+// rewritten, and a formatted label takes its arrow's own colour, darkened
+// for contrast on a light chart. A label's knockout breaks every shaft under
+// its box, the arrow still picks on both sides of the gap, the picked
+// highlight draws the gap too, and the fields round-trip and are omitted
+// while unset. At 1x and 2x.
+#[test]
+fn transition_colours_follow_their_precedence_and_labels_knock_out_shafts() {
+    use renderer::energy_levels::{LabelPart, SpectralColors};
+    let mut r = renderer();
+    let mut chart = chart();
+    chart.config_mut().colorbar = Some(renderer::config::ColorBarOptions::default());
+    let colorbar = chart.config().colorbar.clone().unwrap();
+    let mut levels = labelled_records();
+    levels.style.transition.label_knockout = false;
+    levels.transitions[0].value = Some(colorbar.axis.min);
+    let arrow = transition_0_arrow(&chart, &levels);
+    let colour_at = |r: &mut Renderer, levels: &EnergyLevelSeries, scale: f32| {
+        let img = export(r, &chart, &[series("he", levels.clone())], scale);
+        mean_rgb(&img, along(arrow, 0.15, scale))
+    };
+    let near = |got: [f32; 3], want: Color, what: &str| {
+        let d = (got[0] - want.r).abs() + (got[1] - want.g).abs() + (got[2] - want.b).abs();
+        assert!(d < 0.35, "{what}: {got:?} vs {want:?}");
+    };
+    let spectral = SpectralColors::default();
+    let yellow = spectral.color(587.56).unwrap();
+    assert!(
+        yellow.r > 0.9 && yellow.g > 0.8 && yellow.b < 0.1,
+        "{yellow:?}"
+    );
+    let mapped = colorbar
+        .colormap
+        .sample(colorbar.normalized_z(colorbar.axis.min).unwrap());
+    for scale in [1.0f32, 2.0] {
+        // The style's colour.
+        near(
+            colour_at(&mut r, &levels, scale),
+            GREEN,
+            &format!("{scale}x style"),
+        );
+        // The value's, through the colour bar.
+        let mut by_value = levels.clone();
+        by_value.style.transition.color_by_value = true;
+        near(
+            colour_at(&mut r, &by_value, scale),
+            mapped,
+            &format!("{scale}x value"),
+        );
+        // The wavelength's, over the value's.
+        let mut by_wavelength = by_value.clone();
+        by_wavelength.style.transition.color_by_wavelength = Some(spectral);
+        near(
+            colour_at(&mut r, &by_wavelength, scale),
+            yellow,
+            &format!("{scale}x wavelength"),
+        );
+        assert_eq!(by_wavelength.transitions[0].wavelength, Some(587.56));
+        // The host's, over every mapping.
+        let mut own = by_wavelength.clone();
+        own.transitions[0].color = Some(BLUE);
+        near(
+            colour_at(&mut r, &own, scale),
+            BLUE,
+            &format!("{scale}x own"),
+        );
+    }
+    // The formatted label takes its arrow's own colour as it is. A colour
+    // below 4.5:1 on the chart (587.6 nm yellow on white) is outlined in
+    // near-black; one that reads (447 nm blue) stays plain, as does a host
+    // label.
+    let label_of = |levels: &EnergyLevelSeries| {
+        let (space, measure) = layout_of(&chart, levels);
+        let placement = renderer::energy_levels::LevelPlacement {
+            space: &space,
+            categories: chart.config().bottom_x.categories.as_deref().unwrap_or(&[]),
+            view: LevelView::Main,
+            colorbar: None,
+            picked: None,
+        };
+        let layout = placement.layout(levels, &levels.style, &measure);
+        let text = placement
+            .label(
+                levels,
+                &levels.style,
+                &layout,
+                LabelPart::Transition,
+                0,
+                &measure,
+            )
+            .expect("the label");
+        let renderer::sink::TextRef::Rich(rich) = text.text else {
+            panic!("a rich label");
+        };
+        (rich.color, text.outline, text.rect())
+    };
+    let mut by_wavelength = levels.clone();
+    by_wavelength.style.transition.color_by_wavelength = Some(spectral);
+    let (ink, outline, outlined_rect) = label_of(&by_wavelength);
+    assert_eq!(ink, yellow, "the label keeps its arrow's hue");
+    let outline = outline.expect("a faint label is outlined");
+    assert!(outline.color.r < 0.2 && outline.width == 1.0, "{outline:?}");
+    let mut blue = by_wavelength.clone();
+    blue.transitions[0].wavelength = Some(447.15);
+    let (ink, outline, _) = label_of(&blue);
+    assert_eq!(Some(ink), spectral.color(447.15));
+    assert_eq!(outline, None, "a readable label stays plain");
+    let mut hosted = by_wavelength.clone();
+    hosted.transitions[0].label = Some(renderer::text::RichText::plain("x", BLUE, 14.0, ""));
+    assert_eq!(label_of(&hosted).1, None, "a host label is not outlined");
+    let (_, _, plain_rect) = label_of(&levels);
+    assert_eq!(outlined_rect, plain_rect, "the outline leaves the hit box");
+    // Drawn: dark outline pixels ring the yellow glyphs at 1x and 2x, with
+    // four times the count at 2x (2x is 1x scaled), and the label still
+    // picks as before.
+    let is_dark = |p: &[u8]| p[0] < 60 && p[1] < 60 && p[2] < 70;
+    let mut counts = Vec::new();
+    for scale in [1.0f32, 2.0] {
+        let lit = export(
+            &mut r,
+            &chart,
+            &[series("he", by_wavelength.clone())],
+            scale,
+        );
+        let plain = export(&mut r, &chart, &[series("he", blue.clone())], scale);
+        // The pixels the faint label darkens over the same chart with a
+        // readable label: its outline.
+        let (x0, y0) = (
+            (outlined_rect.x * scale) as u32,
+            (outlined_rect.y * scale) as u32,
+        );
+        let (x1, y1) = (
+            ((outlined_rect.x + outlined_rect.width) * scale).ceil() as u32,
+            ((outlined_rect.y + outlined_rect.height) * scale).ceil() as u32,
+        );
+        let added = (y0..y1)
+            .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+            .filter(|&(x, y)| is_dark(pixel(&lit, x, y)) && !is_dark(pixel(&plain, x, y)))
+            .count();
+        assert!(added > 20, "{scale}x the outline is drawn: {added}");
+        counts.push(added as f32);
+        match pick(
+            &mut r,
+            &chart,
+            &[series("he", by_wavelength.clone())],
+            scale,
+            centre_px(outlined_rect, scale),
+        ) {
+            Some(renderer::PickedData::ValueLabel {
+                part: Some(LabelPart::Transition),
+                ..
+            }) => {}
+            other => panic!("{scale}x the outlined label picks: {other:?}"),
+        }
+    }
+    let ratio = counts[1] / counts[0];
+    assert!((2.5..=5.5).contains(&ratio), "2x outline ink {ratio} x 1x");
+    // SVG and PDF carry the stroke under the fill.
+    let svg = r
+        .export_svg_blocking(
+            renderer::ExportSource::chart(&chart, &[series("he", by_wavelength.clone())]),
+            renderer::ExportOptions::document(1.0),
+        )
+        .expect("svg");
+    assert!(
+        svg.contains("paint-order=\"stroke\""),
+        "the SVG strokes the glyphs"
+    );
+    let plain_svg = r
+        .export_svg_blocking(
+            renderer::ExportSource::chart(&chart, &[series("he", blue.clone())]),
+            renderer::ExportOptions::document(1.0),
+        )
+        .expect("svg");
+    assert!(
+        !plain_svg.contains("paint-order"),
+        "no stroke without an outline"
+    );
+    let pdf = r
+        .export_pdf_blocking(
+            renderer::ExportSource::chart(&chart, &[series("he", by_wavelength.clone())]),
+            renderer::ExportOptions::document(1.0),
+        )
+        .expect("pdf");
+    let plain_pdf = r
+        .export_pdf_blocking(
+            renderer::ExportSource::chart(&chart, &[series("he", blue.clone())]),
+            renderer::ExportOptions::document(1.0),
+        )
+        .expect("pdf");
+    assert!(pdf.len() > plain_pdf.len(), "the PDF strokes the glyphs");
+
+    // Knockout: a label dragged onto the middle of its arrow. The shaft is
+    // broken only under the glyphs' ink: under every glyph no shaft ink is
+    // left, while a spaced label's empty middle leaves the shaft whole.
+    use renderer::text::MeasureText as _;
+    let placed = |levels: &EnergyLevelSeries| {
+        let (space, measure) = layout_of(&chart, levels);
+        let placement = renderer::energy_levels::LevelPlacement {
+            space: &space,
+            categories: chart.config().bottom_x.categories.as_deref().unwrap_or(&[]),
+            view: LevelView::Main,
+            colorbar: None,
+            picked: None,
+        };
+        let layout = placement.layout(levels, &levels.style, &measure);
+        let text = placement
+            .label(
+                levels,
+                &levels.style,
+                &layout,
+                LabelPart::Transition,
+                0,
+                &measure,
+            )
+            .expect("the label");
+        let (rich, _) = text.text.rich().expect("a rich label");
+        let mut ink = Vec::new();
+        measure.ink_boxes(rich, text.origin, &mut |r| ink.push(r));
+        (text.rect(), ink)
+    };
+    // The label's place depends on its offset only through the drag, so a
+    // few corrections centre it on the arrow's middle.
+    let onto_middle = |levels: &mut EnergyLevelSeries| {
+        let mid = [
+            (arrow.0[0] + arrow.1[0]) / 2.0,
+            (arrow.0[1] + arrow.1[1]) / 2.0,
+        ];
+        for _ in 0..4 {
+            let (rect, _) = placed(levels);
+            let offset = &mut levels.transitions[0].label_offset;
+            offset[0] += mid[0] - (rect.x + rect.width / 2.0);
+            offset[1] += mid[1] - (rect.y + rect.height / 2.0);
+        }
+    };
+    // Points along the arrow's centre line: those inside a glyph's ink, and
+    // those inside the label's rectangle at least 3 px from every glyph.
+    let samples = |rect: renderer::layout::RectF, ink: &[renderer::layout::RectF]| {
+        let inside = |r: &renderer::layout::RectF, p: [f32; 2], m: f32| {
+            p[0] >= r.x - m
+                && p[0] <= r.x + r.width + m
+                && p[1] >= r.y - m
+                && p[1] <= r.y + r.height + m
+        };
+        let (mut under, mut clear) = (Vec::new(), Vec::new());
+        for k in 0..=400 {
+            let t = k as f32 / 400.0;
+            let p = [
+                arrow.0[0] + (arrow.1[0] - arrow.0[0]) * t,
+                arrow.0[1] + (arrow.1[1] - arrow.0[1]) * t,
+            ];
+            if ink.iter().any(|r| inside(r, p, -0.5)) {
+                under.push(p);
+            } else if inside(&rect, p, 0.0) && ink.iter().all(|r| !inside(r, p, 3.0)) {
+                clear.push(p);
+            }
+        }
+        (under, clear)
+    };
+    let green_at = |img: &RasterImage, p: [f32; 2], scale: f32| {
+        is_green(pixel(img, (p[0] * scale) as u32, (p[1] * scale) as u32))
+    };
+    let mut knocked = levels.clone();
+    knocked.style.transition.label_knockout = true;
+    onto_middle(&mut knocked);
+    let (on, ink) = placed(&knocked);
+    let (under, _) = samples(on, &ink);
+    assert!(!under.is_empty(), "the arrow passes under the glyphs");
+    // A label with an empty middle: two glyphs far apart.
+    let mut spaced = knocked.clone();
+    spaced.transitions[0].label = Some(renderer::text::RichText::plain(
+        "a                    a",
+        MAGENTA,
+        14.0,
+        "",
+    ));
+    onto_middle(&mut spaced);
+    let (spaced_rect, spaced_ink) = placed(&spaced);
+    let (_, clear) = samples(spaced_rect, &spaced_ink);
+    assert!(
+        !clear.is_empty(),
+        "the arrow crosses the label's empty middle"
+    );
+    let mut unknocked = knocked.clone();
+    unknocked.style.transition.label_knockout = false;
+    for scale in [1.0f32, 2.0] {
+        let plain = export(&mut r, &chart, &[series("he", unknocked.clone())], scale);
+        let cut = export(&mut r, &chart, &[series("he", knocked.clone())], scale);
+        assert!(
+            under.iter().any(|p| green_at(&plain, *p, scale)),
+            "{scale}x without the knockout the shaft runs under the glyphs"
+        );
+        assert!(
+            under.iter().all(|p| !green_at(&cut, *p, scale)),
+            "{scale}x the shaft is cut under the glyphs"
+        );
+        assert!(
+            ink_in(&cut, on, scale, is_magenta) > 0,
+            "{scale}x the label draws"
+        );
+        let open = export(&mut r, &chart, &[series("he", spaced.clone())], scale);
+        assert!(
+            clear.iter().all(|p| green_at(&open, *p, scale)),
+            "{scale}x the shaft stays whole across the label's empty area"
+        );
+        // Both sides of the gap still pick the arrow.
+        for t in [0.2f32, 0.8] {
+            match pick(
+                &mut r,
+                &chart,
+                &[series("he", knocked.clone())],
+                scale,
+                along(arrow, t, scale),
+            ) {
+                Some(renderer::PickedData::Point { point_index: 0, .. }) => {}
+                other => panic!("{scale}x {t}: {other:?}"),
+            }
+        }
+        // The picked highlight draws the same gap.
+        let mut picked = Chart::new(chart.config().clone());
+        picked.config_mut().picked_data = Some(DataSelectionsConfig {
+            refs: vec![PickedDataRef::Point {
+                source_id: None,
+                series_id: "he".into(),
+                point_index: 0,
+            }],
+            ..DataSelectionsConfig::default()
+        });
+        let lit = export(&mut r, &picked, &[series("he", knocked.clone())], scale);
+        assert!(
+            under.iter().all(|p| !green_at(&lit, *p, scale)),
+            "{scale}x picked"
+        );
+        assert!(
+            ink_in(
+                &lit,
+                renderer::layout::RectF {
+                    x: on.x - 30.0,
+                    width: on.width + 60.0,
+                    ..on
+                },
+                scale,
+                is_green
+            ) > 0,
+            "{scale}x picked arrow drawn"
+        );
+    }
+
+    // The fields round-trip and are omitted while unset.
+    let mut all = knocked.clone();
+    all.style.transition.color_by_wavelength = Some(SpectralColors {
+        unit: renderer::energy_levels::WavelengthUnit::Angstrom,
+        ..spectral
+    });
+    all.transitions[0].color = Some(BLUE);
+    let json = serde_json::to_string(&all).unwrap();
+    assert!(json.contains("label_knockout") && json.contains("color_by_wavelength"));
+    let back: EnergyLevelSeries = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, all);
+    let mut unset = all.clone();
+    unset.style.transition.label_knockout = false;
+    unset.style.transition.color_by_wavelength = None;
+    unset.transitions[0].color = None;
+    let json = serde_json::to_string(&unset).unwrap();
+    assert!(
+        !json.contains("label_knockout") && !json.contains("color_by_wavelength"),
+        "{json}"
+    );
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(
+        value["transitions"][0].get("color").is_none(),
+        "no transition colour: {json}"
+    );
+    // A document written before the fields reads them unset.
+    let back: EnergyLevelSeries = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, unset);
 }
 
 // #258: a picked transition is widened under its formatted label, which
@@ -2436,6 +3162,476 @@ fn a_document_with_formatted_labels_and_a_note_round_trips() {
     for scale in [1.0f32, 2.0] {
         let a = export(&mut r, &chart, &list, scale);
         let b = export(&mut r, &Chart::new(config.clone()), &back, scale);
+        assert_eq!(a.rgba, b.rgba, "{scale}x");
+    }
+}
+
+/// The transition labels of `records` in `placement` that leave the plot
+/// or the panel, or overlap any other drawn label (level, band, limit or
+/// transition), described.
+fn transition_label_faults(
+    placement: &renderer::energy_levels::LevelPlacement<'_>,
+    records: &EnergyLevelSeries,
+    style: &renderer::energy_levels::EnergyLevelStyle,
+    measure: &renderer::CpuTextMeasure,
+) -> Vec<String> {
+    use renderer::energy_levels::LabelPart;
+    let layout = placement.layout(records, style, measure);
+    let plot = placement.space.plot_rect();
+    let inside = |r: renderer::layout::RectF| {
+        r.x >= plot.x - 0.5
+            && r.y >= plot.y - 0.5
+            && r.x + r.width <= plot.x + plot.width + 0.5
+            && r.y + r.height <= plot.y + plot.height + 0.5
+    };
+    let mut drawn: Vec<(String, renderer::layout::RectF)> = Vec::new();
+    for (part, len) in [
+        (LabelPart::Level, records.levels.len()),
+        (LabelPart::Band, records.bands.len()),
+        (LabelPart::Limit, records.limits.len()),
+        (LabelPart::Transition, records.transitions.len()),
+    ] {
+        for index in 0..len {
+            if let Some(text) = placement.label(records, style, &layout, part, index, measure) {
+                drawn.push((format!("{part:?} {index}"), text.rect()));
+            }
+        }
+    }
+    let mut found = Vec::new();
+    for (i, (name, rect)) in drawn.iter().enumerate() {
+        if !name.starts_with("Transition") {
+            continue;
+        }
+        let id = &records.transitions[name[11..].parse::<usize>().unwrap()].id;
+        if !inside(*rect) {
+            found.push(format!(
+                "transition {id} clipped: {rect:?} outside {plot:?}"
+            ));
+        }
+        for (j, (other, rect2)) in drawn.iter().enumerate() {
+            if i != j && rects_overlap(*rect, *rect2) && (j > i || !other.starts_with("Transition"))
+            {
+                found.push(format!("transition {id} on {other}"));
+            }
+        }
+    }
+    found
+}
+
+// #357: in the He, Ar and Cu diagrams, at their own size and at 800 × 600
+// in the Gallery theme, at 1x and 2x, no transition (wavelength) label is
+// clipped by the plot and no label box overlaps another. The renderer lays
+// a 2x drawing out in logical pixels (`logical_space`), as here.
+#[test]
+fn transition_labels_stay_inside_the_plot_and_off_other_labels() {
+    let mut r = renderer();
+    let mut all = Vec::new();
+    for kind in [
+        scenes::SceneKind::EnergyLevels,
+        scenes::SceneKind::EnergyLevelsAr,
+        scenes::SceneKind::EnergyLevelsCu,
+    ] {
+        let scene = scenes::build(&mut r, kind, 1_000).expect("scene");
+        let mut gallery_series = scene.series.clone();
+        let mut gallery = Chart::new(scene.config.clone());
+        gallery.set_area(0, 0, 800, 600);
+        gallery
+            .apply_theme("gallery", &mut gallery_series)
+            .expect("the gallery theme");
+        gallery.fit_layout();
+        for (look, config, series) in [
+            ("scene", scene.config.clone(), scene.series.clone()),
+            ("gallery 800x600", gallery.config().clone(), gallery_series),
+        ] {
+            for scale in [1.0f32, 2.0] {
+                let scaled = config.scaled(scale);
+                let expansion = scaled.expand().expect("the scene expands");
+                for panel in &expansion.panels {
+                    let panel = &panel.config;
+                    let Some(categories) = panel.bottom_x.categories.as_deref() else {
+                        continue;
+                    };
+                    let mut space = renderer::annotation::pixel_space_for_config(panel);
+                    let logical = |r: renderer::layout::RectF| renderer::layout::RectF {
+                        x: r.x / scale,
+                        y: r.y / scale,
+                        width: r.width / scale,
+                        height: r.height / scale,
+                    };
+                    space.panel = logical(space.panel);
+                    space.plot = logical(space.plot);
+                    let measure = renderer::CpuTextMeasure::for_style(&panel.draw_style);
+                    for cfg in &series {
+                        let Some(levels) = cfg.render_type.energy_levels() else {
+                            continue;
+                        };
+                        if levels.source.is_some() {
+                            continue;
+                        }
+                        let placement = renderer::energy_levels::LevelPlacement {
+                            space: &space,
+                            categories,
+                            view: levels.show,
+                            colorbar: panel.colorbar.as_ref(),
+                            picked: None,
+                        };
+                        all.extend(
+                            transition_label_faults(&placement, levels, &levels.style, &measure)
+                                .into_iter()
+                                .map(|f| format!("{kind:?} {look} {scale}x: {f}")),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert!(all.is_empty(), "{all:#?}");
+}
+
+// #357: the steep 1s4/1s5 fan of Ar I sets its wavelength labels in one
+// aligned column beside it: one x, even spacing, no two meeting, each with
+// a leader from its own arrow to its label. A label in the column picks as
+// itself, and dragged, it and its leader move together while the rest of
+// the column stays.
+#[test]
+fn a_crowded_fan_sets_its_labels_in_a_column_with_leaders() {
+    use renderer::energy_levels::{LabelPart, LevelHit};
+    use renderer::sink::{DrawnPart, Parts};
+    let mut r = renderer();
+    let scene = scenes::build(&mut r, scenes::SceneKind::EnergyLevelsAr, 1_000).expect("scene");
+    let mut checked = false;
+    each_level_panel(
+        &scene.config,
+        &scene.series,
+        |placement, levels, records, measure| {
+            let style = &levels.style;
+            let rects = |records: &EnergyLevelSeries| -> Vec<Option<renderer::layout::RectF>> {
+                let layout = placement.layout(records, style, measure);
+                (0..records.transitions.len())
+                    .map(|i| {
+                        placement
+                            .label(records, style, &layout, LabelPart::Transition, i, measure)
+                            .map(|t| t.rect())
+                    })
+                    .collect()
+            };
+            let leaders = |records: &EnergyLevelSeries| {
+                let mut segments = Vec::new();
+                let mut sink = Parts(&mut |part| {
+                    if let DrawnPart::Segment { a, b, width } = part
+                        && (width - 0.6).abs() < 1e-6
+                    {
+                        segments.push((a, b));
+                    }
+                });
+                placement.emit(records, style, measure, &mut sink);
+                segments
+            };
+            // A leader ends just off its label's near edge, at its middle.
+            let ends_at = |rect: renderer::layout::RectF, p: [f32; 2]| {
+                let mid = rect.y + rect.height / 2.0;
+                (p[1] - mid).abs() < 0.01
+                    && ((p[0] - (rect.x - 1.0)).abs() < 0.01
+                        || (p[0] - (rect.x + rect.width + 1.0)).abs() < 0.01)
+            };
+            let placed = rects(records);
+            // The column: the labels that share one left edge.
+            let mut by_x: Vec<(i64, usize)> = placed
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| r.map(|r| ((r.x * 10.0).round() as i64, i)))
+                .collect();
+            by_x.sort();
+            let Some(column) = by_x
+                .chunk_by(|a, b| a.0 == b.0)
+                .map(|run| run.iter().map(|(_, i)| *i).collect::<Vec<_>>())
+                .max_by_key(Vec::len)
+            else {
+                return;
+            };
+            if column.len() < 4 {
+                return;
+            }
+            checked = true;
+            let mut tops: Vec<f32> = column.iter().map(|&i| placed[i].unwrap().y).collect();
+            tops.sort_by(f32::total_cmp);
+            let steps: Vec<f32> = tops.windows(2).map(|w| w[1] - w[0]).collect();
+            assert!(
+                steps.iter().all(|s| (s - steps[0]).abs() < 1.0 && *s > 0.0),
+                "evenly spaced: {steps:?}"
+            );
+            let segments = leaders(records);
+            for &i in &column {
+                let rect = placed[i].unwrap();
+                assert!(
+                    segments.iter().any(|(_, b)| ends_at(rect, *b)),
+                    "transition {i} has a leader to its label"
+                );
+                let centre = [rect.x + rect.width / 2.0, rect.y + rect.height / 2.0];
+                let hit = placement.pick(records, style, measure, centre, 4.0);
+                assert_eq!(
+                    hit.map(|h| h.0),
+                    Some(LevelHit::Label(LabelPart::Transition, i))
+                );
+            }
+            // Dragged, one label moves with its leader; the column stays.
+            let moved = column[1];
+            let mut dragged = records.clone();
+            dragged.drag_label(LabelPart::Transition, moved, 6.0, -5.0);
+            let after = rects(&dragged);
+            let (a, b) = (placed[moved].unwrap(), after[moved].unwrap());
+            assert!(
+                (b.x - a.x - 6.0).abs() < 0.01 && (b.y - a.y + 5.0).abs() < 0.01,
+                "{a:?} {b:?}"
+            );
+            for &i in column.iter().filter(|&&i| i != moved) {
+                assert_eq!(after[i], placed[i], "the rest of the column stays");
+            }
+            assert!(
+                leaders(&dragged).iter().any(|(_, p)| ends_at(b, *p)),
+                "the leader follows its label"
+            );
+        },
+    );
+    assert!(checked, "the Ar fan sets a column");
+}
+
+/// The edges of subplot 0's frame as fractions of the parent's plot:
+/// left, top, right, bottom (#392).
+fn inset_fractions(config: &renderer::Config) -> [f64; 4] {
+    let plot = config.data_area().unwrap().0;
+    let frame = config.subplots[0].config.chart_area.0;
+    let fx = |v: u32| (f64::from(v) - f64::from(plot.x)) / f64::from(plot.width);
+    let fy = |v: u32| (f64::from(v) - f64::from(plot.y)) / f64::from(plot.height);
+    [
+        fx(frame.x),
+        fy(frame.y),
+        fx(frame.x + frame.width),
+        fy(frame.y + frame.height),
+    ]
+}
+
+/// Each edge of subplot 0's frame within `px` pixels of where `expected`
+/// puts it in the parent's plot.
+fn assert_inset_in_place(config: &renderer::Config, expected: [f64; 4], px: f64, context: &str) {
+    let plot = config.data_area().unwrap().0;
+    let got = inset_fractions(config);
+    let span = [plot.width, plot.height, plot.width, plot.height];
+    for k in 0..4 {
+        let off = (got[k] - expected[k]).abs() * f64::from(span[k]);
+        assert!(
+            off <= px + 1e-9,
+            "{context}: edge {k} {off} px off ({got:?} vs {expected:?})"
+        );
+    }
+    assert_eq!(config.insets().collect::<Vec<_>>(), vec![0], "{context}");
+}
+
+// #392: the He I scene's inset keeps its place in the parent's plot through
+// a resize sequence (smaller, larger, two other aspects, a layout fit after
+// each), stays drawable when the chart is shrunk below what the inset's own
+// plot needs, and is back exactly where it was when the chart grows back.
+// Every export at 2x is the 1x frame scaled: the inset's plot fill sits at
+// its scaled place and the image is twice the size.
+#[test]
+fn the_he_inset_follows_its_parent_through_a_resize_sequence() {
+    let mut r = renderer();
+    let scene = scenes::build(&mut r, scenes::SceneKind::EnergyLevels, 1_000).expect("scene");
+    let mut chart = Chart::new(scene.config.clone());
+    let start = inset_fractions(chart.config());
+    let original = chart.config().chart_area.0;
+    // The scene's layout fitted at its own size: the frame to come back to.
+    chart.fit_layout();
+    assert_inset_in_place(chart.config(), start, 0.5, "fitted");
+    let frame = chart.config().subplots[0].config.chart_area.0;
+    let plot_at_start = chart.config().data_area().unwrap().0;
+    let steps = [
+        (720, 540, true),
+        (1600, 1100, true),
+        (1400, 600, true),
+        (900, 1000, true),
+        // Below what the inset's own plot needs.
+        (420, 300, false),
+        (original.width, original.height, true),
+    ];
+    for (step, (w, h, in_place)) in steps.into_iter().enumerate() {
+        chart.set_area(0, 0, w, h);
+        chart.fit_layout();
+        let context = format!("{w}x{h}");
+        if in_place {
+            // Derived from the remembered placement every time: no drift.
+            assert_inset_in_place(chart.config(), start, 0.5, &context);
+        }
+        let inset = chart.config().subplot_config(0).unwrap();
+        let plot = inset.data_area().expect("the inset keeps a plot").0;
+        let parent = chart.config().data_area().unwrap().0;
+        if plot.width < parent.width && plot.height < parent.height {
+            assert!(
+                inset.chart_area.0.within(&parent) || !in_place,
+                "{context}: inside the parent's plot"
+            );
+        }
+        let images = [1.0f32, 2.0].map(|scale| {
+            r.export_rgba(
+                renderer::ExportSource::chart(&chart, &scene.series),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap()
+        });
+        assert_eq!(
+            (images[1].width, images[1].height),
+            (images[0].width * 2, images[0].height * 2),
+            "{context}"
+        );
+        for (img, scale) in images.iter().zip([1u32, 2]) {
+            if let Ok(dir) = std::env::var("FIGGY_INSET_DUMP") {
+                std::fs::write(
+                    format!("{dir}/he-{step}-{w}x{h}-{scale}x.rgba"),
+                    [
+                        &img.width.to_le_bytes()[..],
+                        &img.height.to_le_bytes()[..],
+                        &img.rgba[..],
+                    ]
+                    .concat(),
+                )
+                .unwrap();
+            }
+            // The inset's opaque plot fill, a few pixels inside its corner;
+            // a plot kept at its smallest is checked for being drawn.
+            let fill = pixel(
+                img,
+                (plot.x + 3) * scale,
+                (plot.y + plot.height - 3) * scale,
+            );
+            if plot.width >= 12 && plot.height >= 12 {
+                assert!(
+                    fill[0] >= 245 && fill[1] >= 245 && fill[2] >= 245,
+                    "{context} {scale}x inset fill {fill:?}"
+                );
+            } else {
+                assert_eq!(fill[3], 255, "{context} {scale}x inset drawn");
+            }
+        }
+        // The pointer on the inset's plot belongs to the inset.
+        let centre = (
+            plot.x as f32 + plot.width as f32 / 2.0,
+            plot.y as f32 + plot.height as f32 / 2.0,
+        );
+        assert_eq!(chart.config().subplot_at(centre.0, centre.1), Some(0));
+        assert_eq!(
+            chart.config().nested_subplot_at(centre.0, centre.1),
+            Some(0)
+        );
+    }
+    // Back at the first size the plot is where it was, and so is the
+    // inset: exactly the frame it started with.
+    assert_eq!(chart.config().data_area().unwrap().0, plot_at_start);
+    assert_eq!(chart.config().subplots[0].config.chart_area.0, frame);
+}
+
+// #392: an inset follows `set_area` with its picks, its frame selection and
+// drag, and the document round trips; an inset the user dragged follows a
+// later resize from where it was put.
+#[test]
+fn a_dragged_inset_follows_later_resizes_and_keeps_its_picks() {
+    use renderer::{HitMap, LayerRef};
+    let mut r = renderer();
+    let mut chart = chart_with_inset();
+    chart.config_mut().chart_area.0 = Rect {
+        x: 0,
+        y: 0,
+        width: 640,
+        height: 480,
+    };
+    let list = [series("he", records()), inset_series()];
+    // The user drags the inset's frame left and down on the base layer.
+    let measure = renderer::CpuTextMeasure::default();
+    let frame = chart.config().subplots[0].config.chart_area.0;
+    let map = HitMap::for_active_layer(chart.config());
+    assert_eq!(chart.config().active_layer, LayerRef::Base);
+    let id = map.find("subplot_0:frame").expect("frame element");
+    let element = map.get(id).unwrap();
+    let grab = [frame.x as f32 + 4.0, frame.y as f32 + 4.0];
+    assert_eq!(
+        element
+            .as_draggable()
+            .unwrap()
+            .drag_from(chart.config_mut(), &measure, grab, -90.0, 40.0),
+        renderer::layout::NudgeResult::Moved
+    );
+    let dropped = chart.config().subplots[0].config.chart_area.0;
+    assert_eq!((dropped.x, dropped.y), (frame.x - 90, frame.y + 40));
+    let placed = inset_fractions(chart.config());
+    for (w, h) in [(560, 420), (960, 720), (900, 560)] {
+        chart.set_area(0, 0, w, h);
+        let context = format!("{w}x{h}");
+        assert_inset_in_place(chart.config(), placed, 1.5, &context);
+        // The inset's component at 45 still picks as the inset's row.
+        let inset = chart.config().subplots[0].config.clone();
+        let space = renderer::annotation::pixel_space_for_config(&inset);
+        use renderer::AnnotationSpace as _;
+        let px = space
+            .value_to_px(renderer::AnnotationAxis::X, -0.25)
+            .unwrap();
+        let py = space
+            .value_to_px(renderer::AnnotationAxis::Y, 45.0)
+            .unwrap();
+        let panel = chart.config().chart_area.0;
+        for scale in [1.0f32, 2.0] {
+            let id = r
+                .register_chart(chart.config().clone(), list.to_vec())
+                .unwrap();
+            r.enable_gpu_picking().unwrap();
+            let request = renderer::GpuPickRequest {
+                canvas_position_px: [px * scale, py * scale],
+                display_panel_px: Rect {
+                    x: 0,
+                    y: 0,
+                    width: (panel.width as f32 * scale) as u32,
+                    height: (panel.height as f32 * scale) as u32,
+                },
+                display_scale: scale,
+                max_distance_px: 4.0 * scale,
+            };
+            let hit =
+                test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+            r.remove_chart(id).unwrap();
+            match hit {
+                Some(renderer::PickedData::HistogramBin {
+                    series_id,
+                    bin_index,
+                    ..
+                }) => assert_eq!((series_id.as_str(), bin_index), ("inset", 2), "{context}"),
+                other => panic!("{context} {scale}x inset pick: {other:?}"),
+            }
+        }
+        // The frame is still the element under the pointer and selects.
+        let map = HitMap::for_active_layer(chart.config());
+        let plot = inset.data_area().unwrap().0;
+        let at = (
+            plot.x as f32 + plot.width as f32 / 2.0,
+            plot.y as f32 + plot.height as f32 / 2.0,
+        );
+        let hit = map.hit_test(chart.config(), &measure, at.0, at.1).unwrap();
+        assert_eq!(
+            map.get(hit).unwrap().element_id(),
+            "subplot_0:frame",
+            "{context}"
+        );
+    }
+    // The document round trips and draws the same.
+    let json = serde_json::to_string(chart.config()).unwrap();
+    // The dragged placement is stored as the inset's anchor.
+    assert!(chart.config().subplots[0].anchor.is_some());
+    assert!(json.contains("\"anchor\""), "anchor serialized");
+    let back: renderer::Config = serde_json::from_str(&json).unwrap();
+    assert_eq!(&back, chart.config());
+    assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    let reloaded = Chart::new(back);
+    for scale in [1.0f32, 2.0] {
+        let a = export(&mut r, &chart, &list, scale);
+        let b = export(&mut r, &reloaded, &list, scale);
         assert_eq!(a.rgba, b.rgba, "{scale}x");
     }
 }

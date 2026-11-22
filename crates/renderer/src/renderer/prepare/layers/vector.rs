@@ -30,9 +30,15 @@ impl PrepareContext<'_> {
                         "prepare ensured this vector's scratch",
                     ))?;
             let pipeline = match scratch.input {
-                data_render::vector::VectorInput::Points => pipelines.vector_points.as_ref(),
-                data_render::vector::VectorInput::Grid => pipelines.vector_grid.as_ref(),
-                data_render::vector::VectorInput::Path => pipelines.vector_path.as_ref(),
+                data_render::vector::VectorInput::Points => {
+                    pipelines.precise(PrecisePipeline::VectorPoints)
+                }
+                data_render::vector::VectorInput::Grid => {
+                    pipelines.precise(PrecisePipeline::VectorGrid)
+                }
+                data_render::vector::VectorInput::Path => {
+                    pipelines.precise(PrecisePipeline::VectorPath)
+                }
                 data_render::vector::VectorInput::Points3d => {
                     pipelines.view3d[View3dPipeline::Vector as usize].as_ref()
                 }
@@ -68,9 +74,12 @@ impl PrepareContext<'_> {
                     .ok_or(FiggyError::internal(
                         "prepare ensured this streamline's arrowhead scratch",
                     ))?;
-            let pipeline = pipelines.vector_path.as_ref().ok_or(FiggyError::internal(
-                "prepare ensured the path vector pipeline",
-            ))?;
+            let pipeline =
+                pipelines
+                    .precise(PrecisePipeline::VectorPath)
+                    .ok_or(FiggyError::internal(
+                        "prepare ensured the path vector pipeline",
+                    ))?;
             products
                 .arcs
                 .get(idx)

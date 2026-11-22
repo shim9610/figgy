@@ -65,10 +65,17 @@ fn pick_area_candidate(
     var hit_length = 0.0;
     for (var k = 0u; k < pieces; k = k + 1u) {
         let piece = area_piece(ax, ay, bx, by, base_a, base_b, to_series, baseline, mode, k);
-        let top_a = area_corner_ndc(t, piece, false, false, to_series) / t.pixel_to_ndc;
-        let base_a_px = area_corner_ndc(t, piece, false, true, to_series) / t.pixel_to_ndc;
-        let top_b = area_corner_ndc(t, piece, true, false, to_series) / t.pixel_to_ndc;
-        let base_b_px = area_corner_ndc(t, piece, true, true, to_series) / t.pixel_to_ndc;
+        // The four corners (A top, A base, B top, B base) from one
+        // `area_corner_ndc` call in a loop: a software GPU compiler pays for
+        // every inlined copy of its projection (#363).
+        var corners = array<vec2<f32>, 4>();
+        for (var c = 0u; c < 4u; c = c + 1u) {
+            corners[c] = area_corner_ndc(t, piece, (c & 2u) != 0u, (c & 1u) != 0u, to_series) / t.pixel_to_ndc;
+        }
+        let top_a = corners[0];
+        let base_a_px = corners[1];
+        let top_b = corners[2];
+        let base_b_px = corners[3];
         let top = top_b - top_a;
         let length_sq = fma(top.x, top.x, top.y * top.y);
         let length = sqrt(length_sq);

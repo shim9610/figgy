@@ -35,12 +35,23 @@ Earlier releases opened categorical bar, box plot and radar documents through
   polar chart with a categorical angle axis.
 
 Free functions serve an editor before any chart exists (#314):
-`default_config()`, `validate_config(configJson, seriesJson?)` (structured
+`default_config()`, `default_config_for_series(seriesJson)` (the default
+config in the frame of the series' family: no axes for a Feynman diagram,
+the Grotrian frame for energy levels, the timeline frame for a chart with
+range links, #357),
+`validate_config(configJson, seriesJson?)` (structured
 errors with field paths), `normalize_config(configJson)` and
 `convert_categorical_document` / `convert_boxplot_document` /
 `convert_radar_document`, which return the converted config and series, the
 uploads without their values, the series of each column and notes on every
-field the document set that the chart does not carry. See the
+field the document set that the chart does not carry. Given
+`{"chart_area": [x, y, w, h]}` (the chart's chart area) as a second
+argument, the conversion is the one the setter installs on that chart, so
+a preview and the opened chart agree (#334). Each `set_*_document(json,
+options?)` returns the same report JSON from the conversion it installs,
+and `{"refuse": ["path", ...] | "any"}` makes it throw `code:
+"conversion_loss"` with the refused notes, before anything changes, when
+the conversion would drop or change a listed path (or any field). See the
 [model API for editors](../renderer/WASM.md#model-api).
 
 The three calls replace the chart atomically: a document that fails to
@@ -48,7 +59,9 @@ validate, upload, fit or commit rejects with an `Error` whose `stage` names
 the step, and the chart stays as it was. `clear_selection()` ends the
 element and annotation selections and any drag, `begin_column_upload(...)`
 uploads one column in chunks into a GPU staging buffer and installs it on
-`commit(chart)`, and `inspect_streaming_capabilities(config, series)` checks
+`commit(chart)`, `begin_columns_transaction(...)` stages several chunked
+columns and the next Config and Series and installs them together or not at
+all (#334), and `inspect_streaming_capabilities(config, series)` checks
 a candidate document without changing the chart
 ([edit safety](../renderer/WASM.md#edit-safety)).
 
@@ -141,8 +154,9 @@ snapshot, readable while the chart is busy, and it reports `{ scope:
 `figgy-init-progress` event. It starts its picker prewarm once the render pipelines
 have compiled. Exports and picks always draw the whole chart; they compile what they
 need through the browser's asynchronous compiler first (an export its pipelines,
-`pick_point` and `pick_data` their exact pick variants), so neither compiles on the
-page's thread.
+`pick_point` and `pick_data` the picker's pipelines, the nearest-datum kernel and the
+typed data pick kernels, which a drawn chart has already queued), so neither compiles on
+the page's thread.
 The chart's waits borrow it until they settle. `chart.readiness()` returns a
 `FiggyReadiness` that does not ([#315](https://github.com/shim9610/figgy/issues/315)):
 its `series_ready()` and `pipelines_ready()` wait for the same compiles without
@@ -208,13 +222,21 @@ document, the selection or the raster
 `annotation_preview(json)` (where an annotation that is not added yet would be
 drawn, in canvas and document pixels), `convert_annotation_anchor(json, kind)`
 (the same item with `"Data"` or `"Ratio"` anchors at the same drawn position),
-`inspect_document_layout(config_json?)` (the document area, scale and every
-panel's frame, data area and layer, for the installed document or a candidate
-config), `panel_at(x, y)` (the panel on top at a point), `data_area_rect()`
+`inspect_document_layout(config_json?, surface_width?, surface_height?)` (the
+document area, scale and every panel's frame, data area and layer, for the
+installed document or a candidate config, on this canvas or at the physical
+surface size given without resizing anything), `panel_at(x, y)` (the panel on top at a point), `data_area_rect()`
 (the active layer's exact data area), `legend_entry(series_id)` (one legend row
 as the auto legend writes it) and `render_warnings()` (every warning of the
-last frame). The [WASM guide](../renderer/WASM.md#editor-queries-figgychart-312)
-gives the result shapes and error codes.
+last frame). The free function
+`inspect_config_layout(config_json, surface_width, surface_height)`
+returns that layout for a candidate without a chart, and equals what a chart
+with that surface reports ([#334](https://github.com/shim9610/figgy/issues/334)).
+The radial `FiggyBoundedChart` has `annotation_preview(json)` too,
+with the same contract and JSON in its document logical pixels
+([#334](https://github.com/shim9610/figgy/issues/334)). The
+[WASM guide](../renderer/WASM.md#editor-queries-figgychart-312) gives the
+result shapes and error codes.
 
 A Feynman diagram's parts are pick and drag targets too: `pick_point`
 reports a vertex, a propagator or a label as `{kind: "feynman_vertex" |
@@ -290,26 +312,31 @@ crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝�
 `FiggyChart` 설정 메서드로 옮기는 예제는 [WASM.md](../renderer/WASM.md#bounded-family-migration)에 있다.
 
 차트를 만들기 전에 편집기가 쓸 수 있는 독립 함수가 있다(#314). `default_config()`는 기본 설정을,
+`default_config_for_series(seriesJson)`은 시리즈 계열의 틀을 적용한 기본 설정(파인만 도표는 축 없음,
+에너지 준위는 그로트리안 틀, 범위 링크가 있는 차트는 타임라인 틀, #357)을,
 `validate_config(configJson, seriesJson?)`는 거부된 필드의 경로가 담긴 검사 결과를,
 `normalize_config(configJson)`은 표준 형태로 다시 쓴 설정을 돌려준다.
 `convert_categorical_document`, `convert_boxplot_document`, `convert_radar_document`는 레거시 문서를
 변환한 설정과 시리즈, 값을 뺀 업로드 목록, 컬럼별 시리즈, 그리고 문서에 있었지만 옮기지 못한
-필드의 목록(`notes`)을 돌려준다. 자세한 내용은 [편집기용 모델 API](../renderer/WASM.md#model-api)를 참고한다.
+필드의 목록(`notes`)을 돌려준다. 두 번째 인자로 `{"chart_area": [x, y, w, h]}`(차트의 차트 영역)를 주면 그 차트에서 설정 메서드가 설치하는 것과 같은 변환을 하므로 미리 보기와 열린 차트가 일치한다(#334). `set_*_document(json, options?)`는 설치한 변환의 같은 보고서 JSON을 돌려주고, `{"refuse": ["path", ...] | "any"}`를 주면 변환이 나열한 경로(또는 어떤 필드든)를 버리거나 바꿀 때 아무것도 바꾸기 전에 거부된 notes와 함께 `code: "conversion_loss"`를 던진다. 자세한 내용은 [편집기용 모델 API](../renderer/WASM.md#model-api)를 참고한다.
 
 원시 `FiggyChart` 위의 편집기는 문서·선택·래스터를 바꾸지 않고 렌더러에 물어볼 수 있다
 ([#312](https://github.com/shim9610/figgy/issues/312)). `annotation_preview(json)`는 아직 넣지 않은
 주석이 그려질 자리를 캔버스 픽셀과 문서 픽셀로, `convert_annotation_anchor(json, kind)`는 그려지는
-위치를 지킨 채 앵커를 `"Data"`나 `"Ratio"`로 바꾼 항목을 돌려준다. `inspect_document_layout(config_json?)`는
-설치된 문서나 후보 설정의 문서 영역·배율·패널별 프레임·데이터 영역·레이어를, `panel_at(x, y)`는
+위치를 지킨 채 앵커를 `"Data"`나 `"Ratio"`로 바꾼 항목을 돌려준다. `inspect_document_layout(config_json?, surface_width?, surface_height?)`는
+설치된 문서나 후보 설정의 문서 영역·배율·패널별 프레임·데이터 영역·레이어를 이 캔버스에서, 또는 캔버스를 바꾸지 않고 주어진 물리 표면 크기에서, `panel_at(x, y)`는
 그 점에서 맨 위에 있는 패널을, `data_area_rect()`는 활성 레이어의 정확한 데이터 영역을 돌려준다.
 `legend_entry(series_id)`는 자동 범례가 쓰는 한 줄을, `render_warnings()`는 마지막 프레임의 모든
-경고를 돌려준다. 결과 형식과 오류 코드는 [WASM 안내](../renderer/WASM.md#editor-queries-figgychart-312)에 있다.
+경고를 돌려준다. 원형 차트의 `FiggyBoundedChart`에도 같은 계약과 JSON의 `annotation_preview(json)`가 있으며,
+좌표는 그 차트의 문서 논리 픽셀이다([#334](https://github.com/shim9610/figgy/issues/334)).
+차트 없이 쓰는 `inspect_config_layout(config_json, surface_width, surface_height)`은 그 표면 크기의 차트와 같은 레이아웃을 돌려준다(#334).
+결과 형식과 오류 코드는 [WASM 안내](../renderer/WASM.md#editor-queries-figgychart-312)에 있다.
 
 `set_categorical_document`·`set_boxplot_document`·`set_radar_document`는 차트를 한 번에 바꾼다.
 검사·업로드·축 맞춤·반영 중 어느 단계에서 실패하든 `stage`로 그 단계를 알려 주는 `Error`를 던지고
 차트는 그대로 둔다. `clear_selection()`은 장식·주석 선택과 진행 중인 끌기를 끝내고,
 `begin_column_upload(...)`는 컬럼 하나를 조각으로 나눠 GPU 스테이징 버퍼에 쓴 뒤 `commit(chart)`에서
-설치한다. `inspect_streaming_capabilities(config, series)`는 차트를 바꾸지 않고 후보 문서의 스트리밍
+설치한다. `begin_columns_transaction(...)`은 조각으로 나눈 컬럼 여러 개와 다음 Config·Series를 준비해 두었다가 함께 설치하거나 하나도 설치하지 않는다(#334). `inspect_streaming_capabilities(config, series)`는 차트를 바꾸지 않고 후보 문서의 스트리밍
 가능 여부를 검사한다([edit safety](../renderer/WASM.md#edit-safety)).
 
 차트는 기본 셰이더 세트로 시작하고, 끊긴 축·확률 축·극좌표가 설정에 처음 들어오면 전체 세트로

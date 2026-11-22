@@ -1634,10 +1634,6 @@ export class FiggyChartElement extends HTMLElement {
     }
   }
 
-  warm_up() {
-    return this.first_frame_ready();
-  }
-
   async ensure_extent_engine() {
     await this.#runKernelOperation(
       "extent-prewarm",
@@ -2427,10 +2423,14 @@ export class FiggyChartElement extends HTMLElement {
   // the active layer's drawn extents instead.
   fit_ranges() { return this.#mutateChart("fit_ranges"); }
   // A candidate config fitted without installing it (#312): JSON in, JSON
-  // out; the chart is untouched. The Y variant keeps every X axis.
+  // out; the chart is untouched. The Y variant keeps every X axis; the
+  // scoped one (#334) moves only the axes its scope JSON selects.
   fit_config(json, padding) { return this.#kernelForCall().fit_config(json, padding); }
   fit_y_axes_config(json, padding) {
     return this.#kernelForCall().fit_y_axes_config(json, padding);
+  }
+  fit_config_scoped(json, scope, padding) {
+    return this.#kernelForCall().fit_config_scoped(json, scope, padding);
   }
   // One series' style domain from its columns' statistics (#312).
   fit_point_size_domain(seriesId) { return this.#mutateChart("fit_point_size_domain", seriesId); }
@@ -2462,14 +2462,42 @@ export class FiggyChartElement extends HTMLElement {
       is_open: () => handle.is_open(),
     };
   }
+  // Several chunked columns and the next config and series in one commit
+  // (#334). The transaction's `stage()` and `commit()` use this element's
+  // chart.
+  begin_columns_transaction(maxChunkBytes) {
+    const tx = this.#kernelForCall().begin_columns_transaction(maxChunkBytes);
+    return {
+      stage: (id, length, encoding, sourceRevision) =>
+        tx.stage(this.#kernelForCall(), id, length, encoding, sourceRevision ?? null),
+      push: (id, offset, chunk) => tx.push(id, offset, chunk),
+      set_state: (configJson, seriesJson) => tx.set_state(configJson, seriesJson ?? null),
+      commit: () => {
+        const result = tx.commit(this.#kernelForCall());
+        this.#notifyStreamingMutation();
+        return result;
+      },
+      cancel: () => tx.cancel(),
+      is_open: () => tx.is_open(),
+      written: (id) => tx.written(id),
+      length: (id) => tx.length(id),
+      staged_count: () => tx.staged_count(),
+      has_state: () => tx.has_state(),
+    };
+  }
   // Editor queries (#312): JSON text, as the kernel returns it; nothing on
   // the chart changes.
   annotation_preview(json) { return this.#kernelForCall().annotation_preview(json); }
   convert_annotation_anchor(json, kind) {
     return this.#kernelForCall().convert_annotation_anchor(json, kind);
   }
-  inspect_document_layout(configJson) {
-    return this.#kernelForCall().inspect_document_layout(configJson ?? null);
+  // Optional physical surface dimensions (#334): both or neither.
+  inspect_document_layout(configJson, surfaceWidth, surfaceHeight) {
+    return this.#kernelForCall().inspect_document_layout(
+      configJson ?? null,
+      surfaceWidth ?? null,
+      surfaceHeight ?? null,
+    );
   }
   panel_at(x, y) { return this.#kernelForCall().panel_at(x, y); }
   data_area_rect() { return this.#kernelForCall().data_area_rect(); }
@@ -2598,6 +2626,9 @@ export class FiggyChartElement extends HTMLElement {
   theme_names() { return this.#kernelForCall().theme_names(); }
   theme(name) { return this.#kernelForCall().theme(name); }
   subplot_theme(index, name) { return this.#kernelForCall().subplot_theme(index, name); }
+  theme_with_palette(name, cycle) {
+    return this.#kernelForCall().theme_with_palette(name, cycle);
+  }
   apply_custom_theme(theme) { return this.#mutateChart("apply_custom_theme", theme); }
   apply_custom_theme_to(theme, scope = "all") {
     const list = typeof scope === "string" ? scope : JSON.stringify(scope);

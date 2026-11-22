@@ -3519,6 +3519,18 @@ fn assembled_pick_shaders_start_with_the_core_and_use_every_fragment() {
             assert_eq!(last, "gpu_pick/exact_entry.wgsl", "{shader:?}");
         }
     }
+    // The nearest-datum modules (#381) start with the core too and end with
+    // the kernel.
+    for (label, by_set) in [super::NEAREST_PICK_MODULE, super::NEAREST_PICK_3D_MODULE] {
+        let fragments = by_set.full.fragments;
+        assert_eq!(fragments[0], "gpu_pick/core.wgsl", "{label}");
+        assert_eq!(
+            *fragments.last().unwrap(),
+            "gpu_pick/nearest_entry.wgsl",
+            "{label}"
+        );
+        used.extend(fragments.iter().copied());
+    }
     for entry in std::fs::read_dir(&dir).unwrap() {
         let name = entry.unwrap().file_name().into_string().unwrap();
         // The pick modules' Rust files share this directory with the fragments.
@@ -3803,7 +3815,9 @@ fn a_pick_readback_holds_one_candidate_per_clamped_member() {
         GpuPickTicketState::Pending {
             readback, members, ..
         } => (readback.buffer_size(), *members),
-        GpuPickTicketState::ReadyNone => panic!("a registered pick is submitted"),
+        GpuPickTicketState::ReadyNone | GpuPickTicketState::Nearest { .. } => {
+            panic!("an exact engine pick is submitted")
+        }
     };
     let series =
         |i: usize| scatter_descriptor(&format!("readback-{i}"), "readback-x", "readback-y");

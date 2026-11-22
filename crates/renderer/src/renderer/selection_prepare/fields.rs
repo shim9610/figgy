@@ -45,12 +45,9 @@ impl PrepareContext<'_> {
             &selection,
         )?;
         selected_fields.push(ColumnFieldSelectionLayer {
-            pipeline: pipelines
-                .field_selection
-                .as_ref()
-                .ok_or(FiggyError::internal(
-                    "prepare ensured field selection pipeline",
-                ))?,
+            pipeline: pipelines.precise(PrecisePipeline::FieldSelection).ok_or(
+                FiggyError::internal("prepare ensured field selection pipeline"),
+            )?,
             transform_bg: &view.transform_bg,
             selection_bg,
             selection_charge,
@@ -108,12 +105,9 @@ impl PrepareContext<'_> {
             &selection,
         )?;
         selected_fields.push(ColumnFieldSelectionLayer {
-            pipeline: pipelines
-                .field_selection
-                .as_ref()
-                .ok_or(FiggyError::internal(
-                    "prepare ensured field selection pipeline",
-                ))?,
+            pipeline: pipelines.precise(PrecisePipeline::FieldSelection).ok_or(
+                FiggyError::internal("prepare ensured field selection pipeline"),
+            )?,
             transform_bg: &view.transform_bg,
             selection_bg,
             selection_charge,
@@ -177,15 +171,13 @@ impl PrepareContext<'_> {
         // gaps; the draw binds the label group with it.
         let pipeline = if scratch.label.is_some() {
             pipelines
-                .field_selection_labelled
-                .as_ref()
+                .precise(PrecisePipeline::FieldSelectionLabelled)
                 .ok_or(FiggyError::internal(
                     "prepare ensured labelled contour selection pipeline",
                 ))?
         } else {
             pipelines
-                .field_selection
-                .as_ref()
+                .precise(PrecisePipeline::FieldSelection)
                 .ok_or(FiggyError::internal(
                     "prepare ensured contour selection pipeline",
                 ))?

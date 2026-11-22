@@ -137,6 +137,36 @@ pub(crate) fn bind_group_layout(
     result
 }
 
+/// A compute-stage buffer binding at `binding`: storage, read-only or
+/// read-write, with no minimum size.
+pub(crate) const fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
+/// A compute-stage uniform buffer binding at `binding`, with no minimum
+/// size.
+pub(crate) const fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
 #[inline]
 pub(crate) fn pipeline_layout(
     device: &wgpu::Device,
@@ -183,7 +213,7 @@ pub(crate) fn render_pipeline(
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod compile_thread_tests {
     use super::*;
-    use crate::renderer::{DeviceHealth, gpu_checked};
+    use crate::renderer::{DeviceHealth, DeviceOrigin, gpu_checked};
 
     fn gpu() -> (wgpu::Device, wgpu::Queue) {
         let instance = crate::data_render::create_instance();
@@ -217,7 +247,7 @@ mod compile_thread_tests {
                         source: wgpu::ShaderSource::Wgsl(PROBE.into()),
                     },
                 );
-                let health = DeviceHealth::watch(&device);
+                let health = DeviceHealth::watch(&device, DeviceOrigin::SuppliedByHost);
                 let _pipeline = compute_pipeline(
                     &device,
                     &wgpu::ComputePipelineDescriptor {
@@ -241,7 +271,7 @@ mod compile_thread_tests {
     #[test]
     fn a_failed_creation_reports_into_the_callers_scope() {
         let (device, _queue) = gpu();
-        let health = DeviceHealth::watch(&device);
+        let health = DeviceHealth::watch(&device, DeviceOrigin::SuppliedByHost);
         let module = shader_module(
             &device,
             wgpu::ShaderModuleDescriptor {

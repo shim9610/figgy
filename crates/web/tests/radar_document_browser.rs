@@ -14,6 +14,9 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
 use web_sys::HtmlCanvasElement;
 
+mod support;
+use support::details;
+
 wasm_bindgen_test_configure!(run_in_browser);
 
 const DOCUMENT: &str = r#"{
@@ -61,14 +64,10 @@ fn select(chart: &mut FiggyChart, series_id: &str, point_index: usize) {
         .unwrap();
 }
 
-async fn details(chart: &FiggyChart) -> serde_json::Value {
-    serde_json::from_str(&chart.selection_details().await.unwrap()).unwrap()
-}
-
 #[wasm_bindgen_test(async)]
 async fn a_radar_document_opens_as_radar_series_on_a_polar_chart() {
     let mut chart = FiggyChart::create(canvas()).await.unwrap();
-    chart.set_radar_document(DOCUMENT).unwrap();
+    chart.set_radar_document(DOCUMENT, None).unwrap();
 
     let config: Config = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
     let series: Vec<SeriesConfig> = serde_json::from_str(&chart.get_series().unwrap()).unwrap();
@@ -76,7 +75,7 @@ async fn a_radar_document_opens_as_radar_series_on_a_polar_chart() {
     assert!(
         series
             .iter()
-            .all(|s| matches!(s.render_type, DataRenderType::Radar { .. }))
+            .all(|s| matches!(s.render_type, DataRenderType::Radar(_)))
     );
     assert_eq!(config.bottom_x.category_count(), Some(4));
     let polar = config.polar().unwrap();
@@ -105,7 +104,7 @@ async fn a_radar_document_opens_as_radar_series_on_a_polar_chart() {
     assert!(png.length() > 0);
 
     // A second document replaces the first one's series and columns.
-    chart.set_radar_document(DOCUMENT).unwrap();
+    chart.set_radar_document(DOCUMENT, None).unwrap();
     let series: Vec<SeriesConfig> = serde_json::from_str(&chart.get_series().unwrap()).unwrap();
     assert_eq!(series.len(), 2);
 }
@@ -115,14 +114,14 @@ async fn a_radar_document_opens_as_radar_series_on_a_polar_chart() {
 #[wasm_bindgen_test(async)]
 async fn a_rejected_radar_document_keeps_the_previous_one() {
     let mut chart = FiggyChart::create(canvas()).await.unwrap();
-    chart.set_radar_document(DOCUMENT).unwrap();
+    chart.set_radar_document(DOCUMENT, None).unwrap();
     let config = chart.get_config().unwrap();
     let series = chart.get_series().unwrap();
     // A budget at the current usage leaves no room for the new styles.
     let status: serde_json::Value = serde_json::from_str(&chart.gpu_memory_status()).unwrap();
     let total = status["total_bytes"].as_f64().unwrap();
     chart.configure_auto_residency(total, total).unwrap();
-    assert!(chart.set_radar_document(DOCUMENT).is_err());
+    assert!(chart.set_radar_document(DOCUMENT, None).is_err());
     assert_eq!(chart.get_config().unwrap(), config);
     assert_eq!(chart.get_series().unwrap(), series);
 }
@@ -149,7 +148,9 @@ async fn radar_category_labels_move_alone_and_together_through_the_ring() {
     document["decorations"] = serde_json::json!({
         "offsets": [{"element": {"SpokeLabel": {"category_id": "cost"}}, "offset": [6.0, 0.0]}]
     });
-    chart.set_radar_document(&document.to_string()).unwrap();
+    chart
+        .set_radar_document(&document.to_string(), None)
+        .unwrap();
     chart.frame().unwrap();
     let config: Config = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
     let categories = config.bottom_x.categories.as_deref().unwrap();

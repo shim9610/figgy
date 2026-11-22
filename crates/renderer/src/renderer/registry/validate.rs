@@ -5,7 +5,9 @@ use super::*;
 /// Validate a series list against the pool and the chart's own `Config`.
 ///
 /// The config is needed because a field series is only fully declared with it:
-/// `Config.colorbar` owns the z range and colormap.
+/// `Config.colorbar` owns the z range and colormap. A series' colourbar is the
+/// one of the chart that draws it (`Config::series_chart`): the root's for a
+/// root or overlay series, its subplot's own for a subplot's series (#401).
 pub(in crate::renderer) fn validate_renderer_series(
     pool: &impl ColumnRegistration,
     config: &Config,
@@ -47,7 +49,11 @@ pub(in crate::renderer) fn validate_renderer_series(
         // are SSOT, held to the model's rules above. A monotonic series'
         // columns are its envelope, written by its own calls (#271): a
         // frame refuses it with `MonotonicSourceRequired` until they are.
-        if item.is_dataless() || item.monotonic().is_some() {
+        // Range links are SSOT too (#357): they read no column.
+        if item.is_dataless()
+            || item.monotonic().is_some()
+            || item.render_type.range_links().is_some()
+        {
             continue;
         }
         if let Some(mesh) = item.render_type.tri_mesh() {
@@ -87,7 +93,7 @@ pub(in crate::renderer) fn validate_renderer_series(
             }
             if let Some(map) = scatter.point_color_map.as_ref() {
                 validate_registered_column(pool, &map.column)?;
-                if config.colorbar.is_none() {
+                if config.series_chart(&item.series_id).colorbar.is_none() {
                     return Err(FiggyError::InvalidSeriesConfig {
                         series_id: item.series_id.clone(),
                         kind: crate::RuleKind::ScatterColorMapNeedsColorbar,
@@ -114,7 +120,9 @@ pub(in crate::renderer) fn validate_renderer_series(
         if let Some(error) = extract_err_y(&item.render_type) {
             validate_error_ref_columns(pool, error)?;
         }
-        if requires_colorbar(&item.render_type) && config.colorbar.is_none() {
+        if requires_colorbar(&item.render_type)
+            && config.series_chart(&item.series_id).colorbar.is_none()
+        {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: item.series_id.clone(),
                 kind: crate::RuleKind::FieldNeedsColorbar,
@@ -126,12 +134,12 @@ pub(in crate::renderer) fn validate_renderer_series(
         // Every axis column of a parallel series is read on the GPU, and
         // its colour column maps through the colourbar (#141).
         if let Some(parallel) = item.render_type.parallel() {
-            for column in parallel.columns {
+            for column in &parallel.columns {
                 validate_registered_column(pool, column)?;
             }
-            if let Some(column) = parallel.color_column {
+            if let Some(column) = &parallel.color_column {
                 validate_registered_column(pool, column)?;
-                if config.colorbar.is_none() {
+                if config.series_chart(&item.series_id).colorbar.is_none() {
                     return Err(FiggyError::InvalidSeriesConfig {
                         series_id: item.series_id.clone(),
                         kind: crate::RuleKind::ParallelColorMapNeedsColorbar,
@@ -198,7 +206,7 @@ pub(in crate::renderer) fn validate_tri_mesh_series(
             id: mesh.triangles.to_string(),
         })
     })?;
-    if config.colorbar.is_none() {
+    if config.series_chart(&item.series_id).colorbar.is_none() {
         return Err(fail(crate::RuleKind::TriMeshNeedsColorbar));
     }
     if let Some(contour) = &mesh.contour
@@ -260,9 +268,9 @@ pub(in crate::renderer) fn validate_streamline_series(
         kind: reason,
     };
     crate::data_config::validate_streamline_series(item).map_err(invalid)?;
-    if let Some(map) = streamlines.color_map {
+    if let Some(map) = &streamlines.color_map {
         validate_registered_column(pool, &map.column)?;
-        if config.colorbar.is_none() {
+        if config.series_chart(&item.series_id).colorbar.is_none() {
             return Err(invalid(crate::RuleKind::StreamlineColorMapNeedsColorbar));
         }
     }
@@ -376,7 +384,7 @@ pub(in crate::renderer) fn validate_vector_series(
             return Err(invalid(crate::RuleKind::VectorColorMapForm));
         }
     }
-    if style.color_map.is_some() && config.colorbar.is_none() {
+    if style.color_map.is_some() && config.series_chart(&item.series_id).colorbar.is_none() {
         return Err(invalid(crate::RuleKind::VectorColorMapNeedsColorbar));
     }
     Ok(())

@@ -22,14 +22,18 @@ fn ternary_sample_valid(xv: vec2<f32>, yv: vec2<f32>, cv: vec2<f32>) -> bool {
 fn sample_valid(t: Transform, xv: vec2<f32>, yv: vec2<f32>) -> bool {
     let x = xv.x + xv.y;
     let y = yv.x + yv.y;
-    return sample_finite(xv.x) && sample_finite(xv.y)
-        && sample_finite(yv.x) && sample_finite(yv.y)
-        && sample_finite(x) && sample_finite(y)
-        && (t.scale_log.x == 0.0 || x > 0.0)
-        && (t.scale_log.y == 0.0 || y > 0.0)
-        && (t.scale_prob.x < 0.5 || prob_in_domain(xv))
-        && (t.scale_prob.y < 0.5 || prob_in_domain(yv))
-        && polar_sample_valid(t, xv, yv);
+    // Non-short-circuit `&` / `|`: every test is pure, so the result is
+    // the `&&` chain's, but straight-line code. Software compilers
+    // (SwiftShader) slow down sharply on the nested branches a long `&&`
+    // chain becomes, once inlined into a picker loop (#363).
+    var ok = sample_finite(xv.x) & sample_finite(xv.y);
+    ok = ok & sample_finite(yv.x) & sample_finite(yv.y);
+    ok = ok & sample_finite(x) & sample_finite(y);
+    ok = ok & ((t.scale_log.x == 0.0) | (x > 0.0));
+    ok = ok & ((t.scale_log.y == 0.0) | (y > 0.0));
+    ok = ok & ((t.scale_prob.x < 0.5) | prob_in_domain(xv));
+    ok = ok & ((t.scale_prob.y < 0.5) | prob_in_domain(yv));
+    return ok & polar_sample_valid(t, xv, yv);
 }
 
 // Polar clip. The transform is vertex-visible only, so the vertex stage hands

@@ -730,7 +730,7 @@ impl Renderer {
             .chart_states
             .get(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
-        Ok((Chart::new(state.config.clone()), state.series.clone()))
+        Ok((Chart::stored(state.config.clone()), state.series.clone()))
     }
 
     /// The vector export in format `F`, with the PNG export's checks, device
@@ -908,7 +908,7 @@ impl Renderer {
         // export places the parent's area at the origin.
         let scaled_config = export_placed_config(chart.config(), scale, scope);
         let panel_rect = scaled_config.chart_area.0;
-        let scaled_chart = Chart::new(scaled_config);
+        let scaled_chart = Chart::stored(scaled_config);
 
         // 2) Temp ChartView with scaled axis textures, at the export scale.
         let view = self.create_chart_view_at(&scaled_chart, panel_rect, scale)?;
@@ -1066,7 +1066,7 @@ impl Renderer {
         // receipts have nothing to be held for.
         let _ = self.ensure_field_scratches(items)?;
         self.ensure_value_map_scratches(items, scale)?;
-        let _ = self.ensure_vector_scratches(items, scale)?;
+        let _ = self.ensure_vector_scratches(items, Some(scale))?;
         let _ = self.ensure_contour_scratches(items, scale, &mut panels)?;
         let _ = self.ensure_mesh_scratches(items, scale)?;
         self.prepare_arc_items(items, &mut panels)?;
@@ -1189,6 +1189,7 @@ impl Renderer {
                     color: msaa_view.as_ref().unwrap_or(&view),
                     resolve: msaa_view.as_ref().map(|_| &view),
                     depth: Some(&depth_view),
+                    depth_carried: None,
                 },
                 (w, h),
                 &item
@@ -1203,6 +1204,7 @@ impl Renderer {
                         })
                     }),
                 super::composite::PieceSeries::of(&series_list, &own),
+                super::prepare::CompositeSteps::All,
             );
             let bind_group = data_render::create_texture_bind_group(
                 &self.device,

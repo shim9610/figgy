@@ -241,11 +241,12 @@ with `NoFeasibleLayout`.
 document. `config()` reads the whole `Config`, and the editor changes
 everything that leaves the mapping alone: the legend, the chart title, the
 grid, annotations, the data selection (`picked_data`), the active layer,
-the backgrounds, each axis (`MonotonicAxis`: title, tick labels and their
-format, ticks, spacing, axis line, and a y axis' range), overlay axes
-(`overlay_axis`, and `overlay_x_axis` for an overlay's own x axis, whose
-range is the monotonic calls') and legends, and subplots under the same
-rules. It has no setter for the x
+the chart background, each axis (`MonotonicAxis`: title, tick labels and
+their format, ticks, and a y axis' range), overlay axes (`overlay_axis`,
+and `overlay_x_axis` for an overlay's own x axis, whose range is the
+monotonic calls') and legends, and subplots under the same rules. Any other
+field that leaves the mapping alone (the plot background, an axis' tick
+spacing or line) is edited through `assign`. It has no setter for the x
 range, x scale, breaks, direction, chart area or plot area.
 
 Decoration drags go through `nudge` and `drag`, which reject a move that
@@ -315,10 +316,13 @@ Compared with a chart that draws the same samples as an ordinary line:
 
 ## Interactions (M6)
 
-- **Picks** (`pick`, `pick_data`, hover and click selection) report the
-  sample index of the kept point at the nearer end of the drawn segment
-  under the pointer, as an ordinary line's pick does. A dense column's
-  drawn pixels come from exactly its kept points.
+- **Picks** (`pick`, `pick_data`, hover and click selection) hit when the
+  series' drawn ink lies within the pick reach of the pointer, read from the
+  chart's ink mask as on every registered chart (#381), and then report the
+  logical sample index of the kept point nearest to the pointer: the
+  nearest-datum kernel scans the kept points, and each row maps back to its
+  sample index through the shared envelope. Off the line nothing is picked.
+  A dense column's drawn pixels come from exactly its kept points.
 - **The picked highlight** rings the kept point with the selected sample
   index. A sample the envelope does not keep has no ring.
 - **`step_selection`** steps through the kept points.
@@ -410,8 +414,7 @@ envelope itself. It works without the renderer.
   `current` differs from the mapping the envelope was built for, slides
   included. The envelope cannot rebuild itself: make a full call.
 - `is_grid_aligned()` says whether the columns are aligned to the current
-  x range (no pixel offset). `aligned_mapping()` is the x range they are
-  aligned to.
+  x range (no pixel offset).
 - Each channel has `slots()` slots, `w + 3` where `w` is the plot width plus
   twice the margin: the lead edge sample (the last sample left of the
   columns), the columns `0..w`, column `w` (kept in full so that a slide by
@@ -630,10 +633,10 @@ x 축 스케일·끊기·방향이 여기에 속한다. 차트는 엔벌로프�
 
 `edit_config(|editor| ..)`는 문서 사본 위의 `MonotonicConfig`를 빌려준다. `config()`로 `Config`
 전체를 읽을 수 있고, 편집기로는 매핑에 영향이 없는 것을 모두 바꿀 수 있다. 범례, 차트 제목, 격자,
-주석, 데이터 선택(`picked_data`), 활성 레이어, 배경, 각 축(`MonotonicAxis`: 제목, 눈금 라벨과
-형식, 눈금, 간격, 축선, y 축이면 범위), 오버레이 축(`overlay_axis`, 오버레이 자기 x 축은
+주석, 데이터 선택(`picked_data`), 활성 레이어, 차트 배경, 각 축(`MonotonicAxis`: 제목, 눈금 라벨과
+형식, 눈금, y 축이면 범위), 오버레이 축(`overlay_axis`, 오버레이 자기 x 축은
 `overlay_x_axis`이며 그 범위는 단조 호출이 정한다)과 범례, 같은 규칙을 따르는 서브플롯이 여기에
-속한다. x 범위, x 스케일, 끊기, 방향, 차트 영역, 플롯 영역을 바꾸는 메서드는 없다.
+속한다. 매핑에 영향이 없는 나머지 필드(플롯 배경, 축의 눈금 간격과 축선)는 `assign`으로 바꾼다. x 범위, x 스케일, 끊기, 방향, 차트 영역, 플롯 영역을 바꾸는 메서드는 없다.
 
 꾸밈 요소 끌기는 `nudge`와 `drag`로 하며, 플롯 너비를 바꾸는 축이나 플롯 가장자리, 서브플롯 틀처럼
 매핑을 바꿀 움직임은 거절한다. `assign(config)`는 데이터로 편집한 문서 전체를 바꾸며, 매핑을
@@ -688,9 +691,11 @@ x 축 스케일·끊기·방향이 여기에 속한다. 차트는 엔벌로프�
 
 ### 상호작용(M6)
 
-- **피킹**(`pick`, `pick_data`, 마우스 올림, 클릭 선택)은 일반 선과 마찬가지로 포인터 아래 그려진
-  선분에서 가까운 쪽 끝의 남긴 점을 골라 그 샘플 번호를 알려 준다. 조밀한 열의 픽셀은 정확히
-  그 열의 남긴 점으로 그린다.
+- **피킹**(`pick`, `pick_data`, 마우스 올림, 클릭 선택)은 다른 등록 차트처럼 차트의 잉크 마스크를
+  읽어, 포인터에서 픽 사거리 안에 시리즈가 그린 잉크가 있으면 적중한다(#381). 적중하면 포인터에
+  가장 가까운 남긴 점의 논리 샘플 번호를 알려 준다. 최근접 데이터 커널이 남긴 점을 훑고, 각 행은
+  공유 엔벌로프를 거쳐 샘플 번호로 돌아간다. 선에서 벗어나면 아무것도 고르지 않는다. 조밀한 열의
+  픽셀은 정확히 그 열의 남긴 점으로 그린다.
 - **선택 강조**는 선택한 샘플 번호의 남긴 점에 고리를 그린다. 엔벌로프가 남기지 않은 샘플에는
   고리가 없다.
 - **`step_selection`**은 남긴 점을 따라 이동한다.
@@ -768,7 +773,6 @@ x 축 스케일·끊기·방향이 여기에 속한다. 차트는 엔벌로프�
 - `check_mapping(&current)`는 `current`가 엔벌로프를 만든 매핑(밀어내기 반영)과 다르면
   `SourceRequired { change }`로 실패한다. 엔벌로프는 스스로 다시 만들 수 없으므로 전체 호출을 한다.
 - `is_grid_aligned()`는 열이 현재 x 범위에 맞춰져 있는지(픽셀 오프셋이 없는지) 알려 준다.
-  `aligned_mapping()`은 열이 맞춰진 x 범위다.
 - 채널마다 슬롯이 `slots()`개, 곧 `w + 3`개 있다. `w`는 플롯 너비에 양쪽 여백을 더한 값이다.
   슬롯은 왼쪽 경계 샘플(열 0 왼쪽의 마지막 샘플), 열 `0..w`, 열 `w`(열보다 작은 밀어내기에서 보일
   수 있으므로 통째로 둔다), 오른쪽 경계 샘플(열 `w` 오른쪽의 첫 샘플) 순서다.

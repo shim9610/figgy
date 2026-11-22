@@ -6,7 +6,10 @@
 //! value-sized CPU allocation, shadow column, sampling, or downsampling is
 //! involved. Readback contains only the six `(hi, lo)` bounds consumed by the
 //! CPU-owned axis SSoT; no source endpoint or errorbar provenance crosses the
-//! GPU boundary.
+//! GPU boundary. The one exception is the range link gather (#357,
+//! `GpuErrorbarExtentEngine::begin_link_ends`): the layout that chooses the
+//! links' exits reads each link's two bars' drawn ends once, in the decode
+//! callback of the readback, and keeps none of them.
 
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -15,7 +18,7 @@ use crate::TryResolve;
 use crate::gpu_readback::{GpuReadback, ReadbackError};
 
 use crate::data::COLUMN_VALUE_BYTES;
-use crate::data_config::DataRenderType;
+use crate::data_config::{DataRenderType, RgbImageSeries, VectorSeries};
 use crate::data_render::ColumnHandle;
 use crate::gpu_memory::{
     ChargeTally, GpuByteCharge, GpuLedger, GpuResourceKind, charged_buffer, charged_buffer_init,
@@ -157,7 +160,7 @@ impl GpuSeriesFitMode {
                 matrix, fill: None, ..
             }) => (matrix, true),
             // An image fits as a heatmap of its red grid's layout.
-            DataRenderType::RgbImage { red, shading, .. } => {
+            DataRenderType::RgbImage(RgbImageSeries { red, shading, .. }) => {
                 (red, matches!(shading, Shading::Interpolated))
             }
             DataRenderType::Field(crate::data_config::FieldSeries {
@@ -173,23 +176,24 @@ impl GpuSeriesFitMode {
             }
             // Category bars fit from column and stack statistics, box plots
             // from record and ragged statistics.
-            DataRenderType::Histogram { .. }
-            | DataRenderType::CategoryBars { .. }
-            | DataRenderType::BoxPlot { .. }
-            | DataRenderType::RangeBars { .. } => {
+            DataRenderType::Histogram(_)
+            | DataRenderType::CategoryBars(_)
+            | DataRenderType::BoxPlot(_)
+            | DataRenderType::RangeBars(_)
+            | DataRenderType::RangeLinks(_) => {
                 return None;
             }
             // A radar series and streamlines fit as the line they draw (the
             // extent mode above answers them first).
-            DataRenderType::Radar { .. }
-            | DataRenderType::Streamlines { .. }
+            DataRenderType::Radar(_)
+            | DataRenderType::Streamlines(_)
             | DataRenderType::MonotonicLine(_) => return None,
             // A ternary chart's axes are the triangle, not a data extent.
-            DataRenderType::Ternary { .. } => return None,
+            DataRenderType::Ternary(_) => return None,
             // A parallel chart's axes are the categorical positions and the
             // normalized band; each parallel axis fits from its column's
             // statistics (`Chart::auto_fit_parallel_axes`).
-            DataRenderType::Parallel { .. }
+            DataRenderType::Parallel(_)
             | DataRenderType::EnergyLevels(_)
             | DataRenderType::Feynman(_) => return None,
             // A triangle mesh fits from its vertex columns' statistics at
@@ -198,14 +202,14 @@ impl GpuSeriesFitMode {
             // A grid vector's anchors are the grid's sample points: the
             // coordinates under `Centers`, the cell centres under `Edges`.
             // Data-mode tips over a grid are not part of the fit.
-            DataRenderType::Vector {
+            DataRenderType::Vector(VectorSeries {
                 components: crate::data_config::VectorComponents::Grid { u, .. },
                 ..
-            } => (u, true),
-            DataRenderType::Vector {
+            }) => (u, true),
+            DataRenderType::Vector(VectorSeries {
                 components: crate::data_config::VectorComponents::Points { .. },
                 ..
-            }
+            })
             | DataRenderType::Xy(_) => {
                 // The paired mode answered these above; it is their mode.
                 return GpuSeriesExtentMode::from_render_type(render_type).map(Self::Paired);
@@ -251,8 +255,8 @@ impl GpuSeriesExtentMode {
             // A radar outline is a line through (position, value) pairs;
             // streamlines are polylines whose NaN rows hold no extent.
             DataRenderType::Xy(crate::data_config::XySeries { scatter: None, .. })
-            | DataRenderType::Radar { .. }
-            | DataRenderType::Streamlines { .. }
+            | DataRenderType::Radar(_)
+            | DataRenderType::Streamlines(_)
             // A monotonic envelope fits as the line it draws: its kept
             // points, the visible samples and one on each side (#271).
             | DataRenderType::MonotonicLine(_) => Some(Self::Line),
@@ -265,26 +269,27 @@ impl GpuSeriesExtentMode {
             // Point vectors fit their anchors; in `Data` mode the tips are data
             // coordinates too and join the extent. `Pixels` tips are screen
             // lengths, not data, so they are left out like marker radii.
-            DataRenderType::Vector {
+            DataRenderType::Vector(VectorSeries {
                 components: crate::data_config::VectorComponents::Points { .. },
                 style,
-            } => Some(match style.scale {
+            }) => Some(match style.scale {
                 crate::data_config::VectorScale::Data { .. } => Self::VectorTips,
                 crate::data_config::VectorScale::Pixels { .. } => Self::Points,
             }),
-            DataRenderType::Vector {
+            DataRenderType::Vector(VectorSeries {
                 components: crate::data_config::VectorComponents::Grid { .. },
                 ..
-            }
-            | DataRenderType::Histogram { .. }
-            | DataRenderType::CategoryBars { .. }
-            | DataRenderType::BoxPlot { .. }
-            | DataRenderType::RangeBars { .. }
+            })
+            | DataRenderType::Histogram(_)
+            | DataRenderType::CategoryBars(_)
+            | DataRenderType::BoxPlot(_)
+            | DataRenderType::RangeBars(_)
+            | DataRenderType::RangeLinks(_)
             // A ternary chart's axes are the triangle, not a data extent.
-            | DataRenderType::Ternary { .. }
+            | DataRenderType::Ternary(_)
             // A parallel chart's are the categorical positions and the
             // normalized band.
-            | DataRenderType::Parallel { .. }
+            | DataRenderType::Parallel(_)
             // A DataLess energy-level series has no column to fit; its
             // extent is read from the SSOT (#203).
             | DataRenderType::EnergyLevels(_)
@@ -292,7 +297,7 @@ impl GpuSeriesExtentMode {
             | DataRenderType::TriMesh(_)
             | DataRenderType::Feynman(_)
             | DataRenderType::Field(_)
-            | DataRenderType::RgbImage { .. } => None,
+            | DataRenderType::RgbImage(_) => None,
         }
     }
 
@@ -514,6 +519,7 @@ async fn warm_extent_pipelines_js(device: &wgpu::Device) -> Result<(), GpuExtent
         &[
             ("reduce_values", "reduce_values"),
             ("reduce_states", "reduce_states"),
+            ("gather_link_ends", "gather_link_ends"),
         ],
         &mut observer,
     )
@@ -527,6 +533,8 @@ pub struct GpuErrorbarExtentEngine {
     states_layout: wgpu::BindGroupLayout,
     reduce_values: wgpu::ComputePipeline,
     reduce_states: wgpu::ComputePipeline,
+    /// The range link ends gather (#357), on the values layout.
+    gather_link_ends: wgpu::ComputePipeline,
     /// Where per-ticket scratch is charged. Held by the engine rather than
     /// passed per call so the whole `begin_*` chain keeps its signatures — the
     /// engine outlives every ticket it issues.
@@ -580,16 +588,6 @@ impl GpuErrorbarExtentEngine {
             },
         );
 
-        let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only },
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        };
         let uniform = wgpu::BindGroupLayoutEntry {
             binding: 2,
             visibility: wgpu::ShaderStages::COMPUTE,
@@ -605,7 +603,11 @@ impl GpuErrorbarExtentEngine {
                 &device,
                 &wgpu::BindGroupLayoutDescriptor {
                     label: Some(label),
-                    entries: &[storage(0, true), storage(1, false), uniform],
+                    entries: &[
+                        crate::gpu_compile::storage_entry(0, true),
+                        crate::gpu_compile::storage_entry(1, false),
+                        uniform,
+                    ],
                 },
             )
         };
@@ -637,7 +639,15 @@ impl GpuErrorbarExtentEngine {
                     layout: Some(layout),
                     module: &shader,
                     entry_point: Some(entry),
-                    compilation_options: crate::gpu_compile::workgroup_options(device),
+                    // `gather_link_ends` reads no workgroup memory, so it
+                    // takes wgpu's default options; the explicit DX12
+                    // zeroing is only for the reduce entries, which call
+                    // `figgy_zero_workgroup`.
+                    compilation_options: if entry == "gather_link_ends" {
+                        wgpu::PipelineCompilationOptions::default()
+                    } else {
+                        crate::gpu_compile::workgroup_options(device)
+                    },
                     cache: None,
                 },
             )
@@ -656,12 +666,20 @@ impl GpuErrorbarExtentEngine {
                 "reduce_states",
             )
         });
+        let gather_link_ends = observe_value(observer, INIT_SCOPE, "gather_link_ends", || {
+            make_pipeline(
+                "figgy range link ends pipeline",
+                &values_pipeline_layout,
+                "gather_link_ends",
+            )
+        });
 
         Self {
             values_layout,
             states_layout,
             reduce_values,
             reduce_states,
+            gather_link_ends,
             ledger,
             health: crate::renderer::DeviceHealth::default(),
         }
@@ -685,16 +703,6 @@ impl GpuErrorbarExtentEngine {
             },
         );
 
-        let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only },
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        };
         let uniform = wgpu::BindGroupLayoutEntry {
             binding: 2,
             visibility: wgpu::ShaderStages::COMPUTE,
@@ -710,7 +718,11 @@ impl GpuErrorbarExtentEngine {
                 &device,
                 &wgpu::BindGroupLayoutDescriptor {
                     label: Some(label),
-                    entries: &[storage(0, true), storage(1, false), uniform],
+                    entries: &[
+                        crate::gpu_compile::storage_entry(0, true),
+                        crate::gpu_compile::storage_entry(1, false),
+                        uniform,
+                    ],
                 },
             )
         };
@@ -743,7 +755,15 @@ impl GpuErrorbarExtentEngine {
                     layout: Some(layout),
                     module: &shader,
                     entry_point: Some(entry),
-                    compilation_options: crate::gpu_compile::workgroup_options(device),
+                    // `gather_link_ends` reads no workgroup memory, so it
+                    // takes wgpu's default options; the explicit DX12
+                    // zeroing is only for the reduce entries, which call
+                    // `figgy_zero_workgroup`.
+                    compilation_options: if entry == "gather_link_ends" {
+                        wgpu::PipelineCompilationOptions::default()
+                    } else {
+                        crate::gpu_compile::workgroup_options(device)
+                    },
                     cache: None,
                 },
             )
@@ -764,12 +784,22 @@ impl GpuErrorbarExtentEngine {
             )
         })
         .await;
+        let gather_link_ends =
+            observe_value_async(observer, INIT_SCOPE, "gather_link_ends", || {
+                make_pipeline(
+                    "figgy range link ends pipeline",
+                    &values_pipeline_layout,
+                    "gather_link_ends",
+                )
+            })
+            .await;
 
         Self {
             values_layout,
             states_layout,
             reduce_values,
             reduce_states,
+            gather_link_ends,
             ledger,
             health: crate::renderer::DeviceHealth::default(),
         }
@@ -1139,6 +1169,270 @@ impl GpuErrorbarExtentEngine {
                 .into_charge(&self.ledger, GpuResourceKind::ErrorbarScratch),
             _readback_charge: readback_tally.into_charge(&self.ledger, GpuResourceKind::Readback),
         })
+    }
+}
+
+/// One range link's record for [`GpuErrorbarExtentEngine::begin_link_ends`]
+/// (#357): its predecessor and successor rows and the pool offsets of the
+/// bars' start and end columns, in `(hi, lo)` pool elements, or
+/// [`LinkEndsRecord::NO_ROW`] rows for a link whose rows are past the
+/// columns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LinkEndsRecord {
+    pub(crate) pred: u32,
+    pub(crate) succ: u32,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+impl LinkEndsRecord {
+    /// The row of a link that reads nothing (`gpu_errorbar.wgsl`'s
+    /// `LINK_END_NO_ROW`).
+    pub(crate) const NO_ROW: u32 = u32::MAX;
+}
+
+/// The pool offsets of a range bar series' start and end columns and the
+/// rows both hold, for [`LinkEndsRecord`]s: checked as every extent column
+/// is.
+pub(crate) fn link_end_columns(
+    pool_buffer: &wgpu::Buffer,
+    start: &ColumnHandle,
+    end: &ColumnHandle,
+) -> Result<([u32; 2], u32), GpuExtentError> {
+    let start = checked_range(pool_buffer, start, start.len_values, "range start")?;
+    let end = checked_range(pool_buffer, end, end.len_values, "range end")?;
+    Ok(([start.offset, end.offset], start.len.min(end.len)))
+}
+
+impl GpuErrorbarExtentEngine {
+    /// The most links one [`Self::begin_link_ends`] gathers on this device:
+    /// as many records as one storage binding and one buffer hold. A
+    /// layout with more submits several gathers (#357, rule 10).
+    pub(crate) fn link_ends_capacity(device: &wgpu::Device) -> u32 {
+        let limits = device.limits();
+        let bytes = limits
+            .max_storage_buffer_binding_size
+            .min(limits.max_buffer_size);
+        (bytes / SERIES_STATE_BYTES).min(u64::from(u32::MAX)) as u32
+    }
+
+    /// Gather the drawn ends of `count` range links' bars (#357): each
+    /// record of `records` (at least `count` of them, at most
+    /// [`Self::link_ends_capacity`]) is written straight into the mapped
+    /// scratch buffer, one dispatch reads the four ends of each from the
+    /// column pool, and the records are read back. Nothing per link is kept
+    /// on the CPU: the ticket's readback is read once, by the layout.
+    pub(crate) fn begin_link_ends(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pool_buffer: &wgpu::Buffer,
+        mut records: impl Iterator<Item = LinkEndsRecord>,
+        count: u32,
+    ) -> Result<GpuLinkEndsTicket, GpuExtentError> {
+        if count == 0 {
+            return Err(GpuExtentError::EmptyColumn {
+                role: "range links",
+            });
+        }
+        if count > Self::link_ends_capacity(device) {
+            return Err(GpuExtentError::Internal {
+                invariant: "a range link gather fits its device's capacity",
+            });
+        }
+        let limits = device.limits();
+        let pool_binding = checked_pool_binding(pool_buffer, &limits)?;
+        let groups = div_ceil(count, WORKGROUP_SIZE)
+            .min(limits.max_compute_workgroups_per_dimension)
+            .max(1);
+        let bytes = u64::from(count) * SERIES_STATE_BYTES;
+        let scratch_tally = ChargeTally::new();
+        let readback_tally = ChargeTally::new();
+        // gpu-alloc: ErrorbarScratch
+        let scratch = charged_buffer(
+            &scratch_tally,
+            device,
+            &wgpu::BufferDescriptor {
+                label: Some("figgy range link ends scratch"),
+                size: bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: true,
+            },
+        )
+        .map_err(GpuExtentError::from_figgy)?;
+        {
+            // The records go straight into mapped GPU memory (rule 3).
+            let mut mapped = scratch
+                .get_mapped_range_mut(..)
+                .map_err(|error| GpuExtentError::ReadbackMapFailed(format!("{error:?}")))?;
+            let nan = [f32::NAN; 2];
+            let record_bytes = SERIES_STATE_BYTES as usize;
+            for index in 0..count as usize {
+                let record = records.next().ok_or(GpuExtentError::Internal {
+                    invariant: "a range link gather has a record per link",
+                })?;
+                let rows = [f32::from_bits(record.pred), f32::from_bits(record.succ)];
+                let columns = [f32::from_bits(record.start), f32::from_bits(record.end)];
+                let state = SeriesStateGpu {
+                    x: AxisStateGpu {
+                        minimum: nan,
+                        maximum: nan,
+                        minimum_positive: rows,
+                    },
+                    y: AxisStateGpu {
+                        minimum: nan,
+                        maximum: nan,
+                        minimum_positive: columns,
+                    },
+                };
+                mapped
+                    .slice(index * record_bytes..(index + 1) * record_bytes)
+                    .copy_from_slice(bytemuck::bytes_of(&state));
+            }
+        }
+        scratch.unmap();
+        // gpu-alloc: Readback
+        let readback = charged_buffer(
+            &readback_tally,
+            device,
+            &wgpu::BufferDescriptor {
+                label: Some("figgy range link ends readback"),
+                size: bytes,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            },
+        )
+        .map_err(GpuExtentError::from_figgy)?;
+        let params = params_buffer(
+            &scratch_tally,
+            device,
+            "figgy range link ends params",
+            ParamsGpu {
+                offsets_0: [0; 4],
+                offsets_1: [0; 4],
+                lengths_0: [0; 4],
+                lengths_1: [0, 0, count, groups],
+            },
+        )?;
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("figgy range link ends bindings"),
+            layout: &self.values_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(pool_binding),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: scratch.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: params.as_entire_binding(),
+                },
+            ],
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("figgy range link ends encoder"),
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("figgy range link ends pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.gather_link_ends);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(groups, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&scratch, 0, &readback, 0, bytes);
+        let (callback, map) = crate::gpu_readback::completion(&self.health);
+        encoder.map_buffer_on_submit(&readback, wgpu::MapMode::Read, 0..bytes, callback);
+        let submission = queue.submit(std::iter::once(encoder.finish()));
+        Ok(GpuLinkEndsTicket {
+            core: GpuExtentTicketCore {
+                readback: GpuReadback::from_completion(
+                    device,
+                    &self.health,
+                    &readback,
+                    Some(bytes),
+                    map,
+                    Some(submission),
+                ),
+                _scratch_charge: scratch_tally
+                    .into_charge(&self.ledger, GpuResourceKind::ErrorbarScratch),
+                _readback_charge: readback_tally
+                    .into_charge(&self.ledger, GpuResourceKind::Readback),
+            },
+            count,
+        })
+    }
+}
+
+/// The drawn ends of one range link's two bars (#357), in data values:
+/// `[start, end]` of the predecessor and of the successor. `None` for a
+/// link whose rows are past the bars' columns or an end that is not
+/// finite.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LinkEnds {
+    pub(crate) pred: [f64; 2],
+    pub(crate) succ: [f64; 2],
+}
+
+/// A range link gather in flight (#357): [`GpuErrorbarExtentEngine::begin_link_ends`]
+/// submits it; it resolves like every extent ticket.
+pub(crate) struct GpuLinkEndsTicket {
+    core: GpuExtentTicketCore,
+    count: u32,
+}
+
+impl GpuLinkEndsTicket {
+    /// The number of links it gathers.
+    pub(crate) fn count(&self) -> u32 {
+        self.count
+    }
+
+    pub(crate) async fn wait(&mut self) -> Result<(), GpuExtentError> {
+        self.core.wait().await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn wait_blocking(&mut self) -> Result<(), GpuExtentError> {
+        self.core.wait_blocking()
+    }
+
+    pub(crate) fn poll_ready(&mut self) -> Result<bool, GpuExtentError> {
+        self.core.poll_ready()
+    }
+
+    /// After a wait: hand each record's rows and ends to `each`, in record
+    /// order, straight from the mapped readback, and unmap. Nothing is
+    /// copied out (rule 2).
+    pub(crate) fn read(
+        mut self,
+        mut each: impl FnMut(u32, u32, Option<LinkEnds>),
+    ) -> Result<(), GpuExtentError> {
+        let count = self.count as usize;
+        self.core
+            .readback
+            .finish_checked(|bytes: &[u8]| {
+                let decode = |pair: [f32; 2]| {
+                    let v = pair[0] as f64 + pair[1] as f64;
+                    v.is_finite().then_some(v)
+                };
+                for chunk in bytes.chunks_exact(SERIES_STATE_BYTES as usize).take(count) {
+                    let state: SeriesStateGpu = bytemuck::pod_read_unaligned(chunk);
+                    let pred = state.x.minimum_positive[0].to_bits();
+                    let succ = state.x.minimum_positive[1].to_bits();
+                    let ends = (|| {
+                        Some(LinkEnds {
+                            pred: [decode(state.x.minimum)?, decode(state.x.maximum)?],
+                            succ: [decode(state.y.minimum)?, decode(state.y.maximum)?],
+                        })
+                    })();
+                    each(pred, succ, ends);
+                }
+            })
+            .map_err(GpuExtentError::from)
     }
 }
 

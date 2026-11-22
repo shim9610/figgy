@@ -2,31 +2,18 @@
 
 use figgy::FiggyChart;
 use renderer::{
-    Color, DataRenderType, SeriesConfig,
+    Color, DataRenderType, HistogramSeries, SeriesConfig, VectorSeries,
     config::{DataSelectionsConfig, PickedDataRef},
     data_config::{
         BarOrientation, DataBarStyleConfig, VectorComponents, VectorPivot, VectorScale, VectorStyle,
     },
 };
-use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
-use web_sys::HtmlCanvasElement;
+
+mod support;
+use support::{canvas_480x320 as canvas, details};
 
 wasm_bindgen_test_configure!(run_in_browser);
-
-fn canvas() -> HtmlCanvasElement {
-    let canvas: HtmlCanvasElement = web_sys::window()
-        .unwrap()
-        .document()
-        .unwrap()
-        .create_element("canvas")
-        .unwrap()
-        .dyn_into()
-        .unwrap();
-    canvas.set_width(480);
-    canvas.set_height(320);
-    canvas
-}
 
 fn histogram(id: &str, edges: &str, values: &str, orientation: BarOrientation) -> SeriesConfig {
     let (x, y) = if orientation == BarOrientation::Horizontal {
@@ -41,7 +28,7 @@ fn histogram(id: &str, edges: &str, values: &str, orientation: BarOrientation) -
         x_column: x.into(),
         y_column: y.into(),
         z_column: None,
-        render_type: DataRenderType::Histogram {
+        render_type: DataRenderType::Histogram(HistogramSeries {
             bar: DataBarStyleConfig {
                 fill_color: Color::BLACK,
                 border_color: Color::BLACK,
@@ -52,7 +39,7 @@ fn histogram(id: &str, edges: &str, values: &str, orientation: BarOrientation) -
                 orientation,
                 bar_style_overrides: None,
             },
-        },
+        }),
     }
 }
 
@@ -65,10 +52,6 @@ fn select(chart: &mut FiggyChart, reference: PickedDataRef) {
     chart
         .set_config(&serde_json::to_string(&config).unwrap())
         .unwrap();
-}
-
-async fn details(chart: &FiggyChart) -> serde_json::Value {
-    serde_json::from_str(&chart.selection_details().await.unwrap()).unwrap()
 }
 
 #[wasm_bindgen_test(async)]
@@ -173,7 +156,7 @@ async fn point_vector_selection_steps_along_its_anchors() {
         x_column: "vx".into(),
         y_column: "vy".into(),
         z_column: None,
-        render_type: DataRenderType::Vector {
+        render_type: DataRenderType::Vector(VectorSeries {
             components: VectorComponents::Points {
                 u: "vu".into(),
                 v: "vv".into(),
@@ -188,8 +171,9 @@ async fn point_vector_selection_steps_along_its_anchors() {
                 head_width_px: 8.0,
                 min_length_px: 0.0,
                 color_map: None,
+                auto_scale: false,
             },
-        },
+        }),
     }];
     chart
         .set_series(&serde_json::to_string(&series).unwrap())
@@ -272,14 +256,21 @@ async fn offset_lines_round_trip_hit_test_and_report_unshifted_values() {
         back["line_offsets"],
         serde_json::json!({ "series": ["low", "high"], "step_y": 5.0, "step_x": 0.5 })
     );
+    // The kernel's chart keeps its layout fitted (`LayoutState::Fitted`,
+    // #357): `set_config` fits the margins to the new ranges' tick labels,
+    // the fit `auto_layout` makes with the draw style's font.
+    assert!(config.layout_state.is_fitted());
+    let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
+    let fitted = renderer::layout::auto_layout(&config, &measure);
     assert_eq!(
         serde_json::from_value::<renderer::Config>(back).unwrap(),
-        config
+        fitted
     );
-    chart.frame().unwrap();
+    // A pick hits the ink the chart's frames drew (#381): draw every series.
+    chart.series_ready().await.unwrap();
 
     // Data (x, y) to canvas pixels through the displayed base panel.
-    let (display, _, _) = renderer::display_config_for_surface(&config, (480, 320));
+    let (display, _, _) = renderer::display_config_for_surface(&fitted, (480, 320));
     let area = display.data_area().unwrap().0;
     let px = |x: f64, y: f64| {
         (

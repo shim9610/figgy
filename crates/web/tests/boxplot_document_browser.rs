@@ -9,11 +9,13 @@
 //! exports.
 
 use figgy::FiggyChart;
-use renderer::config::{DataSelectionsConfig, PickedDataRef};
 use renderer::{Config, DataRenderType, SeriesConfig};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
 use web_sys::HtmlCanvasElement;
+
+mod support;
+use support::{details, select};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -55,30 +57,10 @@ fn canvas() -> HtmlCanvasElement {
     canvas
 }
 
-fn select(chart: &mut FiggyChart, series_id: &str, bin_index: usize) {
-    let mut config: Config = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
-    config.picked_data = Some(DataSelectionsConfig {
-        refs: vec![PickedDataRef::HistogramBin {
-            source_id: None,
-            series_id: series_id.into(),
-            bin_index,
-            half: None,
-        }],
-        ..Default::default()
-    });
-    chart
-        .set_config(&serde_json::to_string(&config).unwrap())
-        .unwrap();
-}
-
-async fn details(chart: &FiggyChart) -> serde_json::Value {
-    serde_json::from_str(&chart.selection_details().await.unwrap()).unwrap()
-}
-
 #[wasm_bindgen_test(async)]
 async fn a_box_plot_document_opens_as_box_plot_series() {
     let mut chart = FiggyChart::create(canvas()).await.unwrap();
-    chart.set_boxplot_document(DOCUMENT).unwrap();
+    chart.set_boxplot_document(DOCUMENT, None).unwrap();
 
     let config: Config = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
     let series: Vec<SeriesConfig> = serde_json::from_str(&chart.get_series().unwrap()).unwrap();
@@ -86,7 +68,7 @@ async fn a_box_plot_document_opens_as_box_plot_series() {
     assert!(
         series
             .iter()
-            .all(|s| matches!(s.render_type, DataRenderType::BoxPlot { .. }))
+            .all(|s| matches!(s.render_type, DataRenderType::BoxPlot(_)))
     );
     assert_eq!(config.bottom_x.category_count(), Some(3));
     // The value axis covers the whiskers and the outlier.
@@ -114,7 +96,7 @@ async fn a_box_plot_document_opens_as_box_plot_series() {
     assert!(png.length() > 0);
 
     // A second document replaces the first one's series and records.
-    chart.set_boxplot_document(DOCUMENT).unwrap();
+    chart.set_boxplot_document(DOCUMENT, None).unwrap();
     let series: Vec<SeriesConfig> = serde_json::from_str(&chart.get_series().unwrap()).unwrap();
     assert_eq!(series.len(), 2);
 }
@@ -124,14 +106,14 @@ async fn a_box_plot_document_opens_as_box_plot_series() {
 #[wasm_bindgen_test(async)]
 async fn a_rejected_boxplot_document_keeps_the_previous_one() {
     let mut chart = FiggyChart::create(canvas()).await.unwrap();
-    chart.set_boxplot_document(DOCUMENT).unwrap();
+    chart.set_boxplot_document(DOCUMENT, None).unwrap();
     let config = chart.get_config().unwrap();
     let series = chart.get_series().unwrap();
     // A budget at the current usage leaves no room for the new styles.
     let status: serde_json::Value = serde_json::from_str(&chart.gpu_memory_status()).unwrap();
     let total = status["total_bytes"].as_f64().unwrap();
     chart.configure_auto_residency(total, total).unwrap();
-    assert!(chart.set_boxplot_document(DOCUMENT).is_err());
+    assert!(chart.set_boxplot_document(DOCUMENT, None).is_err());
     assert_eq!(chart.get_config().unwrap(), config);
     assert_eq!(chart.get_series().unwrap(), series);
 }
