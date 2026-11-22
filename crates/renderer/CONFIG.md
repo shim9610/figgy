@@ -118,7 +118,12 @@ UTC Unix seconds with `AutoCalendar` tick planning; use
 `LabelFormat::Timestamp(TimestampLabelFormat { unit: TimestampUnit::Milliseconds, ..Default::default() })`
 (types in `renderer::format`).
 `AutoCalendar` measures tick-label text and coarsens the calendar step so labels
-do not overlap. A forced `step: Some(CalendarStep::…)` (#357: `Day`,
+do not overlap. With a `Pattern` label it never takes a step finer than the
+finest field the pattern prints (`%f` sub-second, `%S` second, `%M` minute,
+`%H` hour, `%d` day, `%m` or `%b` month, `%Y` year), so `%Y-%m` ticks at most
+once a month instead of repeating each month's label (#411). A range too short
+to hold one tick at that step, or a pattern with no field, walks as before. A
+forced `step: Some(CalendarStep::…)` (#357: `Day`,
 `Week { start: Weekday::Monday }`, `Month`, `Quarter`, `Year`) ticks every
 boundary of that unit at local midnight instead, and `period_labels: true`
 centres each label on its period (a month header), and leaves out a label
@@ -1634,7 +1639,7 @@ pub struct Config {
 축을 따라 겹치는 숫자 라벨은 일정 간격으로 일부만 표시하며, 눈금과 격자 설정은 바꾸지 않는다. 범주형 축은 라벨을 숨기는 대신 여러 줄로 엇갈려 그려 모든 범주의 이름을 남긴다(#205). 정밀도를 바꿔도 `out_margin`이나 제목 위치를 자동으로 바꾸지는 않으므로 긴 라벨에는 여백을 직접 늘리거나 `layout::auto_layout`을 호출한다. 이 함수는 각 축 띠를 라벨과 제목이 차지하는 폭에 바깥 끝 여유(그 끝에 놓인 글꼴 크기의 절반, 최소 8px)를 더한 크기로 맞추고(원래보다 좁아질 수도 있다), 라벨과 겹치는 제목에는 라벨 글꼴 크기의 절반만큼 라벨 옆에 놓는 오프셋을 주고, 너무 긴 소수 라벨을 `Power` 형식으로 바꾼 설정을 반환한다. 색상 막대의 눈금 라벨도 같은 형식 규칙을 사용한다.
 
 `LabelFormat::Timestamp`는 숫자 좌표를 시간으로 표시한다. 기본값은 UTC 기준 Unix 초와 `AutoCalendar` 눈금 배치다. JavaScript 타임스탬프에는 `unit: TimestampUnit::Milliseconds`를, 한국 표준시(UTC+9)처럼 고정 시차를 적용하려면 `timezone: TimestampZone::FixedOffsetMinutes(540)`을 사용한다(타입은 `renderer::format`에 있다).
-`AutoCalendar`는 라벨 너비를 측정해 달력상의 눈금 간격을 조절한다. `step: Some(CalendarStep::…)`(#357: `Day`, `Week { start: Weekday::Monday }`, `Month`, `Quarter`, `Year`)으로 단위를 정하면 그 단위의 경계마다 현지 자정에 눈금을 둔다. `period_labels: true`이면 라벨을 기간의 가운데에 놓고(월 머리글), 범위 안에 든 기간의 몫보다 넓은 라벨은 그리지 않는다. 라벨 방식 `TimestampLabelMode::Relative { origin, prefix }`("Week 0", "Week 1", …. `origin`이 든 기간부터 단위 수를 센다. `origin`은 형식의 `unit`으로 적은 정수 타임스탬프다)와 `Custom { origin, labels }`(기간 `n`에 호스트가 준 문자열. 목록을 넘어선 기간은 라벨을 그리지 않는다)에는 `step`이 있어야 한다. `%b`는 월의 영어 세 글자 이름을 쓴다. `default::default_calendar_timeline_config()`는 타임라인의 월요일 주 눈금 위에 월 머리글을 얹은 설정이다.
+`AutoCalendar`는 라벨 너비를 측정해 달력상의 눈금 간격을 조절한다. `Pattern` 라벨이면 패턴이 출력하는 가장 작은 필드보다 촘촘한 간격을 고르지 않는다(`%f` 초 미만, `%S` 초, `%M` 분, `%H` 시, `%d` 일, `%m`·`%b` 월, `%Y` 연). 그래서 `%Y-%m`은 많아야 한 달에 눈금 하나를 두고 같은 월 라벨을 되풀이하지 않는다(#411). 그 간격으로 눈금 하나도 들지 않는 짧은 범위나 필드가 없는 패턴은 이전과 같이 고른다. `step: Some(CalendarStep::…)`(#357: `Day`, `Week { start: Weekday::Monday }`, `Month`, `Quarter`, `Year`)으로 단위를 정하면 그 단위의 경계마다 현지 자정에 눈금을 둔다. `period_labels: true`이면 라벨을 기간의 가운데에 놓고(월 머리글), 범위 안에 든 기간의 몫보다 넓은 라벨은 그리지 않는다. 라벨 방식 `TimestampLabelMode::Relative { origin, prefix }`("Week 0", "Week 1", …. `origin`이 든 기간부터 단위 수를 센다. `origin`은 형식의 `unit`으로 적은 정수 타임스탬프다)와 `Custom { origin, labels }`(기간 `n`에 호스트가 준 문자열. 목록을 넘어선 기간은 라벨을 그리지 않는다)에는 `step`이 있어야 한다. `%b`는 월의 영어 세 글자 이름을 쓴다. `default::default_calendar_timeline_config()`는 타임라인의 월요일 주 눈금 위에 월 머리글을 얹은 설정이다.
 큰 Unix 시간 값에서도 작은 시간 차이를 보존하려면 네이티브에서는 `Renderer::add_hilo_column`, 웹에서는 `Float64Array`를 받는 `register_column_f64` / `update_register_column_f64`를 사용한다. GPU에는 `(hi: f32, lo: f32)` 쌍으로 저장된다.
 [시간축 데모](https://github.com/shim9610/figgy/blob/master/crates/web/timestamp-demo.html)에서 시간 범위, 차트 너비와 출력 배율을 바꾸며 결과를 확인할 수 있다.
 
