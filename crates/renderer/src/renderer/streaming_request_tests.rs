@@ -12,6 +12,9 @@ mod ssot_invalidation;
 #[path = "overlay_layer_tests.rs"]
 mod overlay_layers;
 
+#[path = "range_link_readiness_tests.rs"]
+mod range_link_readiness;
+
 #[path = "subplot_tests.rs"]
 mod subplots;
 

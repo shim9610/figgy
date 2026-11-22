@@ -1534,6 +1534,13 @@ impl Chart {
                 }
                 continue;
             }
+            // Range links read no column (#357, #405): their routes join
+            // their bars, whose extents fit the axes. A route leaves those
+            // extents only by fixed pixel amounts (its head, lead, tip gap
+            // and stroke), which no column statistic holds.
+            if cfg.render_type.range_links().is_some() {
+                continue;
+            }
             // A category bar series fits its value axis to its group's bars;
             // its category positions sit on a categorical axis no fit moves.
             if cfg.render_type.category_bars().is_some() {

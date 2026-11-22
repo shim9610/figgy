@@ -501,6 +501,12 @@ pub struct Renderer {
     /// carry path is exercisable with small `n`. Always `None` in release.
     #[cfg(test)]
     arc_chunk_override: Option<u32>,
+    /// Test-only: the `series_id` a registered frame leaves out as if its
+    /// pipelines were still compiling in a browser (#299, #406), so a
+    /// native test reaches the pass that draws without it. Always `None`
+    /// in release.
+    #[cfg(test)]
+    pending_series_override: Option<String>,
 
     /// Constellation deep-space backdrop cache. The backdrop depends only on
     /// the panel size and the (nebula, dust, seed) options — NOT on axis

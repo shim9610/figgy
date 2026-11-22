@@ -658,7 +658,18 @@ impl Renderer {
             ready
         }
         #[cfg(not(target_arch = "wasm32"))]
-        true
+        {
+            // A test stands in for a compile that has not resolved (#406).
+            #[cfg(test)]
+            if let (Some(pending), Some(series)) = (
+                self.pending_series_override.as_deref(),
+                state.series.get(index),
+            ) && series.series_id == pending
+            {
+                return false;
+            }
+            true
+        }
     }
 
     /// Whether the last screen frame drew every series it was handed

@@ -53,6 +53,25 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 `color` and the transition arrows' `color_by_wavelength` and
 `label_knockout`) are additive.
 
+- **Range links fit and draw without their own columns**
+  ([#405](https://github.com/shim9610/figgy/issues/405),
+  [#406](https://github.com/shim9610/figgy/issues/406)). No value, API or
+  wire form changes.
+  - A fit of a chart with a `RangeLinks` series (`fit_ranges`,
+    `fit_config`, `fit_config_scoped`, `fit_y_axes_config` and the browser
+    product's `fit_ranges()`) no longer fails with `unknown column id: `:
+    links read no column, so they add nothing to the fit, which is the
+    fit of their bars. A route leaves its bars' extents only by fixed
+    pixel amounts (its chevron, lead, tip gap and stroke), as a marker
+    or a stroke does, and no column statistic holds those. Tests:
+    `a_fit_with_range_links_is_the_fit_of_their_bars`,
+    `fit_ranges_with_range_links_is_the_fit_of_their_bars`.
+  - A frame that leaves a link series' bars out while their pipelines
+    compile in a browser (#299) no longer fails with `unknown column id: `:
+    the links draw nothing in that frame and appear with their bars, so
+    `first_frame_ready()` settles with both. Tests:
+    `links_whose_bars_are_not_in_the_pass_draw_nothing_until_the_bars_draw`,
+    `a_cold_frame_with_links_ready_before_their_bars_does_not_fail`.
 - **Range link fixes and playground picks**
   ([#357](https://github.com/shim9610/figgy/issues/357),
   [#381](https://github.com/shim9610/figgy/issues/381)). Appearance and

@@ -2337,3 +2337,96 @@ fn three_thousand_links_draw_and_pick() {
         "the last links draw"
     );
 }
+
+/// Range links read no column (#405): fitting a chart with links fits it as
+/// its bars alone, on a numeric position axis in both directions, through
+/// `fit_ranges` and the candidate fits that share its code
+/// (`fit_config`, `fit_config_scoped`), and the links still draw after
+/// the fit.
+#[test]
+fn a_fit_with_range_links_is_the_fit_of_their_bars() {
+    let mut r = renderer();
+    r.add_column("fit-pos", &col(vec![0.0, 1.0])).unwrap();
+    r.add_column("fit-start", &col(vec![0.0, 5.0])).unwrap();
+    r.add_column("fit-end", &col(vec![2.0, 8.0])).unwrap();
+    let mut bars = ranges("fit-bars", GREEN);
+    bars.x_column = "fit-pos".into();
+    bars.y_column = "fit-end".into();
+    if let DataRenderType::RangeBars(b) = &mut bars.render_type {
+        b.start = "fit-start".into();
+        b.slot_width = Some(1.0);
+    }
+    let mut links = SeriesConfig::range_links("fit-links", "fit-bars", [(0, 1)]);
+    if let DataRenderType::RangeLinks(l) = &mut links.render_type {
+        l.color = ORANGE;
+        l.width = 2.0;
+    }
+    assert!(links.x_column.is_empty() && links.y_column.is_empty());
+    for direction in DIRECTIONS {
+        let mut base = chart(direction);
+        let config = base.config_mut();
+        config.bottom_x.categories = None;
+        config.left_y.categories = None;
+        // Ranges no fit would produce, so an unfitted axis shows.
+        for axis in [&mut config.bottom_x, &mut config.left_y] {
+            axis.min = -50.0;
+            axis.max = 50.0;
+        }
+        let bars_only = [bars.clone()];
+        let with_links = [bars.clone(), links.clone()];
+
+        let mut expected = Chart::new(base.config().clone());
+        r.fit_ranges(&mut expected, &mut bars_only.clone()).unwrap();
+        let mut fitted = Chart::new(base.config().clone());
+        r.fit_ranges(&mut fitted, &mut with_links.clone())
+            .expect("a fit with range links succeeds");
+        for (name, got, want) in [
+            ("x", &fitted.config().bottom_x, &expected.config().bottom_x),
+            ("y", &fitted.config().left_y, &expected.config().left_y),
+        ] {
+            assert_eq!(
+                (got.min, got.max),
+                (want.min, want.max),
+                "{direction:?} {name}"
+            );
+        }
+        assert_ne!(
+            (fitted.config().bottom_x.min, fitted.config().bottom_x.max),
+            (-50.0, 50.0),
+            "{direction:?}: the fit moved the axes"
+        );
+        assert_eq!(
+            r.fit_config(base.config(), &with_links, 0.05).unwrap(),
+            r.fit_config(base.config(), &bars_only, 0.05).unwrap(),
+            "{direction:?}: fit_config"
+        );
+        let scope = renderer::FitScope {
+            layer: renderer::LayerRef::Base,
+            axes: renderer::FitAxes::ALL,
+            linked: renderer::LinkedFitData::Group,
+            keep: &[],
+        };
+        assert_eq!(
+            r.fit_config_scoped(base.config(), &with_links, 0.05, &scope)
+                .unwrap(),
+            r.fit_config_scoped(base.config(), &bars_only, 0.05, &scope)
+                .unwrap(),
+            "{direction:?}: fit_config_scoped"
+        );
+
+        // The fitted chart draws both series.
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&fitted, &with_links),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
+        let whole = (0, 0, img.width, img.height);
+        assert!(bbox(&img, whole, is_green).is_some(), "{direction:?} bars");
+        assert!(
+            bbox(&img, whole, is_orange).is_some(),
+            "{direction:?} links"
+        );
+    }
+}

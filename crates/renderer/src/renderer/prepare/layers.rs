@@ -297,15 +297,23 @@ impl PrepareContext<'_> {
                 continue;
             }
             // Range links read no column (#357): they route from their
-            // bars' group 3, so the generic handles are the bars' own.
-            let columns = rt
-                .range_links()
-                .and_then(|links| {
-                    series_specs
-                        .iter()
-                        .find(|s| s.config.series_id == links.bars)
-                })
-                .map_or(cfg, |bars| bars.config);
+            // bars' group 3, so the generic handles are the bars' own. Bars
+            // left out of this pass (their pipelines still compiling, #299)
+            // leave the links nothing to route: they draw nothing until the
+            // bars draw too (#406).
+            let columns = match rt.range_links() {
+                Some(links) => match series_specs
+                    .iter()
+                    .find(|s| s.config.series_id == links.bars)
+                {
+                    Some(bars) => bars.config,
+                    None => {
+                        out.push(data_render::SeriesLayers::empty());
+                        continue;
+                    }
+                },
+                None => cfg,
+            };
             let x_h = match lookup(&columns.x_column) {
                 // A monotonic series before its group's first full call has
                 // no envelope columns: it draws nothing (#271).
