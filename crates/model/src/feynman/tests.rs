@@ -1156,3 +1156,114 @@ fn spans_never_overflow_for_lines_and_arcs_crossing_a_plot() {
 fn scale_v(a: [f32; 2], s: f32) -> [f32; 2] {
     [a[0] * s, a[1] * s]
 }
+
+/// A measure whose extents grow with the text's size, as a face's do.
+struct Sized;
+impl MeasureText for Sized {
+    fn measure_rich(&self, rt: &RichText) -> TextExtents {
+        TextExtents {
+            width: rt.segments.len() as f32 * 0.6 * rt.font_size,
+            ascent: 0.8 * rt.font_size,
+            descent: 0.3 * rt.font_size,
+        }
+    }
+}
+
+/// x and y over 0..1 on a 400 × 400 px plot at (0, 0), y up.
+fn square() -> PixelSpace {
+    let axis = AxisSpace {
+        map: AxisMap::Linear { min: 0.0, max: 1.0 },
+        inverted: false,
+        breaks: BreakMap::IDENTITY,
+    };
+    let rect = RectF {
+        x: 0.0,
+        y: 0.0,
+        width: 400.0,
+        height: 400.0,
+    };
+    PixelSpace {
+        panel: rect,
+        plot: rect,
+        x: axis,
+        y: axis,
+    }
+}
+
+/// #411: an external vertex's label box clears its leg's ink and marker
+/// by the label gap, for every label size and leg slope and for a straight
+/// and a wavy leg; it moves out only as far as that takes; it picks where
+/// it is drawn; and a host's offset still moves it from there.
+#[test]
+fn external_labels_clear_their_legs_at_any_size_and_slope() {
+    let space = square();
+    for particle in [ParticleLine::Fermion, ParticleLine::Photon] {
+        for degrees in (0..360).step_by(15) {
+            for size in [8.0f32, 12.0, 25.0, 40.0] {
+                let angle = (degrees as f64).to_radians();
+                let mut diagram = FeynmanSeries {
+                    vertices: vec![
+                        FeynmanVertex {
+                            at: Some([0.5, 0.5]),
+                            ..vertex("v", VertexRole::Internal)
+                        },
+                        FeynmanVertex {
+                            at: Some([0.5 + 0.3 * angle.cos(), 0.5 + 0.3 * angle.sin()]),
+                            label: Some(RichText::plain("μ⁺", Color::BLACK, size, "")),
+                            ..vertex("x", VertexRole::Outgoing)
+                        },
+                    ],
+                    propagators: vec![line("p", "v", "x", particle)],
+                    ..crate::defaults::feynman_series()
+                };
+                let case = format!("{particle:?} {degrees}° {size} px");
+                let placed = diagram.placed(&space, None).unwrap();
+                let label = placed
+                    .label(FeynmanLabelPart::Vertex, 1, &Sized)
+                    .expect("drawn");
+                let rect = label.rect();
+                let centre = [rect.x + rect.width / 2.0, rect.y + rect.height / 2.0];
+                let half = [rect.width / 2.0, rect.height / 2.0];
+                let (v, x) = (placed.px(0).unwrap(), placed.px(1).unwrap());
+                let need = placed.envelope(0).max(placed.marker_radius(1)) + LABEL_GAP;
+                let gap = box_segment_distance(centre, half, v, x);
+                assert!(gap >= need - 0.01, "{case}: {gap} < {need}");
+                // Moved no further than it takes: the box is at its
+                // default place (half its size beyond the marker and the
+                // gap, along the outward direction), or the gap is met to
+                // a fraction of a pixel.
+                let out = placed.outward(1);
+                let reach = placed.marker_radius(1) + LABEL_GAP;
+                let default = [
+                    x[0] + out[0] * (reach + half[0]),
+                    x[1] + out[1] * (reach + half[1]),
+                ];
+                let at_default =
+                    (centre[0] - default[0]).abs() < 1e-3 && (centre[1] - default[1]).abs() < 1e-3;
+                assert!(
+                    at_default || gap < need + 0.1,
+                    "{case}: pushed further than it takes ({gap} for {need})"
+                );
+                drop(placed);
+                // The pick hits the label where it is drawn.
+                assert_eq!(
+                    diagram
+                        .pick(&space, &Sized, centre, 0.0)
+                        .unwrap()
+                        .map(|(hit, _)| hit),
+                    Some(FeynmanHit::Label(FeynmanLabelPart::Vertex, 1)),
+                    "{case}"
+                );
+                // A drag adds to the cleared place.
+                diagram.drag_label(FeynmanLabelPart::Vertex, 1, 7.0, -5.0);
+                let placed = diagram.placed(&space, None).unwrap();
+                let moved = placed
+                    .label(FeynmanLabelPart::Vertex, 1, &Sized)
+                    .unwrap()
+                    .rect();
+                assert!((moved.x - rect.x - 7.0).abs() < 1e-3, "{case}");
+                assert!((moved.y - rect.y + 5.0).abs() < 1e-3, "{case}");
+            }
+        }
+    }
+}

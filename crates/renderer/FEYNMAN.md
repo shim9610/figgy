@@ -149,7 +149,12 @@ A vertex draws a dot when internal and nothing at a leg's end, unless its
 `Cross` or `CircledCross`. Labels are rich text, so TeX such as `$e^-$`
 keeps its scripts. A vertex label sits away from the vertex's neighbours, a
 propagator label on the side its arc bulges to, and a momentum arrow
-(`MomentumArrow { label, side, reversed }`) runs beside the line.
+(`MomentumArrow { label, side, reversed }`) runs beside the line. The label
+of an external vertex (one with a single leg) keeps a gap of 6 px between
+its text block, measured with its ascent and descent, and its leg's ink and
+marker: where the default place would come closer, the label moves out along
+the outward direction just far enough (#411), at any label size and leg
+slope. A host's `label_offset` applies on top of that place.
 
 ## The default look
 

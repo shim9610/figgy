@@ -1780,3 +1780,164 @@ fn literal_unicode_charges_draw_as_superscript_signs() {
         assert!(pdf(&literal) == pdf(&styled), "{scale}x PDF");
     }
 }
+
+/// #411: the electron–positron fixture of the issue: fixed outer vertices
+/// at (0.15, 0.26 / 0.74) and (0.85, 0.26 / 0.74), the default style, and
+/// 25 px host labels `e⁺`, `e⁻`, `μ⁺` and `μ⁻` on a 1000 × 800 chart.
+fn annihilation(labelled: bool) -> (Chart, FeynmanSeries) {
+    use renderer::text::RichText;
+    let mut chart = chart();
+    chart.set_area(0, 0, 1000, 800);
+    chart.fit_layout();
+    let at = |x, y| Some([x, y]);
+    let mut vertices = vec![
+        vertex("e+", VertexRole::Incoming, at(0.15, 0.74)),
+        vertex("e-", VertexRole::Incoming, at(0.15, 0.26)),
+        vertex("v1", VertexRole::Internal, at(0.36, 0.5)),
+        vertex("v2", VertexRole::Internal, at(0.64, 0.5)),
+        vertex("mu+", VertexRole::Outgoing, at(0.85, 0.74)),
+        vertex("mu-", VertexRole::Outgoing, at(0.85, 0.26)),
+    ];
+    if labelled {
+        for (k, text) in [(0, "e⁺"), (1, "e⁻"), (4, "μ⁺"), (5, "μ⁻")] {
+            vertices[k].label = Some(RichText::plain(text, Color::BLACK, 25.0, ""));
+        }
+    }
+    let line = |id: &str, from: &str, to: &str, particle| Propagator::new(id, from, to, particle);
+    let diagram = FeynmanSeries {
+        vertices,
+        propagators: vec![
+            line("p0", "e+", "v1", ParticleLine::AntiFermion),
+            line("p1", "e-", "v1", ParticleLine::Fermion),
+            line("p2", "v1", "v2", ParticleLine::Photon),
+            line("p3", "v2", "mu+", ParticleLine::AntiFermion),
+            line("p4", "v2", "mu-", ParticleLine::Fermion),
+        ],
+        ..FeynmanSeries::default()
+    };
+    (chart, diagram)
+}
+
+/// The least distance, in export pixels, from a pixel of `labelled`'s ink
+/// that `bare` lacks (a label's glyphs) to a pixel of `bare`'s ink (the
+/// legs and markers), both within `rect` (logical pixels) widened by
+/// `margin`.
+fn label_clearance(
+    labelled: &RasterImage,
+    bare: &RasterImage,
+    rect: renderer::layout::RectF,
+    margin: f32,
+    scale: f32,
+) -> f32 {
+    let x0 = ((rect.x - margin) * scale).max(0.0) as u32;
+    let y0 = ((rect.y - margin) * scale).max(0.0) as u32;
+    let x1 = (((rect.x + rect.width + margin) * scale) as u32).min(bare.width - 1);
+    let y1 = (((rect.y + rect.height + margin) * scale) as u32).min(bare.height - 1);
+    let at = |img: &RasterImage, x: u32, y: u32| {
+        ink(&img.rgba[((y * img.width + x) * 4) as usize..][..4])
+    };
+    let mut least = f32::INFINITY;
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            if !at(labelled, x, y) || at(bare, x, y) {
+                continue;
+            }
+            for v in y0..=y1 {
+                for u in x0..=x1 {
+                    if at(bare, u, v) {
+                        let d = (x as f32 - u as f32).hypot(y as f32 - v as f32);
+                        least = least.min(d);
+                    }
+                }
+            }
+        }
+    }
+    least
+}
+
+// #411: at the default style every external label of the issue's fixture
+// keeps a visible gap between its glyph ink and its leg, at 1x and 2x,
+// and still picks and drags where it is drawn.
+#[test]
+fn external_labels_keep_a_gap_from_their_legs_at_1x_and_2x() {
+    let mut r = renderer();
+    let (chart, diagram) = annihilation(true);
+    let (_, bare) = annihilation(false);
+    let rects = label_rects(&chart, &diagram);
+    assert_eq!(rects.len(), 4);
+    for scale in [1.0, 2.0] {
+        let with = export(&mut r, &chart, &[series("qed", diagram.clone())], scale);
+        let without = export(&mut r, &chart, &[series("qed", bare.clone())], scale);
+        // Only the labels move: every pixel away from their blocks is the
+        // bare diagram's, byte for byte.
+        let away = |x: u32, y: u32| {
+            let (x, y) = (x as f32 / scale, y as f32 / scale);
+            rects.iter().all(|r| {
+                x < r.x - 2.0
+                    || x > r.x + r.width + 2.0
+                    || y < r.y - 2.0
+                    || y > r.y + r.height + 2.0
+            })
+        };
+        for y in 0..with.height {
+            for x in 0..with.width {
+                let i = ((y * with.width + x) * 4) as usize;
+                if away(x, y) {
+                    assert_eq!(
+                        with.rgba[i..i + 4],
+                        without.rgba[i..i + 4],
+                        "{scale}x ({x}, {y})"
+                    );
+                }
+            }
+        }
+        for (k, rect) in rects.iter().enumerate() {
+            let gap = label_clearance(&with, &without, *rect, 16.0, scale);
+            assert!(gap.is_finite(), "{scale}x label {k}: no ink found");
+            assert!(
+                gap >= 3.0 * scale,
+                "{scale}x label {k}: {gap} px from its leg"
+            );
+        }
+    }
+    // The label picks at its drawn centre and drags from there.
+    let rect = rects[2];
+    let list = [series("qed", diagram.clone())];
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(chart.config().clone(), list.to_vec())
+        .unwrap();
+    for scale in [1.0f32, 2.0] {
+        let request = renderer::GpuPickRequest {
+            canvas_position_px: [
+                (rect.x + rect.width / 2.0) * scale,
+                (rect.y + rect.height / 2.0) * scale,
+            ],
+            display_panel_px: Rect {
+                x: 0,
+                y: 0,
+                width: (1000.0 * scale) as u32,
+                height: (800.0 * scale) as u32,
+            },
+            display_scale: scale,
+            max_distance_px: 4.0 * scale,
+        };
+        let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        assert!(
+            matches!(
+                hit,
+                Some(renderer::PickedData::FeynmanLabel {
+                    part: renderer::FeynmanLabelPart::Vertex,
+                    index: 4,
+                    ..
+                })
+            ),
+            "{scale}x: {hit:?}"
+        );
+    }
+    r.remove_chart(id).unwrap();
+    let mut dragged = diagram.clone();
+    dragged.drag_label(renderer::FeynmanLabelPart::Vertex, 4, 10.0, -6.0);
+    let moved = label_rects(&chart, &dragged)[2];
+    assert!((moved.x - rect.x - 10.0).abs() < 1e-3 && (moved.y - rect.y + 6.0).abs() < 1e-3);
+}
