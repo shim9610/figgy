@@ -2832,3 +2832,68 @@ fn the_layouts_room_rule_is_the_routes() {
         );
     }
 }
+
+/// A stored exit is a fraction of its predecessor's drawn length (#357):
+/// after a layout, a zoom (a new time range) and a resize (a larger chart
+/// area) move and stretch the bars, and the exit stays at the same
+/// fraction of its bar at 1x and 2x, with no layout in between.
+#[test]
+fn a_stored_exit_keeps_its_fraction_through_zoom_and_resize() {
+    let mut r = renderer();
+    let (mut chart, mut series) = gantt_scene(&mut r);
+    r.fit_ranges(&mut chart, &mut series).unwrap();
+    // Bench → Dark: Dark starts after Bench ends, so the room rule leaves
+    // the stored exit alone at every size below.
+    let fraction = exits(&series)[1].unwrap();
+    let stored = series.clone();
+    let direction = CategoryBarDirection::Horizontal;
+    let zoomed = {
+        let mut c = Chart::as_given(chart.config().clone());
+        c.config_mut().bottom_x.min = -1.0;
+        c.config_mut().bottom_x.max = 13.0;
+        c
+    };
+    let resized = {
+        let mut c = Chart::as_given(chart.config().clone());
+        c.config_mut().chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: WIDTH + 240,
+            height: HEIGHT + 80,
+        });
+        c
+    };
+    for (name, view) in [
+        ("laid out", &chart),
+        ("zoomed", &zoomed),
+        ("resized", &resized),
+    ] {
+        for scale in [1.0f32, 2.0] {
+            let img = r
+                .export_rgba(
+                    renderer::ExportSource::chart(view, &series),
+                    renderer::ExportOptions::panel(scale),
+                )
+                .block_on()
+                .unwrap();
+            let start = value_px(view, direction, GANTT_TASKS[0].1, scale);
+            let end = value_px(view, direction, GANTT_TASKS[0].2, scale);
+            let x = start + fraction * (end - start);
+            // Just under Bench's bar, at its middle: the bar's lower edge.
+            let mid = (0.5 * (start + end)) as u32;
+            let edge = (1..img.height)
+                .find(|&y| is_green(pixel(&img, mid, y - 1)) && !is_green(pixel(&img, mid, y)))
+                .expect("Bench's lower edge");
+            // The trunks below that edge: the one at the stored fraction.
+            let y = edge + (3.0 * scale) as u32;
+            let near = ((x - 2.0 * scale) as u32..=(x + 2.0 * scale) as u32)
+                .any(|px| is_orange(pixel(&img, px, y)));
+            assert!(
+                near,
+                "{name} {scale}x: the trunk leaves at {fraction} of the bar ({x})"
+            );
+        }
+    }
+    // No layout ran: the stored fractions are unchanged.
+    assert_eq!(exits(&series), exits(&stored));
+}

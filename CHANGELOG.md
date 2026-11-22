@@ -121,7 +121,8 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
     (`range_bars_render.rs`):
     `the_layout_stores_each_links_exit_toward_its_predecessors_end`,
     `links_draw_and_pick_under_their_bars_in_any_order`,
-    `many_links_lay_out_draw_and_pick`, the updated
+    `many_links_lay_out_draw_and_pick`,
+    `a_stored_exit_keeps_its_fraction_through_zoom_and_resize`, the updated
     `dragged_link_exits_move_the_trunk_and_snap_back`; model tests
     `the_chosen_exit_sits_toward_the_predecessors_end`,
     `link_exit_offsets_set_drag_snap_and_share_their_trunk`,
