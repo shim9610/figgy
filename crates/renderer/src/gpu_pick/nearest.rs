@@ -127,10 +127,10 @@ impl NearestPickPipelines {
                 layout: Some(layout),
                 module: &shader,
                 entry_point: Some("pick_nearest_points"),
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &[],
-                    zero_initialize_workgroup_memory: base.zero_initialize_workgroup_memory,
-                },
+                // On DX12 the entry zeroes its workgroup memory itself
+                // (`figgy_zero_workgroup`), switched on by the override the
+                // base options carry; dropping it left the memory unset.
+                compilation_options: base,
                 cache: None,
             },
         )
