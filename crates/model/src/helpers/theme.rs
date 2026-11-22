@@ -1758,7 +1758,21 @@ impl Theme {
                 _ => None,
             })
     }
+}
 
+/// Whether a chart of `series` is a timeline (#357): it draws a range link
+/// series, the dependencies of a Gantt chart. Such a
+/// chart takes the timeline frame
+/// ([`crate::default::default_timeline_config`]) by default, as a Feynman
+/// or energy-level chart takes its family's ([`Theme::family_frame`]).
+/// Read by [`crate::default::config_for_series`].
+pub(crate) fn draws_timeline(series: &[SeriesConfig]) -> bool {
+    series
+        .iter()
+        .any(|item| matches!(item.render_type, DataRenderType::RangeLinks(_)))
+}
+
+impl Theme {
     /// The chrome of one chart: its own axes, titles, grid, legend,
     /// colourbar and highlight, and its overlays' axes and legends.
     fn apply_chart_chrome(&self, config: &mut Config, preset: AxisPreset, series: &[SeriesConfig]) {

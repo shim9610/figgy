@@ -4084,6 +4084,74 @@ mod range_bar_tests {
         assert_eq!(l.links[5].exit_offset, Some(0.5));
     }
 
+    /// The exit the layout chooses (#357): toward the predecessor's end,
+    /// `inset` short of it, pulled back only as far as the successor's
+    /// start needs room for the last leg and the head, and kept on the bar,
+    /// in either direction along the value axis.
+    #[test]
+    fn the_chosen_exit_sits_toward_the_predecessors_end() {
+        let mut series = links();
+        let l = style(&mut series);
+        // Head 6, inset 6. A 100 px bar from 0 to 100, a successor at 300:
+        // the exit is 6 px short of the end.
+        assert_eq!(
+            l.chosen_exit_offset([0.0, 100.0], [300.0, 400.0]),
+            Some(94.0)
+        );
+        // A successor starting at 60: room for the tip gap, the lead and
+        // the head, 60 - 1.5 - 4 - 6.
+        let room = 60.0 - RANGE_LINK_TIP_GAP_PX - RANGE_LINK_LEAD_PX - 6.0;
+        assert_eq!(l.chosen_exit_offset([0.0, 100.0], [60.0, 90.0]), Some(room));
+        // A successor before the predecessor: the exit stays on the bar,
+        // half a pixel in from its start (0 is the default to the setter).
+        assert_eq!(l.chosen_exit_offset([0.0, 100.0], [-50.0, 10.0]), Some(0.5));
+        // A bar shorter than two insets: half of it.
+        assert_eq!(l.chosen_exit_offset([0.0, 8.0], [300.0, 400.0]), Some(4.0));
+        // A value axis running right to left (an inverted axis): the same
+        // offset from the predecessor's start along the successor's run.
+        assert_eq!(
+            l.chosen_exit_offset([400.0, 300.0], [100.0, 0.0]),
+            Some(94.0)
+        );
+        // A bar that draws nothing has no exit.
+        assert_eq!(l.chosen_exit_offset([5.0, 5.0], [10.0, 20.0]), None);
+        assert_eq!(l.chosen_exit_offset([f32::NAN, 5.0], [10.0, 20.0]), None);
+    }
+
+    /// The drawing order (#357): a link series listed after its bars draws
+    /// just before them, several in their order; links listed first, and
+    /// every other series, keep their place.
+    #[test]
+    fn link_series_draw_before_their_bars() {
+        let named = |id: &str, bars: &str| {
+            let mut l = links();
+            l.series_id = id.into();
+            style(&mut l).bars = bars.into();
+            l
+        };
+        let order = |list: &[SeriesConfig]| -> Vec<usize> {
+            series_draw_order(list.len(), |i| &list[i]).collect()
+        };
+        // Another series: bars that no link names.
+        let line = ranges("plain");
+        let list = [
+            line.clone(),
+            ranges("one"),
+            named("l1", "one"),
+            ranges("two"),
+            named("l2", "one"),
+            named("l3", "two"),
+        ];
+        assert_eq!(order(&list), [0, 2, 4, 1, 5, 3]);
+        // Links listed first keep the order of the list.
+        let list = [named("l1", "one"), ranges("one"), line.clone()];
+        assert_eq!(order(&list), [0, 1, 2]);
+        // A link series naming no listed bars keeps its place.
+        let list = [ranges("one"), named("l1", "gone"), line];
+        assert_eq!(order(&list), [0, 1, 2]);
+        assert_eq!(order(&[]), Vec::<usize>::new());
+    }
+
     /// Run by `serde_tests`' one test.
     #[cfg(feature = "serde")]
     pub(super) fn range_links_round_trip() {

@@ -625,3 +625,37 @@ fn reduce_states(
         store_series_state(workgroup_id.x, shared_states[0]);
     }
 }
+
+// ───── Range link ends (#357) ─────
+//
+// The drawn ends of the two bars of each range link, gathered for the
+// layout that chooses the links' exits. One SeriesState-sized record per
+// link: the CPU writes the predecessor and successor rows (words 4 and 5)
+// and the pool offsets of the bars' start and end columns (words 10 and 11,
+// in vec2<f32> pool elements), with every value word NaN; this pass writes
+// the predecessor's start and end (words 0..3) and the successor's start
+// and end (words 6..9) as `(hi, lo)` pairs. A record whose row is
+// `LINK_END_NO_ROW` (past a column, checked by the CPU) keeps its NaNs.
+// Nothing is reduced and no workgroup memory is used.
+
+const LINK_END_NO_ROW: u32 = 0xffffffffu;
+
+@compute @workgroup_size(64)
+fn gather_link_ends(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let stride = dispatch_groups() * WORKGROUP_SIZE;
+    var index = global_id.x;
+    while (index < input_len()) {
+        let base = index * SERIES_STATE_WORDS;
+        let pred = output_words[base + 4u];
+        let succ = output_words[base + 5u];
+        let start = output_words[base + 10u];
+        let end = output_words[base + 11u];
+        if (pred != LINK_END_NO_ROW && succ != LINK_END_NO_ROW) {
+            store_bound(base, load_pair(start, pred));
+            store_bound(base + 2u, load_pair(end, pred));
+            store_bound(base + 6u, load_pair(start, succ));
+            store_bound(base + 8u, load_pair(end, succ));
+        }
+        index = index + stride;
+    }
+}

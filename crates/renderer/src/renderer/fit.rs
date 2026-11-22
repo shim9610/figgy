@@ -1395,7 +1395,8 @@ impl Renderer {
             .get_mut(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
         state.fit_extents = fit_extents;
-        Ok(())
+        // The links' exits in the fitted layout (#357).
+        self.fit_chart_link_exits_unreported(id)
     }
 }
 
@@ -1462,6 +1463,11 @@ impl Renderer {
         chart.auto_fit_every_layer(&self.pool, series, FIT_RANGES_PADDING)?;
         self.fit_vector_scales_unreported(chart.config(), series)?;
         fit_level_slots(chart.config(), series);
+        // The links' exits in the fitted layout (#357). A browser cannot
+        // wait for the gather: its registered charts fit them with
+        // `fit_chart_link_exits`.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.fit_link_exits_unreported(chart.config(), series)?;
         Ok(())
     }
 
@@ -2177,5 +2183,519 @@ fn keep_unmoved_chart_axes(
         if !moved(FitAxisIdentity::OverlayY(overlay(index))) {
             layer.y_axis = kept.y_axis.clone();
         }
+    }
+}
+
+// ───── Range link exits (#357) ─────
+//
+// The layout chooses the exit of every range link that has none
+// (`RangeLink::exit_offset` is `None`) and writes it into the document: a
+// display parameter chosen once from the two bars as they are drawn (rule
+// 1), toward the predecessor's end. The bars' ends are gathered on the GPU
+// from the column pool by the extent engine (`gpu_extent::begin_link_ends`)
+// and read back once; the CPU keeps no row values (rule 2). There is no cap
+// on links (rule 10): a layout with more links than one gather holds runs
+// several gathers in turn. An exit that is `Some` is never rewritten.
+
+/// The links of `series` without an exit, as `(series index, link index)`
+/// in series and link order: the order a gather's records follow.
+fn unset_link_exits(series: &[SeriesConfig]) -> impl Iterator<Item = (usize, usize)> + '_ {
+    series.iter().enumerate().flat_map(|(k, item)| {
+        item.render_type
+            .range_links()
+            .into_iter()
+            .flat_map(move |links| {
+                links
+                    .links
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, link)| link.exit_offset.is_none())
+                    .map(move |(j, _)| (k, j))
+            })
+    })
+}
+
+/// A range link exit fit's GPU failure as the renderer's error.
+fn link_exit_error(error: crate::gpu_extent::GpuExtentError) -> FiggyError {
+    use crate::gpu_extent::GpuExtentError as E;
+    match error {
+        E::ColumnNotResident { id } => FiggyError::ColumnNotResident { id },
+        E::UnknownColumn { id, .. } => FiggyError::UnknownColumn { id },
+        E::Internal { invariant } => FiggyError::Internal { invariant },
+        other => FiggyError::GpuValidation {
+            resource: "range link exit fit",
+            reason: other.to_string(),
+        },
+    }
+}
+
+/// A layout's range link exit fit in flight (#357):
+/// [`Renderer::begin_link_exit_fit`] submits the gather of the bars' drawn
+/// ends of up to one gather's worth of links without an exit;
+/// [`Self::resolve`] waits for it without borrowing the renderer, and
+/// [`ResolvedLinkExitFit::write`] writes the exits.
+pub struct LinkExitFitTicket {
+    ends: crate::gpu_extent::GpuLinkEndsTicket,
+    skip: u64,
+}
+
+/// A range link exit fit whose gather has completed (#357).
+pub struct ResolvedLinkExitFit {
+    ends: crate::gpu_extent::GpuLinkEndsTicket,
+    skip: u64,
+}
+
+/// What [`ResolvedLinkExitFit::write`] wrote (#357).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LinkExitWrite {
+    /// The links whose exit was written.
+    pub written: u64,
+    /// The gathered links left without one: a row past the bars, a bar
+    /// that draws nothing, or a link edited since the gather.
+    pub unset: u64,
+}
+
+impl LinkExitFitTicket {
+    /// The number of links the gather reads.
+    pub fn links(&self) -> u32 {
+        self.ends.count()
+    }
+
+    /// Wait for the gather: the bundle's poll thread completes the wait on
+    /// native (see [`crate::RendererDevice::new`]).
+    pub async fn resolve(
+        mut self,
+    ) -> std::result::Result<ResolvedLinkExitFit, crate::gpu_extent::GpuExtentError> {
+        self.ends.wait().await?;
+        Ok(ResolvedLinkExitFit {
+            ends: self.ends,
+            skip: self.skip,
+        })
+    }
+
+    /// [`Self::resolve`], polling the device on this thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn resolve_blocking(
+        mut self,
+    ) -> std::result::Result<ResolvedLinkExitFit, crate::gpu_extent::GpuExtentError> {
+        self.ends.wait_blocking()?;
+        Ok(ResolvedLinkExitFit {
+            ends: self.ends,
+            skip: self.skip,
+        })
+    }
+
+    /// The fit once the gather has completed, or the ticket back, without
+    /// blocking.
+    pub fn try_resolve(
+        mut self,
+    ) -> std::result::Result<
+        crate::TryResolve<ResolvedLinkExitFit, Self>,
+        crate::gpu_extent::GpuExtentError,
+    > {
+        if !self.ends.poll_ready()? {
+            return Ok(crate::TryResolve::Pending(self));
+        }
+        Ok(crate::TryResolve::Ready(ResolvedLinkExitFit {
+            ends: self.ends,
+            skip: self.skip,
+        }))
+    }
+}
+
+/// The drawn geometry one range link series' exits are chosen in: its
+/// bars' value axis in the panel that draws them, in document logical
+/// pixels.
+struct LinkExitSpace {
+    axis: crate::annotation::AxisSpace,
+    plot: crate::layout::RectF,
+    horizontal: bool,
+}
+
+impl LinkExitSpace {
+    fn of(panels: &[Config], config: &Config, bars: &str) -> Self {
+        let index = super::series_panel_index(config, panels.len(), bars);
+        let panel = &panels[index];
+        let space = crate::annotation::pixel_space_for_config(panel);
+        let horizontal = panel.effective_bar_groups().direction
+            == crate::data_config::CategoryBarDirection::Horizontal;
+        Self {
+            axis: if horizontal { space.x } else { space.y },
+            plot: space.plot,
+            horizontal,
+        }
+    }
+
+    /// Where `value` is drawn along the value axis, in logical pixels.
+    fn along(&self, value: f64) -> Option<f32> {
+        let t = self.axis.fraction(value)? as f32;
+        let p = self.plot;
+        Some(if self.horizontal {
+            p.x + t * p.width
+        } else {
+            p.y + p.height - t * p.height
+        })
+    }
+}
+
+impl ResolvedLinkExitFit {
+    /// Write the exit the layout chooses
+    /// ([`crate::data_config::RangeLinkSeries::chosen_exit_offset`]) into
+    /// every gathered link of `series` that still has none, from its bars'
+    /// ends as `config` draws them. `config` and `series` are the ones the
+    /// gather was begun with, or the same document laid out again: a link
+    /// whose rows changed since, or that has an exit now, is left as it is.
+    pub fn write(self, config: &Config, series: &mut [SeriesConfig]) -> Result<LinkExitWrite> {
+        let panels = super::expand_for_render(config)?;
+        let mut out = LinkExitWrite::default();
+        // The links the gather holds, in its record order: the unset links
+        // after the first `skip`, found again as the records are read.
+        let mut position = (0usize, 0usize);
+        let mut skip = self.skip;
+        let mut space: Option<(usize, LinkExitSpace)> = None;
+        let next_unset = |series: &[SeriesConfig], (mut k, mut j): (usize, usize)| loop {
+            let item = series.get(k)?;
+            match item.render_type.range_links() {
+                Some(links) if j < links.links.len() => {
+                    if links.links[j].exit_offset.is_none() {
+                        return Some((k, j));
+                    }
+                    j += 1;
+                }
+                _ => {
+                    k += 1;
+                    j = 0;
+                }
+            }
+        };
+        let mut read = |pred: u32, succ: u32, ends: Option<crate::gpu_extent::LinkEnds>| {
+            let found = loop {
+                let Some(found) = next_unset(series, position) else {
+                    break None;
+                };
+                position = (found.0, found.1 + 1);
+                if skip == 0 {
+                    break Some(found);
+                }
+                skip -= 1;
+            };
+            let Some((k, j)) = found else {
+                out.unset += 1;
+                return;
+            };
+            let Some(links) = series[k].render_type.range_links() else {
+                return;
+            };
+            let link = links.links[j];
+            let geometry = match &space {
+                Some((cached, geometry)) if *cached == k => geometry,
+                _ => {
+                    &space
+                        .insert((k, LinkExitSpace::of(&panels, config, &links.bars)))
+                        .1
+                }
+            };
+            let px = |ends: [f64; 2]| Some([geometry.along(ends[0])?, geometry.along(ends[1])?]);
+            let offset = (link.from == pred && link.to == succ)
+                .then_some(ends)
+                .flatten()
+                .and_then(|ends| Some((px(ends.pred)?, px(ends.succ)?)))
+                .and_then(|(a, b)| links.chosen_exit_offset(a, b));
+            match (offset, series[k].render_type.range_links_mut()) {
+                (Some(offset), Some(links)) => {
+                    links.links[j].exit_offset = Some(offset);
+                    out.written += 1;
+                }
+                _ => out.unset += 1,
+            }
+        };
+        self.ends.read(&mut read).map_err(link_exit_error)?;
+        Ok(out)
+    }
+}
+
+impl Renderer {
+    /// Begin the layout's range link exit fit over `series` (#357): the
+    /// gather of the drawn ends of the bars of the links
+    /// without an exit, after the first `skip` of them, up to as many as
+    /// one gather holds on this device. `None` when no link is left. The
+    /// extent engine is created here when it is missing.
+    ///
+    /// Refused, changing nothing: a bars column that is not registered
+    /// (`UnknownColumn`) or is streamed (`ColumnNotResident`, rule 8).
+    pub fn begin_link_exit_fit(
+        &self,
+        series: &[SeriesConfig],
+        skip: u64,
+    ) -> Result<Option<LinkExitFitTicket>> {
+        let result = self.begin_link_exit_fit_unreported(series, skip);
+        self.reported(result)
+    }
+
+    pub(in crate::renderer) fn begin_link_exit_fit_unreported(
+        &self,
+        series: &[SeriesConfig],
+        skip: u64,
+    ) -> Result<Option<LinkExitFitTicket>> {
+        let total = unset_link_exits(series).count() as u64;
+        if skip >= total {
+            return Ok(None);
+        }
+        // A renderer whose extent engine is not prepared gathers with an
+        // engine made for this fit: its pipelines are created on any
+        // platform without waiting (a browser compiles them at their first
+        // submit), and the ticket does not borrow it.
+        let made;
+        let engine = match self.errorbar_extent_engine.as_ref() {
+            Some(engine) => engine,
+            None => {
+                made = crate::gpu_extent::GpuErrorbarExtentEngine::new_tracked(
+                    &self.device,
+                    Arc::clone(&self.gpu_ledger),
+                )
+                .with_health(self.health.clone());
+                &made
+            }
+        };
+        let capacity = crate::gpu_extent::GpuErrorbarExtentEngine::link_ends_capacity(&self.device);
+        let count = (total - skip).min(u64::from(capacity));
+        // Each link series' bars columns, resolved and checked before
+        // anything is submitted.
+        let bars_columns = |k: usize| -> Result<([u32; 2], u32)> {
+            let links = series[k]
+                .render_type
+                .range_links()
+                .ok_or(FiggyError::Internal {
+                    invariant: "an unset link exit belongs to a link series",
+                })?;
+            let bars = series
+                .iter()
+                .find(|s| s.series_id == links.bars && s.render_type.range_bars().is_some())
+                .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                    series_id: series[k].series_id.clone(),
+                    kind: crate::RuleKind::RangeLinkBars,
+                })?;
+            let ranges = bars.render_type.range_bars().ok_or(FiggyError::Internal {
+                invariant: "a link's bars are range bars",
+            })?;
+            for id in [ranges.start.as_str(), bars.y_column.as_str()] {
+                if self.streaming_sources.contains_key(id) {
+                    return Err(FiggyError::ColumnNotResident { id: id.to_owned() });
+                }
+            }
+            let start = current_extent_handle(&self.pool, "range start", &ranges.start)
+                .map_err(link_exit_error)?;
+            let end = current_extent_handle(&self.pool, "range end", &bars.y_column)
+                .map_err(link_exit_error)?;
+            crate::gpu_extent::link_end_columns(self.pool.buffer(), &start, &end)
+                .map_err(link_exit_error)
+        };
+        let mut checked = None;
+        for (k, _) in unset_link_exits(series) {
+            if checked != Some(k) {
+                bars_columns(k)?;
+                checked = Some(k);
+            }
+        }
+        let mut cache: Option<(usize, ([u32; 2], u32))> = None;
+        let records = unset_link_exits(series)
+            .skip(skip as usize)
+            .take(count as usize)
+            .map(|(k, j)| {
+                let (columns, len) = match cache {
+                    Some((cached, columns)) if cached == k => columns,
+                    _ => {
+                        // Checked above: every bars series resolves.
+                        let columns = bars_columns(k).unwrap_or(([0, 0], 0));
+                        cache = Some((k, columns));
+                        columns
+                    }
+                };
+                let link = series[k]
+                    .render_type
+                    .range_links()
+                    .and_then(|links| links.links.get(j))
+                    .copied()
+                    .unwrap_or_else(|| crate::data_config::RangeLink::new(u32::MAX, u32::MAX));
+                let row = |row: u32| {
+                    if row < len {
+                        row
+                    } else {
+                        crate::gpu_extent::LinkEndsRecord::NO_ROW
+                    }
+                };
+                // The rows the CPU reads back are the link's own; a row
+                // past the bars reads nothing on the GPU.
+                let (pred, succ) = if link.from < len && link.to < len {
+                    (link.from, link.to)
+                } else {
+                    (row(link.from), row(link.to))
+                };
+                crate::gpu_extent::LinkEndsRecord {
+                    pred,
+                    succ,
+                    start: columns[0],
+                    end: columns[1],
+                }
+            });
+        let ends = engine
+            .begin_link_ends(
+                &self.device,
+                &self.queue,
+                self.pool.buffer(),
+                records,
+                count as u32,
+            )
+            .map_err(link_exit_error)?;
+        self.health.check()?;
+        Ok(Some(LinkExitFitTicket { ends, skip }))
+    }
+
+    /// The layout's range link exit fit over `config` and `series`, waiting
+    /// for each gather on this thread (#357): every link of `series` whose
+    /// exit is `None` gets the exit the layout chooses
+    /// ([`crate::data_config::RangeLinkSeries::chosen_exit_offset`]) from
+    /// its bars as `config` draws them; an exit that is `Some` is kept,
+    /// whoever wrote it. A link whose rows are past its bars, or whose bar
+    /// draws nothing, keeps `None`. Returns whether an exit was written.
+    /// [`Self::register_chart`] (a `Fitted` chart's first fit),
+    /// [`Self::fit_ranges`] and [`Self::commit_auto_fit_all`] run it; a host
+    /// that lays a chart out with [`crate::chart::Chart::fit_layout`] calls
+    /// it afterwards (the chart object holds no series). The cost grows
+    /// with the links: one gather of 48 bytes each, read back once.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn fit_link_exits(&self, config: &Config, series: &mut [SeriesConfig]) -> Result<bool> {
+        let result = self.fit_link_exits_unreported(config, series);
+        self.reported(result)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::renderer) fn fit_link_exits_unreported(
+        &self,
+        config: &Config,
+        series: &mut [SeriesConfig],
+    ) -> Result<bool> {
+        let mut skip = 0;
+        let mut changed = false;
+        while let Some(ticket) = self.begin_link_exit_fit_unreported(series, skip)? {
+            let resolved = ticket.resolve_blocking().map_err(link_exit_error)?;
+            let write = resolved.write(config, series)?;
+            skip += write.unset;
+            changed |= write.written > 0;
+        }
+        Ok(changed)
+    }
+
+    /// The range link exit fit of registered chart `id` (#357), over its
+    /// stored config and series: on native it runs to the end here
+    /// (`Self::fit_link_exits`) and the written series are committed as
+    /// a series edit; in the browser, which cannot wait, the gather is
+    /// submitted here and its exits are written by the frame that finds it
+    /// complete ([`Self::service_link_exit_fits`]), which commits them the
+    /// same way. A chart without links without an exit is left as it is.
+    pub fn fit_chart_link_exits(&mut self, id: ChartId) -> Result<()> {
+        let result = self.fit_chart_link_exits_unreported(id);
+        self.reported(result)
+    }
+
+    pub(in crate::renderer) fn fit_chart_link_exits_unreported(
+        &mut self,
+        id: ChartId,
+    ) -> Result<()> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        if unset_link_exits(&state.series).next().is_none() {
+            return Ok(());
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let config = state.config.clone();
+            let mut series = state.series.clone();
+            if self.fit_link_exits_unreported(&config, &mut series)? {
+                self.set_chart_series_unreported(id, series)?;
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.schedule_link_exit_fit(id, 0)?;
+        }
+        Ok(())
+    }
+
+    /// Submit the next gather of chart `id`'s link exit fit, after the
+    /// first `skip` links without an exit, and keep it with the chart.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    fn schedule_link_exit_fit(&mut self, id: ChartId, skip: u64) -> Result<()> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let revision = state.revisions.series;
+        let ticket = self.begin_link_exit_fit_unreported(&state.series, skip)?;
+        let state = self
+            .chart_states
+            .get_mut(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        state.link_exit_fit =
+            ticket.map(|ticket| super::registry::PendingLinkExitFit { ticket, revision });
+        Ok(())
+    }
+
+    /// Write the exits of every registered chart's link exit fit whose
+    /// gather has completed (#357), without blocking: the frame calls it
+    /// before it prepares. A chart whose series changed since the gather
+    /// was submitted fits again from its new series. Returns whether a
+    /// chart's series changed.
+    pub fn service_link_exit_fits(&mut self) -> Result<bool> {
+        let result = self.service_link_exit_fits_unreported();
+        self.reported(result)
+    }
+
+    pub(in crate::renderer) fn service_link_exit_fits_unreported(&mut self) -> Result<bool> {
+        let mut changed = false;
+        // By index: committing a chart's series leaves the chart order as
+        // it is.
+        for index in 0..self.chart_order.len() {
+            let Some(&id) = self.chart_order.get(index) else {
+                break;
+            };
+            let state = self
+                .chart_states
+                .get_mut(&id)
+                .ok_or(FiggyError::UnknownChart { id })?;
+            let Some(pending) = state.link_exit_fit.take() else {
+                continue;
+            };
+            if pending.revision != state.revisions.series {
+                // The series changed under the gather: fit them again.
+                self.schedule_link_exit_fit(id, 0)?;
+                continue;
+            }
+            let skip = pending.ticket.skip;
+            let resolved = match pending.ticket.try_resolve().map_err(link_exit_error)? {
+                crate::TryResolve::Ready(resolved) => resolved,
+                crate::TryResolve::Pending(ticket) => {
+                    if let Some(state) = self.chart_states.get_mut(&id) {
+                        state.link_exit_fit = Some(super::registry::PendingLinkExitFit {
+                            ticket,
+                            revision: pending.revision,
+                        });
+                    }
+                    continue;
+                }
+            };
+            let config = state.config.clone();
+            let mut series = state.series.clone();
+            let write = resolved.write(&config, &mut series)?;
+            if write.written > 0 {
+                self.set_chart_series_unreported(id, series)?;
+                changed = true;
+            }
+            // The next gather, when the links outnumber one.
+            self.schedule_link_exit_fit(id, skip + write.unset)?;
+        }
+        Ok(changed)
     }
 }

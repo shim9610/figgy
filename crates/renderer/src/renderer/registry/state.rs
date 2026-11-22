@@ -234,6 +234,19 @@ pub(in crate::renderer) struct ChartRenderState {
     /// (#363, #381, [`Renderer::warm_first_pick`]).
     #[cfg(target_arch = "wasm32")]
     pub(in crate::renderer) pick_warmup: Option<PickWarmup>,
+    /// The range link exit fit in flight for this chart (#357): a browser
+    /// cannot wait for its gather, so the frame that finds it complete
+    /// writes the exits ([`Renderer::service_link_exit_fits`]). Always
+    /// `None` on native, where the fit runs to the end when it is asked.
+    pub(in crate::renderer) link_exit_fit: Option<PendingLinkExitFit>,
+}
+
+/// A registered chart's range link exit fit in flight (#357): the gather
+/// and the series revision it was begun from, a generation stamp, so a
+/// series edit before it completes fits the new series instead.
+pub(in crate::renderer) struct PendingLinkExitFit {
+    pub(in crate::renderer) ticket: crate::renderer::LinkExitFitTicket,
+    pub(in crate::renderer) revision: RenderRevision,
 }
 
 /// One chart's pick warm-up (#363): scalars only.

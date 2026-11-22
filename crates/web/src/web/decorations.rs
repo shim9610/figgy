@@ -262,7 +262,9 @@ impl FiggyChart {
     /// active layer. A layer without series keeps its ranges. Then the
     /// scale of every auto-scaled vector series is fitted to the spacing
     /// of its arrows and its `auto_scale` flag consumed (#357), so the
-    /// stored series say how long the arrows draw. A streamed source and a
+    /// stored series say how long the arrows draw. Then each range link
+    /// without an exit gets the one the layout chooses (#357), written by
+    /// the frame that finds its GPU gather complete. A streamed source and a
     /// monotonic chart are refused, and a refusal changes nothing.
     /// `auto_fit_all(padding)` instead measures the active layer's drawn
     /// extents (error bar ends included) on the GPU.
@@ -274,6 +276,12 @@ impl FiggyChart {
             .fit_ranges(&mut chart, &mut series)
             .map_err(js_err)?;
         self.replace_chart_state(chart.config().clone(), series)?;
+        // The links' exits in the fitted layout (#357): the gather is
+        // submitted here and the frame that finds it complete writes them.
+        self.renderer
+            .fit_chart_link_exits(self.chart_id)
+            .map_err(js_err)?;
+        self.request_host_redraw();
         Ok(())
     }
 

@@ -120,8 +120,11 @@ pub struct RangeLink {
     /// The successor's row.
     pub to: u32,
     /// Where the link leaves the predecessor's edge, in logical pixels
-    /// from the predecessor's start (clamped to the bar when drawn); `None`
-    /// is the series' default, `inset`. A user's drag writes it.
+    /// from the predecessor's start (clamped to the bar when drawn). The
+    /// layout writes it into a link that has none
+    /// ([`RangeLinkSeries::chosen_exit_offset`], #357) and a user's drag
+    /// moves it; a `Some` value is never rewritten by a layout. `None`
+    /// until a layout runs, drawn `inset` from the predecessor's start.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
@@ -146,8 +149,8 @@ pub const RANGE_LINK_EXIT_SNAP: f32 = 3.0;
 
 /// The fields of a [`DataRenderType::RangeLinks`] series (#357): the
 /// dependency links between the bars of the range bar series `bars`, drawn
-/// in `color`, `width` logical pixels wide: out of the predecessor's edge
-/// facing the successor, `inset` pixels from its start, down to the
+/// in `color`, `width` logical pixels wide, under the bars: out of the
+/// predecessor's edge facing the successor at each link's exit, down to the
 /// successor's centre line and into its start, ending in an open chevron
 /// `head` pixels long. The series is DataLess: its links are SSOT
 /// (`links`), and it reads no column (`x_column` and `y_column` empty).
@@ -163,8 +166,9 @@ pub struct RangeLinkSeries {
     pub width: f32,
     /// The open chevron's length in logical pixels, `0..=32`.
     pub head: f32,
-    /// How far from the predecessor's start a link leaves its edge by
-    /// default, in logical pixels, `0..=64`.
+    /// How far short of the predecessor's end the layout puts a link's
+    /// exit, and how far from its start a link without an exit leaves its
+    /// edge, in logical pixels, `0..=64`.
     pub inset: f32,
     /// The links, any number of them.
     #[cfg_attr(
@@ -233,6 +237,85 @@ impl RangeLinkSeries {
         }
         NudgeResult::Moved
     }
+
+    /// The exit the layout chooses for a link (#357), in logical pixels
+    /// from the predecessor's start, from the two bars' drawn ends along
+    /// the value axis in logical pixels (`pred` and `succ`, each
+    /// `[start, end]`): toward the predecessor's end, `inset` short of it
+    /// (half the bar when it is shorter than two insets), pulled back only
+    /// as far as the successor's start needs room for the last leg and the
+    /// head (the route's room rule: [`RANGE_LINK_TIP_GAP_PX`],
+    /// [`RANGE_LINK_LEAD_PX`] and `head`), and kept on the bar, at least
+    /// half a pixel from its start, since an offset of 0 means the default
+    /// to [`Self::set_link_exit_offset`]. `None` when an end is not finite
+    /// or the bar has no length: such a link draws nothing.
+    ///
+    /// A display parameter chosen once by the layout and stored in the
+    /// SSOT (rule 1): it reads the drawn ends and produces no value the user
+    /// reads as data.
+    pub fn chosen_exit_offset(&self, pred: [f32; 2], succ: [f32; 2]) -> Option<f32> {
+        if !pred.iter().chain(&succ).all(|v| v.is_finite()) || pred[0] == pred[1] {
+            return None;
+        }
+        // `u` runs from the successor's start to its end, as the route's
+        // does (`range_links.wgsl`).
+        let s = if succ[1] >= succ[0] { 1.0 } else { -1.0 };
+        let tip = succ[0] * s - RANGE_LINK_TIP_GAP_PX;
+        let first = (pred[0] * s).min(pred[1] * s);
+        let last = (pred[0] * s).max(pred[1] * s);
+        let back = self.inset.max(0.0).min((last - first) * 0.5);
+        let room = tip - self.head.max(0.0) - RANGE_LINK_LEAD_PX;
+        let exit = (last - back).min(room).max(first);
+        Some((exit - first).clamp(0.5_f32.min(last - first), last - first))
+    }
+}
+
+/// The gap between a link's chevron tip and its successor's start, in
+/// logical pixels. Must match `range_links.wgsl`'s `RANGE_LINK_TIP_GAP_PX`.
+pub const RANGE_LINK_TIP_GAP_PX: f32 = 1.5;
+
+/// The least last leg between a link's exit and its chevron's base, in
+/// logical pixels. Must match `range_links.wgsl`'s `RANGE_LINK_LEAD_PX`.
+pub const RANGE_LINK_LEAD_PX: f32 = 4.0;
+
+/// The order series draw in (#357): the list's order, except that a
+/// [`DataRenderType::RangeLinks`] series listed after its bars draws just
+/// before them, so the bars cover the link ends whatever the list's order.
+/// Links before their bars keep their place; several link series of one
+/// bars series keep their order. `series(i)` is the `i`-th of `count`
+/// series; every index is yielded once. The draw, the ink mask's owners,
+/// the pick's paint order and the export read this one order.
+pub fn series_draw_order<'a, F>(count: usize, series: F) -> impl Iterator<Item = usize> + Clone
+where
+    F: Fn(usize) -> &'a SeriesConfig + Clone,
+{
+    let bars_of = {
+        let series = series.clone();
+        move |i: usize| {
+            series(i)
+                .render_type
+                .range_links()
+                .map(|links| links.bars.as_str())
+        }
+    };
+    // A link series is moved when its bars are listed before it.
+    let moved = {
+        let series = series.clone();
+        let bars_of = bars_of.clone();
+        move |i: usize| bars_of(i).is_some_and(|bars| (0..i).any(|j| series(j).series_id == bars))
+    };
+    (0..count).flat_map(move |i| {
+        let bars = series(i);
+        let is_bars = bars.render_type.range_bars().is_some();
+        let bars_of = bars_of.clone();
+        let moved = moved.clone();
+        let own = (!moved(i)).then_some(i);
+        // The link series after these bars, then the bars themselves.
+        // Each of them lists its bars, `i`, before itself: it is moved.
+        ((i + 1)..count)
+            .filter(move |&j| is_bars && bars_of(j) == Some(bars.series_id.as_str()))
+            .chain(own)
+    })
 }
 
 /// The fields of a [`DataRenderType::RangeBars`] series.

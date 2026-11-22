@@ -53,6 +53,63 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 `color` and the transition arrows' `color_by_wavelength` and
 `label_knockout`) are additive.
 
+- **The layout chooses each range link's exit, links draw under their bars,
+  and a chart of links takes the timeline frame**
+  ([#357](https://github.com/shim9610/figgy/issues/357), approved in
+  [this comment](https://github.com/shim9610/figgy/issues/357#issuecomment-7077230337)).
+  No wire form changes; serialized documents read and draw as before until
+  a layout runs on them.
+  - The layout writes an exit into every link whose `exit_offset` is
+    `None`: `Renderer::fit_ranges`, a `Fitted` chart's registration
+    (`register_chart`'s first fit) and `commit_auto_fit_all`, and in the
+    browser `fit_ranges()`, `fit_layout()`, `auto_fit_all()` and a new
+    chart's first fit. The exit sits toward the predecessor's end, `inset`
+    short of it (half a bar shorter than two insets), pulled back only as
+    far as the successor's start needs room for the last leg and the head,
+    and kept on the bar (`RangeLinkSeries::chosen_exit_offset`). It is
+    stored in logical pixels from the predecessor's start, as before. A
+    value that is already `Some` is never rewritten, whoever wrote it;
+    clearing it to `None` (`set_link_exit_offset`, or a drag that snaps
+    back) lets the next layout choose again. `Chart::fit_layout` and the
+    model's `auto_layout` hold no series: a host that lays out with them
+    calls `Renderer::fit_link_exits(config, &mut series)` afterwards.
+  - The bars' drawn ends come from the extent engine's GPU readback
+    (`gpu_extent`): a new compute entry, `gather_link_ends` in
+    `gpu_errorbar.wgsl`, reads each link's predecessor and successor start
+    and end from the column pool into one 48-byte record per link, written
+    straight into mapped memory and read back once. The CPU keeps no row
+    values (rule 2) and there is no cap on links (rule 10): more links than
+    one gather holds run several gathers. 3749 links lay out in about
+    0.1 s on lavapipe. The new API: `Renderer::begin_link_exit_fit`,
+    `LinkExitFitTicket` (`resolve`, `resolve_blocking`, `try_resolve`),
+    `ResolvedLinkExitFit::write`, `Renderer::fit_link_exits` (native),
+    `Renderer::fit_chart_link_exits` and `Renderer::service_link_exit_fits`
+    (a browser frame writes the exits of a gather that completed, and the
+    series edit redraws the chart).
+  - The draw uses a stored exit as stored, kept on the bar: it no longer
+    moves a stored exit back for a successor that starts soon
+    (`range_links.wgsl`). A link without one (no layout has run) draws as
+    before.
+  - A `RangeLinks` series draws just before its bars whatever its place in
+    the series list (`data_config::series_draw_order`), so the bars cover
+    the link ends; the ink mask's owners, the data pick's paint order and
+    every export follow the same order. Appearance only: a chart listing
+    the links before their bars draws exactly as before.
+  - `default::config_for_series` (and the browser's
+    `default_config_for_series`) gives a chart that holds a range link
+    series the timeline frame (`default_timeline_config`): rows top-down,
+    row bands, no row axis line or ticks, horizontal bars.
+  - Migration: none for documents. A stored exit that a successor
+    starting soon used to move back now draws where it is stored; drag it
+    or clear it to let the layout choose. Tests (`range_bars_render.rs`):
+    `the_layout_stores_each_links_exit_toward_its_predecessors_end`,
+    `links_draw_and_pick_under_their_bars_in_any_order`,
+    `many_links_lay_out_draw_and_pick`, the updated
+    `dragged_link_exits_move_the_trunk_and_snap_back`; model tests
+    `the_chosen_exit_sits_toward_the_predecessors_end`,
+    `link_series_draw_before_their_bars`,
+    `a_chart_with_range_links_takes_the_timeline_frame`; the browser test
+    `default_config_for_series_json_frames_each_family`.
 - **Range links fit and draw without their own columns**
   ([#405](https://github.com/shim9610/figgy/issues/405),
   [#406](https://github.com/shim9610/figgy/issues/406)). No value, API or

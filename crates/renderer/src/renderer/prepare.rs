@@ -451,10 +451,13 @@ impl PrepareContext<'_> {
                     let texture = &self.ink_masks[slot].texture;
                     texture.width() == w && texture.height() == h
                 });
-                // The series each slot names, in drawing order.
-                let owners: Arc<[crate::gpu_pick::InkSeries]> = input
-                    .series
-                    .iter()
+                // The series each slot names, in drawing order (#357: a
+                // range link series draws under its bars).
+                let owners: Arc<[crate::gpu_pick::InkSeries]> =
+                    crate::data_config::series_draw_order(input.series.len(), |i| {
+                        input.series[i].config
+                    })
+                    .map(|i| &input.series[i])
                     .map(|series| crate::gpu_pick::InkSeries {
                         source_id: series.config.source_id.clone(),
                         series_id: series.config.series_id.clone(),
@@ -856,18 +859,31 @@ impl PrepareContext<'_> {
                 data_pieces,
                 piece_transforms,
                 axis_pipeline: pipelines.axis.clone(),
-                series: layers
-                    .into_iter()
-                    .zip(&prepared_arc.series)
-                    .zip(item.series)
-                    .map(|((layers, arc), series)| {
+                // In drawing order (#357): a range link series listed
+                // after its bars draws under them. The ink mask's owners
+                // and the pick's paint order follow the same order.
+                series: {
+                    let mut layers = layers;
+                    if layers.len() != item.series.len()
+                        || prepared_arc.series.len() < item.series.len()
+                    {
+                        return Err(FiggyError::internal("one prepared layer set per series"));
+                    }
+                    crate::data_config::series_draw_order(item.series.len(), |i| {
+                        item.series[i].config
+                    })
+                    .map(|i| {
                         PreparedSeries::from_layers(
-                            layers,
-                            arc.arc.as_ref().map(|arc| Arc::clone(&arc.charge)),
-                            Some(Arc::clone(&series.style._charge)),
+                            std::mem::replace(&mut layers[i], data_render::SeriesLayers::empty()),
+                            prepared_arc.series[i]
+                                .arc
+                                .as_ref()
+                                .map(|arc| Arc::clone(&arc.charge)),
+                            Some(Arc::clone(&item.series[i].style._charge)),
                         )
                     })
-                    .collect(),
+                    .collect()
+                },
                 stream_display: None,
                 resident_display: None,
                 column_fingerprint,

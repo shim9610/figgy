@@ -1929,6 +1929,13 @@ mod tests {
             config(&[renderer::SeriesConfig::line("l", "x", "y")]),
             unframed()
         );
+        // A chart of dependency links takes the timeline frame (#357), as
+        // the Rust default does.
+        let gantt = [
+            renderer::SeriesConfig::timeline_bars("t", "pos", "start", "end"),
+            renderer::SeriesConfig::range_links("l", "t", [(0, 1)]),
+        ];
+        assert_eq!(config(&gantt), renderer::default::default_timeline_config());
         assert!(super::default_config_for_series_json("{").is_err());
         // The returned config is a valid document.
         let json = super::default_config_for_series_json("[]").unwrap();

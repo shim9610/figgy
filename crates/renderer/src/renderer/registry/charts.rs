@@ -245,6 +245,7 @@ impl Renderer {
                 display: None,
                 #[cfg(target_arch = "wasm32")]
                 pick_warmup: None,
+                link_exit_fit: None,
             },
         );
         if monotonic {
@@ -254,6 +255,19 @@ impl Renderer {
         }
         self.next_chart_id = id_value;
         self.visual_revision = visual_revision;
+        // A browser cannot wait for the links' exits in the first fit
+        // (#357): their gather is submitted here and written by the frame
+        // that finds it complete. Native fits them in `first_fit`.
+        #[cfg(target_arch = "wasm32")]
+        if fit
+            && !monotonic
+            && self
+                .chart_states
+                .get(&id)
+                .is_some_and(|s| s.config.layout_state.is_fitted())
+        {
+            self.fit_chart_link_exits_unreported(id)?;
+        }
         Ok(id)
     }
 
