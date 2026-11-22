@@ -639,7 +639,15 @@ impl GpuErrorbarExtentEngine {
                     layout: Some(layout),
                     module: &shader,
                     entry_point: Some(entry),
-                    compilation_options: crate::gpu_compile::workgroup_options(device),
+                    // `gather_link_ends` reads no workgroup memory, so it
+                    // takes wgpu's default options; the explicit DX12
+                    // zeroing is only for the reduce entries, which call
+                    // `figgy_zero_workgroup`.
+                    compilation_options: if entry == "gather_link_ends" {
+                        wgpu::PipelineCompilationOptions::default()
+                    } else {
+                        crate::gpu_compile::workgroup_options(device)
+                    },
                     cache: None,
                 },
             )
@@ -747,7 +755,15 @@ impl GpuErrorbarExtentEngine {
                     layout: Some(layout),
                     module: &shader,
                     entry_point: Some(entry),
-                    compilation_options: crate::gpu_compile::workgroup_options(device),
+                    // `gather_link_ends` reads no workgroup memory, so it
+                    // takes wgpu's default options; the explicit DX12
+                    // zeroing is only for the reduce entries, which call
+                    // `figgy_zero_workgroup`.
+                    compilation_options: if entry == "gather_link_ends" {
+                        wgpu::PipelineCompilationOptions::default()
+                    } else {
+                        crate::gpu_compile::workgroup_options(device)
+                    },
                     cache: None,
                 },
             )
