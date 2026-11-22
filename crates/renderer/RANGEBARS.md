@@ -181,12 +181,19 @@ fit) write an exit into every link whose `exit_offset` is `None`: toward the
 predecessor's end, `inset` short of it (half a bar shorter than two insets),
 pulled back only as far as the successor's start needs room for the last
 leg and the head, and kept on the bar
-(`RangeLinkSeries::chosen_exit_offset`). The draw uses a stored exit as
-stored, kept on the bar, and never re-routes it. A value that is already
-`Some` is never rewritten, whoever wrote it, so a dragged exit survives
-later layouts; clearing one to `None` lets the next layout choose again. A
-link without an exit (no layout has run) leaves `inset` from the
-predecessor's start, moved back when the successor starts too soon.
+(`RangeLinkSeries::chosen_exit_offset`). The exit is stored as a fraction
+`0..=1` of the predecessor's drawn length, from its start (0) to its end
+(1), so it keeps its place on the bar when the chart zooms, resizes or
+exports at another scale. The draw maps the fraction onto the bar's
+current drawn span and keeps the room rule: when the successor starts too
+soon for the last leg and the head, the exit moves back. A value that is
+already `Some` is never rewritten, whoever wrote it, so a dragged exit
+survives later layouts; clearing one to `None` lets the next layout choose
+again. A link without an exit (no layout has run) leaves `inset` logical
+pixels from the predecessor's start, under the same room rule. Documents
+written before the fraction stored logical pixels as `exit_offset`; they
+read as `None` (the bar's drawn length is not in the document), and the
+next layout chooses (`exit_fraction` is the wire key now).
 `Chart::fit_layout` holds no series: a host that lays out with it calls
 `Renderer::fit_link_exits(config, &mut series)` afterwards.
 
@@ -208,7 +215,7 @@ layout and the frame that finds it complete writes the exits
 | `width` | 1.5 px | `0..=24` |
 | `head` | 6 px open chevron | `0..=32` |
 | `inset` | 6 px: how far short of the predecessor's end the layout puts an exit, and from its start a link without one leaves | `0..=64` |
-| `links[i].exit_offset` | `None`: chosen by the next layout | finite, not negative, logical px from the predecessor's start; `set_link_exit_offset` reads `Some(0)` as `None` |
+| `links[i].exit_offset` (JSON `exit_fraction`) | `None`: chosen by the next layout | a fraction `0..=1` of the predecessor's drawn length from its start |
 
 The style ranges are `RuleKind::RangeLinkStyle`. Polar charts refuse links
 (`RuleKind::PolarRangeLinks`), and a streamed source is refused
@@ -248,18 +255,19 @@ series. `selection_details()` reports `index`, `from`, `to` and
 export with them.
 
 A link's exit is draggable. `RangeLinkSeries::drag_link_exit(index,
-along, limit)` moves it along the predecessor's edge: every link that leaves
-the same bar at the same exit moves with it, so a shared trunk moves as one,
-and an exit within 3 px of `inset` snaps back to `None`, which the next
-layout chooses again. `limit` is
-the predecessor's drawn length in logical pixels: the stored offset stops
-there, so dragging back past the bar's end moves the exit at once. The CPU
-holds no row values, so the length comes from the link's pick: a range link
-hit (`PickedData::HistogramBin`) carries `extent_px`, its predecessor's
-drawn length in display pixels (a range bar hit carries its own), which the
-host divides by the display scale. With `None` only the draw keeps the exit
-on the bar. `set_link_exit_offset(index, offset)` sets one link's offset
-directly. In the browser, `press_range_link(series_id, index, extent_px)`
+along, length)` moves it along the predecessor's edge by `along` logical
+pixels on a predecessor drawn `length` logical pixels long: the stored
+fraction moves by `along / length` and stops at 0 and 1, so dragging back
+past the bar's end moves the exit at once. Every link that leaves the same
+bar at the same exit moves with it, so a shared trunk moves as one, and an
+exit within 3 px of `inset` snaps back to `None`, which the next layout
+chooses again. The CPU holds no row values, so the length comes from the
+link's pick: a range link hit (`PickedData::HistogramBin`) carries
+`extent_px`, its predecessor's drawn length in display pixels (a range bar
+hit carries its own), which the host divides by the display scale. Without
+a length the drag cannot be converted and is rejected.
+`set_link_exit_offset(index, fraction)` sets one link's exit directly,
+`0..=1`. In the browser, `press_range_link(series_id, index, extent_px)`
 after a `pick_data` hit (`hit.extent_px`) starts the drag, `on_move` moves
 the exit along the value axis as it runs on screen (an inverted axis
 included) and `on_release` ends it; `set_link_exit_offset` is the twin of

@@ -56,9 +56,9 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 - **The layout chooses each range link's exit, links draw under their bars,
   and a chart of links takes the timeline frame**
   ([#357](https://github.com/shim9610/figgy/issues/357), approved in
-  [this comment](https://github.com/shim9610/figgy/issues/357#issuecomment-7077230337)).
-  No wire form changes; serialized documents read and draw as before until
-  a layout runs on them.
+  [this comment](https://github.com/shim9610/figgy/issues/357#issuecomment-7077230337),
+  amended in [this one](https://github.com/shim9610/figgy/issues/357#issuecomment-7077549205)).
+  The link exit's unit and wire key change (migration below).
   - The layout writes an exit into every link whose `exit_offset` is
     `None`: `Renderer::fit_ranges`, a `Fitted` chart's registration
     (`register_chart`'s first fit) and `commit_auto_fit_all`, and in the
@@ -66,8 +66,7 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
     chart's first fit. The exit sits toward the predecessor's end, `inset`
     short of it (half a bar shorter than two insets), pulled back only as
     far as the successor's start needs room for the last leg and the head,
-    and kept on the bar (`RangeLinkSeries::chosen_exit_offset`). It is
-    stored in logical pixels from the predecessor's start, as before. A
+    and kept on the bar (`RangeLinkSeries::chosen_exit_offset`). A
     value that is already `Some` is never rewritten, whoever wrote it;
     clearing it to `None` (`set_link_exit_offset`, or a drag that snaps
     back) lets the next layout choose again. `Chart::fit_layout` and the
@@ -86,10 +85,18 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
     `Renderer::fit_chart_link_exits` and `Renderer::service_link_exit_fits`
     (a browser frame writes the exits of a gather that completed, and the
     series edit redraws the chart).
-  - The draw uses a stored exit as stored, kept on the bar: it no longer
-    moves a stored exit back for a successor that starts soon
-    (`range_links.wgsl`). A link without one (no layout has run) draws as
-    before.
+  - `RangeLink::exit_offset` is a fraction `0..=1` of the predecessor's
+    drawn length, from its start (0) to its end (1), instead of logical
+    pixels, so an exit keeps its place on the bar when the chart zooms,
+    resizes or exports at another scale. The draw maps it onto the bar's
+    current drawn span and keeps the room rule (`range_links.wgsl`); `inset`
+    (px) remains only the fallback of a link without an exit. A drag
+    converts the pointer's pixels with the drawn length the pick reports
+    (`extent_px`): `drag_link_exit(index, along, length)` moves the fraction
+    by `along / length` between 0 and 1 and is rejected without a length.
+    `set_link_exit_offset` takes a fraction and refuses one outside `0..=1`
+    (`Some(0)` is now the bar's start, not the default). Validation
+    (`RuleKind::RangeLinkStyle`) holds each exit to `0..=1`.
   - A `RangeLinks` series draws just before its bars whatever its place in
     the series list (`data_config::series_draw_order`), so the bars cover
     the link ends; the ink mask's owners, the data pick's paint order and
@@ -99,14 +106,27 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
     `default_config_for_series`) gives a chart that holds a range link
     series the timeline frame (`default_timeline_config`): rows top-down,
     row bands, no row axis line or ticks, horizontal bars.
-  - Migration: none for documents. A stored exit that a successor
-    starting soon used to move back now draws where it is stored; drag it
-    or clear it to let the layout choose. Tests (`range_bars_render.rs`):
+  - Migration: the exit is written as `exit_fraction`. A document of the
+    pixel unit (`"exit_offset": 24.0`, written by the unreleased
+    integration builds since range links arrived in #357) reads that link
+    as `None`, and the next layout chooses its exit: the pixel value cannot
+    be converted when the document is read, since the bar's drawn length
+    depends on the column values and the layout, neither of which the
+    document holds. Saved again, the document re-reads unchanged. No
+    released document carries a range link (`tests/fixtures/released`), so
+    every released document parses, re-serializes and exports as before.
+    Rust code that set pixels sets a fraction: `exit_offset: Some(0.5)` is
+    the bar's middle; `drag_link_exit`'s third argument is now the drawn
+    length (required) rather than an optional clamp. Tests
+    (`range_bars_render.rs`):
     `the_layout_stores_each_links_exit_toward_its_predecessors_end`,
     `links_draw_and_pick_under_their_bars_in_any_order`,
     `many_links_lay_out_draw_and_pick`, the updated
     `dragged_link_exits_move_the_trunk_and_snap_back`; model tests
     `the_chosen_exit_sits_toward_the_predecessors_end`,
+    `link_exit_offsets_set_drag_snap_and_share_their_trunk`,
+    `link_exit_drags_are_fractions_of_the_drawn_length`,
+    `range_links_round_trip` (the pixel key reads as `None`),
     `link_series_draw_before_their_bars`,
     `a_chart_with_range_links_takes_the_timeline_frame`; the browser test
     `default_config_for_series_json_frames_each_family`.

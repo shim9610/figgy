@@ -1979,11 +1979,13 @@ fn range_links_draw_on_overlays_and_subplots() {
     }
 }
 
-/// Dragging a link's exit (#357): the SSOT `exit_offset` moves where the
-/// trunk leaves its predecessor, for every link on a shared trunk, on a
-/// registered chart edited in place (SSOT invalidation) and in exports at
-/// 1x and 2x; the moved link still picks; a drag back within 3 px snaps to
-/// the default and draws the default image again; the offset round-trips.
+/// Dragging a link's exit (#357): the SSOT `exit_offset`, a fraction of
+/// the predecessor's drawn length, moves where the trunk leaves its
+/// predecessor, for every link on a shared trunk, on a registered chart
+/// edited in place (SSOT invalidation) and in exports at 1x and 2x, where
+/// the fraction maps onto the drawn span under the room rule; the moved
+/// link still picks; a drag back within 3 px of `inset` snaps to `None`
+/// and draws the default image again; the fraction round-trips.
 #[test]
 fn dragged_link_exits_move_the_trunk_and_snap_back() {
     let mut r = renderer();
@@ -2008,30 +2010,40 @@ fn dragged_link_exits_move_the_trunk_and_snap_back() {
     );
     let before: Vec<_> = [1.0f32, 2.0].map(|s| draw(&mut r, id, s)).into();
     // Drag link 1's exit 30 px toward row 0's end: link 0 shares its trunk.
+    // The exit is a fraction of row 0's drawn length (#357).
+    let length = value_px(&chart, direction, 60.0, 1.0) - value_px(&chart, direction, 20.0, 1.0);
     let mut edited = series.to_vec();
     let links = edited[0].render_type.range_links_mut().unwrap();
     assert_eq!(
-        links.drag_link_exit(1, 30.0, None),
+        links.drag_link_exit(1, 30.0, Some(length)),
         renderer::layout::NudgeResult::Moved
     );
-    assert_eq!(links.links[0].exit_offset, Some(40.0));
-    assert_eq!(links.links[1].exit_offset, Some(40.0));
+    let moved = links.links[0].exit_offset.expect("a fraction");
+    assert!((moved * length - 40.0).abs() < 1e-3, "{moved}");
+    assert_eq!(links.links[1].exit_offset, Some(moved));
     r.set_chart_series(id, edited.clone()).unwrap();
+    // The reference: the same links with their default exit at 40 px.
+    let mut reference = series.to_vec();
+    reference[0].render_type.range_links_mut().unwrap().inset = 40.0;
     for (k, scale) in [1.0f32, 2.0].into_iter().enumerate() {
         let after = draw(&mut r, id, scale);
-        // A stored exit is drawn where it is stored (#357): link 0's trunk
-        // leaves row 0 (from 20) 40 px in and crosses row 1's slot there,
-        // although row 2 starts at 30, where the default exit moved back.
-        let trunk = (value_px(&chart, direction, 20.0, scale) + 40.0 * scale).round() as u32;
-        let r1 = slot(&chart, direction, 1, scale);
-        assert!(
-            bbox(&after, (trunk - 2, r1.1, trunk + 3, r1.3), is_orange).is_some(),
-            "{scale}x: the trunk leaves 40 px in"
-        );
-        assert!(
-            bbox(&before[k], (trunk - 2, r1.1, trunk + 3, r1.3), is_orange).is_none(),
-            "{scale}x: the default trunk was elsewhere"
-        );
+        let expected = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &reference),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        // The fraction maps onto the drawn span at every scale, with the
+        // route's room rule: the default exit at 40 px, up to rounding.
+        let worst = after
+            .rgba
+            .iter()
+            .zip(&expected.rgba)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap_or(0);
+        assert!(worst <= 3, "{scale}x: the exit moved to 40 px ({worst})");
         assert_ne!(after.rgba, before[k].rgba, "{scale}x: the trunk moved");
         // The moved link picks where the new trunk has ink the old lacks.
         let (w, h) = (after.width, after.height);
@@ -2059,13 +2071,13 @@ fn dragged_link_exits_move_the_trunk_and_snap_back() {
     #[cfg(feature = "serde")]
     {
         let json = serde_json::to_string(&edited).unwrap();
-        assert!(json.contains("\"exit_offset\":40.0"), "{json}");
+        assert!(json.contains("\"exit_fraction\":"), "{json}");
         let again: Vec<SeriesConfig> = serde_json::from_str(&json).unwrap();
         assert_eq!(again, edited);
     }
     // Back to 2 px from the default: it snaps, and the image is the default.
     let links = edited[0].render_type.range_links_mut().unwrap();
-    links.drag_link_exit(0, -28.0, None);
+    links.drag_link_exit(0, -28.0, Some(length));
     assert_eq!(links.links[0].exit_offset, None);
     assert_eq!(links.links[1].exit_offset, None);
     r.set_chart_series(id, edited).unwrap();
@@ -2078,9 +2090,10 @@ fn dragged_link_exits_move_the_trunk_and_snap_back() {
 /// A pick reports drawn lengths for the exit drag's clamp (#357, #381): a
 /// link hit carries its predecessor's drawn length and a bar hit its own,
 /// in display pixels at 1x and 2x, from the bars the GPU draws (the CPU holds
-/// no row values). A drag past the bar's end stops at that length, and
-/// dragging back moves the exit at once: the image changes on the first
-/// step back. The length is a display parameter; no value changes.
+/// no row values). A drag converts its pixels to a fraction of that
+/// length: past the bar's end it stops at 1, and dragging back moves the
+/// exit at once, so the image changes on the first step back. The length
+/// is a display parameter; no value changes.
 #[test]
 fn link_picks_report_the_predecessors_drawn_length_and_the_drag_stops_there() {
     // Row 0 runs 20..60 and row 1 starts at 90, past it: only the bar's
@@ -2167,25 +2180,25 @@ fn link_picks_report_the_predecessors_drawn_length_and_the_drag_stops_there() {
         assert!(bar.is_some_and(|b| b > 0.0), "{scale}x: {bar:?}");
         limit = extent / scale;
     }
-    // Past the bar's end: the stored offset stops at the length.
+    // Past the bar's end: the stored fraction stops at 1, the bar's end.
     let mut edited = series.to_vec();
     let links = edited[0].render_type.range_links_mut().unwrap();
     assert_eq!(
         links.drag_link_exit(0, 1000.0, Some(limit)),
         renderer::layout::NudgeResult::Moved
     );
-    assert_eq!(links.links[0].exit_offset, Some(limit));
+    assert_eq!(links.links[0].exit_offset, Some(1.0));
     r.set_chart_series(id, edited.clone()).unwrap();
     let at_end = draw(&mut r, 1.0);
     // Further on draws the same; one step back moves the exit at once.
     let links = edited[0].render_type.range_links_mut().unwrap();
     links.drag_link_exit(0, 200.0, Some(limit));
-    assert_eq!(links.links[0].exit_offset, Some(limit));
+    assert_eq!(links.links[0].exit_offset, Some(1.0));
     r.set_chart_series(id, edited.clone()).unwrap();
     assert_eq!(draw(&mut r, 1.0).rgba, at_end.rgba, "held at the end");
     let links = edited[0].render_type.range_links_mut().unwrap();
     links.drag_link_exit(0, -8.0, Some(limit));
-    assert_eq!(links.links[0].exit_offset, Some(limit - 8.0));
+    assert_eq!(links.links[0].exit_offset, Some(1.0 - 8.0 / limit));
     r.set_chart_series(id, edited).unwrap();
     assert_ne!(draw(&mut r, 1.0).rgba, at_end.rgba, "back at once");
     r.remove_chart(id).unwrap();
@@ -2532,6 +2545,9 @@ fn the_layout_stores_each_links_exit_toward_its_predecessors_end() {
         let expected = links
             .chosen_exit_offset([px(a.1), px(a.2)], [px(b.1), px(b.2)])
             .unwrap();
+        // A fraction of the predecessor's drawn length (#357).
+        assert!((0.0..=1.0).contains(&exit), "{link:?}: {exit}");
+        let (exit, expected) = (exit * len, expected * len);
         assert!(
             (exit - expected).abs() < 0.5,
             "{link:?}: {exit} vs {expected}"
@@ -2539,7 +2555,7 @@ fn the_layout_stores_each_links_exit_toward_its_predecessors_end() {
         // Toward the predecessor's end: `inset` short of it, or as near as
         // the successor's start leaves room for.
         let room = px(b.1) - px(a.1) - 1.5 - 4.0 - links.head;
-        let near_end = (len - links.inset).min(room).max(0.5);
+        let near_end = (len - links.inset).min(room).max(0.0);
         assert!(
             (exit - near_end).abs() < 0.5,
             "{link:?}: {exit} vs {near_end}"
@@ -2625,7 +2641,7 @@ fn the_layout_stores_each_links_exit_toward_its_predecessors_end() {
             .rgba
         };
         let json = serde_json::to_string(&series).unwrap();
-        assert!(json.contains("exit_offset"));
+        assert!(json.contains("exit_fraction"));
         let back: Vec<SeriesConfig> = serde_json::from_str(&json).unwrap();
         assert_eq!(back, series);
         assert!(draw(&mut r, &back) == draw(&mut r, &series));
@@ -2669,7 +2685,9 @@ fn links_draw_and_pick_under_their_bars_in_any_order() {
         // the link's stroke reaches half its width into the bar there.
         let direction = CategoryBarDirection::Horizontal;
         let exit = exits(&series)[0].unwrap();
-        let x = (value_px(&chart, direction, GANTT_TASKS[0].1, scale) + exit * scale) as u32;
+        let start = value_px(&chart, direction, GANTT_TASKS[0].1, scale);
+        let end = value_px(&chart, direction, GANTT_TASKS[0].2, scale);
+        let x = (start + exit * (end - start)) as u32;
         let img = &listed_after;
         // The bar's last row at the exit, where the link's stroke runs
         // under it: the next pixel blends the bar's edge over the link and

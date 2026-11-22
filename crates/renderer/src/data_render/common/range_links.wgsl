@@ -8,13 +8,14 @@
 //
 // One instance is one link, drawn on every draw from its two bars in the
 // web Gantt convention: out of the predecessor's edge facing the successor's
-// row at the link's stored exit (chosen by the layout toward the
-// predecessor's end, or dragged), straight across to the successor's centre
-// line, one rounded corner, then along that line into the successor's
-// start, ending in an open chevron just before it. A link without a stored
-// exit (no layout has run) leaves a small inset from the predecessor's
-// start, moved back when the successor starts before it to leave room for
-// the head. Links leaving one bar at one exit share their trunk. The stroke width, head size and inset come from the
+// row at the link's stored exit (a fraction of the predecessor's drawn
+// length, chosen by the layout toward its end, or dragged), straight across
+// to the successor's centre line, one rounded corner, then along that line
+// into the successor's start, ending in an open chevron just before it. A
+// link without a stored exit (no layout has run) leaves a small inset from
+// the predecessor's start. When the successor starts before the exit, the
+// exit moves back to leave room for the head. Links leaving one bar at one
+// exit share their trunk. The stroke width, head size and inset come from the
 // lane table in render pixels, so the draw, the highlight and the pick
 // (which binds no `Style`) read one geometry. The route is appearance: it
 // reads the values the bars are drawn from and computes none the user reads
@@ -23,8 +24,9 @@
 /// Lane table entries past `range_bars.wgsl`'s: the link count, and the
 /// stroke width, head length and default exit inset in render pixels (f32
 /// bits). Link `i` follows at `RANGE_LINK_LANES + i * RANGE_LINK_STRIDE`:
-/// its predecessor row, its successor row and its exit offset in render
-/// pixels (f32 bits, NaN for the default). Must match `bar.rs`.
+/// its predecessor row, its successor row and its stored exit, a fraction
+/// of the predecessor's drawn length (f32 bits, NaN for none). Must match
+/// `bar.rs`.
 const RANGE_LANE_LINK_COUNT: u32 = 8u;
 const RANGE_LANE_LINK_WIDTH: u32 = 9u;
 const RANGE_LANE_LINK_HEAD: u32 = 10u;
@@ -74,9 +76,9 @@ struct RangeLinkRoute {
     down: vec2<f32>,
     /// The corner's radius, fitted to both legs.
     radius: f32,
-    /// The predecessor's drawn length along the value axis: the largest
-    /// exit offset that moves the exit (`range_link_exit_px` is clamped to
-    /// it). The pick reports it (`RangeLinkPick`) so a drag can stop there.
+    /// The predecessor's drawn length along the value axis, which a stored
+    /// exit fraction is mapped onto. The pick reports it so a drag converts
+    /// its pixels to a fraction.
     span: f32,
 };
 
@@ -94,10 +96,10 @@ fn range_link_row(i: u32, k: u32) -> vec2<u32> {
     return vec2<u32>(r, 1u);
 }
 
-/// Link `i`'s stored exit offset from the predecessor's start in render
-/// pixels, or -1 when it has none (NaN in the lane: no layout has chosen
-/// it yet).
-fn range_link_stored_exit_px(i: u32) -> f32 {
+/// Link `i`'s stored exit, a fraction `0..=1` of the predecessor's drawn
+/// length from its first end, or -1 when it has none (NaN in the lane: no
+/// layout has chosen it yet).
+fn range_link_stored_exit(i: u32) -> f32 {
     let o = bitcast<f32>(range_lane(RANGE_LINK_LANES + i * RANGE_LINK_STRIDE + 2u));
     if (o >= 0.0) {
         return o;
@@ -156,16 +158,19 @@ fn range_link_route(i: u32) -> RangeLinkRoute {
     let tip_u = b.start_px * s - gap;
     let a_first = min(a.start_px * s, a.end_px * s);
     let a_last = max(a.start_px * s, a.end_px * s);
-    // The exit. A stored offset (the layout's choice or a user's drag,
-    // #357) is drawn where it is stored, kept on the bar: the draw never
-    // re-routes it. Without one (no layout has run), the default inset
-    // from the predecessor's first end, kept on the bar and moved back
-    // when the successor starts too soon for the last leg and its head.
-    let stored = range_link_stored_exit_px(i);
-    var exit_u = min(a_first + stored, a_last);
-    if (stored < 0.0) {
-        exit_u = min(min(a_first + range_link_inset_px(), a_last), tip_u - head - lead);
+    // The exit. A stored fraction (the layout's choice or a user's drag,
+    // #357) is mapped onto the predecessor's current drawn span, so it
+    // keeps its place on the bar through a zoom, a resize or another
+    // export scale. Without one (no layout has run), the default inset
+    // from the predecessor's first end, kept on the bar. Either is moved
+    // back when the successor starts too soon for the last leg and its
+    // head (the room rule).
+    let stored = range_link_stored_exit(i);
+    var along = min(a_first + range_link_inset_px(), a_last);
+    if (stored >= 0.0) {
+        along = a_first + clamp(stored, 0.0, 1.0) * (a_last - a_first);
     }
+    var exit_u = min(along, tip_u - head - lead);
     var down = 1.0;
     var exit_c = a_band.y;
     if (b_mid < a_mid) {
@@ -342,7 +347,7 @@ fn fs_range_link_selection(in: RangeLinkVsOut) -> @location(0) vec4<f32> {
 // half its stroke plus the pick distance, from the same route the draw
 // builds. A link answers as a histogram bin whose index is its row, with
 // its predecessor's drawn length in render pixels (f32 bits) in `index1`:
-// a display parameter the exit drag stops at, not data.
+// a display parameter the exit drag divides its pixels by, not data.
 
 fn range_link_pick(i: u32) -> DataPickCandidate {
     let r = range_link_route(i);
