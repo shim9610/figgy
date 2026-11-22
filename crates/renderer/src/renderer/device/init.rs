@@ -218,6 +218,8 @@ impl Renderer {
             frame_settled: 0,
             #[cfg(test)]
             arc_chunk_override: None,
+            #[cfg(test)]
+            pending_series_override: None,
             space_bg: None,
             surface_format,
             gpu_ledger,
@@ -393,6 +395,8 @@ impl Renderer {
             frame_settled: 0,
             #[cfg(test)]
             arc_chunk_override: None,
+            #[cfg(test)]
+            pending_series_override: None,
             space_bg: None,
             surface_format,
             gpu_ledger,
