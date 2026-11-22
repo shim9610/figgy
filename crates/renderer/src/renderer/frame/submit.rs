@@ -485,6 +485,8 @@ impl Renderer {
             .try_reserve_exact(items.len())
             .map_err(allocation)?;
         self.sync_external_invalidations()?;
+        // A browser's range link exit fits whose gathers completed (#357).
+        self.service_link_exit_fits()?;
         self.service_stream_requests();
         for item in items {
             let config = self.chart_config(item.chart_id)?;

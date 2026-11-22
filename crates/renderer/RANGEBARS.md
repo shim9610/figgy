@@ -107,7 +107,9 @@ let waterfall = SeriesConfig {
 
 `SeriesConfig::timeline_bars(id, positions, start, end)` and
 `default::default_timeline_config()` (both with the `helpers` feature)
-build a timeline in the look of the common web timelines (#357):
+build a timeline in the look of the common web timelines (#357), and
+`default::config_for_series` gives a chart whose series hold a range link
+series (a Gantt chart's dependencies) this frame too:
 
 | Choice | Value | References |
 |---|---|---|
@@ -153,25 +155,55 @@ let tasks = SeriesConfig::timeline_bars("tasks", "row", "start", "end").with_pro
 
 `SeriesConfig::range_links(id, bars, [(from, to), …])` adds a
 `DataRenderType::RangeLinks` series: each `RangeLink { from, to,
-exit_offset }` joins the bar of row `from` to the bar of row `to` of the
+exit_fraction }` joins the bar of row `from` to the bar of row `to` of the
 range bar series `bars`, finish to start. The series is DataLess: the links
 are SSOT (`links`), like annotations, and it reads no column (`x_column`
 and `y_column` empty, `RuleKind::RangeLinkColumns`). There is no cap on
 links; each costs one 6-vertex instance and one pick candidate per draw,
 and 12 bytes of the lane table the series uploads when it is prepared
-(`three_thousand_links_draw_and_pick` draws 3749). The renderer routes each link on every draw from
-the two bars as they are drawn, in the web Gantt convention (Frappe Gantt):
-the link leaves the predecessor's edge facing the successor's row, a small
-inset from its start, runs across to the successor's centre line, turns
-through one rounded corner and ends in an open chevron just before the
-successor's start. When the successor starts before that exit, the exit
-moves back to leave room for the head, so a link never turns back through
-a bar. Links leaving one bar share their trunk, and a link between two
-tasks on one row runs straight from the first's end. A link naming a row
-past the bars' rows draws and picks nothing, and `series_draw_info`
-reports the series as `truncated`. List the links before their
-bars: a series draws in its place in the list, so the bars then cover the
-link ends.
+(`three_thousand_links_draw_and_pick` draws 3749). The renderer draws each
+link on every draw from the two bars as they are drawn, in the web Gantt
+convention (Frappe Gantt): the link leaves the predecessor's edge facing the
+successor's row at its exit, runs across to the successor's centre line,
+turns through one rounded corner and ends in an open chevron just before the
+successor's start. Links leaving one bar at one exit share their trunk, and
+a link between two tasks on one row runs straight from the first's end. A
+link naming a row past the bars' rows draws and picks nothing, and
+`series_draw_info` reports the series as `truncated`. A link series draws
+just before its bars, whatever its place in the series list
+(`data_config::series_draw_order`), so the bars cover the link ends; the ink
+mask, the pick's paint order and every export follow that order.
+
+The layout chooses each link's exit and stores it (#357): `fit_ranges`, a
+`Fitted` chart's registration and `commit_auto_fit_all` (in the browser
+`fit_ranges()`, `fit_layout()`, `auto_fit_all()` and a new chart's first
+fit) write an exit into every link whose `exit_fraction` is `None`: toward the
+predecessor's end, `inset` short of it (half a bar shorter than two insets),
+pulled back only as far as the successor's start needs room for the last
+leg and the head, and kept on the bar
+(`RangeLinkSeries::chosen_exit_offset`). The exit is stored as a fraction
+`0..=1` of the predecessor's drawn length, from its start (0) to its end
+(1), so it keeps its place on the bar when the chart zooms, resizes or
+exports at another scale. The draw maps the fraction onto the bar's
+current drawn span and keeps the room rule: when the successor starts too
+soon for the last leg and the head, the exit moves back. A value that is
+already `Some` is never rewritten, whoever wrote it, so a dragged exit
+survives later layouts; clearing one to `None` lets the next layout choose
+again. A link without an exit (no layout has run) leaves `inset` logical
+pixels from the predecessor's start, under the same room rule.
+`Chart::fit_layout` holds no series: a host that lays out with it calls
+`Renderer::fit_link_exits(config, &mut series)` afterwards.
+
+The bars' drawn ends come from the extent engine's GPU readback: one
+gather (`gather_link_ends`) reads each link's predecessor and successor
+start and end from the column pool into a 48-byte record, written straight
+into mapped memory and read back once by the layout; the CPU keeps no row
+values. There is no cap on links: more links than one gather holds (one
+storage binding) run several gathers. The cost grows with the links:
+`many_links_lay_out_draw_and_pick` lays out 3749 links in about 0.1 s on
+lavapipe. In a browser, which cannot wait, the gather is submitted at the
+layout and the frame that finds it complete writes the exits
+(`Renderer::service_link_exit_fits`); the series edit redraws the chart.
 
 | Field | Default (`range_links`) | Range |
 |---|---|---|
@@ -179,8 +211,8 @@ link ends.
 | `color` | amber `#D4A24C` | channels in `0..=1`; a theme keeps it, since the waterfall connector's thin dark line does not read as a dependency |
 | `width` | 1.5 px | `0..=24` |
 | `head` | 6 px open chevron | `0..=32` |
-| `inset` | 6 px from the predecessor's start: the default exit | `0..=64` |
-| `links[i].exit_offset` | `None`: the default exit | finite, not negative; `Some(0)` is the default |
+| `inset` | 6 px: how far short of the predecessor's end the layout puts an exit, and from its start a link without one leaves | `0..=64` |
+| `links[i].exit_fraction` | `None`: chosen by the next layout | a fraction `0..=1` of the predecessor's drawn length from its start |
 
 The style ranges are `RuleKind::RangeLinkStyle`. Polar charts refuse links
 (`RuleKind::PolarRangeLinks`), and a streamed source is refused
@@ -191,8 +223,9 @@ use renderer::SeriesConfig;
 
 let tasks = SeriesConfig::timeline_bars("tasks", "row", "start", "end");
 let links = SeriesConfig::range_links("links", "tasks", [(0, 1), (1, 2), (1, 3)]);
-// Links first, so the bars cover their ends.
-let series = [links, tasks];
+// In either order the bars cover the link ends; a layout
+// (`Renderer::fit_ranges`) chooses each link's exit.
+let series = [tasks, links];
 ```
 
 ## Interaction
@@ -215,21 +248,23 @@ index in `links`, wherever its stroke or head is painted; the picked link
 is redrawn in the selection colour with a wider stroke, and
 `step_selection` moves along the links by `dx + dy`, staying in the
 series. `selection_details()` reports `index`, `from`, `to` and
-`exit_offset`. Links draw on overlays and subplots next to their bars and
+`exit_fraction`. Links draw on overlays and subplots next to their bars and
 export with them.
 
 A link's exit is draggable. `RangeLinkSeries::drag_link_exit(index,
-along, limit)` moves it along the predecessor's edge: every link that leaves
-the same bar at the same exit moves with it, so a shared trunk moves as one,
-and an exit within 3 px of the default snaps back to it (`None`). `limit` is
-the predecessor's drawn length in logical pixels: the stored offset stops
-there, so dragging back past the bar's end moves the exit at once. The CPU
-holds no row values, so the length comes from the link's pick: a range link
-hit (`PickedData::HistogramBin`) carries `extent_px`, its predecessor's
-drawn length in display pixels (a range bar hit carries its own), which the
-host divides by the display scale. With `None` only the draw keeps the exit
-on the bar. `set_link_exit_offset(index, offset)` sets one link's offset
-directly. In the browser, `press_range_link(series_id, index, extent_px)`
+along, length)` moves it along the predecessor's edge by `along` logical
+pixels on a predecessor drawn `length` logical pixels long: the stored
+fraction moves by `along / length` and stops at 0 and 1, so dragging back
+past the bar's end moves the exit at once. Every link that leaves the same
+bar at the same exit moves with it, so a shared trunk moves as one, and an
+exit within 3 px of `inset` snaps back to `None`, which the next layout
+chooses again. The CPU holds no row values, so the length comes from the
+link's pick: a range link hit (`PickedData::HistogramBin`) carries
+`extent_px`, its predecessor's drawn length in display pixels (a range bar
+hit carries its own), which the host divides by the display scale. Without
+a length the drag cannot be converted and is rejected.
+`set_link_exit_offset(index, fraction)` sets one link's exit directly,
+`0..=1`. In the browser, `press_range_link(series_id, index, extent_px)`
 after a `pick_data` hit (`hit.extent_px`) starts the drag, `on_move` moves
 the exit along the value axis as it runs on screen (an inverted axis
 included) and `on_release` ends it; `set_link_exit_offset` is the twin of

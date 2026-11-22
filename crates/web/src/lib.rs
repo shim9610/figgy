@@ -1929,6 +1929,13 @@ mod tests {
             config(&[renderer::SeriesConfig::line("l", "x", "y")]),
             unframed()
         );
+        // A chart of dependency links takes the timeline frame (#357), as
+        // the Rust default does.
+        let gantt = [
+            renderer::SeriesConfig::timeline_bars("t", "pos", "start", "end"),
+            renderer::SeriesConfig::range_links("l", "t", [(0, 1)]),
+        ];
+        assert_eq!(config(&gantt), renderer::default::default_timeline_config());
         assert!(super::default_config_for_series_json("{").is_err());
         // The returned config is a valid document.
         let json = super::default_config_for_series_json("[]").unwrap();
@@ -2033,27 +2040,26 @@ mod tests {
         let refused = report(std::slice::from_ref(&links));
         assert_eq!(refused["valid"], false);
         assert!(refused.to_string().contains("RangeLinkBars"), "{refused}");
-        // A dragged exit is SSOT: it validates and normalizes unchanged; a
-        // negative one names its rule.
+        // A dragged exit is SSOT: it validates and normalizes unchanged; one
+        // past the bar's end (above 1) names its rule.
         let mut dragged = links;
         dragged
             .render_type
             .range_links_mut()
             .unwrap()
-            .set_link_exit_offset(0, Some(24.0));
+            .set_link_exit_offset(0, Some(0.25));
         let bars = renderer::SeriesConfig::timeline_bars("t", "pos", "start", "end");
         let ok = report(&[bars.clone(), dragged.clone()]);
         assert_eq!(ok["valid"], true, "{ok}");
+        // A fraction of the predecessor's length (#357), written as
+        // `exit_fraction`.
         let json = serde_json::to_string(&dragged).unwrap();
-        assert!(json.contains("\"exit_offset\":24.0"), "{json}");
+        assert!(json.contains("\"exit_fraction\":0.25"), "{json}");
         if let Some(l) = dragged.render_type.range_links_mut() {
-            l.links[0].exit_offset = Some(-1.0);
+            l.links[0].exit_fraction = Some(1.5);
         }
-        let negative = report(&[bars, dragged]);
-        assert!(
-            negative.to_string().contains("RangeLinkStyle"),
-            "{negative}"
-        );
+        let past = report(&[bars, dragged]);
+        assert!(past.to_string().contains("RangeLinkStyle"), "{past}");
     }
 
     /// A link exit drag follows the pointer (#357): along the value axis,

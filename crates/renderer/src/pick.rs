@@ -79,9 +79,9 @@ pub enum PickedData {
         half: Option<crate::data_config::ViolinSide>,
         /// A drawn length along the value axis in display pixels, for the
         /// hit of a range bar (the bar's) or a range link (its
-        /// predecessor's, the farthest its exit can be dragged); `None` for
-        /// every other bin. A display parameter read from the drawn bar,
-        /// not data: a link exit drag stops at it
+        /// predecessor's, which a link exit drag divides its pixels by to
+        /// move the stored fraction); `None` for every other bin. A display
+        /// parameter read from the drawn bar, not data
         /// (`RangeLinkSeries::drag_link_exit`).
         extent_px: Option<f32>,
         distance_px: f32,

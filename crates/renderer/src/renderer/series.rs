@@ -1734,7 +1734,9 @@ pub(super) fn range_link_data<'c>(
             for link in &style.links {
                 push(link.from);
                 push(link.to);
-                let offset = link.exit_offset.map_or(f32::NAN, |o| o * display_scale);
+                // A fraction of the predecessor's drawn length (#357): the
+                // same at every scale.
+                let offset = link.exit_fraction.map_or(f32::NAN, |o| o);
                 push(offset.to_bits());
             }
             Ok(())

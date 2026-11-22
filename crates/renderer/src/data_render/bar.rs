@@ -285,8 +285,8 @@ pub(crate) const RANGE_LANE_LINK_HEAD: u32 = 10;
 pub(crate) const RANGE_LANE_LINK_INSET: u32 = 11;
 /// The fixed head of a link series' lane table; link `i` follows in
 /// `RANGE_LINK_STRIDE` entries from `RANGE_LINK_LANES + i * RANGE_LINK_STRIDE`:
-/// its `from` row, its `to` row and its exit offset in render pixels as f32
-/// bits (NaN for the default).
+/// its `from` row, its `to` row and its stored exit, a fraction of the
+/// predecessor's drawn length, as f32 bits (NaN for none).
 pub(crate) const RANGE_LINK_LANES: usize = RANGE_LANE_LINK_INSET as usize + 1;
 pub(crate) const RANGE_LINK_STRIDE: usize = 3;
 /// Vertices per link: one quad over the whole route. Must match

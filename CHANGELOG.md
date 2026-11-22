@@ -53,6 +53,80 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 `color` and the transition arrows' `color_by_wavelength` and
 `label_knockout`) are additive.
 
+- **The layout chooses each range link's exit, links draw under their bars,
+  and a chart of links takes the timeline frame**
+  ([#357](https://github.com/shim9610/figgy/issues/357), approved in
+  [this comment](https://github.com/shim9610/figgy/issues/357#issuecomment-7077230337),
+  amended in [this one](https://github.com/shim9610/figgy/issues/357#issuecomment-7077549205)).
+  Range links are unreleased (crates.io tops out at renderer 0.18.1), so
+  the exit's new field is not a migration.
+  - The layout writes an exit into every link whose `exit_fraction` is
+    `None`: `Renderer::fit_ranges`, a `Fitted` chart's registration
+    (`register_chart`'s first fit) and `commit_auto_fit_all`, and in the
+    browser `fit_ranges()`, `fit_layout()`, `auto_fit_all()` and a new
+    chart's first fit. The exit sits toward the predecessor's end, `inset`
+    short of it (half a bar shorter than two insets), pulled back only as
+    far as the successor's start needs room for the last leg and the head,
+    and kept on the bar (`RangeLinkSeries::chosen_exit_offset`). A
+    value that is already `Some` is never rewritten, whoever wrote it;
+    clearing it to `None` (`set_link_exit_offset`, or a drag that snaps
+    back) lets the next layout choose again. `Chart::fit_layout` and the
+    model's `auto_layout` hold no series: a host that lays out with them
+    calls `Renderer::fit_link_exits(config, &mut series)` afterwards.
+  - The bars' drawn ends come from the extent engine's GPU readback
+    (`gpu_extent`): a new compute entry, `gather_link_ends` in
+    `gpu_errorbar.wgsl`, reads each link's predecessor and successor start
+    and end from the column pool into one 48-byte record per link, written
+    straight into mapped memory and read back once. The CPU keeps no row
+    values (rule 2) and there is no cap on links (rule 10): more links than
+    one gather holds run several gathers. 3749 links lay out in about
+    0.1 s on lavapipe. The new API: `Renderer::begin_link_exit_fit`,
+    `LinkExitFitTicket` (`resolve`, `resolve_blocking`, `try_resolve`),
+    `ResolvedLinkExitFit::write`, `Renderer::fit_link_exits` (native),
+    `Renderer::fit_chart_link_exits` and `Renderer::service_link_exit_fits`
+    (a browser frame writes the exits of a gather that completed, and the
+    series edit redraws the chart).
+  - `RangeLink::exit_offset` (logical pixels) becomes
+    `RangeLink::exit_fraction`, a fraction `0..=1` of the predecessor's
+    drawn length from its start (0) to its end (1), written under that key,
+    so an exit keeps its place on the bar when the chart zooms,
+    resizes or exports at another scale. The draw maps it onto the bar's
+    current drawn span and keeps the room rule (`range_links.wgsl`); `inset`
+    (px) remains only the fallback of a link without an exit. A drag
+    converts the pointer's pixels with the drawn length the pick reports
+    (`extent_px`): `drag_link_exit(index, along, length)` moves the fraction
+    by `along / length` between 0 and 1 and is rejected without a length.
+    `set_link_exit_offset` takes a fraction and refuses one outside `0..=1`
+    (`Some(0)` is now the bar's start, not the default). Validation
+    (`RuleKind::RangeLinkStyle`) holds each exit to `0..=1`.
+  - A `RangeLinks` series draws just before its bars whatever its place in
+    the series list (`data_config::series_draw_order`), so the bars cover
+    the link ends; the ink mask's owners, the data pick's paint order and
+    every export follow the same order. Appearance only: a chart listing
+    the links before their bars draws exactly as before.
+  - `default::config_for_series` (and the browser's
+    `default_config_for_series`) gives a chart that holds a range link
+    series the timeline frame (`default_timeline_config`): rows top-down,
+    row bands, no row axis line or ticks, horizontal bars.
+  - No migration: no released or published document carries a range
+    link (`tests/fixtures/released` has none), so every released document
+    parses, re-serializes and exports as before. Code written against the
+    unreleased pixel field sets `exit_fraction: Some(0.5)` for the bar's
+    middle; `drag_link_exit`'s third argument is now the drawn length
+    (required) rather than an optional clamp. Tests
+    (`range_bars_render.rs`):
+    `the_layout_stores_each_links_exit_toward_its_predecessors_end`,
+    `links_draw_and_pick_under_their_bars_in_any_order`,
+    `many_links_lay_out_draw_and_pick`,
+    `a_stored_exit_keeps_its_fraction_through_zoom_and_resize`, the updated
+    `dragged_link_exits_move_the_trunk_and_snap_back`; model tests
+    `the_chosen_exit_sits_toward_the_predecessors_end`,
+    `link_exit_offsets_set_drag_snap_and_share_their_trunk`,
+    `link_exit_drags_are_fractions_of_the_drawn_length`,
+    `range_links_round_trip`,
+    `link_series_draw_before_their_bars`,
+    `a_chart_with_range_links_takes_the_timeline_frame`; the browser test
+    `default_config_for_series_json_frames_each_family`.
 - **Range links fit and draw without their own columns**
   ([#405](https://github.com/shim9610/figgy/issues/405),
   [#406](https://github.com/shim9610/figgy/issues/406)). No value, API or

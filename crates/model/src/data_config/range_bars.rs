@@ -119,14 +119,19 @@ pub struct RangeLink {
     pub from: u32,
     /// The successor's row.
     pub to: u32,
-    /// Where the link leaves the predecessor's edge, in logical pixels
-    /// from the predecessor's start (clamped to the bar when drawn); `None`
-    /// is the series' default, `inset`. A user's drag writes it.
+    /// Where the link leaves the predecessor's edge, as a fraction `0..=1`
+    /// of the predecessor's drawn length from its start (0) to its end (1),
+    /// so the exit keeps its place on the bar through a zoom, a resize or
+    /// an export at another scale. The layout writes it into a link that
+    /// has none ([`RangeLinkSeries::chosen_exit_offset`], #357) and a
+    /// user's drag moves it; a layout never rewrites a `Some` value. `None`
+    /// until a layout runs, drawn `inset` logical pixels from the
+    /// predecessor's start.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub exit_offset: Option<f32>,
+    pub exit_fraction: Option<f32>,
 }
 
 impl RangeLink {
@@ -135,7 +140,7 @@ impl RangeLink {
         Self {
             from,
             to,
-            exit_offset: None,
+            exit_fraction: None,
         }
     }
 }
@@ -146,8 +151,8 @@ pub const RANGE_LINK_EXIT_SNAP: f32 = 3.0;
 
 /// The fields of a [`DataRenderType::RangeLinks`] series (#357): the
 /// dependency links between the bars of the range bar series `bars`, drawn
-/// in `color`, `width` logical pixels wide: out of the predecessor's edge
-/// facing the successor, `inset` pixels from its start, down to the
+/// in `color`, `width` logical pixels wide, under the bars: out of the
+/// predecessor's edge facing the successor at each link's exit, down to the
 /// successor's centre line and into its start, ending in an open chevron
 /// `head` pixels long. The series is DataLess: its links are SSOT
 /// (`links`), and it reads no column (`x_column` and `y_column` empty).
@@ -163,8 +168,9 @@ pub struct RangeLinkSeries {
     pub width: f32,
     /// The open chevron's length in logical pixels, `0..=32`.
     pub head: f32,
-    /// How far from the predecessor's start a link leaves its edge by
-    /// default, in logical pixels, `0..=64`.
+    /// How far short of the predecessor's end the layout puts a link's
+    /// exit, and how far from its start a link without an exit leaves its
+    /// edge, in logical pixels, `0..=64`.
     pub inset: f32,
     /// The links, any number of them.
     #[cfg_attr(
@@ -175,64 +181,140 @@ pub struct RangeLinkSeries {
 }
 
 impl RangeLinkSeries {
-    /// Set link `index`'s exit offset: `None`, `Some(0)` and a non-finite
-    /// value clear it back to the default exit. Returns `false`, changing
-    /// nothing, for an index past the links or a negative offset.
+    /// Set link `index`'s exit, a fraction `0..=1` of the predecessor's
+    /// drawn length from its start: `None` and a non-finite value clear it,
+    /// so the next layout chooses. Returns `false`, changing nothing, for
+    /// an index past the links or a fraction outside `0..=1`.
     pub fn set_link_exit_offset(&mut self, index: usize, offset: Option<f32>) -> bool {
-        let offset = offset.filter(|o| o.is_finite() && *o != 0.0);
-        if offset.is_some_and(|o| o < 0.0) {
+        let offset = offset.filter(|o| o.is_finite());
+        if offset.is_some_and(|o| !(0.0..=1.0).contains(&o)) {
             return false;
         }
         let Some(link) = self.links.get_mut(index) else {
             return false;
         };
-        link.exit_offset = offset;
+        link.exit_fraction = offset;
         true
     }
 
     /// Drag link `index`'s exit by `along` logical pixels along the
-    /// predecessor's edge (toward its end when positive). Every link that
-    /// leaves the same bar at the same exit moves with it, so a shared
-    /// trunk moves as one; an exit within [`RANGE_LINK_EXIT_SNAP`] of the
-    /// default snaps back to it (`None`), and one dragged before the bar's
-    /// start stops half a pixel in from it, since an offset of 0 means the
-    /// default.
+    /// predecessor's edge (toward its end when positive), on a predecessor
+    /// drawn `length` logical pixels long: the drag moves the stored
+    /// fraction by `along / length`, between 0 (the bar's start) and 1 (its
+    /// end). Every link that leaves the same bar at the same exit moves
+    /// with it, so a shared trunk moves as one; an exit dragged within
+    /// [`RANGE_LINK_EXIT_SNAP`] pixels of `inset` snaps back to `None`,
+    /// which the next layout chooses again.
     ///
-    /// `limit` is the predecessor's drawn length in logical pixels, the
-    /// farthest an exit moves (the draw clamps the exit to the bar's end):
-    /// the stored offset stops there, so dragging back moves the exit at
-    /// once. The renderer holds no row values on the CPU, so the length
-    /// comes from the link's pick (`PickedData::HistogramBin::extent_px`,
-    /// in display pixels, divided by the display scale); with `None` the
-    /// offset is not clamped and only the draw stops the exit.
+    /// The renderer holds no row values on the CPU, so the length comes
+    /// from the link's pick (`PickedData::HistogramBin::extent_px`, in
+    /// display pixels, divided by the display scale). Without a finite,
+    /// positive length the drag cannot be converted and is rejected.
     pub fn drag_link_exit(
         &mut self,
         index: usize,
         along: f32,
-        limit: Option<f32>,
+        length: Option<f32>,
     ) -> crate::layout::NudgeResult {
         use crate::layout::{NudgeReject, NudgeResult};
         let Some(&picked) = self.links.get(index) else {
             return NudgeResult::Rejected(NudgeReject::OutOfBounds);
         };
+        let Some(length) = length.filter(|l| l.is_finite() && *l > 0.0) else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
         if !along.is_finite() {
             return NudgeResult::Rejected(NudgeReject::OutOfBounds);
         }
-        let inset = self.inset;
-        let current = picked.exit_offset.unwrap_or(inset);
-        let limit = limit.filter(|l| l.is_finite()).map(|l| l.max(0.5));
-        // An offset stored past the bar moves from where the exit is drawn.
-        let from = limit.map_or(current, |l| current.min(l));
-        let moved = (from + along).max(0.5);
-        let moved = limit.map_or(moved, |l| moved.min(l));
-        let offset = ((moved - inset).abs() > RANGE_LINK_EXIT_SNAP).then_some(moved);
+        let inset = (self.inset / length).clamp(0.0, 1.0);
+        let current = picked.exit_fraction.unwrap_or(inset);
+        let moved = (current.clamp(0.0, 1.0) + along / length).clamp(0.0, 1.0);
+        let offset = ((moved - inset).abs() * length > RANGE_LINK_EXIT_SNAP).then_some(moved);
         for link in &mut self.links {
-            if link.from == picked.from && link.exit_offset.unwrap_or(inset) == current {
-                link.exit_offset = offset;
+            if link.from == picked.from && link.exit_fraction.unwrap_or(inset) == current {
+                link.exit_fraction = offset;
             }
         }
         NudgeResult::Moved
     }
+
+    /// The exit the layout chooses for a link (#357), as a fraction `0..=1`
+    /// of the predecessor's drawn length from its start, from the two bars'
+    /// drawn ends along the value axis in logical pixels (`pred` and
+    /// `succ`, each `[start, end]`): toward the predecessor's end, `inset`
+    /// short of it (half the bar when it is shorter than two insets),
+    /// pulled back only as far as the successor's start needs room for the
+    /// last leg and the head (the route's room rule:
+    /// [`RANGE_LINK_TIP_GAP_PX`], [`RANGE_LINK_LEAD_PX`] and `head`), and
+    /// kept on the bar. `None` when an end is not finite or the bar has no
+    /// length: such a link draws nothing.
+    ///
+    /// A display parameter chosen once by the layout and stored in the
+    /// SSOT (rule 1): it reads the drawn ends and produces no value the user
+    /// reads as data.
+    pub fn chosen_exit_offset(&self, pred: [f32; 2], succ: [f32; 2]) -> Option<f32> {
+        if !pred.iter().chain(&succ).all(|v| v.is_finite()) || pred[0] == pred[1] {
+            return None;
+        }
+        // `u` runs from the successor's start to its end, as the route's
+        // does (`range_links.wgsl`).
+        let s = if succ[1] >= succ[0] { 1.0 } else { -1.0 };
+        let tip = succ[0] * s - RANGE_LINK_TIP_GAP_PX;
+        let first = (pred[0] * s).min(pred[1] * s);
+        let last = (pred[0] * s).max(pred[1] * s);
+        let back = self.inset.max(0.0).min((last - first) * 0.5);
+        let room = tip - self.head.max(0.0) - RANGE_LINK_LEAD_PX;
+        let exit = (last - back).min(room).max(first);
+        Some(((exit - first) / (last - first)).clamp(0.0, 1.0))
+    }
+}
+
+/// The gap between a link's chevron tip and its successor's start, in
+/// logical pixels. Must match `range_links.wgsl`'s `RANGE_LINK_TIP_GAP_PX`.
+pub const RANGE_LINK_TIP_GAP_PX: f32 = 1.5;
+
+/// The least last leg between a link's exit and its chevron's base, in
+/// logical pixels. Must match `range_links.wgsl`'s `RANGE_LINK_LEAD_PX`.
+pub const RANGE_LINK_LEAD_PX: f32 = 4.0;
+
+/// The order series draw in (#357): the list's order, except that a
+/// [`DataRenderType::RangeLinks`] series listed after its bars draws just
+/// before them, so the bars cover the link ends whatever the list's order.
+/// Links before their bars keep their place; several link series of one
+/// bars series keep their order. `series(i)` is the `i`-th of `count`
+/// series; every index is yielded once. The draw, the ink mask's owners,
+/// the pick's paint order and the export read this one order.
+pub fn series_draw_order<'a, F>(count: usize, series: F) -> impl Iterator<Item = usize> + Clone
+where
+    F: Fn(usize) -> &'a SeriesConfig + Clone,
+{
+    let bars_of = {
+        let series = series.clone();
+        move |i: usize| {
+            series(i)
+                .render_type
+                .range_links()
+                .map(|links| links.bars.as_str())
+        }
+    };
+    // A link series is moved when its bars are listed before it.
+    let moved = {
+        let series = series.clone();
+        let bars_of = bars_of.clone();
+        move |i: usize| bars_of(i).is_some_and(|bars| (0..i).any(|j| series(j).series_id == bars))
+    };
+    (0..count).flat_map(move |i| {
+        let bars = series(i);
+        let is_bars = bars.render_type.range_bars().is_some();
+        let bars_of = bars_of.clone();
+        let moved = moved.clone();
+        let own = (!moved(i)).then_some(i);
+        // The link series after these bars, then the bars themselves.
+        // Each of them lists its bars, `i`, before itself: it is moved.
+        ((i + 1)..count)
+            .filter(move |&j| is_bars && bars_of(j) == Some(bars.series_id.as_str()))
+            .chain(own)
+    })
 }
 
 /// The fields of a [`DataRenderType::RangeBars`] series.
@@ -330,7 +412,7 @@ pub const MAX_RANGE_LINK_INSET: f32 = 64.0;
 /// The rules one range link series is held to among the chart's `series`
 /// (#357): its bars series is a range bar series of the same layer, it
 /// reads no column, its width, head and inset are in range, its colour's
-/// channels in `0..=1`, and every exit offset is finite and not negative.
+/// channels in `0..=1`, and every exit is a fraction in `0..=1`.
 /// A link's rows are checked against the bars when drawn: one past them
 /// draws nothing, and `series_draw_info` reports it as `truncated`.
 pub fn validate_range_link_series(
@@ -353,12 +435,12 @@ pub fn validate_range_link_series(
     if !item.x_column.is_empty() || !item.y_column.is_empty() || item.z_column.is_some() {
         return Err(crate::RuleKind::RangeLinkColumns);
     }
-    let offset_ok = |o: Option<f32>| o.is_none_or(|o| o.is_finite() && o >= 0.0);
+    let offset_ok = |o: Option<f32>| o.is_none_or(|o| (0.0..=1.0).contains(&o));
     if !finite_in(links.width, 0.0, MAX_RANGE_STROKE_WIDTH)
         || !finite_in(links.head, 0.0, MAX_RANGE_LINK_HEAD)
         || !finite_in(links.inset, 0.0, MAX_RANGE_LINK_INSET)
         || !valid_bar_color(links.color, false)
-        || !links.links.iter().all(|l| offset_ok(l.exit_offset))
+        || !links.links.iter().all(|l| offset_ok(l.exit_fraction))
     {
         return Err(crate::RuleKind::RangeLinkStyle);
     }

@@ -1941,7 +1941,7 @@ exactly the bar that series draws.
 | 0 to 7 | the bars' own, as above |
 | `RANGE_LANE_LINK_COUNT` (8) | the link count, any number |
 | `RANGE_LANE_LINK_WIDTH` (9), `_HEAD` (10), `_INSET` (11) | the stroke width, the chevron's length and the default exit inset in render pixels, as f32 bits |
-| `RANGE_LINK_LANES + i · RANGE_LINK_STRIDE` (12 + 3i) .. +2 | link `i`: its `from` row, its `to` row, and its exit offset in render pixels as f32 bits (NaN for the default) |
+| `RANGE_LINK_LANES + i · RANGE_LINK_STRIDE` (12 + 3i) .. +2 | link `i`: its `from` row, its `to` row, and its stored exit, a fraction of the predecessor's drawn length, as f32 bits (NaN for a link without one) |
 
 The geometry sits in the lane table rather than `Style` because the pick
 compute binds no `Style`; the draw, the highlight and the pick read one
@@ -1953,12 +1953,16 @@ twice. The route follows the web Gantt convention and is built on every
 draw from the two bars, with the value axis signed so the successor runs
 forward:
 
-- The exit is on the predecessor's edge facing the successor's row, the
-  link's exit offset (or `inset`) in from the predecessor's first end, kept
-  on the bar. When the successor starts too
-  soon for the last leg and its head, the exit moves back to
-  `successor start − head − 4 px`, so a route never turns back through a
-  bar.
+- The exit is on the predecessor's edge facing the successor's row: the
+  link's stored fraction mapped onto the predecessor's drawn span from its
+  first end (#357), or, for a link without one (no layout has run),
+  `inset` in from that end, kept on the bar. The layout chooses the
+  fraction from the two bars (`RangeLinkSeries::chosen_exit_offset`).
+  When the successor starts too soon for the last leg and its head, the
+  exit moves back to `successor start − head − 4 px`, so the route never
+  turns back through a bar. The tip gap and the lead are
+  `RANGE_LINK_TIP_GAP_PX` and `RANGE_LINK_LEAD_PX`, mirrored by the
+  model's constants of the same names.
 - The first leg runs across to the successor's centre line. It turns
   through one quarter arc of 4 logical pixels, fitted to both legs.
 - The last leg runs along the centre line to 1.5 px before the successor's
@@ -1970,8 +1974,8 @@ one row) get a straight link out of the predecessor's last end, so no
 stroke runs inside a bar whose unfinished part is translucent. A row that is NaN, negative or
 past the bars' row count, or a bar that draws nothing, draws no link. The
 colour is the series' `Style` colour; nothing per link is stored. A link
-draws in its series' place in the list, so a host lists the links before
-their bars to have the bars cover the link ends.
+series draws just before its bars whatever its place in the list
+(`data_config::series_draw_order`), so the bars cover the link ends.
 
 `vs_range_link_selection` / `fs_range_link_selection` draw the picked
 link's route in the selection colour, its stroke widened by the
@@ -1979,8 +1983,8 @@ selection's width on each side. The compute entry `pick_range_links`
 answers the nearest point of the route (legs, corner or chevron) within half the stroke plus the pick
 distance, as a `DATA_PICK_KIND_HISTOGRAM_BIN` candidate whose index is the
 link's row and whose `index1` is its predecessor's drawn length in render
-pixels (f32 bits, the route's `span`): the farthest the exit moves, which
-the exit drag stops at (`extent_px`). The route's lengths (the tip gap,
+pixels (f32 bits, the route's `span`): the span a stored fraction is
+mapped onto, which the exit drag divides its pixels by (`extent_px`). The route's lengths (the tip gap,
 the last leg before the head, the same-row test, the corner) are logical
 pixels scaled by `range_link_scale()`, with the stroke, head and inset the
 CPU scales. The route is appearance: it reads the values the bars are

@@ -639,7 +639,9 @@ impl FiggyChart {
     /// (`Renderer::fit_layout`, #271). It can move the plot's edges, so it
     /// takes the sources of the chart's monotonic groups as
     /// `resize_monotonic` does. A chart without monotonic series takes no
-    /// argument: `chart.fit_layout()`.
+    /// argument: `chart.fit_layout()`; its range links without an exit
+    /// then get the ones the layout chooses (#357), written by the frame
+    /// that finds their GPU gather complete.
     pub fn fit_layout(&mut self, sources: Option<js_sys::Array>) -> Result<(), JsValue> {
         let sources = sources.unwrap_or_default();
         let groups = lent_groups(&sources)?;
@@ -653,6 +655,12 @@ impl FiggyChart {
                 self.renderer
                     .set_chart_config(self.chart_id, laid_out)
                     .map_err(js_err)?;
+                // The links' exits in the new layout (#357): written by
+                // the frame that finds their gather complete.
+                self.renderer
+                    .fit_chart_link_exits(self.chart_id)
+                    .map_err(js_err)?;
+                self.request_host_redraw();
             }
         }
         self.sync_hitmap()

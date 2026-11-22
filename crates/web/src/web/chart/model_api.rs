@@ -81,8 +81,9 @@ pub fn default_config() -> Result<String, JsValue> {
 /// (`default::config_for_series`, #357) as JSON: `default_config()` in the
 /// frame the series' family draws by default. A chart that draws a Feynman
 /// series has no axes, grid or tick labels (`AxisPreset::Hidden`), one that
-/// draws an energy-level series takes the Grotrian frame, and every other
-/// list gives `default_config()`. The frame is chosen here, once: an
+/// draws an energy-level series takes the Grotrian frame, one that draws a
+/// range link series takes the timeline frame (`default_timeline_config`),
+/// and every other list gives `default_config()`. The frame is chosen here, once: an
 /// `apply_axis_preset` or `set_config` afterwards keeps the host's choice.
 /// Throws for a series list that does not parse.
 ///

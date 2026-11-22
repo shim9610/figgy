@@ -79,8 +79,9 @@ pub struct FiggyChart {
     /// `on_move` moves the selected label instead of a chart element.
     pub(super) value_label_pointer: bool,
     /// The predecessor's drawn length in document pixels of the link a
-    /// `press_range_link` drag moves (#357, #381): the farthest its exit
-    /// goes, read from the link's pick (`extent_px`). A display parameter.
+    /// `press_range_link` drag moves (#357, #381), in document pixels: the
+    /// length its stored fraction is taken of, read from the link's pick
+    /// (`extent_px`). A display parameter.
     pub(super) link_exit_limit: Option<f32>,
     /// A subplot frame drag holds the display placement
     /// (`Renderer::hold_chart_display`, #205) until the pointer's release.

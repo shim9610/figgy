@@ -107,7 +107,10 @@ pub fn default_config() -> Config {
 /// frame its family draws by default (#357). A chart that draws a Feynman
 /// series is drawn without axes ([`crate::preset::AxisPreset::Hidden`]),
 /// one that draws an energy-level series in the Grotrian frame
-/// ([`crate::preset::AxisPreset::Grotrian`]); every other chart, and a
+/// ([`crate::preset::AxisPreset::Grotrian`]), and one that draws a range
+/// link series (a Gantt chart's dependencies) in the timeline frame
+/// ([`default_timeline_config`]: horizontal bars, the first row at the
+/// top, row bands, no row axis line or ticks); every other chart, and a
 /// chart without series, gets [`default_config`] unchanged. The first
 /// Feynman or energy-level series decides, as a theme's frame does
 /// (`FeynmanTheme::axis_preset`, `EnergyLevelTheme::axis_preset` of the
@@ -127,7 +130,14 @@ pub fn default_config() -> Config {
 /// renderer registering it fits the axis ranges once
 /// (`Renderer::register_chart`). Nothing is fitted here.
 pub fn config_for_series(series: &mut [SeriesConfig]) -> Config {
-    let mut config = default_config();
+    // A chart of dependency links is a timeline (#357): it starts from the
+    // timeline frame, so its rows run top-down with row bands and no row
+    // axis line or ticks.
+    let mut config = if crate::helpers::theme::draws_timeline(series) {
+        default_timeline_config()
+    } else {
+        default_config()
+    };
     config.layout_state = LayoutState::Fitted;
     let frame = crate::helpers::theme::Theme::default().family_frame(
         &config,
@@ -189,6 +199,23 @@ mod tests {
         let hidden = config_for_series(&mut [feynman()]);
         assert!(!hidden.bottom_x.line_visible && !hidden.left_y.line_visible);
         assert!(!hidden.grid.show_major_x && !hidden.grid.show_major_y);
+    }
+
+    /// A chart of dependency links takes the timeline frame (#357): rows
+    /// top-down with row bands, no row axis line or ticks, horizontal bars.
+    #[test]
+    fn a_chart_with_range_links_takes_the_timeline_frame() {
+        let mut series = [
+            SeriesConfig::timeline_bars("tasks", "row", "start", "end"),
+            SeriesConfig::range_links("links", "tasks", [(0, 1)]),
+        ];
+        let config = config_for_series(&mut series);
+        assert_eq!(config, default_timeline_config());
+        assert!(config.left_y.inverted && !config.left_y.line_visible);
+        assert!(config.left_y.category_bands.is_some());
+        // The bars alone keep the generic default, as before.
+        let mut bars = [SeriesConfig::timeline_bars("tasks", "row", "start", "end")];
+        assert_eq!(config_for_series(&mut bars), unframed());
     }
 
     #[test]

@@ -510,12 +510,14 @@ impl Renderer {
                 resource: "typed data pick series",
                 reason: error.to_string(),
             })?;
-        for (index, cfg) in series.iter().enumerate() {
-            let paint_order =
-                u32::try_from(index).map_err(|_| FiggyError::InvalidSeriesConfig {
-                    series_id: cfg.series_id.clone(),
-                    kind: crate::RuleKind::SeriesPaintOrderOverflow,
-                })?;
+        // In drawing order, ranked by it (#357): a range link series listed
+        // after its bars draws, and so picks, under them.
+        let order = crate::data_config::series_draw_order(series.len(), |i| &series[i]);
+        for (rank, cfg) in order.enumerate().map(|(rank, i)| (rank, &series[i])) {
+            let paint_order = u32::try_from(rank).map_err(|_| FiggyError::InvalidSeriesConfig {
+                series_id: cfg.series_id.clone(),
+                kind: crate::RuleKind::SeriesPaintOrderOverflow,
+            })?;
 
             let primitives = effective_series_primitives(&config.draw_style, &cfg.render_type);
             match DataPickRoute::of(primitives) {

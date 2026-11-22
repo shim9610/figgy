@@ -525,11 +525,12 @@ impl FiggyChart {
     /// series `series_id`, as a `pick_data` hit names it (a histogram bin of
     /// that series). The link becomes the data selection and the drag
     /// starts: `on_move` moves its exit along the predecessor's edge
-    /// (`drag_link_exit`, moving a shared trunk as one and snapping to the
-    /// default within 3 px) and `on_release` ends it. `extent_px` is the
-    /// hit's `extent_px`, the link's predecessor's drawn length in canvas
-    /// pixels: the exit stops at the bar's end, so dragging back moves it
-    /// at once; without it only the draw stops the exit. Returns `false`
+    /// (`drag_link_exit`, moving a shared trunk as one and snapping back to
+    /// unset within 3 px of `inset`) and `on_release` ends it. `extent_px`
+    /// is the hit's `extent_px`, the link's predecessor's drawn length in
+    /// canvas pixels: the exit is stored as a fraction of it (#357), between
+    /// the bar's start and end, so the drag needs it; without it the drag
+    /// moves nothing. Returns `false`
     /// and changes nothing for an id or index that names no link.
     /// JS: `const hit = JSON.parse(await chart.pick_data(x, y, 6));`
     /// `if (hit?.kind === "histogram_bin") chart.press_range_link(hit.series_id, hit.bin_index, hit.extent_px);`
@@ -568,7 +569,7 @@ impl FiggyChart {
         picked.refs = vec![reference];
         config.picked_data = Some(picked);
         self.replace_chart_config(config)?;
-        self.link_exit_limit = match extent_px.filter(|e| e.is_finite() && *e >= 0.0) {
+        self.link_exit_limit = match extent_px.filter(|e| e.is_finite() && *e > 0.0) {
             Some(extent) => Some(self.display_delta_to_document(extent, 0.0)?.0),
             None => None,
         };
@@ -579,11 +580,11 @@ impl FiggyChart {
         Ok(true)
     }
 
-    /// Set the exit offset of link `index` of the range link series
-    /// `series_id` (#357), in logical pixels from its predecessor's start;
-    /// `undefined`, 0 or a non-finite value restores the default exit.
-    /// Returns `false` and changes nothing for an unknown series, an index
-    /// past its links or a negative offset.
+    /// Set the exit of link `index` of the range link series `series_id`
+    /// (#357), a fraction `0..=1` of its predecessor's drawn length from
+    /// the start; `undefined` or a non-finite value clears it, so the next
+    /// layout chooses. Returns `false` and changes nothing for an unknown
+    /// series, an index past its links or a fraction outside `0..=1`.
     pub fn set_link_exit_offset(
         &mut self,
         series_id: &str,

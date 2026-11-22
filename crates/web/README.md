@@ -37,7 +37,8 @@ Earlier releases opened categorical bar, box plot and radar documents through
 Free functions serve an editor before any chart exists (#314):
 `default_config()`, `default_config_for_series(seriesJson)` (the default
 config in the frame of the series' family: no axes for a Feynman diagram,
-the Grotrian frame for energy levels, #357),
+the Grotrian frame for energy levels, the timeline frame for a chart with
+range links, #357),
 `validate_config(configJson, seriesJson?)` (structured
 errors with field paths), `normalize_config(configJson)` and
 `convert_categorical_document` / `convert_boxplot_document` /
@@ -312,7 +313,7 @@ crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝�
 
 차트를 만들기 전에 편집기가 쓸 수 있는 독립 함수가 있다(#314). `default_config()`는 기본 설정을,
 `default_config_for_series(seriesJson)`은 시리즈 계열의 틀을 적용한 기본 설정(파인만 도표는 축 없음,
-에너지 준위는 그로트리안 틀, #357)을,
+에너지 준위는 그로트리안 틀, 범위 링크가 있는 차트는 타임라인 틀, #357)을,
 `validate_config(configJson, seriesJson?)`는 거부된 필드의 경로가 담긴 검사 결과를,
 `normalize_config(configJson)`은 표준 형태로 다시 쓴 설정을 돌려준다.
 `convert_categorical_document`, `convert_boxplot_document`, `convert_radar_document`는 레거시 문서를

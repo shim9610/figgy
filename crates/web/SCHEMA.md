@@ -1305,12 +1305,22 @@ Dependency links (#357) join the bars of the range bar series named in
 `bars`, which must be in the same layer. The series is DataLess: its
 `links` are SSOT and it names no column (`x_column` and `y_column` empty).
 Each link runs from the bar of row `from` to the bar of row `to`: out of
-the predecessor's edge `exit_offset` pixels from its start (`inset` when
-absent), across to the successor's row with one rounded corner, and into
-its start with an open chevron. A row past the bars draws no link. List
-the links before their bars to draw them under the bars. `links` is
-omitted when empty and `exit_offset` when unset; every other field is
-written. `width` is `0..=24`, `head` `0..=32`, `inset` `0..=64` and each `exit_offset` finite and not negative, in logical pixels (`RangeLinkStyle`); a polar chart and
+the predecessor's edge at `exit_fraction` (a fraction `0..=1` of the
+predecessor's drawn length, from its start), across to the
+successor's row with one rounded corner, and into its start with an open
+chevron. A row past the bars draws no link. The layout (`fit_ranges()`,
+`fit_layout()`, `auto_fit_all()` and a new chart's first fit) writes an
+`exit_fraction` into every link that has none, toward the predecessor's end,
+`inset` short of it and pulled back only as far as the successor's start
+needs room for the head; a written value is never rewritten by a layout,
+and a link without one draws `inset` from the predecessor's start (#357).
+The links draw under their bars whatever their place in the series list. A
+chart made with `default_config_for_series` from series holding a
+`RangeLinks` series takes the timeline frame. `links` is
+omitted when empty and `exit_fraction` when unset; every other field is
+written. `width` is `0..=24`, `head` `0..=32` and `inset` `0..=64`, in
+logical pixels, and each `exit_fraction` is in `0..=1` (`RangeLinkStyle`).
+A polar chart and
 a streamed source refuse links (`PolarRangeLinks`, `StreamedRangeLinks`).
 
 ```json
@@ -1328,7 +1338,7 @@ a streamed source refuse links (`PolarRangeLinks`, `StreamedRangeLinks`).
       "inset": 6.0,
       "links": [
         { "from": 0, "to": 2 },
-        { "from": 2, "to": 3, "exit_offset": 24.0 }
+        { "from": 2, "to": 3, "exit_fraction": 0.75 }
       ]
     }
   }
@@ -1336,13 +1346,15 @@ a streamed source refuse links (`PolarRangeLinks`, `StreamedRangeLinks`).
 ```
 
 The picked link's `selection_details()` carries `index`, `from`, `to` and
-`exit_offset` (`null` when unset). A `pick_data` hit on a range bar or a
+`exit_fraction` (`null` when unset). A `pick_data` hit on a range bar or a
 range link carries `extent_px`, the bar's (or the link's predecessor's)
 drawn length in canvas pixels. `press_range_link(series_id, index,
-extent_px)` starts a drag of the link's exit (`on_move` moves it, snapping
-to the default within 3 px and stopping at the predecessor's end when
-`extent_px` is given, and `on_release` ends it), and
-`set_link_exit_offset(series_id, index, offset)` sets it directly.
+extent_px)` starts a drag of the link's exit: `on_move` moves the stored
+fraction by the pointer's pixels divided by `extent_px`, between the
+predecessor's start and end, snapping back to unset within 3 px of `inset`,
+which the next layout chooses again; without `extent_px` the drag moves
+nothing; `on_release` ends it. `set_link_exit_offset(series_id, index,
+fraction)` sets it directly, `0..=1`.
 
 <a id="surface-render_type"></a>
 

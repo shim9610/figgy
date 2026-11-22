@@ -1979,11 +1979,13 @@ fn range_links_draw_on_overlays_and_subplots() {
     }
 }
 
-/// Dragging a link's exit (#357): the SSOT `exit_offset` moves where the
-/// trunk leaves its predecessor, for every link on a shared trunk, on a
-/// registered chart edited in place (SSOT invalidation) and in exports at
-/// 1x and 2x; the moved link still picks; a drag back within 3 px snaps to
-/// the default and draws the default image again; the offset round-trips.
+/// Dragging a link's exit (#357): the SSOT `exit_fraction`, a fraction of
+/// the predecessor's drawn length, moves where the trunk leaves its
+/// predecessor, for every link on a shared trunk, on a registered chart
+/// edited in place (SSOT invalidation) and in exports at 1x and 2x, where
+/// the fraction maps onto the drawn span under the room rule; the moved
+/// link still picks; a drag back within 3 px of `inset` snaps to `None`
+/// and draws the default image again; the fraction round-trips.
 #[test]
 fn dragged_link_exits_move_the_trunk_and_snap_back() {
     let mut r = renderer();
@@ -2008,14 +2010,17 @@ fn dragged_link_exits_move_the_trunk_and_snap_back() {
     );
     let before: Vec<_> = [1.0f32, 2.0].map(|s| draw(&mut r, id, s)).into();
     // Drag link 1's exit 30 px toward row 0's end: link 0 shares its trunk.
+    // The exit is a fraction of row 0's drawn length (#357).
+    let length = value_px(&chart, direction, 60.0, 1.0) - value_px(&chart, direction, 20.0, 1.0);
     let mut edited = series.to_vec();
     let links = edited[0].render_type.range_links_mut().unwrap();
     assert_eq!(
-        links.drag_link_exit(1, 30.0, None),
+        links.drag_link_exit(1, 30.0, Some(length)),
         renderer::layout::NudgeResult::Moved
     );
-    assert_eq!(links.links[0].exit_offset, Some(40.0));
-    assert_eq!(links.links[1].exit_offset, Some(40.0));
+    let moved = links.links[0].exit_fraction.expect("a fraction");
+    assert!((moved * length - 40.0).abs() < 1e-3, "{moved}");
+    assert_eq!(links.links[1].exit_fraction, Some(moved));
     r.set_chart_series(id, edited.clone()).unwrap();
     // The reference: the same links with their default exit at 40 px.
     let mut reference = series.to_vec();
@@ -2029,10 +2034,16 @@ fn dragged_link_exits_move_the_trunk_and_snap_back() {
             )
             .block_on()
             .unwrap();
-        assert_eq!(
-            after.rgba, expected.rgba,
-            "{scale}x: the exit moved to 40 px"
-        );
+        // The fraction maps onto the drawn span at every scale, with the
+        // route's room rule: the default exit at 40 px, up to rounding.
+        let worst = after
+            .rgba
+            .iter()
+            .zip(&expected.rgba)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap_or(0);
+        assert!(worst <= 3, "{scale}x: the exit moved to 40 px ({worst})");
         assert_ne!(after.rgba, before[k].rgba, "{scale}x: the trunk moved");
         // The moved link picks where the new trunk has ink the old lacks.
         let (w, h) = (after.width, after.height);
@@ -2060,15 +2071,15 @@ fn dragged_link_exits_move_the_trunk_and_snap_back() {
     #[cfg(feature = "serde")]
     {
         let json = serde_json::to_string(&edited).unwrap();
-        assert!(json.contains("\"exit_offset\":40.0"), "{json}");
+        assert!(json.contains("\"exit_fraction\":"), "{json}");
         let again: Vec<SeriesConfig> = serde_json::from_str(&json).unwrap();
         assert_eq!(again, edited);
     }
     // Back to 2 px from the default: it snaps, and the image is the default.
     let links = edited[0].render_type.range_links_mut().unwrap();
-    links.drag_link_exit(0, -28.0, None);
-    assert_eq!(links.links[0].exit_offset, None);
-    assert_eq!(links.links[1].exit_offset, None);
+    links.drag_link_exit(0, -28.0, Some(length));
+    assert_eq!(links.links[0].exit_fraction, None);
+    assert_eq!(links.links[1].exit_fraction, None);
     r.set_chart_series(id, edited).unwrap();
     for (k, scale) in [1.0f32, 2.0].into_iter().enumerate() {
         assert_eq!(draw(&mut r, id, scale).rgba, before[k].rgba, "{scale}x");
@@ -2079,9 +2090,10 @@ fn dragged_link_exits_move_the_trunk_and_snap_back() {
 /// A pick reports drawn lengths for the exit drag's clamp (#357, #381): a
 /// link hit carries its predecessor's drawn length and a bar hit its own,
 /// in display pixels at 1x and 2x, from the bars the GPU draws (the CPU holds
-/// no row values). A drag past the bar's end stops at that length, and
-/// dragging back moves the exit at once: the image changes on the first
-/// step back. The length is a display parameter; no value changes.
+/// no row values). A drag converts its pixels to a fraction of that
+/// length: past the bar's end it stops at 1, and dragging back moves the
+/// exit at once, so the image changes on the first step back. The length
+/// is a display parameter; no value changes.
 #[test]
 fn link_picks_report_the_predecessors_drawn_length_and_the_drag_stops_there() {
     // Row 0 runs 20..60 and row 1 starts at 90, past it: only the bar's
@@ -2168,25 +2180,25 @@ fn link_picks_report_the_predecessors_drawn_length_and_the_drag_stops_there() {
         assert!(bar.is_some_and(|b| b > 0.0), "{scale}x: {bar:?}");
         limit = extent / scale;
     }
-    // Past the bar's end: the stored offset stops at the length.
+    // Past the bar's end: the stored fraction stops at 1, the bar's end.
     let mut edited = series.to_vec();
     let links = edited[0].render_type.range_links_mut().unwrap();
     assert_eq!(
         links.drag_link_exit(0, 1000.0, Some(limit)),
         renderer::layout::NudgeResult::Moved
     );
-    assert_eq!(links.links[0].exit_offset, Some(limit));
+    assert_eq!(links.links[0].exit_fraction, Some(1.0));
     r.set_chart_series(id, edited.clone()).unwrap();
     let at_end = draw(&mut r, 1.0);
     // Further on draws the same; one step back moves the exit at once.
     let links = edited[0].render_type.range_links_mut().unwrap();
     links.drag_link_exit(0, 200.0, Some(limit));
-    assert_eq!(links.links[0].exit_offset, Some(limit));
+    assert_eq!(links.links[0].exit_fraction, Some(1.0));
     r.set_chart_series(id, edited.clone()).unwrap();
     assert_eq!(draw(&mut r, 1.0).rgba, at_end.rgba, "held at the end");
     let links = edited[0].render_type.range_links_mut().unwrap();
     links.drag_link_exit(0, -8.0, Some(limit));
-    assert_eq!(links.links[0].exit_offset, Some(limit - 8.0));
+    assert_eq!(links.links[0].exit_fraction, Some(1.0 - 8.0 / limit));
     r.set_chart_series(id, edited).unwrap();
     assert_ne!(draw(&mut r, 1.0).rgba, at_end.rgba, "back at once");
     r.remove_chart(id).unwrap();
@@ -2429,4 +2441,459 @@ fn a_fit_with_range_links_is_the_fit_of_their_bars() {
             "{direction:?} links"
         );
     }
+}
+
+/// The maintainer's Gantt scene (#357): six tasks overlapping in time, and
+/// the links Bench → Install, Bench → Dark, Install → Dark, Install →
+/// Verify and Dark → First light. Bars in flat green, links in orange.
+const GANTT_TASKS: [(&str, f64, f64); 6] = [
+    ("Bench", 0.0, 4.0),
+    ("Install", 3.0, 8.0),
+    ("Dark", 6.0, 11.0),
+    ("Verify", 9.0, 12.0),
+    ("First light", 10.0, 14.0),
+    ("Report", 13.0, 16.0),
+];
+const GANTT_LINKS: [(u32, u32); 5] = [(0, 1), (0, 2), (1, 2), (1, 3), (2, 4)];
+
+/// The scene's columns, its series as a host builds them and its chart
+/// from `default::config_for_series`, not yet fitted.
+fn gantt_scene(r: &mut Renderer) -> (Chart, Vec<SeriesConfig>) {
+    let column = |f: fn(&(&str, f64, f64)) -> f64| col(GANTT_TASKS.iter().map(f).collect());
+    if r.logical_column("g-row").is_none() {
+        r.add_column("g-row", &col((0..6).map(f64::from).collect()))
+            .unwrap();
+        r.add_column("g-start", &column(|t| t.1)).unwrap();
+        r.add_column("g-end", &column(|t| t.2)).unwrap();
+    }
+    let mut series = vec![
+        SeriesConfig::timeline_bars("tasks", "g-row", "g-start", "g-end"),
+        SeriesConfig::range_links("links", "tasks", GANTT_LINKS),
+    ];
+    let mut config = renderer::default::config_for_series(&mut series);
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: WIDTH,
+        height: HEIGHT,
+    });
+    config.chart_title.visible = false;
+    config.legend.visible = false;
+    config.left_y.categories = Some(
+        GANTT_TASKS
+            .iter()
+            .map(|t| Category::new(t.0, t.0))
+            .collect(),
+    );
+    if let DataRenderType::RangeBars(b) = &mut series[0].render_type {
+        b.color = GREEN;
+        b.color_by = RangeColor::Single;
+        b.style = flat_style();
+    }
+    if let DataRenderType::RangeLinks(l) = &mut series[1].render_type {
+        l.color = ORANGE;
+        l.width = 2.0;
+    }
+    (Chart::new(config), series)
+}
+
+/// The links' stored exits.
+fn exits(series: &[SeriesConfig]) -> Vec<Option<f32>> {
+    series[1]
+        .render_type
+        .range_links()
+        .unwrap()
+        .links
+        .iter()
+        .map(|l| l.exit_fraction)
+        .collect()
+}
+
+/// The layout chooses every link's exit and stores it (#357): after
+/// `fit_ranges` (and a `Fitted` chart's registration) each link has `Some`
+/// exit, `inset` short of its predecessor's end, pulled back only where its
+/// successor starts too soon, read from the bars the GPU draws (the gather
+/// of `gpu_extent`, no CPU copy). The chart takes the timeline frame. A
+/// dragged exit survives a later layout; one cleared to `None` is chosen
+/// again. The stored exit is what the draw uses: the registered chart's
+/// image is the host chart's at 1x and 2x, the series round-trip with
+/// their exits and draw the same.
+#[test]
+fn the_layout_stores_each_links_exit_toward_its_predecessors_end() {
+    let mut r = renderer();
+    let (mut chart, mut series) = gantt_scene(&mut r);
+    // The timeline frame (item 4): rows top-down, bands, no row line.
+    let frame = renderer::default::default_timeline_config();
+    let config = chart.config();
+    assert!(config.left_y.inverted && !config.left_y.line_visible);
+    assert_eq!(config.left_y.category_bands, frame.left_y.category_bands);
+    assert_eq!(config.bar_groups, frame.bar_groups);
+    assert_eq!(
+        exits(&series),
+        vec![None; 5],
+        "nothing chosen before a layout"
+    );
+
+    r.fit_ranges(&mut chart, &mut series).unwrap();
+    let direction = CategoryBarDirection::Horizontal;
+    let px = |v: f64| value_px(&chart, direction, v, 1.0);
+    let links = series[1].render_type.range_links().unwrap().clone();
+    for (link, exit) in GANTT_LINKS.iter().zip(exits(&series)) {
+        let (a, b) = (GANTT_TASKS[link.0 as usize], GANTT_TASKS[link.1 as usize]);
+        let exit = exit.unwrap_or_else(|| panic!("link {link:?} has an exit"));
+        let len = px(a.2) - px(a.1);
+        let expected = links
+            .chosen_exit_offset([px(a.1), px(a.2)], [px(b.1), px(b.2)])
+            .unwrap();
+        // A fraction of the predecessor's drawn length (#357).
+        assert!((0.0..=1.0).contains(&exit), "{link:?}: {exit}");
+        let (exit, expected) = (exit * len, expected * len);
+        assert!(
+            (exit - expected).abs() < 0.5,
+            "{link:?}: {exit} vs {expected}"
+        );
+        // Toward the predecessor's end: `inset` short of it, or as near as
+        // the successor's start leaves room for.
+        let room = px(b.1) - px(a.1) - 1.5 - 4.0 - links.head;
+        let near_end = (len - links.inset).min(room).max(0.0);
+        assert!(
+            (exit - near_end).abs() < 0.5,
+            "{link:?}: {exit} vs {near_end}"
+        );
+        assert!(
+            exit > 0.5 * len || room < 0.5 * len,
+            "{link:?}: toward the end"
+        );
+    }
+
+    // A `Fitted` chart's registration makes the same fit (SSOT): its
+    // stored series hold the exits and its image is the host chart's.
+    let (_, mut unfitted) = gantt_scene(&mut r);
+    unfitted[1] = {
+        let mut l = series[1].clone();
+        for link in &mut l.render_type.range_links_mut().unwrap().links {
+            link.exit_fraction = None;
+        }
+        l
+    };
+    let mut fresh = Chart::new(gantt_scene_config(&chart));
+    let id = r
+        .register_chart(fresh.config().clone(), unfitted.clone())
+        .unwrap();
+    let stored = r.chart_series(id).unwrap().to_vec();
+    assert_eq!(
+        exits(&stored),
+        exits(&series),
+        "registration fits the exits"
+    );
+    for scale in [1.0f32, 2.0] {
+        let registered = r
+            .export_rgba(
+                renderer::ExportSource::Registered(id),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        let host = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        assert!(
+            registered.rgba == host.rgba,
+            "{scale}x: the stored exits draw"
+        );
+        assert!(bbox(&host, (0, 0, host.width, host.height), is_orange).is_some());
+    }
+    r.remove_chart(id).unwrap();
+    let _ = r.fit_ranges(&mut fresh, &mut unfitted);
+
+    // A dragged exit survives a later layout; the others keep theirs.
+    let before = exits(&series);
+    let l = series[1].render_type.range_links_mut().unwrap();
+    let len = value_px(&chart, direction, GANTT_TASKS[1].2, 1.0)
+        - value_px(&chart, direction, GANTT_TASKS[1].1, 1.0);
+    l.drag_link_exit(3, -20.0, Some(len));
+    let dragged = exits(&series);
+    assert_ne!(dragged[3], before[3]);
+    r.fit_ranges(&mut chart, &mut series).unwrap();
+    assert_eq!(exits(&series), dragged, "a stored exit is never rewritten");
+    // `set_link_exit_offset` clears one: the next layout chooses it again.
+    let l = series[1].render_type.range_links_mut().unwrap();
+    assert!(l.set_link_exit_offset(0, None));
+    assert!(l.set_link_exit_offset(3, None));
+    r.fit_ranges(&mut chart, &mut series).unwrap();
+    let again = exits(&series);
+    assert_eq!(again[0], before[0]);
+    assert_eq!(again[3], before[3]);
+
+    #[cfg(feature = "serde")]
+    {
+        let draw = |r: &mut Renderer, series: &[SeriesConfig]| {
+            r.export_rgba(
+                renderer::ExportSource::chart(&chart, series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap()
+            .rgba
+        };
+        let json = serde_json::to_string(&series).unwrap();
+        assert!(json.contains("exit_fraction"));
+        let back: Vec<SeriesConfig> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, series);
+        assert!(draw(&mut r, &back) == draw(&mut r, &series));
+    }
+}
+
+/// The chart config of the scene as laid out, for a second registration.
+fn gantt_scene_config(chart: &Chart) -> renderer::Config {
+    chart.config().clone()
+}
+
+/// A link series draws under its bars whatever its place in the list
+/// (#357): after a layout, `[bars, links]` draws exactly as `[links,
+/// bars]` at 1x and 2x (appearance only: the documented order drew so
+/// before), a pixel where a link's stroke runs under a bar picks the bar,
+/// and a link pixel off the bars still picks its link; the picked link's
+/// highlight is drawn over the bars.
+#[test]
+fn links_draw_and_pick_under_their_bars_in_any_order() {
+    let mut r = renderer();
+    let (mut chart, mut series) = gantt_scene(&mut r);
+    r.fit_ranges(&mut chart, &mut series).unwrap();
+    let swapped = [series[1].clone(), series[0].clone()];
+    for scale in [1.0f32, 2.0] {
+        let draw = |r: &mut Renderer, series: &[SeriesConfig]| {
+            r.export_rgba(
+                renderer::ExportSource::chart(&chart, series),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap()
+        };
+        let listed_after = draw(&mut r, &series);
+        let listed_before = draw(&mut r, &swapped);
+        assert!(
+            listed_after.rgba == listed_before.rgba,
+            "{scale}x: the links draw under their bars in either order"
+        );
+
+        // Along an exit's column, the last bar pixel before the link's ink:
+        // the link's stroke reaches half its width into the bar there.
+        let direction = CategoryBarDirection::Horizontal;
+        let exit = exits(&series)[0].unwrap();
+        let start = value_px(&chart, direction, GANTT_TASKS[0].1, scale);
+        let end = value_px(&chart, direction, GANTT_TASKS[0].2, scale);
+        let x = (start + exit * (end - start)) as u32;
+        let img = &listed_after;
+        // The bar's last row at the exit, where the link's stroke runs
+        // under it: the next pixel blends the bar's edge over the link and
+        // the one after is the link's trunk.
+        let covered = (1..img.height - 1).find(|&y| {
+            is_green(pixel(img, x, y - 1))
+                && !is_green(pixel(img, x, y))
+                && is_orange(pixel(img, x, y + 1))
+        });
+        let covered = covered.expect("the link leaves the bar's edge") - 1;
+        let at = |y: u32| (x as f32 + 0.5, y as f32 + 0.5);
+        assert_eq!(
+            registered_pick(&mut r, &chart, &series, scale, at(covered), 0.0),
+            Some(("tasks".into(), 0)),
+            "{scale}x: the bar is over the link"
+        );
+        assert_eq!(
+            registered_pick(
+                &mut r,
+                &chart,
+                &series,
+                scale,
+                at(covered + 4 * scale as u32),
+                0.0
+            )
+            .map(|hit| hit.0),
+            Some("links".into()),
+            "{scale}x: the trunk picks its link"
+        );
+        // The picked link's highlight is drawn over everything.
+        let mut lit_chart = Chart::as_given(chart.config().clone());
+        lit_chart.config_mut().picked_data = Some(selection("links", 0));
+        let lit = r
+            .export_rgba(
+                renderer::ExportSource::chart(&lit_chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        assert!(bbox(&lit, (0, 0, lit.width, lit.height), is_magenta).is_some());
+    }
+}
+
+/// Many links lay out, draw and pick with no cap (#357, rule 10): 3749
+/// links among 3000 bars get their exits from one gather of their bars'
+/// ends (48 bytes a link, read back once); the time is measured and
+/// printed, the links draw and one picks.
+#[test]
+fn many_links_lay_out_draw_and_pick() {
+    let mut r = renderer();
+    let n = 3000usize;
+    r.add_column("ml-pos", &col((0..n).map(|i| i as f64).collect()))
+        .unwrap();
+    r.add_column(
+        "ml-start",
+        &col((0..n).map(|i| (i % 10) as f64 * 9.0).collect()),
+    )
+    .unwrap();
+    r.add_column(
+        "ml-end",
+        &col((0..n).map(|i| (i % 10) as f64 * 9.0 + 6.0).collect()),
+    )
+    .unwrap();
+    let mut bars = ranges("ml-bars", GREEN);
+    bars.x_column = "ml-pos".into();
+    bars.y_column = "ml-end".into();
+    if let DataRenderType::RangeBars(b) = &mut bars.render_type {
+        b.start = "ml-start".into();
+        b.slot_width = Some(1.0);
+    }
+    let chain = (0..n as u32 - 1).map(|i| (i, i + 1));
+    let skips = (0..n as u32 - 2).step_by(4).map(|i| (i, i + 2));
+    let mut links = SeriesConfig::range_links("ml", "ml-bars", chain.chain(skips));
+    if let DataRenderType::RangeLinks(l) = &mut links.render_type {
+        l.color = ORANGE;
+        l.width = 3.0;
+    }
+    let mut chart = chart(CategoryBarDirection::Horizontal);
+    let config = chart.config_mut();
+    config.left_y.categories = None;
+    config.left_y.min = n as f64 - 4.5;
+    config.left_y.max = n as f64 - 0.5;
+    config.left_y.major_spacing = 1.0;
+    let mut series = vec![links, bars];
+    let started = std::time::Instant::now();
+    assert!(r.fit_link_exits(chart.config(), &mut series).unwrap());
+    let elapsed = started.elapsed();
+    let count = series[0].render_type.range_links().unwrap().links.len();
+    eprintln!("laid out {count} link exits in {elapsed:?}");
+    assert_eq!(count, n - 1 + (n - 2).div_ceil(4));
+    assert!(
+        series[0]
+            .render_type
+            .range_links()
+            .unwrap()
+            .links
+            .iter()
+            .all(|l| l.exit_fraction.is_some()),
+        "every link has an exit"
+    );
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
+    let ink = bbox(&img, (0, 0, img.width, img.height), is_orange).expect("the links draw");
+    let hit = (ink.1..=ink.3)
+        .flat_map(|y| (ink.0..=ink.2).map(move |x| (x, y)))
+        .find(|&(x, y)| is_orange(pixel(&img, x, y)))
+        .unwrap();
+    let picked = registered_pick(
+        &mut r,
+        &chart,
+        &series,
+        1.0,
+        (hit.0 as f32 + 0.5, hit.1 as f32 + 0.5),
+        0.0,
+    );
+    assert_eq!(picked.map(|p| p.0), Some("ml".into()));
+}
+
+/// The layout's room rule (#357, `RangeLinkSeries::chosen_exit_offset`)
+/// and the route's (`range_links.wgsl`) read the same tip gap and lead.
+#[test]
+fn the_layouts_room_rule_is_the_routes() {
+    let source = include_str!("../src/data_render/common/range_links.wgsl");
+    for (name, value) in [
+        (
+            "RANGE_LINK_TIP_GAP_PX",
+            renderer::data_config::RANGE_LINK_TIP_GAP_PX,
+        ),
+        (
+            "RANGE_LINK_LEAD_PX",
+            renderer::data_config::RANGE_LINK_LEAD_PX,
+        ),
+    ] {
+        assert!(
+            source.contains(&format!("const {name}: f32 = {value:?};")),
+            "{name}"
+        );
+    }
+}
+
+/// A stored exit is a fraction of its predecessor's drawn length (#357):
+/// after a layout, a zoom (a new time range) and a resize (a larger chart
+/// area) move and stretch the bars, and the exit stays at the same
+/// fraction of its bar at 1x and 2x, with no layout in between.
+#[test]
+fn a_stored_exit_keeps_its_fraction_through_zoom_and_resize() {
+    let mut r = renderer();
+    let (mut chart, mut series) = gantt_scene(&mut r);
+    r.fit_ranges(&mut chart, &mut series).unwrap();
+    // Bench → Dark: Dark starts after Bench ends, so the room rule leaves
+    // the stored exit alone at every size below.
+    let fraction = exits(&series)[1].unwrap();
+    let stored = series.clone();
+    let direction = CategoryBarDirection::Horizontal;
+    let zoomed = {
+        let mut c = Chart::as_given(chart.config().clone());
+        c.config_mut().bottom_x.min = -1.0;
+        c.config_mut().bottom_x.max = 13.0;
+        c
+    };
+    let resized = {
+        let mut c = Chart::as_given(chart.config().clone());
+        c.config_mut().chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: WIDTH + 240,
+            height: HEIGHT + 80,
+        });
+        c
+    };
+    for (name, view) in [
+        ("laid out", &chart),
+        ("zoomed", &zoomed),
+        ("resized", &resized),
+    ] {
+        for scale in [1.0f32, 2.0] {
+            let img = r
+                .export_rgba(
+                    renderer::ExportSource::chart(view, &series),
+                    renderer::ExportOptions::panel(scale),
+                )
+                .block_on()
+                .unwrap();
+            let start = value_px(view, direction, GANTT_TASKS[0].1, scale);
+            let end = value_px(view, direction, GANTT_TASKS[0].2, scale);
+            let x = start + fraction * (end - start);
+            // Just under Bench's bar, at its middle: the bar's lower edge.
+            let mid = (0.5 * (start + end)) as u32;
+            let edge = (1..img.height)
+                .find(|&y| is_green(pixel(&img, mid, y - 1)) && !is_green(pixel(&img, mid, y)))
+                .expect("Bench's lower edge");
+            // The trunks below that edge: the one at the stored fraction.
+            let y = edge + (3.0 * scale) as u32;
+            let near = ((x - 2.0 * scale) as u32..=(x + 2.0 * scale) as u32)
+                .any(|px| is_orange(pixel(&img, px, y)));
+            assert!(
+                near,
+                "{name} {scale}x: the trunk leaves at {fraction} of the bar ({x})"
+            );
+        }
+    }
+    // No layout ran: the stored fractions are unchanged.
+    assert_eq!(exits(&series), exits(&stored));
 }
