@@ -99,7 +99,7 @@ impl FiggyChart {
                 result["index"] = serde_json::json!(bin_index);
                 result["from"] = serde_json::json!(link.map(|l| l.from));
                 result["to"] = serde_json::json!(link.map(|l| l.to));
-                result["exit_offset"] = serde_json::json!(link.and_then(|l| l.exit_offset));
+                result["exit_fraction"] = serde_json::json!(link.and_then(|l| l.exit_fraction));
             }
             // A category bar reports its category and its value, read back
             // from the GPU column the draw used.

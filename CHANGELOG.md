@@ -58,8 +58,9 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
   ([#357](https://github.com/shim9610/figgy/issues/357), approved in
   [this comment](https://github.com/shim9610/figgy/issues/357#issuecomment-7077230337),
   amended in [this one](https://github.com/shim9610/figgy/issues/357#issuecomment-7077549205)).
-  The link exit's unit and wire key change (migration below).
-  - The layout writes an exit into every link whose `exit_offset` is
+  Range links are unreleased (crates.io tops out at renderer 0.18.1), so
+  the exit's new field is not a migration.
+  - The layout writes an exit into every link whose `exit_fraction` is
     `None`: `Renderer::fit_ranges`, a `Fitted` chart's registration
     (`register_chart`'s first fit) and `commit_auto_fit_all`, and in the
     browser `fit_ranges()`, `fit_layout()`, `auto_fit_all()` and a new
@@ -85,9 +86,10 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
     `Renderer::fit_chart_link_exits` and `Renderer::service_link_exit_fits`
     (a browser frame writes the exits of a gather that completed, and the
     series edit redraws the chart).
-  - `RangeLink::exit_offset` is a fraction `0..=1` of the predecessor's
-    drawn length, from its start (0) to its end (1), instead of logical
-    pixels, so an exit keeps its place on the bar when the chart zooms,
+  - `RangeLink::exit_offset` (logical pixels) becomes
+    `RangeLink::exit_fraction`, a fraction `0..=1` of the predecessor's
+    drawn length from its start (0) to its end (1), written under that key,
+    so an exit keeps its place on the bar when the chart zooms,
     resizes or exports at another scale. The draw maps it onto the bar's
     current drawn span and keeps the room rule (`range_links.wgsl`); `inset`
     (px) remains only the fallback of a link without an exit. A drag
@@ -106,18 +108,12 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
     `default_config_for_series`) gives a chart that holds a range link
     series the timeline frame (`default_timeline_config`): rows top-down,
     row bands, no row axis line or ticks, horizontal bars.
-  - Migration: the exit is written as `exit_fraction`. A document of the
-    pixel unit (`"exit_offset": 24.0`, written by the unreleased
-    integration builds since range links arrived in #357) reads that link
-    as `None`, and the next layout chooses its exit: the pixel value cannot
-    be converted when the document is read, since the bar's drawn length
-    depends on the column values and the layout, neither of which the
-    document holds. Saved again, the document re-reads unchanged. No
-    released document carries a range link (`tests/fixtures/released`), so
-    every released document parses, re-serializes and exports as before.
-    Rust code that set pixels sets a fraction: `exit_offset: Some(0.5)` is
-    the bar's middle; `drag_link_exit`'s third argument is now the drawn
-    length (required) rather than an optional clamp. Tests
+  - No migration: no released or published document carries a range
+    link (`tests/fixtures/released` has none), so every released document
+    parses, re-serializes and exports as before. Code written against the
+    unreleased pixel field sets `exit_fraction: Some(0.5)` for the bar's
+    middle; `drag_link_exit`'s third argument is now the drawn length
+    (required) rather than an optional clamp. Tests
     (`range_bars_render.rs`):
     `the_layout_stores_each_links_exit_toward_its_predecessors_end`,
     `links_draw_and_pick_under_their_bars_in_any_order`,
@@ -127,7 +123,7 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
     `the_chosen_exit_sits_toward_the_predecessors_end`,
     `link_exit_offsets_set_drag_snap_and_share_their_trunk`,
     `link_exit_drags_are_fractions_of_the_drawn_length`,
-    `range_links_round_trip` (the pixel key reads as `None`),
+    `range_links_round_trip`,
     `link_series_draw_before_their_bars`,
     `a_chart_with_range_links_takes_the_timeline_frame`; the browser test
     `default_config_for_series_json_frames_each_family`.

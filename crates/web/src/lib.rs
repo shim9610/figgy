@@ -2056,7 +2056,7 @@ mod tests {
         let json = serde_json::to_string(&dragged).unwrap();
         assert!(json.contains("\"exit_fraction\":0.25"), "{json}");
         if let Some(l) = dragged.render_type.range_links_mut() {
-            l.links[0].exit_offset = Some(1.5);
+            l.links[0].exit_fraction = Some(1.5);
         }
         let past = report(&[bars, dragged]);
         assert!(past.to_string().contains("RangeLinkStyle"), "{past}");

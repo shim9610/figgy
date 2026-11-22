@@ -114,7 +114,6 @@ pub struct RangeConnector {
 /// A row at or past the bars' row count draws and picks nothing.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(from = "RangeLinkWire"))]
 pub struct RangeLink {
     /// The predecessor's row.
     pub from: u32,
@@ -127,46 +126,12 @@ pub struct RangeLink {
     /// has none ([`RangeLinkSeries::chosen_exit_offset`], #357) and a
     /// user's drag moves it; a layout never rewrites a `Some` value. `None`
     /// until a layout runs, drawn `inset` logical pixels from the
-    /// predecessor's start. Written as `exit_fraction`: a document of the
-    /// pixel unit (`exit_offset`) reads as `None`, so the next layout
-    /// chooses.
+    /// predecessor's start.
     #[cfg_attr(
         feature = "serde",
-        serde(
-            rename = "exit_fraction",
-            default,
-            skip_serializing_if = "Option::is_none"
-        )
+        serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub exit_offset: Option<f32>,
-}
-
-/// The wire form a [`RangeLink`] reads (#357): `exit_fraction`, the
-/// fraction of the predecessor's drawn length, or the earlier pixel offset
-/// `exit_offset`, which reads as `None`. A pixel offset cannot be converted
-/// when a document is read: the bar's drawn length depends on the bar's
-/// values in the column pool and on the layout, neither of which the
-/// document holds. The next layout chooses the exit again.
-#[cfg(feature = "serde")]
-#[derive(serde::Deserialize)]
-struct RangeLinkWire {
-    from: u32,
-    to: u32,
-    #[serde(default)]
-    exit_fraction: Option<f32>,
-    #[serde(default, rename = "exit_offset")]
-    _pixels: Option<f32>,
-}
-
-#[cfg(feature = "serde")]
-impl From<RangeLinkWire> for RangeLink {
-    fn from(wire: RangeLinkWire) -> Self {
-        Self {
-            from: wire.from,
-            to: wire.to,
-            exit_offset: wire.exit_fraction,
-        }
-    }
+    pub exit_fraction: Option<f32>,
 }
 
 impl RangeLink {
@@ -175,7 +140,7 @@ impl RangeLink {
         Self {
             from,
             to,
-            exit_offset: None,
+            exit_fraction: None,
         }
     }
 }
@@ -228,7 +193,7 @@ impl RangeLinkSeries {
         let Some(link) = self.links.get_mut(index) else {
             return false;
         };
-        link.exit_offset = offset;
+        link.exit_fraction = offset;
         true
     }
 
@@ -262,12 +227,12 @@ impl RangeLinkSeries {
             return NudgeResult::Rejected(NudgeReject::OutOfBounds);
         }
         let inset = (self.inset / length).clamp(0.0, 1.0);
-        let current = picked.exit_offset.unwrap_or(inset);
+        let current = picked.exit_fraction.unwrap_or(inset);
         let moved = (current.clamp(0.0, 1.0) + along / length).clamp(0.0, 1.0);
         let offset = ((moved - inset).abs() * length > RANGE_LINK_EXIT_SNAP).then_some(moved);
         for link in &mut self.links {
-            if link.from == picked.from && link.exit_offset.unwrap_or(inset) == current {
-                link.exit_offset = offset;
+            if link.from == picked.from && link.exit_fraction.unwrap_or(inset) == current {
+                link.exit_fraction = offset;
             }
         }
         NudgeResult::Moved
@@ -475,7 +440,7 @@ pub fn validate_range_link_series(
         || !finite_in(links.head, 0.0, MAX_RANGE_LINK_HEAD)
         || !finite_in(links.inset, 0.0, MAX_RANGE_LINK_INSET)
         || !valid_bar_color(links.color, false)
-        || !links.links.iter().all(|l| offset_ok(l.exit_offset))
+        || !links.links.iter().all(|l| offset_ok(l.exit_fraction))
     {
         return Err(crate::RuleKind::RangeLinkStyle);
     }

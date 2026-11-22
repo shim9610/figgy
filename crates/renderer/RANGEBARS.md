@@ -155,7 +155,7 @@ let tasks = SeriesConfig::timeline_bars("tasks", "row", "start", "end").with_pro
 
 `SeriesConfig::range_links(id, bars, [(from, to), …])` adds a
 `DataRenderType::RangeLinks` series: each `RangeLink { from, to,
-exit_offset }` joins the bar of row `from` to the bar of row `to` of the
+exit_fraction }` joins the bar of row `from` to the bar of row `to` of the
 range bar series `bars`, finish to start. The series is DataLess: the links
 are SSOT (`links`), like annotations, and it reads no column (`x_column`
 and `y_column` empty, `RuleKind::RangeLinkColumns`). There is no cap on
@@ -177,7 +177,7 @@ mask, the pick's paint order and every export follow that order.
 The layout chooses each link's exit and stores it (#357): `fit_ranges`, a
 `Fitted` chart's registration and `commit_auto_fit_all` (in the browser
 `fit_ranges()`, `fit_layout()`, `auto_fit_all()` and a new chart's first
-fit) write an exit into every link whose `exit_offset` is `None`: toward the
+fit) write an exit into every link whose `exit_fraction` is `None`: toward the
 predecessor's end, `inset` short of it (half a bar shorter than two insets),
 pulled back only as far as the successor's start needs room for the last
 leg and the head, and kept on the bar
@@ -190,10 +190,7 @@ soon for the last leg and the head, the exit moves back. A value that is
 already `Some` is never rewritten, whoever wrote it, so a dragged exit
 survives later layouts; clearing one to `None` lets the next layout choose
 again. A link without an exit (no layout has run) leaves `inset` logical
-pixels from the predecessor's start, under the same room rule. Documents
-written before the fraction stored logical pixels as `exit_offset`; they
-read as `None` (the bar's drawn length is not in the document), and the
-next layout chooses (`exit_fraction` is the wire key now).
+pixels from the predecessor's start, under the same room rule.
 `Chart::fit_layout` holds no series: a host that lays out with it calls
 `Renderer::fit_link_exits(config, &mut series)` afterwards.
 
@@ -215,7 +212,7 @@ layout and the frame that finds it complete writes the exits
 | `width` | 1.5 px | `0..=24` |
 | `head` | 6 px open chevron | `0..=32` |
 | `inset` | 6 px: how far short of the predecessor's end the layout puts an exit, and from its start a link without one leaves | `0..=64` |
-| `links[i].exit_offset` (JSON `exit_fraction`) | `None`: chosen by the next layout | a fraction `0..=1` of the predecessor's drawn length from its start |
+| `links[i].exit_fraction` | `None`: chosen by the next layout | a fraction `0..=1` of the predecessor's drawn length from its start |
 
 The style ranges are `RuleKind::RangeLinkStyle`. Polar charts refuse links
 (`RuleKind::PolarRangeLinks`), and a streamed source is refused
@@ -251,7 +248,7 @@ index in `links`, wherever its stroke or head is painted; the picked link
 is redrawn in the selection colour with a wider stroke, and
 `step_selection` moves along the links by `dx + dy`, staying in the
 series. `selection_details()` reports `index`, `from`, `to` and
-`exit_offset`. Links draw on overlays and subplots next to their bars and
+`exit_fraction`. Links draw on overlays and subplots next to their bars and
 export with them.
 
 A link's exit is draggable. `RangeLinkSeries::drag_link_exit(index,

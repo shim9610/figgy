@@ -1979,7 +1979,7 @@ fn range_links_draw_on_overlays_and_subplots() {
     }
 }
 
-/// Dragging a link's exit (#357): the SSOT `exit_offset`, a fraction of
+/// Dragging a link's exit (#357): the SSOT `exit_fraction`, a fraction of
 /// the predecessor's drawn length, moves where the trunk leaves its
 /// predecessor, for every link on a shared trunk, on a registered chart
 /// edited in place (SSOT invalidation) and in exports at 1x and 2x, where
@@ -2018,9 +2018,9 @@ fn dragged_link_exits_move_the_trunk_and_snap_back() {
         links.drag_link_exit(1, 30.0, Some(length)),
         renderer::layout::NudgeResult::Moved
     );
-    let moved = links.links[0].exit_offset.expect("a fraction");
+    let moved = links.links[0].exit_fraction.expect("a fraction");
     assert!((moved * length - 40.0).abs() < 1e-3, "{moved}");
-    assert_eq!(links.links[1].exit_offset, Some(moved));
+    assert_eq!(links.links[1].exit_fraction, Some(moved));
     r.set_chart_series(id, edited.clone()).unwrap();
     // The reference: the same links with their default exit at 40 px.
     let mut reference = series.to_vec();
@@ -2078,8 +2078,8 @@ fn dragged_link_exits_move_the_trunk_and_snap_back() {
     // Back to 2 px from the default: it snaps, and the image is the default.
     let links = edited[0].render_type.range_links_mut().unwrap();
     links.drag_link_exit(0, -28.0, Some(length));
-    assert_eq!(links.links[0].exit_offset, None);
-    assert_eq!(links.links[1].exit_offset, None);
+    assert_eq!(links.links[0].exit_fraction, None);
+    assert_eq!(links.links[1].exit_fraction, None);
     r.set_chart_series(id, edited).unwrap();
     for (k, scale) in [1.0f32, 2.0].into_iter().enumerate() {
         assert_eq!(draw(&mut r, id, scale).rgba, before[k].rgba, "{scale}x");
@@ -2187,18 +2187,18 @@ fn link_picks_report_the_predecessors_drawn_length_and_the_drag_stops_there() {
         links.drag_link_exit(0, 1000.0, Some(limit)),
         renderer::layout::NudgeResult::Moved
     );
-    assert_eq!(links.links[0].exit_offset, Some(1.0));
+    assert_eq!(links.links[0].exit_fraction, Some(1.0));
     r.set_chart_series(id, edited.clone()).unwrap();
     let at_end = draw(&mut r, 1.0);
     // Further on draws the same; one step back moves the exit at once.
     let links = edited[0].render_type.range_links_mut().unwrap();
     links.drag_link_exit(0, 200.0, Some(limit));
-    assert_eq!(links.links[0].exit_offset, Some(1.0));
+    assert_eq!(links.links[0].exit_fraction, Some(1.0));
     r.set_chart_series(id, edited.clone()).unwrap();
     assert_eq!(draw(&mut r, 1.0).rgba, at_end.rgba, "held at the end");
     let links = edited[0].render_type.range_links_mut().unwrap();
     links.drag_link_exit(0, -8.0, Some(limit));
-    assert_eq!(links.links[0].exit_offset, Some(1.0 - 8.0 / limit));
+    assert_eq!(links.links[0].exit_fraction, Some(1.0 - 8.0 / limit));
     r.set_chart_series(id, edited).unwrap();
     assert_ne!(draw(&mut r, 1.0).rgba, at_end.rgba, "back at once");
     r.remove_chart(id).unwrap();
@@ -2505,7 +2505,7 @@ fn exits(series: &[SeriesConfig]) -> Vec<Option<f32>> {
         .unwrap()
         .links
         .iter()
-        .map(|l| l.exit_offset)
+        .map(|l| l.exit_fraction)
         .collect()
 }
 
@@ -2572,7 +2572,7 @@ fn the_layout_stores_each_links_exit_toward_its_predecessors_end() {
     unfitted[1] = {
         let mut l = series[1].clone();
         for link in &mut l.render_type.range_links_mut().unwrap().links {
-            link.exit_offset = None;
+            link.exit_fraction = None;
         }
         l
     };
@@ -2785,7 +2785,7 @@ fn many_links_lay_out_draw_and_pick() {
             .unwrap()
             .links
             .iter()
-            .all(|l| l.exit_offset.is_some()),
+            .all(|l| l.exit_fraction.is_some()),
         "every link has an exit"
     );
     let img = r

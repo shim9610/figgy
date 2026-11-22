@@ -1320,9 +1320,7 @@ chart made with `default_config_for_series` from series holding a
 omitted when empty and `exit_fraction` when unset; every other field is
 written. `width` is `0..=24`, `head` `0..=32` and `inset` `0..=64`, in
 logical pixels, and each `exit_fraction` is in `0..=1` (`RangeLinkStyle`).
-The pixel offset `exit_offset` that earlier documents carry reads as unset:
-the bar's drawn length is not in the document, so the next layout chooses
-again. A polar chart and
+A polar chart and
 a streamed source refuse links (`PolarRangeLinks`, `StreamedRangeLinks`).
 
 ```json
@@ -1348,7 +1346,7 @@ a streamed source refuse links (`PolarRangeLinks`, `StreamedRangeLinks`).
 ```
 
 The picked link's `selection_details()` carries `index`, `from`, `to` and
-`exit_offset`, the fraction (`null` when unset). A `pick_data` hit on a range bar or a
+`exit_fraction` (`null` when unset). A `pick_data` hit on a range bar or a
 range link carries `extent_px`, the bar's (or the link's predecessor's)
 drawn length in canvas pixels. `press_range_link(series_id, index,
 extent_px)` starts a drag of the link's exit: `on_move` moves the stored

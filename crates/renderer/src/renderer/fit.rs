@@ -2189,7 +2189,7 @@ fn keep_unmoved_chart_axes(
 // ───── Range link exits (#357) ─────
 //
 // The layout chooses the exit of every range link that has none
-// (`RangeLink::exit_offset` is `None`) and writes it into the document: a
+// (`RangeLink::exit_fraction` is `None`) and writes it into the document: a
 // display parameter chosen once from the two bars as they are drawn (rule
 // 1), toward the predecessor's end. The bars' ends are gathered on the GPU
 // from the column pool by the extent engine (`gpu_extent::begin_link_ends`)
@@ -2209,7 +2209,7 @@ fn unset_link_exits(series: &[SeriesConfig]) -> impl Iterator<Item = (usize, usi
                     .links
                     .iter()
                     .enumerate()
-                    .filter(|(_, link)| link.exit_offset.is_none())
+                    .filter(|(_, link)| link.exit_fraction.is_none())
                     .map(move |(j, _)| (k, j))
             })
     })
@@ -2357,7 +2357,7 @@ impl ResolvedLinkExitFit {
             let item = series.get(k)?;
             match item.render_type.range_links() {
                 Some(links) if j < links.links.len() => {
-                    if links.links[j].exit_offset.is_none() {
+                    if links.links[j].exit_fraction.is_none() {
                         return Some((k, j));
                     }
                     j += 1;
@@ -2403,7 +2403,7 @@ impl ResolvedLinkExitFit {
                 .and_then(|(a, b)| links.chosen_exit_offset(a, b));
             match (offset, series[k].render_type.range_links_mut()) {
                 (Some(offset), Some(links)) => {
-                    links.links[j].exit_offset = Some(offset);
+                    links.links[j].exit_fraction = Some(offset);
                     out.written += 1;
                 }
                 _ => out.unset += 1,

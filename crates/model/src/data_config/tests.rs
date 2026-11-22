@@ -3955,8 +3955,8 @@ mod range_bar_tests {
             |l| style(l).width = f32::NAN,
             |l| style(l).head = 33.0,
             |l| style(l).inset = 65.0,
-            |l| style(l).links[3].exit_offset = Some(-1.0),
-            |l| style(l).links[3].exit_offset = Some(f32::INFINITY),
+            |l| style(l).links[3].exit_fraction = Some(-1.0),
+            |l| style(l).links[3].exit_fraction = Some(f32::INFINITY),
             |l| style(l).color = Color::new(2.0, 0.0, 0.0, 1.0),
         ] {
             assert_eq!(refused(edit), Err(crate::RuleKind::RangeLinkStyle));
@@ -4019,48 +4019,48 @@ mod range_bar_tests {
         let mut series = links();
         let l = style(&mut series);
         assert!(l.set_link_exit_offset(5, Some(0.2)));
-        assert_eq!(l.links[5].exit_offset, Some(0.2));
+        assert_eq!(l.links[5].exit_fraction, Some(0.2));
         // 0 is the bar's start, a value like any other.
         assert!(l.set_link_exit_offset(5, Some(0.0)));
-        assert_eq!(l.links[5].exit_offset, Some(0.0));
+        assert_eq!(l.links[5].exit_fraction, Some(0.0));
         assert!(l.set_link_exit_offset(5, Some(f32::NAN)));
-        assert_eq!(l.links[5].exit_offset, None);
+        assert_eq!(l.links[5].exit_fraction, None);
         assert!(!l.set_link_exit_offset(5, Some(-0.1)));
         assert!(!l.set_link_exit_offset(5, Some(1.5)));
         assert!(!l.set_link_exit_offset(3000, Some(0.5)));
         // Two more links leave row 5's bar: one sharing its trunk, one moved.
         l.links.push(RangeLink::new(5, 9));
         l.links.push(RangeLink {
-            exit_offset: Some(0.8),
+            exit_fraction: Some(0.8),
             ..RangeLink::new(5, 8)
         });
         // A 100 px bar, inset 6 (0.06): 14 px on is 0.2.
         assert_eq!(l.drag_link_exit(5, 14.0, Some(100.0)), NudgeResult::Moved);
-        let moved = l.links[5].exit_offset.unwrap();
+        let moved = l.links[5].exit_fraction.unwrap();
         assert!((moved - 0.2).abs() < 1e-6, "{moved}");
-        assert_eq!(l.links[3000].exit_offset, Some(moved), "the shared trunk");
-        assert_eq!(l.links[3001].exit_offset, Some(0.8), "its own exit");
-        assert_eq!(l.links[4].exit_offset, None, "another bar's link");
+        assert_eq!(l.links[3000].exit_fraction, Some(moved), "the shared trunk");
+        assert_eq!(l.links[3001].exit_fraction, Some(0.8), "its own exit");
+        assert_eq!(l.links[4].exit_fraction, None, "another bar's link");
         // Back within 3 px of the inset: the entries clear.
         assert_eq!(l.drag_link_exit(5, -12.0, Some(100.0)), NudgeResult::Moved);
-        assert_eq!(l.links[5].exit_offset, None);
-        assert_eq!(l.links[3000].exit_offset, None);
+        assert_eq!(l.links[5].exit_fraction, None);
+        assert_eq!(l.links[3000].exit_fraction, None);
         // Past the bar's ends: 0 and 1; back from the end moves at once.
         assert_eq!(
             l.drag_link_exit(3001, -500.0, Some(100.0)),
             NudgeResult::Moved
         );
-        assert_eq!(l.links[3001].exit_offset, Some(0.0));
+        assert_eq!(l.links[3001].exit_fraction, Some(0.0));
         assert_eq!(
             l.drag_link_exit(3001, 500.0, Some(100.0)),
             NudgeResult::Moved
         );
-        assert_eq!(l.links[3001].exit_offset, Some(1.0));
+        assert_eq!(l.links[3001].exit_fraction, Some(1.0));
         assert_eq!(
             l.drag_link_exit(3001, -10.0, Some(100.0)),
             NudgeResult::Moved
         );
-        assert_eq!(l.links[3001].exit_offset, Some(0.9));
+        assert_eq!(l.links[3001].exit_fraction, Some(0.9));
         // No length, no conversion; an unknown link or a NaN drag.
         assert_ne!(l.drag_link_exit(3001, 1.0, None), NudgeResult::Moved);
         assert_ne!(l.drag_link_exit(3001, 1.0, Some(0.0)), NudgeResult::Moved);
@@ -4081,9 +4081,9 @@ mod range_bar_tests {
         let l = style(&mut series);
         assert!(l.set_link_exit_offset(5, Some(0.5)));
         assert_eq!(l.drag_link_exit(5, 20.0, Some(200.0)), NudgeResult::Moved);
-        assert_eq!(l.links[5].exit_offset, Some(0.6));
+        assert_eq!(l.links[5].exit_fraction, Some(0.6));
         assert_eq!(l.drag_link_exit(5, 20.0, Some(50.0)), NudgeResult::Moved);
-        assert_eq!(l.links[5].exit_offset, Some(1.0));
+        assert_eq!(l.links[5].exit_fraction, Some(1.0));
     }
 
     /// The exit the layout chooses (#357), a fraction of the predecessor's
@@ -4157,25 +4157,16 @@ mod range_bar_tests {
     #[cfg(feature = "serde")]
     pub(super) fn range_links_round_trip() {
         let mut original = links();
-        style(&mut original).links[1].exit_offset = Some(0.75);
+        style(&mut original).links[1].exit_fraction = Some(0.75);
         let json = serde_json::to_value(&original).unwrap();
         let fields = json["render_type"]["RangeLinks"].as_object().unwrap();
         for key in ["bars", "color", "width", "head", "inset", "links"] {
             assert!(fields.contains_key(key), "{key}");
         }
         // An unset exit is omitted; a set one is written as the fraction
-        // `exit_fraction` (#357).
+        // `exit_fraction` (#357), the field's name.
         assert!(fields["links"][0].get("exit_fraction").is_none());
         assert_eq!(fields["links"][1]["exit_fraction"], 0.75);
-        assert!(fields["links"][1].get("exit_offset").is_none());
-        // A document of the pixel unit (`exit_offset`) reads as unset, so
-        // the next layout chooses; saved again, it re-reads unchanged.
-        let legacy: RangeLink =
-            serde_json::from_str(r#"{"from":2,"to":3,"exit_offset":24.0}"#).unwrap();
-        assert_eq!(legacy, RangeLink::new(2, 3));
-        let saved = serde_json::to_string(&legacy).unwrap();
-        assert_eq!(saved, r#"{"from":2,"to":3}"#);
-        assert_eq!(serde_json::from_str::<RangeLink>(&saved).unwrap(), legacy);
         // No links: the key is omitted and reads back empty.
         let mut empty = links();
         style(&mut empty).links.clear();
