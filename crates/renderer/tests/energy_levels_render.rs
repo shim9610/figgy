@@ -1951,6 +1951,71 @@ fn bundled_arrows_spread_along_their_levels_without_crossing() {
     assert!(found.is_empty(), "{found:#?}");
 }
 
+// #411: two upper levels in columns a and c emit to one lower level in b.
+// The two arrivals tie on their candidate end offset; the one from the
+// left takes the left end and the one from the right the right end, in
+// both record orders, so the shafts never cross above b. The geometry
+// and the 1x and 2x exports are the same whichever transition is listed
+// first.
+#[test]
+fn arrivals_at_one_level_take_the_side_they_come_from_in_any_order() {
+    use renderer::energy_levels::LevelPlacement;
+    let records = |right_first: bool| {
+        let mut transitions = vec![
+            transition("left", "lower", "upper_a"),
+            transition("right", "lower", "upper_c"),
+        ];
+        if right_first {
+            transitions.reverse();
+        }
+        EnergyLevelSeries {
+            levels: vec![
+                level("upper_a", "a", 60.0),
+                level("lower", "b", 20.0),
+                level("upper_c", "c", 60.0),
+            ],
+            transitions,
+            ..EnergyLevelSeries::default()
+        }
+    };
+    let mut r = renderer();
+    let mut drawn = Vec::new();
+    for right_first in [false, true] {
+        let levels = records(right_first);
+        let chart = chart();
+        let (space, measure) = layout_of(&chart, &levels);
+        let placement = LevelPlacement {
+            space: &space,
+            categories: chart.config().bottom_x.categories.as_deref().unwrap(),
+            view: LevelView::Main,
+            colorbar: None,
+            picked: None,
+        };
+        let layout = placement.layout(&levels, &levels.style, &measure);
+        let arrow = |id: &str| {
+            let index = levels.transitions.iter().position(|t| t.id == id).unwrap();
+            placement.transition_arrow(&layout, index).expect("drawn")
+        };
+        // Emission: from the upper level (`.0`) to the lower (`.1`).
+        let (left, right) = (arrow("left"), arrow("right"));
+        assert!(
+            left.1[0] < right.1[0],
+            "right_first {right_first}: {left:?} {right:?}"
+        );
+        assert!(!segments_cross(left, right), "{left:?} {right:?}");
+        let series = [series("e", levels.clone())];
+        let images: Vec<_> = [1.0, 2.0]
+            .into_iter()
+            .map(|scale| export(&mut r, &chart, &series, scale))
+            .collect();
+        drawn.push(((left, right), images));
+    }
+    assert_eq!(drawn[0].0, drawn[1].0, "the same arrows in both orders");
+    for (a, b) in drawn[0].1.iter().zip(&drawn[1].1) {
+        assert!(a.rgba == b.rgba, "the same image in both orders");
+    }
+}
+
 // #248: in the He, Ar, Cu, U and every-level Ar scenes no drawn level or
 // band label lies on another column's level stroke or band fill, on a limit
 // line, or on another label, and no transition label on another label.

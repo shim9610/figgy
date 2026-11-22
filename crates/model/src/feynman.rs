@@ -1949,6 +1949,32 @@ fn segment_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
     len(sub(p, lerp(a, b, t)))
 }
 
+/// The distance from the box of half-size `half` about `centre` to the
+/// segment `a`–`b`, zero where they meet.
+fn box_segment_distance(centre: [f32; 2], half: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    let (x0, y0) = (centre[0] - half[0], centre[1] - half[1]);
+    let (x1, y1) = (centre[0] + half[0], centre[1] + half[1]);
+    let rect = RectF {
+        x: x0,
+        y: y0,
+        width: x1 - x0,
+        height: y1 - y0,
+    };
+    if clip_line(a, b, rect).is_some() {
+        return 0.0;
+    }
+    let to_box = |p: [f32; 2]| {
+        let dx = (x0 - p[0]).max(p[0] - x1).max(0.0);
+        let dy = (y0 - p[1]).max(p[1] - y1).max(0.0);
+        dx.hypot(dy)
+    };
+    [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+        .into_iter()
+        .map(|corner| segment_distance(corner, a, b))
+        .chain([to_box(a), to_box(b)])
+        .fold(f32::INFINITY, f32::min)
+}
+
 /// A placed propagator: its base path, its ends, whether it is a loop and
 /// the side its label sits on (`1` left of travel, `-1` right).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1983,6 +2009,13 @@ pub(crate) struct Placed<'s> {
 
 /// The gap between a part and its label, logical pixels.
 const LABEL_GAP: f32 = 6.0;
+/// The segments an external label's leg is sampled with, over the half
+/// nearest its vertex (#411). A sampling resolution, not a count limit.
+const LEG_SAMPLES: usize = 8;
+/// The bisection steps that find how far an external label moves out to
+/// clear its leg (#411): the bound halves each step, so 24 steps resolve
+/// far below a pixel.
+const PUSH_STEPS: u32 = 24;
 /// The gap between a line and its momentum arrow, logical pixels.
 const MOMENTUM_GAP: f32 = 6.0;
 /// The share of a line its momentum arrow spans, centred.
@@ -2444,6 +2477,17 @@ impl Placed<'_> {
             anchor[0] + direction[0] * extents.width / 2.0,
             anchor[1] + direction[1] * extents.height() / 2.0,
         ];
+        // An external vertex's text box keeps a gap from its leg's ink
+        // (#411); the host's offset applies on top.
+        let centre = match part {
+            FeynmanLabelPart::Vertex => self.clear_of_leg(
+                index,
+                centre,
+                direction,
+                [extents.width / 2.0, extents.height() / 2.0],
+            ),
+            _ => centre,
+        };
         Some(PlacedText {
             text: if scale == 1.0 {
                 TextRef::Rich(text)
@@ -2458,6 +2502,63 @@ impl Placed<'_> {
             rotation: None,
             outline: None,
         })
+    }
+
+    /// The centre of external vertex `index`'s label box (half-size
+    /// `half`, the measured width and ascent plus descent) given its
+    /// default `centre`, moved along `out` only as far as it takes for the
+    /// box to clear its one leg's ink and marker by [`LABEL_GAP`] (#411).
+    /// The leg is sampled over the half nearest the vertex, so a bent or
+    /// steep leg is covered as well as a straight one, at any label size.
+    /// A box that already clears it, or a vertex with no single leg, keeps
+    /// its centre. A display parameter: nothing is stored (rule 1).
+    fn clear_of_leg(
+        &self,
+        index: usize,
+        centre: [f32; 2],
+        out: [f32; 2],
+        half: [f32; 2],
+    ) -> [f32; 2] {
+        let &[[other, propagator]] = self.topology.around(index) else {
+            return centre;
+        };
+        if other == index {
+            return centre;
+        }
+        let (Some(geometry), Some((from, _))) =
+            (self.geometry(propagator), self.topology.ends_of(propagator))
+        else {
+            return centre;
+        };
+        let need = self.envelope(propagator).max(self.marker_radius(index)) + LABEL_GAP;
+        let along = |k: usize| {
+            let t = 0.5 * k as f64 / LEG_SAMPLES as f64;
+            geometry.base.point(if from == index { t } else { 1.0 - t })
+        };
+        let clearance = |c: [f32; 2]| {
+            (0..LEG_SAMPLES)
+                .map(|k| box_segment_distance(c, half, along(k), along(k + 1)))
+                .fold(f32::INFINITY, f32::min)
+        };
+        if clearance(centre) >= need {
+            return centre;
+        }
+        let at = |t: f32| add(centre, scale(out, t));
+        // Moving out by the gap and the box's size clears a leg that runs
+        // away from `out`; a leg that does not is left at that bound.
+        let (mut lo, mut hi) = (0.0f32, need + 2.0 * (half[0] + half[1]));
+        if clearance(at(hi)) < need {
+            return at(hi);
+        }
+        for _ in 0..PUSH_STEPS {
+            let mid = (lo + hi) / 2.0;
+            if clearance(at(mid)) < need {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        at(hi)
     }
 
     /// How far a propagator's label sits from its base path on `side`: past

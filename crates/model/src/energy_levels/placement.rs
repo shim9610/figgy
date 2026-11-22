@@ -323,22 +323,36 @@ impl LevelPlacement<'_> {
         // Per level, its ends in order of their offsets, pushed at least a
         // gap apart (less on a stroke too short for that, and no more than
         // their bundle spaced them) and kept on it.
+        // Ends that land on one spot are ordered by where their arrows go
+        // (#411): by the run across per unit of rise to the other end, so
+        // an arrow from the left takes the left end and two arrows meeting
+        // a level never cross just before it, whatever order the records
+        // list them in. The transition index breaks only a full tie.
         let mut x_of = vec![[f32::NAN; 2]; records.transitions.len()];
-        let mut ends: Vec<(usize, f32, usize, usize)> = Vec::new();
+        let mut ends: Vec<(usize, f32, f32, usize, usize)> = Vec::new();
         for (index, pair) in rows.iter().enumerate() {
             let Some((lower, upper)) = *pair else {
                 continue;
             };
-            for (row, slot) in [(lower, 0), (upper, 1)] {
-                if let Some((c, _)) = centre(row) {
-                    ends.push((row, c[0] + offset[index], index, slot));
-                }
+            let (Some((l, _)), Some((u, _))) = (centre(lower), centre(upper)) else {
+                continue;
+            };
+            for (row, slot, here, there) in [(lower, 0, l, u), (upper, 1, u, l)] {
+                let rise = (there[1] - here[1]).abs();
+                let run = there[0] - here[0];
+                let heading = if rise > 0.0 {
+                    run / rise
+                } else {
+                    run.signum() * f32::INFINITY
+                };
+                ends.push((row, here[0] + offset[index], heading, index, slot));
             }
         }
         ends.sort_by(|a, b| {
-            (a.0, a.1, a.2)
-                .partial_cmp(&(b.0, b.1, b.2))
-                .unwrap_or(std::cmp::Ordering::Equal)
+            a.0.cmp(&b.0)
+                .then(a.1.total_cmp(&b.1))
+                .then(a.2.total_cmp(&b.2))
+                .then(a.3.cmp(&b.3))
         });
         let mut start = 0;
         while start < ends.len() {
@@ -361,7 +375,7 @@ impl LevelPlacement<'_> {
                 // them when that is closer, so its arrows stay parallel.
                 let mut previous = (f32::NAN, 0usize);
                 for k in start..end {
-                    let (given, index) = (ends[k].1, ends[k].2);
+                    let (given, index) = (ends[k].1, ends[k].3);
                     if k > start {
                         let bundle = |i: usize| rows[i].map(|p| (column(p.0), column(p.1)));
                         let least = if bundle(index) == bundle(previous.1) {
@@ -394,7 +408,7 @@ impl LevelPlacement<'_> {
                     }
                 }
                 for e in &ends[start..end] {
-                    x_of[e.2][e.3] = e.1;
+                    x_of[e.3][e.4] = e.1;
                 }
             }
             start = end;

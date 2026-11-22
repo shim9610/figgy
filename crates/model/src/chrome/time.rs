@@ -95,9 +95,63 @@ where
 
     let start = parts_from_value(axis.min, cfg)?;
     let end = parts_from_value(axis.max, cfg)?;
+    // A pattern label never takes a step finer than the finest field it
+    // prints: finer ticks would repeat the same text (#411). A range too
+    // short to hold one tick at that floor keeps the unfloored walk.
+    let floor = match &cfg.label {
+        TimestampLabelMode::Pattern(pattern) => finest_pattern_field(pattern),
+        _ => None,
+    };
+    if let Some(floor) = floor {
+        let plan = walk_candidates(
+            axis,
+            cfg,
+            start,
+            end,
+            Some(floor),
+            axis_len_px,
+            min_gap_px,
+            &mut measure_extent_px,
+        )?;
+        if plan.is_some() {
+            return plan;
+        }
+    }
+    walk_candidates(
+        axis,
+        cfg,
+        start,
+        end,
+        None,
+        axis_len_px,
+        min_gap_px,
+        &mut measure_extent_px,
+    )?
+}
+
+/// Walks the candidates from fine to coarse, skipping those finer than
+/// `floor`, and returns the first whose labels fit (or the coarsest valid
+/// one). The outer `None` is a range the formatter cannot read.
+#[allow(clippy::too_many_arguments)]
+fn walk_candidates<F>(
+    axis: &AxisOptions,
+    cfg: &TimestampLabelFormat,
+    start: DateTimeParts,
+    end: DateTimeParts,
+    floor: Option<u8>,
+    axis_len_px: f32,
+    min_gap_px: f32,
+    measure_extent_px: &mut F,
+) -> Option<Option<TimestampTickPlan>>
+where
+    F: FnMut(&str) -> f32,
+{
     let mut last_valid = None;
 
     for candidate in candidates() {
+        if floor.is_some_and(|floor| step_field_rank(candidate.step) < floor) {
+            continue;
+        }
         let ticks = ticks_for_candidate(axis, cfg, candidate, start, end)?;
         if ticks.is_empty() {
             continue;
@@ -118,11 +172,52 @@ where
             minor_values: Vec::new(),
         });
         if count <= 1 || required <= axis_len_px.max(1.0) {
-            return last_valid;
+            return Some(last_valid);
         }
     }
 
-    last_valid
+    Some(last_valid)
+}
+
+/// The rank of the calendar field a step advances: 0 sub-second, 1 second,
+/// 2 minute, 3 hour, 4 day, 5 month, 6 year. Ranks compare with
+/// [`finest_pattern_field`].
+fn step_field_rank(step: TimeStep) -> u8 {
+    match step {
+        TimeStep::FixedNs(ns) if ns < NS_PER_SECOND => 0,
+        TimeStep::FixedNs(ns) if ns < 60 * NS_PER_SECOND => 1,
+        TimeStep::FixedNs(ns) if ns < 3_600 * NS_PER_SECOND => 2,
+        TimeStep::FixedNs(ns) if ns < SECONDS_PER_DAY as i128 * NS_PER_SECOND => 3,
+        TimeStep::FixedNs(_) => 4,
+        TimeStep::Months(_) => 5,
+        TimeStep::Years(_) => 6,
+    }
+}
+
+/// The rank (as [`step_field_rank`]) of the finest field a label pattern
+/// prints: `%f` sub-second, `%S` second, `%M` minute, `%H` hour, `%d` day,
+/// `%m` and `%b` month, `%Y` year. `None` for a pattern that prints no
+/// field.
+fn finest_pattern_field(pattern: &str) -> Option<u8> {
+    let mut finest: Option<u8> = None;
+    let mut chars = pattern.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            continue;
+        }
+        let rank = match chars.next() {
+            Some('f') => 0,
+            Some('S') => 1,
+            Some('M') => 2,
+            Some('H') => 3,
+            Some('d') => 4,
+            Some('m') | Some('b') => 5,
+            Some('Y') => 6,
+            _ => continue,
+        };
+        finest = Some(finest.map_or(rank, |f| f.min(rank)));
+    }
+    finest
 }
 
 pub fn format_timestamp_numeric_tick(
@@ -990,6 +1085,100 @@ mod tests {
 
     fn texts(ticks: &[TimestampTick]) -> Vec<&str> {
         ticks.iter().map(|t| t.label.as_str()).collect()
+    }
+
+    /// An AutoCalendar axis with a pattern label in milliseconds, laid out
+    /// like a vertical axis: each label is 16 px tall on a 700 px axis.
+    fn auto_pattern_plan(min: f64, max: f64, pattern: &str) -> TimestampTickPlan {
+        let mut axis = crate::defaults::axis_options_x();
+        axis.min = min * 1_000.0;
+        axis.max = max * 1_000.0;
+        axis.label_style.format = LabelFormat::Timestamp(TimestampLabelFormat {
+            unit: TimestampUnit::Milliseconds,
+            label: TimestampLabelMode::Pattern(pattern.into()),
+            tick_policy: TimestampTickPolicy::AutoCalendar,
+            ..crate::defaults::timestamp_label_format()
+        });
+        build_timestamp_tick_plan(&axis, 700.0, 8.0, |_| 16.0).unwrap()
+    }
+
+    fn assert_adjacent_labels_differ(plan: &TimestampTickPlan) {
+        for pair in plan.majors.windows(2) {
+            assert_ne!(pair[0].label, pair[1].label, "{:?}", texts(&plan.majors));
+        }
+        assert!(plan.majors.len() <= MAX_TIME_TICKS);
+    }
+
+    /// #411: an eight-month `%Y-%m` axis ticks once a month, not weekly
+    /// with each month printed four or five times.
+    #[test]
+    fn a_month_pattern_never_ticks_finer_than_a_month() {
+        let plan = auto_pattern_plan(utc(1996, 12, 21), utc(1997, 8, 12), "%Y-%m");
+        assert_eq!(
+            texts(&plan.majors),
+            [
+                "1997-01", "1997-02", "1997-03", "1997-04", "1997-05", "1997-06", "1997-07",
+                "1997-08"
+            ]
+        );
+        for (tick, month) in plan.majors.iter().zip(1..) {
+            assert_eq!(tick.value, utc(1997, month, 1) * 1_000.0);
+        }
+        assert_adjacent_labels_differ(&plan);
+    }
+
+    /// Other patterns take their own floor: a year pattern ticks at whole
+    /// years, a date pattern at whole days, a time pattern at whole minutes.
+    #[test]
+    fn each_pattern_floors_the_step_at_its_finest_field() {
+        // Five and a half years would take quarters without the floor.
+        let plan = auto_pattern_plan(utc(2001, 3, 1), utc(2006, 9, 1), "%Y");
+        assert_eq!(
+            texts(&plan.majors),
+            ["2002", "2003", "2004", "2005", "2006"]
+        );
+        assert_adjacent_labels_differ(&plan);
+
+        // Ten days would take half-day ticks without the floor.
+        let plan = auto_pattern_plan(utc(2026, 1, 1), utc(2026, 1, 11), "%Y-%m-%d");
+        assert_eq!(plan.majors.len(), 11);
+        assert_eq!(plan.majors[0].label, "2026-01-01");
+        assert_adjacent_labels_differ(&plan);
+
+        // Four minutes would take 10 s ticks without the floor.
+        let start = utc(2026, 1, 1) + 10.0 * 3_600.0;
+        let plan = auto_pattern_plan(start, start + 240.0, "%H:%M");
+        assert_eq!(
+            texts(&plan.majors),
+            ["10:00", "10:01", "10:02", "10:03", "10:04"]
+        );
+        assert_adjacent_labels_differ(&plan);
+
+        // A pattern with seconds keeps second ticks.
+        let plan = auto_pattern_plan(start, start + 20.0, "%H:%M:%S");
+        assert_eq!(plan.majors.len(), 21);
+        assert_adjacent_labels_differ(&plan);
+    }
+
+    /// The label fit still coarsens past the floor, and a pattern with no
+    /// field, or a range shorter than one floor step, walks as before.
+    #[test]
+    fn the_floor_keeps_the_fit_and_unfloored_fallbacks() {
+        // Forty years of months do not fit: years do.
+        let plan = auto_pattern_plan(utc(1980, 1, 1), utc(2020, 1, 1), "%Y-%m");
+        assert!(plan.majors.len() <= 700 / 24 + 1, "{}", plan.majors.len());
+        assert_adjacent_labels_differ(&plan);
+
+        let plan = auto_pattern_plan(utc(2026, 1, 1), utc(2026, 1, 11), "day");
+        assert!(plan.majors.len() > 11);
+
+        // Ten days inside one month hold no month start.
+        let plan = auto_pattern_plan(utc(2026, 1, 3), utc(2026, 1, 13), "%Y-%m");
+        assert!(!plan.majors.is_empty());
+
+        assert_eq!(finest_pattern_field("%% %Y"), Some(6));
+        assert_eq!(finest_pattern_field("%b %d"), Some(4));
+        assert_eq!(finest_pattern_field("%q"), None);
     }
 
     /// A month header: a tick at each 1st inside the range, `%b %Y`, and
