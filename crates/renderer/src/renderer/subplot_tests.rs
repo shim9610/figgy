@@ -635,6 +635,301 @@ fn an_annotation_over_a_subplot_draws_and_selects_over_it() {
     );
 }
 
+// #418: text boxes and arrows may sit anywhere in the document area, so
+// over a sibling subplot beside the parent's chart area. A note over the
+// lower-right subplot draws there on the display, in the export at 1x and
+// 2x and in SVG; the pointer reaches it there on the annotation layer (the
+// subplot's layer reaches the subplot); selecting it boxes it there; it
+// drags across panels and resizes (an arrow's endpoint) over the subplot,
+// and a drag beyond the document area is refused. Anchors keep resolving
+// against the parent's plot, and the document round-trips through JSON.
+#[test]
+fn an_annotation_over_a_sibling_subplot_places_draws_and_drags_there() {
+    use crate::annotation::{Anchor, Annotation, AnnotationKind};
+    use crate::layout::NudgeResult;
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut config = document();
+    let plot = config.data_area().unwrap().0;
+    let parent = config.chart_area.0;
+    let lower_left = config.subplots[0].config.chart_area.0;
+    let lower_right = config.subplots[1].config.chart_area.0;
+    let document_area = config.document_area();
+    assert!(
+        lower_right.y >= parent.y + parent.height,
+        "a sibling beside the parent"
+    );
+    let plain = fresh_frame(&config);
+    let mut r = renderer();
+    let export = |r: &mut Renderer, chart: &Chart, scale: f32| {
+        r.export_rgba(
+            crate::ExportSource::chart(chart, &series()),
+            crate::ExportOptions::document(scale),
+        )
+        .block_on()
+        .unwrap()
+    };
+    let svg = |r: &mut Renderer, chart: &Chart| {
+        r.export_svg_blocking(
+            crate::ExportSource::chart(chart, &series()),
+            crate::ExportOptions::document(1.0),
+        )
+        .unwrap()
+    };
+    let plain_chart = Chart::new(config.clone());
+    let plain_exports = [
+        export(&mut r, &plain_chart, 1.0),
+        export(&mut r, &plain_chart, 2.0),
+    ];
+    let plain_svg = svg(&mut r, &plain_chart);
+    // A boxed note at the lower-right subplot's centre, by a ratio anchor
+    // of the parent's plot (below its bottom edge: `y > 1`), and an arrow
+    // from the parent's plot into that subplot.
+    let ratio = |v: u32, from: u32, length: u32| (v as f32 - from as f32) / length as f32;
+    let centre_anchor = Anchor::Ratio {
+        x: ratio(lower_right.x + lower_right.width / 2, plot.x, plot.width),
+        y: ratio(lower_right.y + lower_right.height / 2, plot.y, plot.height),
+    };
+    let Anchor::Ratio { y: below, .. } = centre_anchor else {
+        unreachable!()
+    };
+    assert!(below > 1.0, "the anchor lies below the parent's plot");
+    config.annotations.items = vec![
+        Annotation::new(AnnotationKind::Text {
+            anchor: centre_anchor,
+            text: RichText::plain("note", Color::BLACK, 10.0, ""),
+            box_style: Some(Default::default()),
+            align: model::annotation::NoteAlign::Center,
+        }),
+        Annotation::new(AnnotationKind::Arrow {
+            from: Anchor::Ratio { x: 0.9, y: 0.5 },
+            to: Anchor::Ratio {
+                x: ratio(
+                    lower_right.x + lower_right.width * 3 / 4,
+                    plot.x,
+                    plot.width,
+                ),
+                y: ratio(lower_right.y + lower_right.height / 4, plot.y, plot.height),
+            },
+            style: Default::default(),
+            text: None,
+        }),
+    ];
+    let view = r
+        .create_chart_view(&Chart::new(config.clone()), UPPER)
+        .unwrap();
+    let map = view.annotation_map();
+    assert!(map.warnings().is_empty(), "{:?}", map.warnings());
+    let note = map
+        .bounds(map.find(0).expect("the note over the sibling is drawn"))
+        .unwrap();
+    assert!(map.find(1).is_some(), "the arrow into the sibling is drawn");
+    let within = |x: f32, y: f32, area: Rect| {
+        x >= area.x as f32
+            && y >= area.y as f32
+            && x < (area.x + area.width) as f32
+            && y < (area.y + area.height) as f32
+    };
+    let inside_note = |x: f32, y: f32| {
+        x >= note.x && x < note.x + note.width && y >= note.y && y < note.y + note.height
+    };
+    assert!(
+        within(note.x, note.y, lower_right)
+            && within(
+                note.x + note.width - 1.0,
+                note.y + note.height - 1.0,
+                lower_right
+            ),
+        "the note {note:?} is not over the sibling {lower_right:?}"
+    );
+    let centre = [note.x + note.width / 2.0, note.y + note.height / 2.0];
+    // Display: the note draws over the sibling, above its decoration.
+    let annotated = fresh_frame(&config);
+    let pixels = differing(&plain, &annotated);
+    assert!(
+        pixels.iter().any(|&(x, y)| inside_note(x as f32, y as f32)),
+        "the note is not drawn over the sibling"
+    );
+    assert!(
+        pixels
+            .iter()
+            .all(|&(x, y)| within(x as f32, y as f32, document_area)),
+        "the layer drew outside the document"
+    );
+    // Export at 1x and 2x: the same, in the export's pixels.
+    let chart = Chart::new(config.clone());
+    for (k, scale) in [1.0f32, 2.0].into_iter().enumerate() {
+        let image = export(&mut r, &chart, scale);
+        let plain = &plain_exports[k];
+        assert_eq!((image.width, image.height), (plain.width, plain.height));
+        let at = |x: f32, y: f32| {
+            let (x, y) = ((x * scale) as u32, (y * scale) as u32);
+            let i = ((y * image.width + x) * 4) as usize;
+            (image.rgba[i..i + 4].to_vec(), plain.rgba[i..i + 4].to_vec())
+        };
+        let changed = (0..(note.height as u32))
+            .flat_map(|dy| (0..(note.width as u32)).map(move |dx| (dx, dy)))
+            .filter(|&(dx, dy)| {
+                let (a, b) = at(note.x + dx as f32, note.y + dy as f32);
+                a != b
+            })
+            .count();
+        assert!(
+            changed > 0,
+            "{scale}x: the note is not exported over the sibling"
+        );
+    }
+    // SVG: the overlay pass writes the note's box over the sibling.
+    let annotated_svg = svg(&mut r, &chart);
+    assert_ne!(annotated_svg, plain_svg, "the SVG lost the annotations");
+    let mut parts = Vec::new();
+    crate::vector_export::emit_pass(
+        &config,
+        &[],
+        &crate::vector_export::Pass::Overlay,
+        &mut crate::sink::Parts(&mut |part| {
+            if let crate::sink::DrawnPart::Rect(rect) = part {
+                parts.push(rect);
+            }
+        }),
+        1.0,
+    );
+    assert!(
+        parts.iter().any(|rect| (rect.x - note.x).abs() < 0.5
+            && (rect.y - note.y).abs() < 0.5
+            && (rect.width - note.width).abs() < 0.5),
+        "the vector overlay has no note box at {note:?}: {parts:?}"
+    );
+    // The pointer reaches the note over the sibling on the annotation
+    // layer; on the sibling's layer it reaches the sibling, not the note.
+    let name = |hits: &HitMap, hit: Option<crate::LayerHit>| match hit {
+        Some(crate::LayerHit::Annotation { index, .. }) => format!("annotation_{index}"),
+        Some(crate::LayerHit::Element(id)) => hits.get(id).unwrap().element_id(),
+        None => "none".into(),
+    };
+    config.set_active_layer(LayerRef::Annotations);
+    let hits = HitMap::for_active_layer(&config);
+    assert_eq!(
+        name(&hits, view.hit_test_active_layer(&config, &hits, centre)),
+        "annotation_0"
+    );
+    config.set_active_layer(LayerRef::Subplot(1));
+    let hits = HitMap::for_active_layer(&config);
+    let on_sibling = name(&hits, view.hit_test_active_layer(&config, &hits, centre));
+    assert!(on_sibling.starts_with("subplot_1:"), "{on_sibling}");
+    // Selecting it boxes it over the sibling (`refresh_annotations`).
+    config.set_active_layer(LayerRef::Annotations);
+    let id = r.register_chart(config.clone(), series()).unwrap();
+    let mut view = view;
+    let unselected = frame_with_view(&mut r, id, &mut view);
+    let before = view.layer_stamps().annotations;
+    r.refresh_annotations(&mut view, &Chart::new(config.clone()), UPPER, Some(0))
+        .unwrap();
+    assert_eq!(view.layer_stamps().annotations, before + 1);
+    assert_eq!(view.annotation_selected(), Some(0));
+    let selected = frame_with_view(&mut r, id, &mut view);
+    assert!(
+        differing(&unselected, &selected)
+            .iter()
+            .any(|&(x, y)| within(x as f32, y as f32, lower_right)),
+        "the selection box is not drawn over the sibling"
+    );
+    // Dragging it across panels: from the lower-right subplot over the
+    // lower-left one, then up into the parent's area.
+    let refreshed = |r: &mut Renderer, view: &mut ChartView, config: &Config| {
+        r.refresh_annotations(view, &Chart::new(config.clone()), UPPER, Some(0))
+            .unwrap();
+        let map = view.annotation_map();
+        map.bounds(map.find(0).unwrap()).unwrap()
+    };
+    let map = view.annotation_map();
+    assert_eq!(
+        map.drag_by(&mut config.annotations, map.find(0).unwrap(), -160.0, 0.0),
+        Some(NudgeResult::Moved)
+    );
+    let moved = refreshed(&mut r, &mut view, &config);
+    assert!((moved.x - (note.x - 160.0)).abs() < 0.5, "{moved:?}");
+    assert!(within(moved.x, moved.y, lower_left), "{moved:?}");
+    let map = view.annotation_map();
+    assert_eq!(
+        map.drag_by(&mut config.annotations, map.find(0).unwrap(), 0.0, -120.0),
+        Some(NudgeResult::Moved)
+    );
+    let moved = refreshed(&mut r, &mut view, &config);
+    assert!((moved.y - (note.y - 120.0)).abs() < 0.5, "{moved:?}");
+    assert!(within(moved.x, moved.y, parent), "{moved:?}");
+    let hits = HitMap::for_active_layer(&config);
+    let moved_centre = [moved.x + moved.width / 2.0, moved.y + moved.height / 2.0];
+    assert_eq!(
+        name(
+            &hits,
+            view.hit_test_active_layer(&config, &hits, moved_centre)
+        ),
+        "annotation_0"
+    );
+    // Back over the sibling; then past the document's bottom edge, which
+    // is refused and leaves the item unchanged.
+    let map = view.annotation_map();
+    assert_eq!(
+        map.drag_by(&mut config.annotations, map.find(0).unwrap(), 160.0, 120.0),
+        Some(NudgeResult::Moved)
+    );
+    let back = refreshed(&mut r, &mut view, &config);
+    assert!((back.x - note.x).abs() < 0.5 && (back.y - note.y).abs() < 0.5);
+    let unchanged = config.annotations.clone();
+    let map = view.annotation_map();
+    assert!(matches!(
+        map.drag_by(
+            &mut config.annotations,
+            map.find(0).unwrap(),
+            0.0,
+            document_area.height as f32
+        ),
+        Some(NudgeResult::Rejected(_))
+    ));
+    assert_eq!(config.annotations, unchanged);
+    // Resize: the arrow's head handle moves within the sibling.
+    let map = view.annotation_map();
+    let arrow = map.find(1).unwrap();
+    let crate::annotation::AnnotationKind::Arrow { to, .. } = &config.annotations.items[1].kind
+    else {
+        unreachable!()
+    };
+    let head = crate::annotation::AnnotationSpace::anchor_to_px(map.space(), to).unwrap();
+    assert!(within(head[0], head[1], lower_right), "{head:?}");
+    let handle = map
+        .hit_resize_handle(arrow, head)
+        .expect("the arrow head's handle over the sibling");
+    assert_eq!(
+        map.resize_by(&mut config.annotations, arrow, handle, -10.0, 20.0),
+        Some(NudgeResult::Moved)
+    );
+    let crate::annotation::AnnotationKind::Arrow { to, .. } = &config.annotations.items[1].kind
+    else {
+        unreachable!()
+    };
+    let head_moved = crate::annotation::AnnotationSpace::anchor_to_px(map.space(), to).unwrap();
+    assert!(
+        (head_moved[0] - (head[0] - 10.0)).abs() < 0.5
+            && (head_moved[1] - (head[1] + 20.0)).abs() < 0.5,
+        "{head_moved:?}"
+    );
+    assert!(within(head_moved[0], head_moved[1], lower_right));
+    // The document round-trips through JSON and places the note in the
+    // same spot.
+    #[cfg(feature = "serde")]
+    {
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, config);
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), json);
+        let reread = r.create_chart_view(&Chart::new(parsed), UPPER).unwrap();
+        let map = reread.annotation_map();
+        assert_eq!(map.bounds(map.find(0).unwrap()), Some(back));
+    }
+}
+
 // The document export covers the union of every chart area; the panel
 // export keeps the parent's. Both scale with the export.
 #[test]
