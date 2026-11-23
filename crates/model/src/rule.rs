@@ -760,6 +760,8 @@ rule_kinds! {
             len: u64,
             triangles: u64,
         },
+        /// A subplot with no data area at its size holds an inset (#419).
+        InsetHostWithoutDataArea { subplot: usize, inset: usize },
     }
 }
 
@@ -1020,6 +1022,10 @@ impl RuleKind {
             } => write!(
                 f,
                 "face value column {column:?} has {len} values for {triangles} triangles"
+            ),
+            Self::InsetHostWithoutDataArea { subplot, inset } => write!(
+                f,
+                "subplot {subplot} has no data area at its size, so inset subplot {inset} placed in it has no plot to sit in"
             ),
             // Every unit rule is written by `Display` itself.
             unit => f.write_str(unit.code()),
@@ -3338,6 +3344,13 @@ mod tests {
                     triangles: 3909,
                 },
                 "face value column \"column_v\" has 3908 values for 3909 triangles",
+            ),
+            (
+                RuleKind::InsetHostWithoutDataArea {
+                    subplot: 3912,
+                    inset: 3913,
+                },
+                "subplot 3912 has no data area at its size, so inset subplot 3913 placed in it has no plot to sit in",
             ),
         ];
         for (kind, sentence) in pinned {

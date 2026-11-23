@@ -516,6 +516,7 @@ fn legacy_data_area(
                     "the explicit data area is empty once its edges are rounded to whole pixels"
                 }
                 LayoutError::Infeasible
+                | LayoutError::InsetHostWithoutDataArea { .. }
                 | LayoutError::OverflowHorizontal { .. }
                 | LayoutError::OverflowVertical { .. } => {
                     "the explicit data area leaves less room than the converted chart's titles, ticks and axis bands take"
