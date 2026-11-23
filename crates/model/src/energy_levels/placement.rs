@@ -230,8 +230,10 @@ impl LevelPlacement<'_> {
     /// near-parallel. The offsets are [`ARROW_STEP`] apart, or an
     /// arrowhead plus a margin when that is wider, squeezed evenly when the
     /// strokes are too short. Ends of other bundles on the same level are
-    /// then kept that far apart, and every end stays on its stroke. A
-    /// host's `x_offset` adds to the spread.
+    /// then kept that far apart, and every end stays on its stroke. Among
+    /// the arrows meeting a level from one side of it, those from the left
+    /// take the ends left of those from the right (#413). A host's
+    /// `x_offset` adds to the spread.
     fn arrows(
         &self,
         records: &EnergyLevelSeries,
@@ -328,8 +330,12 @@ impl LevelPlacement<'_> {
         // an arrow from the left takes the left end and two arrows meeting
         // a level never cross just before it, whatever order the records
         // list them in. The transition index breaks only a full tie.
+        // Each end also records the half its arrow leaves the level into
+        // (the sign of the rise to its other end, down the screen) and,
+        // below, its rank among the ends of that half.
         let mut x_of = vec![[f32::NAN; 2]; records.transitions.len()];
-        let mut ends: Vec<(usize, f32, f32, usize, usize)> = Vec::new();
+        type End = (usize, f32, f32, usize, usize, i8, usize);
+        let mut ends: Vec<End> = Vec::new();
         for (index, pair) in rows.iter().enumerate() {
             let Some((lower, upper)) = *pair else {
                 continue;
@@ -345,7 +351,8 @@ impl LevelPlacement<'_> {
                 } else {
                     run.signum() * f32::INFINITY
                 };
-                ends.push((row, here[0] + offset[index], heading, index, slot));
+                let half = i8::from(there[1] > here[1]) - i8::from(there[1] < here[1]);
+                ends.push((row, here[0] + offset[index], heading, index, slot, half, 0));
             }
         }
         ends.sort_by(|a, b| {
@@ -407,8 +414,40 @@ impl LevelPlacement<'_> {
                         e.1 += shift;
                     }
                 }
-                for e in &ends[start..end] {
-                    x_of[e.3][e.4] = e.1;
+                // Arrows on one side of the level (above it, or below)
+                // cross just before it when an arrow from the right takes
+                // an end left of one from the left (#413). The bundles'
+                // offsets can do that: two arrows from the right spread
+                // about the centre put one end left of an arrival from the
+                // left at the centre. So within each half the places found
+                // above are handed out again, the leftmost to the arrows
+                // from the left (a negative heading), then to the vertical
+                // ones, then to those from the right, each side keeping
+                // its order. The places themselves do not move, so they
+                // stay a gap apart, and the ends of the other half keep
+                // theirs: arrows in opposite halves never cross. Both
+                // sorts are stable, so equal keys keep the order above.
+                let side = |e: &End| i8::from(e.2 > 0.0) - i8::from(e.2 < 0.0);
+                let run = &mut ends[start..end];
+                // Each end's rank in its half, sides in order.
+                run.sort_by_key(|e| (e.5, side(e)));
+                let mut first = 0;
+                for k in 0..run.len() {
+                    if run[k].5 != run[first].5 {
+                        first = k;
+                    }
+                    run[k].6 = k - first;
+                }
+                // Each half's places from the left; the end of rank `r`
+                // takes the `r`th.
+                run.sort_by(|a, b| a.5.cmp(&b.5).then(a.1.total_cmp(&b.1)));
+                let mut first = 0;
+                for k in 0..run.len() {
+                    if run[k].5 != run[first].5 {
+                        first = k;
+                    }
+                    let (index, slot, rank) = (run[k].3, run[k].4, run[k].6);
+                    x_of[index][slot] = run[first + rank].1;
                 }
             }
             start = end;
