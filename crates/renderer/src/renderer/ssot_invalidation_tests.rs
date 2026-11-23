@@ -2639,7 +2639,11 @@ fn polar_heatmap_family() -> EditFamily {
             c.polar_mut().unwrap().inner_radius_fraction = 0.3;
         }),
         ("radial_label_angle_degrees", |c| {
-            c.polar_mut().unwrap().radial_label_angle_degrees = 45.0;
+            c.polar_mut().unwrap().radial_label_angle_degrees = Some(45.0);
+        }),
+        // #417: the layout's skip count.
+        ("radius_labels_skipped", |c| {
+            c.polar_mut().unwrap().radius_labels_skipped = Some(1);
         }),
     ];
     config_edits.extend(family_colormap_edits());

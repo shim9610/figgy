@@ -148,8 +148,17 @@ pub struct PolarOptions {
     pub interpolation: PolarInterpolation,
     /// The screen direction of the ray the radial tick labels and the radial
     /// axis line sit on, in degrees counter-clockwise from the right.
-    /// Dragging the ray (`Element::Axis(Side::Left)`) turns it.
-    pub radial_label_angle_degrees: f64,
+    /// Dragging the ray (`Element::Axis(Side::Left)`) turns it and stores
+    /// the angle. `None` (the default, omitted from JSON) is chosen by the
+    /// layout (#417): a renderer's auto layout of polar category bars
+    /// writes the ray it finds least obstructed by the drawn wedges, and
+    /// never overwrites a stored angle. While it is `None` the ray is drawn
+    /// at [`DEFAULT_RADIAL_LABEL_ANGLE_DEGREES`].
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub radial_label_angle_degrees: Option<f64>,
     /// The shape of the rings. `None` (the default, omitted from JSON)
     /// draws circles; [`GridShape::Polygon`] joins them at the categories
     /// of a categorical angle axis.
@@ -166,7 +175,22 @@ pub struct PolarOptions {
         serde(default, skip_serializing_if = "std::ops::Not::not")
     )]
     pub hide_first_radius_label: bool,
+    /// How many of the innermost drawn radius labels are skipped because
+    /// their boxes would sit over the drawn bars (#417). `None` (the
+    /// default, omitted from JSON) skips none and is filled by the same
+    /// layout that chooses the ray; a stored count is never overwritten.
+    /// `hide_first_radius_label` still hides the innermost label when this
+    /// count is 0. The rings and their ticks still draw.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub radius_labels_skipped: Option<u32>,
 }
+
+/// The ray of the radius labels while
+/// [`PolarOptions::radial_label_angle_degrees`] is `None`: straight up.
+pub const DEFAULT_RADIAL_LABEL_ANGLE_DEGREES: f64 = 90.0;
 
 /// The circle a polar chart draws into, in the chart's pixel space.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -219,7 +243,7 @@ impl PolarOptions {
     /// The screen unit vector of the radius axis ray, from the centre
     /// outward: `radial_label_angle_degrees` with y down.
     pub fn ray_direction(&self) -> [f32; 2] {
-        let a = self.radial_label_angle_degrees.to_radians();
+        let a = self.ray_degrees().to_radians();
         [a.cos() as f32, -(a.sin() as f32)]
     }
 
@@ -230,11 +254,26 @@ impl PolarOptions {
         [d[1], -d[0]]
     }
 
+    /// The screen direction the ray is drawn at, in degrees: the stored
+    /// angle, or [`DEFAULT_RADIAL_LABEL_ANGLE_DEGREES`] while none is.
+    pub fn ray_degrees(&self) -> f64 {
+        self.radial_label_angle_degrees
+            .unwrap_or(DEFAULT_RADIAL_LABEL_ANGLE_DEGREES)
+    }
+
+    /// The innermost drawn radius labels that are not drawn: the layout's
+    /// skipped count, and at least the first when `hide_first_radius_label`
+    /// is set.
+    pub fn hidden_inner_radius_labels(&self) -> u32 {
+        self.radius_labels_skipped
+            .unwrap_or(0)
+            .max(u32::from(self.hide_first_radius_label))
+    }
+
     /// Turn the ray by `degrees` counter-clockwise, keeping the angle in
-    /// `0..360`.
+    /// `0..360`. The turned angle is stored, so the layout keeps it.
     pub fn turn_ray(&mut self, degrees: f64) {
-        self.radial_label_angle_degrees =
-            (self.radial_label_angle_degrees + degrees).rem_euclid(360.0);
+        self.radial_label_angle_degrees = Some((self.ray_degrees() + degrees).rem_euclid(360.0));
     }
 
     /// The screen offset of the radius tick labels. In polar mode
@@ -328,7 +367,7 @@ impl PolarOptions {
 
     /// Validate against the axes the coordinate system reads.
     pub fn validate(&self, config: &Config) -> Result<(), crate::RuleKind> {
-        if !self.zero_angle_degrees.is_finite() || !self.radial_label_angle_degrees.is_finite() {
+        if !self.zero_angle_degrees.is_finite() || !self.ray_degrees().is_finite() {
             return Err(crate::RuleKind::PolarAngles);
         }
         if !self.inner_radius_fraction.is_finite()
@@ -698,9 +737,10 @@ mod tests {
             sector: Some([0.0, 3.0]),
             inner_radius_fraction: 0.2,
             interpolation: PolarInterpolation::Arc { pieces: 12 },
-            radial_label_angle_degrees: 45.0,
+            radial_label_angle_degrees: Some(45.0),
             grid_shape: Some(GridShape::Polygon),
             hide_first_radius_label: true,
+            radius_labels_skipped: Some(2),
         }));
         let text = serde_json::to_string(&polar).unwrap();
         let back: Config = serde_json::from_str(&text).unwrap();
@@ -715,6 +755,29 @@ mod tests {
             "{default_text}"
         );
         assert!(text.contains(r#""hide_first_radius_label":true"#), "{text}");
+        // #417: an earlier release always wrote the ray, which reads as an
+        // explicit angle and writes back unchanged; the layout's two values
+        // are omitted while `None`.
+        let stored: PolarOptions =
+            serde_json::from_value(serde_json::json!({ "radial_label_angle_degrees": 67.5 }))
+                .unwrap();
+        assert_eq!(stored.radial_label_angle_degrees, Some(67.5));
+        assert_eq!(stored.radius_labels_skipped, None);
+        let text = serde_json::to_string(&stored).unwrap();
+        assert!(
+            text.contains(r#""radial_label_angle_degrees":67.5"#),
+            "{text}"
+        );
+        assert!(!text.contains("radius_labels_skipped"), "{text}");
+        assert!(
+            !default_text.contains("radial_label_angle_degrees"),
+            "{default_text}"
+        );
+        assert_eq!(crate::defaults::polar_options().ray_degrees(), 90.0);
+        // A drag turns the drawn ray and stores it, so the layout keeps it.
+        let mut dragged = crate::defaults::polar_options();
+        dragged.turn_ray(-100.0);
+        assert_eq!(dragged.radial_label_angle_degrees, Some(350.0));
         let circle: PolarOptions =
             serde_json::from_value(serde_json::json!({ "grid_shape": "Circle" })).unwrap();
         assert_eq!(circle.grid_shape, Some(GridShape::Circle));

@@ -131,9 +131,10 @@ pub(crate) fn polar_options() -> PolarOptions {
         sector: None,
         inner_radius_fraction: 0.0,
         interpolation: PolarInterpolation::Chord,
-        radial_label_angle_degrees: 90.0,
+        radial_label_angle_degrees: None,
         grid_shape: None,
         hide_first_radius_label: false,
+        radius_labels_skipped: None,
     }
 }
 

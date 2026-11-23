@@ -197,6 +197,9 @@ impl FiggyChart {
         // A range link exit fit whose gather has completed writes its
         // exits (#357): the series edit makes this frame draw them.
         self.renderer.service_link_exit_fits().map_err(js_err)?;
+        // A radius label fit whose gather has completed writes the ray
+        // (#417): the config edit makes this frame draw it.
+        self.renderer.service_radial_label_fits().map_err(js_err)?;
         let current_stamp = self.render_stamp()?;
         let renderer_dirty = current_stamp.needs_draw_since(self.last_presented_stamp.as_ref());
         let raster_dirty = current_stamp.needs_raster_since(self.last_presented_stamp.as_ref());
