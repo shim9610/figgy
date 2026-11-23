@@ -1275,3 +1275,240 @@ fn rendered_panels_match_the_panel_layers_through_every_edit() {
     }
     drop(fonts);
 }
+
+/// `document()` with subplot 2, an inset too small for a data area in the
+/// parent's plot, and a note in the parent's plot on the annotation layer.
+fn tiny_inset_document() -> (Config, Rect) {
+    use crate::annotation::{Anchor, Annotation, AnnotationKind};
+    let mut config = document();
+    let plot = config.data_area().unwrap().0;
+    let mut inset = chart(
+        Rect {
+            x: plot.x + plot.width - 40,
+            y: plot.y + 4,
+            width: 30,
+            height: 24,
+        },
+        (0.0, 1.0),
+    );
+    inset.chart_title.visible = false;
+    inset.background = Some(Color {
+        r: 0.2,
+        g: 0.4,
+        b: 0.9,
+        a: 1.0,
+    });
+    let inset_area = inset.chart_area.0;
+    config.subplots.push(Subplot::new(inset, &[]));
+    config.annotations.items = vec![Annotation::new(AnnotationKind::Text {
+        anchor: Anchor::Ratio { x: 0.25, y: 0.5 },
+        text: RichText::plain("note", Color::BLACK, 10.0, ""),
+        box_style: Some(Default::default()),
+        align: Default::default(),
+    })];
+    (config, inset_area)
+}
+
+/// `config` drawn on the display without registering it (a chart the
+/// registry refuses, such as one whose inset has no data area, still draws
+/// through `prepare`, like an export of it).
+fn unregistered_frame(config: &Config) -> Vec<u8> {
+    let mut r = renderer();
+    let declarations = series();
+    let styles: Vec<_> = declarations
+        .iter()
+        .map(|declaration| r.create_style_for_series(declaration).unwrap())
+        .collect();
+    let drawn: Vec<_> = declarations
+        .iter()
+        .zip(&styles)
+        .map(|(config, style)| Series { config, style })
+        .collect();
+    let chart = Chart::new(config.clone());
+    let mut view = r.create_chart_view(&chart, config.chart_area.0).unwrap();
+    let prepared = r
+        .prepare(&mut [ChartDrawItem {
+            view: &mut view,
+            chart: &chart,
+            series: &drawn,
+        }])
+        .unwrap();
+    paint_frame_pixels(&r, &prepared, 1)
+}
+
+/// Whether the 320 x 240 document image `rgba`, drawn at `scale`, differs
+/// from `other` inside `area` (logical pixels).
+fn differs_in(rgba: &[u8], other: &[u8], area: Rect, scale: u32) -> bool {
+    let width = 320 * scale;
+    (area.y * scale..(area.y + area.height) * scale).any(|y| {
+        (area.x * scale..(area.x + area.width) * scale).any(|x| {
+            let i = ((y * width + x) * 4) as usize;
+            rgba[i..i + 4] != other[i..i + 4]
+        })
+    })
+}
+
+// #419: a layered document whose inset is too small for a data area draws
+// every panel. The inset draws its frame and decorations without data, as a
+// single-layer chart that small does; the root, the other subplots and the
+// annotation overlay are drawn as they are without the inset: on the
+// display, in the PNG export at 1x and 2x and in the vector parts.
+#[test]
+fn a_layered_document_with_a_tiny_inset_draws_every_panel() {
+    let fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (config, inset_area) = tiny_inset_document();
+    assert!(config.subplot_config(2).unwrap().data_area().is_err());
+    let panels = expand_for_render(&config).unwrap();
+    assert_eq!(panels.len(), config.panel_layers().len());
+    assert_eq!(panels.last().unwrap().chart_area.0, inset_area);
+    let mut without_inset = config.clone();
+    without_inset.subplots.truncate(2);
+    let mut without_note = config.clone();
+    without_note.annotations.items.clear();
+    let note = Rect {
+        x: 20,
+        y: 20,
+        width: 120,
+        height: 80,
+    };
+    // Every pixel outside the inset is the document's without it; the inset
+    // draws inside its area; the note draws.
+    let outside_inset = |image: &[u8], plain: &[u8], scale: u32, context: &str| {
+        let width = 320 * scale;
+        for (i, (p, q)) in image.chunks_exact(4).zip(plain.chunks_exact(4)).enumerate() {
+            let (x, y) = (i as u32 % width / scale, i as u32 / width / scale);
+            let inside = x >= inset_area.x
+                && y >= inset_area.y
+                && x < inset_area.x + inset_area.width
+                && y < inset_area.y + inset_area.height;
+            assert!(
+                inside || p == q,
+                "{context}: ({x}, {y}) differs outside the inset"
+            );
+        }
+        assert!(
+            differs_in(image, plain, inset_area, scale),
+            "{context}: the inset drew nothing"
+        );
+    };
+    // The registry refuses the document with a typed error, as it refuses a
+    // single-layer chart without a data area; drawing and exporting it
+    // draw every panel.
+    let mut r = renderer();
+    assert!(matches!(
+        r.register_chart(config.clone(), series()),
+        Err(FiggyError::InvalidConfig {
+            field: "layout",
+            kind: crate::RuleKind::LayoutDataAreaEmpty,
+        })
+    ));
+    let display = unregistered_frame(&config);
+    let plain = unregistered_frame(&without_inset);
+    assert_eq!(plain, fresh_frame(&without_inset));
+    outside_inset(&display, &plain, 1, "display");
+    let mut root_only = config.clone();
+    root_only.subplots.clear();
+    assert!(
+        display != unregistered_frame(&root_only),
+        "display: only the root panel drew"
+    );
+    assert!(
+        differs_in(&display, &unregistered_frame(&without_note), note, 1),
+        "display: the note is missing"
+    );
+
+    let export = |r: &mut Renderer, config: &Config, scale: f32| {
+        r.export_rgba(
+            crate::ExportSource::chart(&Chart::new(config.clone()), &series()),
+            crate::ExportOptions::document(scale),
+        )
+        .block_on()
+        .unwrap()
+        .rgba
+    };
+    for scale in [1u32, 2] {
+        let image = export(&mut r, &config, scale as f32);
+        let plain = export(&mut r, &without_inset, scale as f32);
+        outside_inset(&image, &plain, scale, &format!("{scale}x export"));
+        assert!(
+            image[(320 * 120 * scale * scale * 4) as usize..]
+                .chunks_exact(4)
+                .any(|p| p[3] != 0),
+            "{scale}x export: the lower subplots are missing"
+        );
+        assert!(
+            image != export(&mut r, &root_only, scale as f32),
+            "{scale}x export: only the root panel drew"
+        );
+        assert!(
+            differs_in(
+                &image,
+                &export(&mut r, &without_note, scale as f32),
+                note,
+                scale
+            ),
+            "{scale}x export: the note is missing"
+        );
+        // The SVG and the PDF: the files of the whole document, written
+        // from the parts below.
+        let options = crate::ExportOptions::document(scale as f32);
+        let svg = |r: &mut Renderer, config: &Config| {
+            r.export_svg(
+                crate::ExportSource::chart(&Chart::new(config.clone()), &series()),
+                options,
+            )
+            .block_on()
+            .unwrap()
+        };
+        let pdf = |r: &mut Renderer, config: &Config| {
+            r.export_pdf(
+                crate::ExportSource::chart(&Chart::new(config.clone()), &series()),
+                options,
+            )
+            .block_on()
+            .unwrap()
+        };
+        let text = svg(&mut r, &config);
+        assert!(
+            text.contains(&format!("viewBox=\"0 0 {} {}\"", 320 * scale, 240 * scale)),
+            "{scale}x SVG: not the document's size"
+        );
+        assert_ne!(text, svg(&mut r, &root_only), "{scale}x SVG");
+        assert_ne!(text, svg(&mut r, &without_inset), "{scale}x SVG");
+        assert_ne!(text, svg(&mut r, &without_note), "{scale}x SVG");
+        let document = pdf(&mut r, &config);
+        assert!(document.starts_with(b"%PDF-"));
+        assert_ne!(document, pdf(&mut r, &root_only), "{scale}x PDF");
+        assert_ne!(document, pdf(&mut r, &without_inset), "{scale}x PDF");
+        assert_ne!(document, pdf(&mut r, &without_note), "{scale}x PDF");
+        // The vector parts: text in the lower subplots' areas.
+        let mut origins = Vec::new();
+        crate::written_document_parts(
+            &Chart::new(config.clone()),
+            &series(),
+            scale as f32,
+            &mut |part| {
+                if let crate::WrittenPart::Text { origin, .. } = part {
+                    origins.push(origin);
+                }
+            },
+        )
+        .unwrap();
+        for index in 0..2 {
+            let area = config.subplots[index].config.chart_area.0;
+            let s = scale as f32;
+            assert!(
+                origins.iter().any(|[x, y]| {
+                    *x >= area.x as f32 * s
+                        && *y >= area.y as f32 * s
+                        && *x < (area.x + area.width) as f32 * s
+                        && *y < (area.y + area.height) as f32 * s
+                }),
+                "{scale}x vector: no text in subplot {index}"
+            );
+        }
+    }
+    drop(fonts);
+}
