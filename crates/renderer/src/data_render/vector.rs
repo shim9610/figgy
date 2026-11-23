@@ -554,7 +554,7 @@ pub struct ColumnVectorLayer<'a> {
     /// params.
     pub vector_bg: wgpu::BindGroup,
     /// Keeps the group-2 buffers' lump charge alive while anything can draw.
-    pub charge: crate::gpu_memory::SharedCharge,
+    pub charge: std::borrow::Cow<'a, crate::gpu_memory::SharedCharge>,
     /// Arrows to issue; zero skips the draw. Unread with `indirect`.
     pub count: u32,
     /// [`VectorInput::Path`]: the `DrawIndirect` arguments the arc scan's

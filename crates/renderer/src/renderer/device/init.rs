@@ -214,6 +214,7 @@ impl Renderer {
             #[cfg(target_arch = "wasm32")]
             export_compile_queue: None,
             frame_complete: true,
+            frame_residency: Vec::new(),
             #[cfg(target_arch = "wasm32")]
             frame_settled: 0,
             #[cfg(test)]
@@ -391,6 +392,7 @@ impl Renderer {
             #[cfg(target_arch = "wasm32")]
             export_compile_queue: None,
             frame_complete: true,
+            frame_residency: Vec::new(),
             #[cfg(target_arch = "wasm32")]
             frame_settled: 0,
             #[cfg(test)]

@@ -540,7 +540,7 @@ impl TargetPipelines {
     }
     fn merge_preparation(&mut self, other: Self) {
         if self.ternary_region_scan.is_none() {
-            self.ternary_region_scan = other.ternary_region_scan.clone();
+            self.ternary_region_scan = other.ternary_region_scan;
         }
         for (slot, other) in self.precise.iter_mut().zip(other.precise) {
             if slot.is_none() {

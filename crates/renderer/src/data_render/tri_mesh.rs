@@ -138,7 +138,7 @@ pub struct ColumnTriMeshLayer<'a> {
     pub style_bg: wgpu::BindGroup,
     pub field_bg: wgpu::BindGroup,
     /// Keeps the group 2 buffers' lump charge alive.
-    pub charge: crate::gpu_memory::SharedCharge,
+    pub charge: std::borrow::Cow<'a, crate::gpu_memory::SharedCharge>,
     /// The triangles to instance; 0 skips the draw.
     pub triangles: u32,
 }

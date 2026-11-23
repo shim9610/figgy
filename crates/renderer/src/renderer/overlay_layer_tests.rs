@@ -456,7 +456,7 @@ fn pick_inputs_follow_the_active_layer() {
         ..
     } = active_layer_pick_inputs(&config, &series).unwrap();
     let expansion = config.expand().unwrap();
-    assert_eq!(panel, expansion.panels[0].config);
+    assert_eq!(*panel, expansion.panels[0].config);
     assert_eq!(subset, vec![declaration("s0", "x", "a")]);
 
     config.set_active_layer(LayerRef::Overlay(1));
@@ -465,7 +465,7 @@ fn pick_inputs_follow_the_active_layer() {
         series: subset,
         ..
     } = active_layer_pick_inputs(&config, &series).unwrap();
-    assert_eq!(panel, expansion.panels[2].config);
+    assert_eq!(*panel, expansion.panels[2].config);
     assert_eq!(panel.left_y.min, -1.5);
     assert_eq!(panel.left_y.max, 1.5);
     assert_eq!(panel.data_area().unwrap(), expansion.data_area);
@@ -477,7 +477,7 @@ fn pick_inputs_follow_the_active_layer() {
         series: subset,
         ..
     } = active_layer_pick_inputs(&config, &series).unwrap();
-    assert_eq!(panel, expansion.panels[0].config);
+    assert_eq!(*panel, expansion.panels[0].config);
     assert_eq!(subset.len(), 1);
 
     // A document without overlays is its own panel.
@@ -487,7 +487,7 @@ fn pick_inputs_follow_the_active_layer() {
         series: subset,
         ..
     } = active_layer_pick_inputs(&plain, &series).unwrap();
-    assert_eq!(panel, plain);
+    assert_eq!(*panel, plain);
     assert_eq!(subset, series);
 }
 

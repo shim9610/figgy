@@ -87,10 +87,7 @@ impl Renderer {
         // The layer group at the cursor: over a subplot (on the base layer)
         // the subplot drawn there, otherwise the active layer's group.
         let active = subplot_route(&state.config, &displayed, request.canvas_position_px)
-            .map_or_else(
-                || state.config.active_layer(),
-                |config| config.active_layer(),
-            );
+            .unwrap_or_else(|| state.config.active_layer());
         let (first, overlays, subplot) = match active {
             crate::LayerRef::Subplot(index) | crate::LayerRef::SubplotOverlay(index, _) => (
                 crate::LayerRef::Subplot(index),
@@ -143,9 +140,7 @@ impl Renderer {
             // The group's first layer is planned as the panel draws it: the
             // base panel when the document fell back to it.
             let layer = drawn_as.unwrap_or(layer);
-            let mut shown = displayed.clone();
-            shown.active_layer = layer;
-            let inputs = active_layer_pick_inputs(&shown, &series)?;
+            let inputs = layer_pick_inputs(&displayed, layer, &series)?;
             let plan = PickChartPlan::new(&inputs.panel, &inputs.series)?;
             let first_member = inputs.series.len() - inputs.member_count();
             for descriptor in plan.descriptors {
@@ -157,7 +152,7 @@ impl Renderer {
                     .position(|item| item.series_id == descriptor.series_id);
                 let panel = position
                     .and_then(|position| position.checked_sub(first_member))
-                    .map_or(&inputs.panel, |member| &inputs.member_panels[member]);
+                    .map_or(&*inputs.panel, |member| &inputs.member_panels[member]);
                 let transform = data_render::scatter_transform_from_config(panel);
                 needs_full |= transform.needs_full_shaders();
                 let (moved, _) = pick_request_outside_gaps(panel, request);

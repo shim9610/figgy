@@ -277,8 +277,8 @@ impl PrepareContext<'_> {
                     transform_bg: &view.transform_bg,
                     region_bg,
                     count: params.count,
-                    charge,
-                    ring_charge,
+                    charge: std::borrow::Cow::Owned(charge),
+                    ring_charge: std::borrow::Cow::Owned(ring_charge),
                 })
             }
             _ => None,

@@ -1070,12 +1070,12 @@ impl FiggyChart {
     /// After a press on an annotation the delta moves that item (or the
     /// pressed handle) through the frame's anchor space.
     pub fn on_move(&mut self, dx: f32, dy: f32) -> Result<(), JsValue> {
-        if let Some((series_id, drag)) = self.feynman_pointer.clone() {
+        if let Some((series_id, drag)) = &self.feynman_pointer {
             if self.dragging && dx.is_finite() && dy.is_finite() {
                 let (dx, dy) = self.display_delta_to_document(dx, dy)?;
                 let moved = self
                     .renderer
-                    .drag_feynman(self.chart_id, &series_id, drag, dx, dy)
+                    .drag_feynman(self.chart_id, series_id, *drag, dx, dy)
                     .map_err(js_err)?;
                 if moved == NudgeResult::Moved {
                     self.request_host_redraw();
@@ -1103,10 +1103,10 @@ impl FiggyChart {
             return Ok(());
         };
         let (dx, dy) = self.display_delta_to_document(dx, dy)?;
-        let mut config = self.chart_config()?.clone();
         // Containment is measured on the drawn parts, with the font the
-        // document draws with.
-        let measure = CpuTextMeasure::for_style(&config.draw_style);
+        // document draws with. The document is copied only by a gesture
+        // that edits it.
+        let measure = CpuTextMeasure::for_style(&self.chart_config()?.draw_style);
         if let Some(handle) = self.resizing {
             let at = self.drag_pointer;
             self.drag_pointer = [at[0] + dx, at[1] + dy];
@@ -1122,13 +1122,17 @@ impl FiggyChart {
                 // takes the groups' sources (#271): the gesture proposes the
                 // plot rect and the host applies it on release
                 // (`take_plot_resize_request`, `resize_monotonic`).
-                let mut proposed = self.plot_resize.take().unwrap_or(config);
+                let mut proposed = match self.plot_resize.take() {
+                    Some(proposed) => proposed,
+                    None => self.chart_config()?.clone(),
+                };
                 let _ = rz.resize_from(&mut proposed, &measure, handle, at, dx, dy);
                 self.plot_resize = Some(proposed);
-            } else if rz.resize_from(&mut config, &measure, handle, at, dx, dy)
-                == NudgeResult::Moved
-            {
-                self.drag_chart_config(config)?;
+            } else {
+                let mut config = self.chart_config()?.clone();
+                if rz.resize_from(&mut config, &measure, handle, at, dx, dy) == NudgeResult::Moved {
+                    self.drag_chart_config(config)?;
+                }
             }
             return Ok(());
         }
@@ -1137,6 +1141,7 @@ impl FiggyChart {
         {
             let at = self.drag_pointer;
             self.drag_pointer = [at[0] + dx, at[1] + dy];
+            let mut config = self.chart_config()?.clone();
             if drag.drag_from(&mut config, &measure, at, dx, dy) == NudgeResult::Moved {
                 self.drag_chart_config(config)?;
             }

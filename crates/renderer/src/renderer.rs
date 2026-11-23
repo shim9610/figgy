@@ -493,6 +493,9 @@ pub struct Renderer {
     /// series it was handed (#299): false while a series waited for its
     /// pipelines' background compile. Always true natively.
     frame_complete: bool,
+    /// Reused per prepared frame: whether each series of each item is
+    /// drawn, flattened in item and series order. Holds no data.
+    frame_residency: Vec<bool>,
     /// The queue's settled count when the last screen frame was prepared:
     /// a compile settled since then may let a left-out series draw.
     #[cfg(target_arch = "wasm32")]

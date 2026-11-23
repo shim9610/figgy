@@ -104,7 +104,9 @@ pub fn create_ternary_region_bind_group_layout(device: &wgpu::Device) -> wgpu::B
 }
 
 /// The ring-start scan's compute pipelines and their group 2 layout: the
-/// pool, the level being written, the level above and the params.
+/// pool, the level being written, the level above and the params. The
+/// handles are reference counted by wgpu, so a clone shares them.
+#[derive(Clone)]
 pub struct RingScanPipelines {
     bgl: wgpu::BindGroupLayout,
     init: wgpu::ComputePipeline,
@@ -493,9 +495,9 @@ pub struct ColumnTernaryRegionLayer<'a> {
     pub transform_bg: &'a wgpu::BindGroup,
     pub region_bg: wgpu::BindGroup,
     pub count: u32,
-    pub charge: crate::gpu_memory::SharedCharge,
+    pub charge: std::borrow::Cow<'a, crate::gpu_memory::SharedCharge>,
     /// The ring starts' charge, held while the group binds them.
-    pub ring_charge: crate::gpu_memory::SharedCharge,
+    pub ring_charge: std::borrow::Cow<'a, crate::gpu_memory::SharedCharge>,
 }
 
 /// Draw `layer` into a pass with the stencil attachment: `count` edge

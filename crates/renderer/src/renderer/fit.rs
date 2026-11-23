@@ -2353,6 +2353,33 @@ impl LinkExitSpace {
     }
 }
 
+/// The series a link exit fit writes into: read throughout, edited only
+/// where an exit is written.
+pub(in crate::renderer) trait LinkExitSeries {
+    fn read(&self) -> &[SeriesConfig];
+    fn edit(&mut self, index: usize) -> &mut SeriesConfig;
+}
+
+impl LinkExitSeries for [SeriesConfig] {
+    fn read(&self) -> &[SeriesConfig] {
+        self
+    }
+
+    fn edit(&mut self, index: usize) -> &mut SeriesConfig {
+        &mut self[index]
+    }
+}
+
+impl LinkExitSeries for std::borrow::Cow<'_, [SeriesConfig]> {
+    fn read(&self) -> &[SeriesConfig] {
+        self
+    }
+
+    fn edit(&mut self, index: usize) -> &mut SeriesConfig {
+        &mut self.to_mut()[index]
+    }
+}
+
 impl ResolvedLinkExitFit {
     /// Write the exit the layout chooses
     /// ([`crate::data_config::RangeLinkSeries::chosen_exit_offset`]) into
@@ -2361,6 +2388,16 @@ impl ResolvedLinkExitFit {
     /// gather was begun with, or the same document laid out again: a link
     /// whose rows changed since, or that has an exit now, is left as it is.
     pub fn write(self, config: &Config, series: &mut [SeriesConfig]) -> Result<LinkExitWrite> {
+        self.write_into(config, series)
+    }
+
+    /// [`Self::write`] into `series`, which is edited only where an exit is
+    /// written: a borrowed list is copied on its first write.
+    pub(in crate::renderer) fn write_into<S: LinkExitSeries + ?Sized>(
+        self,
+        config: &Config,
+        series: &mut S,
+    ) -> Result<LinkExitWrite> {
         let panels = super::expand_for_render(config)?;
         let mut out = LinkExitWrite::default();
         // The links the gather holds, in its record order: the unset links
@@ -2385,7 +2422,7 @@ impl ResolvedLinkExitFit {
         };
         let mut read = |pred: u32, succ: u32, ends: Option<crate::gpu_extent::LinkEnds>| {
             let found = loop {
-                let Some(found) = next_unset(series, position) else {
+                let Some(found) = next_unset(series.read(), position) else {
                     break None;
                 };
                 position = (found.0, found.1 + 1);
@@ -2398,7 +2435,7 @@ impl ResolvedLinkExitFit {
                 out.unset += 1;
                 return;
             };
-            let Some(links) = series[k].render_type.range_links() else {
+            let Some(links) = series.read()[k].render_type.range_links() else {
                 return;
             };
             let link = links.links[j];
@@ -2416,9 +2453,12 @@ impl ResolvedLinkExitFit {
                 .flatten()
                 .and_then(|ends| Some((px(ends.pred)?, px(ends.succ)?)))
                 .and_then(|(a, b)| links.chosen_exit_offset(a, b));
-            match (offset, series[k].render_type.range_links_mut()) {
-                (Some(offset), Some(links)) => {
-                    links.links[j].exit_fraction = Some(offset);
+            let writes = offset.is_some() && series.read()[k].render_type.range_links().is_some();
+            match (offset, writes) {
+                (Some(offset), true) => {
+                    if let Some(links) = series.edit(k).render_type.range_links_mut() {
+                        links.links[j].exit_fraction = Some(offset);
+                    }
                     out.written += 1;
                 }
                 _ => out.unset += 1,
@@ -2701,10 +2741,11 @@ impl Renderer {
                     continue;
                 }
             };
-            let config = state.config.clone();
-            let mut series = state.series.clone();
-            let write = resolved.write(&config, &mut series)?;
+            // The series are copied only when an exit is written.
+            let mut series = std::borrow::Cow::Borrowed(state.series.as_slice());
+            let write = resolved.write_into(&state.config, &mut series)?;
             if write.written > 0 {
+                let series = series.into_owned();
                 self.set_chart_series_unreported(id, series)?;
                 changed = true;
             }

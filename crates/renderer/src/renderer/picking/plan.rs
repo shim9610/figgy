@@ -18,13 +18,15 @@ pub(in crate::renderer) struct PickChartPlan {
 /// panels kept in place, however many members there are (#107): the pick
 /// tests each member where its panel draws it, from the top of the stack
 /// first, and the layer's own panel last (`GpuPickEngine::pick_with_arcs`).
-pub(in crate::renderer) struct LayerPickInputs {
-    pub(in crate::renderer) panel: Config,
-    pub(in crate::renderer) series: Vec<SeriesConfig>,
+///
+/// A document without layers borrows its config and series.
+pub(in crate::renderer) struct LayerPickInputs<'a> {
+    pub(in crate::renderer) panel: std::borrow::Cow<'a, Config>,
+    pub(in crate::renderer) series: std::borrow::Cow<'a, [SeriesConfig]>,
     pub(in crate::renderer) member_panels: Vec<Config>,
 }
 
-impl LayerPickInputs {
+impl LayerPickInputs<'_> {
     /// The number of members at the end of `series`.
     pub(in crate::renderer) fn member_count(&self) -> usize {
         self.member_panels.len()
@@ -37,36 +39,71 @@ impl LayerPickInputs {
     }
 }
 
-/// The config a base-layer pick at `cursor` (in `displayed`'s pixels) runs
-/// on: `config` with the subplot drawn on top there as its active layer
-/// ([`Config::subplot_at`], #205). `None` off every subplot, or on any
-/// other active layer, where the host has chosen the layer itself.
+/// The layer a base-layer pick at `cursor` (in `displayed`'s pixels) runs
+/// on: the subplot drawn on top there ([`Config::subplot_at`], #205), made
+/// `config`'s active layer. `None` off every subplot, or on any other active
+/// layer, where the host has chosen the layer itself.
 pub(in crate::renderer) fn subplot_route(
     config: &Config,
     displayed: &Config,
     cursor: [f32; 2],
-) -> Option<Config> {
+) -> Option<crate::LayerRef> {
     if config.active_layer() != crate::LayerRef::Base {
         return None;
     }
     let index = displayed.subplot_at(cursor[0], cursor[1])?;
-    let mut routed = config.clone();
-    routed.active_layer = crate::LayerRef::Subplot(index);
-    Some(routed)
+    Some(crate::LayerRef::Subplot(index))
 }
 
-pub(in crate::renderer) fn active_layer_pick_inputs(
-    config: &Config,
-    series: &[SeriesConfig],
-) -> std::result::Result<LayerPickInputs, crate::gpu_pick::GpuPickError> {
+pub(in crate::renderer) fn active_layer_pick_inputs<'a>(
+    config: &'a Config,
+    series: &'a [SeriesConfig],
+) -> std::result::Result<LayerPickInputs<'a>, crate::gpu_pick::GpuPickError> {
     if !is_layered(config) {
         return Ok(LayerPickInputs {
-            panel: config.clone(),
-            series: series.to_vec(),
+            panel: std::borrow::Cow::Borrowed(config),
+            series: std::borrow::Cow::Borrowed(series),
             member_panels: Vec::new(),
         });
     }
-    let layer = match config.active_layer() {
+    layered_pick_inputs(config, config.active_layer(), series)
+}
+
+/// [`active_layer_pick_inputs`] of `config` with `layer` as its active
+/// layer, without copying the document to set it. `layer` is one `config`
+/// has: no out-of-range fallback is applied.
+pub(in crate::renderer) fn layer_pick_inputs<'a>(
+    config: &'a Config,
+    layer: crate::LayerRef,
+    series: &'a [SeriesConfig],
+) -> std::result::Result<LayerPickInputs<'a>, crate::gpu_pick::GpuPickError> {
+    if !is_layered(config) {
+        // The panel is the document with `layer` active, copied only when
+        // that changes it.
+        let panel = if config.active_layer == layer {
+            std::borrow::Cow::Borrowed(config)
+        } else {
+            let mut panel = config.clone();
+            panel.active_layer = layer;
+            std::borrow::Cow::Owned(panel)
+        };
+        return Ok(LayerPickInputs {
+            panel,
+            series: std::borrow::Cow::Borrowed(series),
+            member_panels: Vec::new(),
+        });
+    }
+    layered_pick_inputs(config, layer, series)
+}
+
+/// The pick inputs of `layer` of a layered `config`. Expansion ignores the
+/// document's own active layer, so `layer` stands in for it.
+fn layered_pick_inputs<'a>(
+    config: &'a Config,
+    layer: crate::LayerRef,
+    series: &'a [SeriesConfig],
+) -> std::result::Result<LayerPickInputs<'a>, crate::gpu_pick::GpuPickError> {
+    let layer = match layer {
         crate::LayerRef::Annotations => crate::LayerRef::Base,
         layer => layer,
     };
@@ -102,8 +139,8 @@ pub(in crate::renderer) fn active_layer_pick_inputs(
         true
     });
     Ok(LayerPickInputs {
-        panel,
-        series: subset,
+        panel: std::borrow::Cow::Owned(panel),
+        series: std::borrow::Cow::Owned(subset),
         member_panels: panels,
     })
 }
