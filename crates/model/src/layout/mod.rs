@@ -45,11 +45,23 @@ pub enum Side {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LayoutError {
-    OverflowHorizontal { required: f32, available: u32 },
-    OverflowVertical { required: f32, available: u32 },
+    OverflowHorizontal {
+        required: f32,
+        available: u32,
+    },
+    OverflowVertical {
+        required: f32,
+        available: u32,
+    },
     EmptyDataArea,
     TargetOutOfChartArea,
     Infeasible,
+    /// Subplot `subplot` has no data area at its size and subplot `inset`
+    /// is placed in it (#419): the inset has no plot to sit in.
+    InsetHostWithoutDataArea {
+        subplot: usize,
+        inset: usize,
+    },
 }
 
 /// How much of the data area, in pixels along each axis, must stay inside the

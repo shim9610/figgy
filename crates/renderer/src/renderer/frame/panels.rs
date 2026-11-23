@@ -202,10 +202,12 @@ pub(crate) fn expand_for_render(config: &Config) -> Result<Vec<Config>> {
             .into_iter()
             .map(|panel| panel.config)
             .collect()),
-        // No data area at this size (a preview squeezed below its margins):
-        // a single-layer chart draws its chrome and no data there, so a
-        // layered one draws its base panel the same way instead of failing
-        // the frame. The next larger size expands normally again.
+        // No data area for the parent at this size (a preview squeezed
+        // below its margins): a single-layer chart draws its chrome and no
+        // data there, so a layered one draws its base panel the same way
+        // instead of failing the frame. The next larger size expands
+        // normally again. A squeezed subplot never lands here: `expand`
+        // draws its panels unaligned, or refuses it by name below (#419).
         Err(
             crate::layout::LayoutError::OverflowHorizontal { .. }
             | crate::layout::LayoutError::OverflowVertical { .. }
@@ -217,6 +219,14 @@ pub(crate) fn expand_for_render(config: &Config) -> Result<Vec<Config>> {
             panel.line_offsets = None;
             panel.active_layer = crate::LayerRef::Base;
             Ok(vec![panel])
+        }
+        // A squeezed subplot holding an inset is refused by name (#419),
+        // never drawn as the base panel alone.
+        Err(crate::layout::LayoutError::InsetHostWithoutDataArea { subplot, inset }) => {
+            Err(FiggyError::InvalidConfig {
+                field: "subplots",
+                kind: crate::RuleKind::InsetHostWithoutDataArea { subplot, inset },
+            })
         }
         Err(crate::layout::LayoutError::TargetOutOfChartArea) => Err(FiggyError::InvalidConfig {
             field: "subplots",

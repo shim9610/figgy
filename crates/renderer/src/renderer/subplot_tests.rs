@@ -1812,3 +1812,181 @@ fn a_layered_document_with_a_tiny_inset_draws_every_panel() {
     }
     drop(fonts);
 }
+
+/// `tiny_inset_document()` with an overlay layer on the inset (#419): its
+/// own Y axis on the right and a legend.
+fn tiny_layered_inset_document() -> (Config, Rect) {
+    let (mut config, inset_area) = tiny_inset_document();
+    let mut overlay = OverlayLayer::default();
+    overlay.y_axis.min = 0.0;
+    overlay.y_axis.max = 1.0;
+    overlay.y_axis.major_spacing = 0.5;
+    overlay.y_axis.out_margin = 18.0;
+    overlay.y_axis.label_style.font_size = 9.0;
+    overlay.y_axis.title_option.visible = false;
+    config.subplots[2].config.overlays.push(overlay);
+    (config, inset_area)
+}
+
+// #419: an inset too small for a data area that has an overlay layer of
+// its own draws both of its panels, unaligned, like the single-panel inset:
+// the export frame holds one panel per entry of `panel_layers`, the
+// overlay's panel adds no ink without a plot (as the base's axes draw none),
+// and the root, the other subplots and the note draw as without the inset,
+// on the display and in the PNG export at 1x and 2x.
+#[test]
+fn a_tiny_inset_with_an_overlay_draws_every_panel() {
+    let fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (config, inset_area) = tiny_layered_inset_document();
+    let (single, _) = tiny_inset_document();
+    let layers = config.panel_layers();
+    assert_eq!(
+        layers[layers.len() - 2..],
+        [LayerRef::Subplot(2), LayerRef::SubplotOverlay(2, 0)]
+    );
+    let panels = expand_for_render(&config).unwrap();
+    assert_eq!(panels.len(), layers.len());
+    for panel in &panels[layers.len() - 2..] {
+        assert_eq!(panel.chart_area.0, inset_area);
+    }
+    let mut without_inset = config.clone();
+    without_inset.subplots.truncate(2);
+    let mut root_only = config.clone();
+    root_only.subplots.clear();
+    let outside_inset_equal = |image: &[u8], plain: &[u8], scale: u32, context: &str| {
+        let width = 320 * scale;
+        for (i, (p, q)) in image.chunks_exact(4).zip(plain.chunks_exact(4)).enumerate() {
+            let (x, y) = (i as u32 % width / scale, i as u32 / width / scale);
+            let inside = x >= inset_area.x
+                && y >= inset_area.y
+                && x < inset_area.x + inset_area.width
+                && y < inset_area.y + inset_area.height;
+            assert!(
+                inside || p == q,
+                "{context}: ({x}, {y}) differs outside the inset"
+            );
+        }
+        assert!(
+            differs_in(image, plain, inset_area, scale),
+            "{context}: the inset drew nothing"
+        );
+    };
+    let display = unregistered_frame(&config);
+    outside_inset_equal(&display, &unregistered_frame(&without_inset), 1, "display");
+    assert_eq!(display, unregistered_frame(&single), "display");
+    assert!(
+        display != unregistered_frame(&root_only),
+        "display: root only"
+    );
+    let mut r = renderer();
+    let chart = Chart::new(config.clone());
+    for scale in [1u32, 2] {
+        let frame = r
+            .prepare_export(&chart, &series(), scale as f32, ExportScope::Document)
+            .unwrap();
+        assert_eq!(frame.panels().len(), layers.len(), "{scale}x panels");
+        drop(frame);
+        let export = |r: &mut Renderer, config: &Config| {
+            r.export_rgba(
+                crate::ExportSource::chart(&Chart::new(config.clone()), &series()),
+                crate::ExportOptions::document(scale as f32),
+            )
+            .block_on()
+            .unwrap()
+            .rgba
+        };
+        let image = export(&mut r, &config);
+        let context = format!("{scale}x export");
+        outside_inset_equal(&image, &export(&mut r, &without_inset), scale, &context);
+        assert!(image == export(&mut r, &single), "{context}");
+        assert!(image != export(&mut r, &root_only), "{context}: root only");
+    }
+    drop(fonts);
+}
+
+// #419: an inset too small for a data area that holds an inset of its own
+// (#392) is refused by name on the display and in every export, never drawn
+// as the root panel alone; the same nested inset in a host with a data area
+// draws.
+#[test]
+fn a_tiny_inset_holding_an_inset_is_refused_by_name() {
+    let fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (mut config, _) = tiny_inset_document();
+    let mut child = chart(
+        Rect {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 8,
+        },
+        (0.0, 1.0),
+    );
+    child.chart_title.visible = false;
+    let mut nested = Subplot::new(child, &[]);
+    nested.anchor = Some(crate::InsetAnchor {
+        parent: CellRef::Subplot(2),
+        frame: [[0.5, 0.9], [0.1, 0.5]],
+    });
+    config.subplots.push(nested);
+    let refused = |result: Result<()>| {
+        assert!(
+            matches!(
+                result,
+                Err(FiggyError::InvalidConfig {
+                    field: "subplots",
+                    kind: crate::RuleKind::InsetHostWithoutDataArea {
+                        subplot: 2,
+                        inset: 3
+                    },
+                })
+            ),
+            "{result:?}"
+        );
+    };
+    refused(expand_for_render(&config).map(|_| ()));
+    let mut r = renderer();
+    let chart = Chart::new(config.clone());
+    let declarations = series();
+    for scale in [1.0f32, 2.0] {
+        let source = crate::ExportSource::chart(&chart, &declarations);
+        let options = crate::ExportOptions::document(scale);
+        refused(r.export_rgba(source, options).block_on().map(|_| ()));
+        refused(r.export_svg(source, options).block_on().map(|_| ()));
+        refused(r.export_pdf(source, options).block_on().map(|_| ()));
+    }
+    let styles: Vec<_> = declarations
+        .iter()
+        .map(|declaration| r.create_style_for_series(declaration).unwrap())
+        .collect();
+    let drawn: Vec<_> = declarations
+        .iter()
+        .zip(&styles)
+        .map(|(config, style)| Series { config, style })
+        .collect();
+    let view = r.create_chart_view(&chart, config.chart_area.0);
+    if let Ok(mut view) = view {
+        refused(
+            r.prepare(&mut [ChartDrawItem {
+                view: &mut view,
+                chart: &chart,
+                series: &drawn,
+            }])
+            .map(|_| ()),
+        );
+    } else {
+        refused(view.map(|_| ()));
+    }
+    // A host with a data area keeps its nested inset.
+    let mut roomy = config.clone();
+    roomy.subplots[2].config.chart_area.0.width = 120;
+    roomy.subplots[2].config.chart_area.0.height = 90;
+    roomy.subplots[2].config.chart_area.0.x = 150;
+    assert!(roomy.subplot_config(2).unwrap().data_area().is_ok());
+    let panels = expand_for_render(&roomy).unwrap();
+    assert_eq!(panels.len(), roomy.panel_layers().len());
+    drop(fonts);
+}
