@@ -55,7 +55,11 @@
 //! the parent's panels and in subplot order, so its panels share its own
 //! chart area and data area, not the parent's. The document's picked
 //! references of a subplot's series go to that subplot's panels, which split
-//! them by the same rule.
+//! them by the same rule. A subplot that draws as one panel and has no data
+//! area at its size (an inset squeezed below its margins) is that one
+//! panel, unaligned: its frame and decorations without data, as a
+//! single-layer chart that small draws, while the rest of the document
+//! expands as usual (#419).
 
 use crate::config::{
     AxisBreaks, AxisOptions, AxisScale, Category, ChartTitleOptions, ColorBarOptions, Config,
@@ -73,7 +77,8 @@ pub struct ExpandedPanel {
     /// `SubplotOverlay(i, j)` and its own members' panels.
     pub layer: LayerRef,
     /// A single-layer config (no overlays, `active_layer == Base`) whose
-    /// `data_area()` is the group data area.
+    /// `data_area()` is the group data area, except a single-panel subplot
+    /// with no data area at its size, which has none.
     pub config: Config,
 }
 
@@ -529,7 +534,8 @@ impl Config {
     }
 
     /// Expand the document into its internal panels. See the module
-    /// documentation for the rules. Fails when the layout has no data area,
+    /// documentation for the rules. Fails when the parent's layout, or a
+    /// layered subplot's, has no data area,
     /// when overlays share a series id or when the line offsets break
     /// [`Self::validate_line_offset_layout`].
     pub fn expand(&self) -> Result<Expansion, LayoutError> {
@@ -566,7 +572,26 @@ impl Config {
         for index in 0..self.subplots.len() {
             let mut subplot = self.subplot_config(index).ok_or(LayoutError::Infeasible)?;
             self.lend_subplot_picks(&mut subplot, index);
-            for panel in subplot.expand()?.panels {
+            let expansion = match subplot.expand() {
+                Ok(expansion) => expansion,
+                // A single-panel subplot with no data area at this size (an
+                // inset squeezed below its margins) draws as a single-layer
+                // chart that small does: its frame and decorations, no
+                // data. The document's other panels draw as usual (#419).
+                Err(
+                    LayoutError::OverflowHorizontal { .. }
+                    | LayoutError::OverflowVertical { .. }
+                    | LayoutError::EmptyDataArea,
+                ) if subplot.own_panel_count() == 1 => {
+                    panels.push(ExpandedPanel {
+                        layer: LayerRef::Subplot(index),
+                        config: subplot.unaligned_base_panel(),
+                    });
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            for panel in expansion.panels {
                 panels.push(ExpandedPanel {
                     layer: match panel.layer {
                         LayerRef::Overlay(overlay) => LayerRef::SubplotOverlay(index, overlay),
@@ -698,6 +723,15 @@ impl Config {
     }
 
     fn base_panel(&self, group: &Margins, data_area: &DataArea) -> Result<Config, LayoutError> {
+        let mut panel = self.unaligned_base_panel();
+        align_margins(&mut panel, group, data_area)?;
+        Ok(panel)
+    }
+
+    /// The base panel before its margins are lifted to the group's: what a
+    /// chart with no data area at its size draws (its frame and
+    /// decorations, no data).
+    fn unaligned_base_panel(&self) -> Config {
         let mut panel = self.clone();
         panel.overlays.clear();
         panel.subplots.clear();
@@ -706,8 +740,7 @@ impl Config {
         panel.active_layer = LayerRef::Base;
         // The document's one annotation layer is drawn with the base panel.
         retain_layer_picks(&mut panel, self, LayerRef::Base);
-        align_margins(&mut panel, group, data_area)?;
-        Ok(panel)
+        panel
     }
 
     fn overlay_panel_with(
@@ -3109,6 +3142,49 @@ mod tests {
             twice.layer_of_series("s0o1"),
             LayerRef::SubplotOverlay(0, 1)
         );
+    }
+
+    /// #419: a single-panel subplot too small for a data area is its one
+    /// panel, unaligned and as written, and every other panel of the
+    /// document expands as before; a layered subplot that small, or a
+    /// parent that small, still fails the expansion.
+    #[test]
+    fn a_single_panel_subplot_without_a_data_area_is_drawn_as_written() {
+        let tiny = || {
+            ChartArea(Rect {
+                x: 10,
+                y: 10,
+                width: 12,
+                height: 10,
+            })
+        };
+        let mut cfg = layered(1, &[1, 0]);
+        let full = cfg.expand().unwrap();
+        cfg.subplots[1].config.chart_area = tiny();
+        assert!(cfg.subplot_config(1).unwrap().data_area().is_err());
+        let expansion = cfg.expand().unwrap();
+        let layers = cfg.panel_layers();
+        assert_eq!(expansion.panels.len(), layers.len());
+        for (panel, layer) in expansion.panels.iter().zip(&layers) {
+            assert_eq!(panel.layer, *layer);
+        }
+        let last = expansion.panels.last().unwrap();
+        assert_eq!(last.layer, LayerRef::Subplot(1));
+        assert_eq!(
+            last.config,
+            cfg.subplot_config(1).unwrap().unaligned_base_panel()
+        );
+        assert_eq!(last.config.chart_area, tiny());
+        let count = full.panels.len() - 1;
+        assert_eq!(expansion.panels[..count], full.panels[..count]);
+        assert_eq!(expansion.data_area, full.data_area);
+        // A tiny subplot with an overlay has no panel for it to draw on.
+        let mut layered_tiny = layered(0, &[1]);
+        layered_tiny.subplots[0].config.chart_area = tiny();
+        assert!(layered_tiny.expand().is_err());
+        let mut root = layered(0, &[0]);
+        root.chart_area = tiny();
+        assert!(root.expand().is_err());
     }
 
     /// PANELS_MATCH_LAYERS (#152): `expand` gives one panel per entry of
