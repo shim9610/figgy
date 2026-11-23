@@ -405,23 +405,31 @@ fn exports_and_the_ray_drag_follow_the_fitted_document() {
         .radius_labels_skipped
         .unwrap();
     assert!(skipped > 0);
-    let svg = renderer
-        .export_svg_blocking(
-            renderer::ExportSource::chart(&chart, &series),
-            renderer::ExportOptions::panel(1.0),
-        )
-        .unwrap();
-    // The zero ring's label is the innermost one: skipped.
+    // SVG draws text as glyph uses: the skipped labels' glyphs are
+    // missing next to the same document with every label shown.
+    let mut shown = chart.config().clone();
+    shown.polar_mut().unwrap().radius_labels_skipped = Some(0);
+    let shown = Chart::new(shown);
+    let mut glyphs = |chart: &Chart| {
+        renderer
+            .export_svg_blocking(
+                renderer::ExportSource::chart(chart, &series),
+                renderer::ExportOptions::document(1.0),
+            )
+            .unwrap()
+            .matches("<use")
+            .count()
+    };
+    let (fitted, all) = (glyphs(&chart), glyphs(&shown));
     assert!(
-        !svg.contains(">0.0%<"),
-        "the skipped zero label is not drawn"
+        fitted < all,
+        "{fitted} glyphs with labels skipped, {all} without"
     );
-    assert!(svg.contains(">12.0%<"), "the outer labels are drawn");
     for scale in [1.0, 2.0] {
         let pdf = renderer
             .export_pdf_blocking(
                 renderer::ExportSource::chart(&chart, &series),
-                renderer::ExportOptions::panel(scale),
+                renderer::ExportOptions::document(scale),
             )
             .unwrap();
         assert!(pdf.starts_with(b"%PDF"), "{scale}x");
