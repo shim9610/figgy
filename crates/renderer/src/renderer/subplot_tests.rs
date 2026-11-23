@@ -1778,31 +1778,36 @@ fn a_layered_document_with_a_tiny_inset_draws_every_panel() {
         assert_ne!(document, pdf(&mut r, &root_only), "{scale}x PDF");
         assert_ne!(document, pdf(&mut r, &without_inset), "{scale}x PDF");
         assert_ne!(document, pdf(&mut r, &without_note), "{scale}x PDF");
-        // The vector parts: text in the lower subplots' areas.
-        let mut origins = Vec::new();
-        crate::written_document_parts(
-            &Chart::new(config.clone()),
-            &series(),
-            scale as f32,
-            &mut |part| {
-                if let crate::WrittenPart::Text { origin, .. } = part {
-                    origins.push(origin);
-                }
-            },
-        )
-        .unwrap();
-        for index in 0..2 {
-            let area = config.subplots[index].config.chart_area.0;
-            let s = scale as f32;
-            assert!(
-                origins.iter().any(|[x, y]| {
-                    *x >= area.x as f32 * s
-                        && *y >= area.y as f32 * s
-                        && *x < (area.x + area.width) as f32 * s
-                        && *y < (area.y + area.height) as f32 * s
-                }),
-                "{scale}x vector: no text in subplot {index}"
-            );
+        // The vector parts: text in the lower subplots' areas. The parts
+        // walk is cpu-twin test support; the GPU failure checks build
+        // the lib tests without it.
+        #[cfg(feature = "cpu-twin")]
+        {
+            let mut origins = Vec::new();
+            crate::written_document_parts(
+                &Chart::new(config.clone()),
+                &series(),
+                scale as f32,
+                &mut |part| {
+                    if let crate::WrittenPart::Text { origin, .. } = part {
+                        origins.push(origin);
+                    }
+                },
+            )
+            .unwrap();
+            for index in 0..2 {
+                let area = config.subplots[index].config.chart_area.0;
+                let s = scale as f32;
+                assert!(
+                    origins.iter().any(|[x, y]| {
+                        *x >= area.x as f32 * s
+                            && *y >= area.y as f32 * s
+                            && *x < (area.x + area.width) as f32 * s
+                            && *y < (area.y + area.height) as f32 * s
+                    }),
+                    "{scale}x vector: no text in subplot {index}"
+                );
+            }
         }
     }
     drop(fonts);
