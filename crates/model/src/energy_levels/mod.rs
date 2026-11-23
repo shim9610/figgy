@@ -30,6 +30,8 @@
 //!
 //! [`DataRenderType::EnergyLevels`]: crate::data_config::DataRenderType::EnergyLevels
 
+use std::borrow::Cow;
+
 use crate::annotation::{Annotation, AnnotationAxis, AnnotationKind, AnnotationLineStyle};
 use crate::color::Color;
 use crate::data_config::{MAX_CATEGORY_BAR_LABEL_CHARS, MAX_VALUE_LABEL_OFFSET, SeriesConfig};
@@ -1311,57 +1313,86 @@ pub struct InsetMarkerParts {
     pub links: Option<[[[f32; 2]; 2]; 2]>,
 }
 
+/// [`crate::config::Config::inset_window`] on `parent` for `inset`.
+fn derived_window(
+    parent: &crate::config::Config,
+    inset: &crate::config::Config,
+) -> Option<[[f64; 2]; 2]> {
+    let (y0, y1) = inset.left_y.data_range();
+    let x = match (&parent.bottom_x.categories, &inset.bottom_x.categories) {
+        (Some(parent), Some(own)) => {
+            let (lo, hi) = inset.bottom_x.data_range();
+            let slot = |k: usize| parent.iter().position(|c| c.id == own[k].id);
+            // The parent slot of the inset's first category, and whether
+            // the inset's categories follow it slot by slot.
+            let first = slot(0)?;
+            let consecutive = (0..own.len()).all(|k| slot(k) == Some(first + k));
+            if consecutive {
+                [first as f64 + lo, first as f64 + hi]
+            } else {
+                let (a, b) = (0..own.len())
+                    .filter_map(slot)
+                    .fold((usize::MAX, 0), |(a, b), p| (a.min(p), b.max(p)));
+                [a as f64 - 0.5, b as f64 + 0.5]
+            }
+        }
+        (None, None) => {
+            let (a, b) = inset.bottom_x.data_range();
+            [a, b]
+        }
+        _ => return None,
+    };
+    Some([x, [y0, y1]])
+}
+
 impl crate::config::Config {
     /// The window subplot `subplot` magnifies, derived from it (#205):
-    /// `[[x0, x1], [y0, y1]]` in this chart's data coordinates. `y` is the
-    /// inset's `left_y` range. On a categorical `bottom_x`, `x` covers the
-    /// slots of this chart's categories that the inset's categories name
+    /// `[[x0, x1], [y0, y1]]` in the data coordinates of the panel it is
+    /// placed in (#414: its anchor's parent, else the panel whose plot holds
+    /// its frame; this chart for an inset in no panel). `y` is the inset's
+    /// `left_y` range. On a categorical `bottom_x`, `x` covers the
+    /// slots of the parent's categories that the inset's categories name
     /// by id (the column whose records an energy-level `Components` view
     /// shows), cut to the inset's own window; on a numeric one it is the
-    /// inset's `bottom_x` range. `None` when the inset names none of this
-    /// chart's categories or its x axis is of the other kind.
+    /// inset's `bottom_x` range. `None` when the inset names none of the
+    /// parent's categories or its x axis is of the other kind.
     pub fn inset_window(&self, subplot: usize) -> Option<[[f64; 2]; 2]> {
         let inset = self.subplot_config(subplot)?;
-        let (y0, y1) = inset.left_y.data_range();
-        let x = match (&self.bottom_x.categories, &inset.bottom_x.categories) {
-            (Some(parent), Some(own)) => {
-                let (lo, hi) = inset.bottom_x.data_range();
-                let slot = |k: usize| parent.iter().position(|c| c.id == own[k].id);
-                // The parent slot of the inset's first category, and whether
-                // the inset's categories follow it slot by slot.
-                let first = slot(0)?;
-                let consecutive = (0..own.len()).all(|k| slot(k) == Some(first + k));
-                if consecutive {
-                    [first as f64 + lo, first as f64 + hi]
-                } else {
-                    let (a, b) = (0..own.len())
-                        .filter_map(slot)
-                        .fold((usize::MAX, 0), |(a, b), p| (a.min(p), b.max(p)));
-                    [a as f64 - 0.5, b as f64 + 0.5]
-                }
-            }
-            (None, None) => {
-                let (a, b) = inset.bottom_x.data_range();
-                [a, b]
-            }
-            _ => return None,
-        };
-        Some([x, [y0, y1]])
+        derived_window(&*self.inset_parent_config(subplot)?, &inset)
     }
 
-    /// Where subplot `subplot`'s marker is drawn on this chart (#205), from
-    /// its [`crate::layer::InsetMarker`]: its explicit window or the derived
-    /// one ([`Self::inset_window`]) in this chart's pixels, at least ten
-    /// line widths across and clipped to the plot. `None` for a subplot without a marker, a window that has no
+    /// The chart subplot `subplot`'s marker is drawn on (#414): the panel
+    /// its frame is placed in (its anchor's parent, else the panel whose
+    /// plot holds its frame), with linked axes resolved; this chart for an
+    /// inset in no panel. `None` for a missing subplot.
+    fn inset_parent_config(&self, subplot: usize) -> Option<Cow<'_, crate::config::Config>> {
+        self.subplots.get(subplot)?;
+        Some(match self.parent_panel(subplot) {
+            Some(panel) if panel > 0 => Cow::Owned(self.subplot_config(panel - 1)?),
+            _ => Cow::Borrowed(self),
+        })
+    }
+
+    /// Where subplot `subplot`'s marker is drawn (#205), from its
+    /// [`crate::layer::InsetMarker`]: its explicit window or the derived one
+    /// ([`Self::inset_window`]), projected with the axes of the panel the
+    /// inset is placed in (#414), at least ten line widths across and
+    /// clipped to that panel's plot. Pixels are the document's. `None` for a subplot without a marker, a window that has no
     /// position or lies outside the plot.
     pub fn inset_marker_parts(&self, subplot: usize) -> Option<InsetMarkerParts> {
         use crate::layout::{RectF, axis_fraction};
         let marker = self.subplots.get(subplot)?.marker.as_ref()?;
-        let [[x0, x1], [y0, y1]] = marker.window.or_else(|| self.inset_window(subplot))?;
-        let plot = RectF::from_rect(&self.data_area().ok()?.0);
-        let px = |v: f64| plot.x + axis_fraction(v, &self.bottom_x, plot.width) * plot.width;
+        // Projected and clipped in the parent panel's coordinates (#414).
+        let parent = self.inset_parent_config(subplot)?;
+        let inset_config = self.subplot_config(subplot)?;
+        let [[x0, x1], [y0, y1]] = match marker.window {
+            Some(window) => window,
+            None => derived_window(&parent, &inset_config)?,
+        };
+        let plot = RectF::from_rect(&parent.data_area().ok()?.0);
+        let px = |v: f64| plot.x + axis_fraction(v, &parent.bottom_x, plot.width) * plot.width;
         let py =
-            |v: f64| plot.y + (1.0 - axis_fraction(v, &self.left_y, plot.height)) * plot.height;
+            |v: f64| plot.y + (1.0 - axis_fraction(v, &parent.left_y, plot.height)) * plot.height;
         let (a, b) = (px(x0), px(x1));
         let (c, d) = (py(y0), py(y1));
         if ![a, b, c, d].iter().all(|v| v.is_finite()) {
@@ -1393,7 +1424,7 @@ impl crate::config::Config {
             width: right - left,
             height: bottom - top,
         };
-        let inset = RectF::from_rect(&self.subplot_config(subplot)?.data_area().ok()?.0);
+        let inset = RectF::from_rect(&inset_config.data_area().ok()?.0);
         let links = marker.connectors.then(|| {
             let (w0, w1) = ((left, top), (right, bottom));
             let (i0, i1) = (
@@ -2890,6 +2921,135 @@ mod inset_marker_tests {
         assert_eq!(config.inset_window(0), None);
         config.subplots[0].marker = None;
         assert_eq!(config.inset_marker_parts(0), None);
+    }
+
+    /// The issue's document (#414): a root panel, a panel to its right
+    /// (subplot 0) and an inset (subplot 1) anchored in the right panel.
+    fn inset_in_a_subplot() -> Config {
+        use crate::layer::{CellRef, InsetAnchor, InsetMarker};
+        let mut root = crate::defaults::config();
+        root.chart_area.0 = Rect {
+            x: 0,
+            y: 0,
+            width: 500,
+            height: 400,
+        };
+        let mut right = crate::defaults::config();
+        right.chart_area.0 = Rect {
+            x: 520,
+            y: 0,
+            width: 500,
+            height: 400,
+        };
+        let mut zoom = crate::defaults::config();
+        zoom.chart_area.0 = Rect {
+            x: 810,
+            y: 80,
+            width: 180,
+            height: 180,
+        };
+        root.subplots.push(Subplot {
+            config: right,
+            ..crate::defaults::subplot()
+        });
+        root.subplots.push(Subplot {
+            config: zoom,
+            anchor: Some(InsetAnchor {
+                parent: CellRef::Subplot(0),
+                frame: [[0.55, 0.95], [0.10, 0.65]],
+            }),
+            marker: Some(InsetMarker {
+                window: Some([[0.2, 0.4], [0.2, 0.4]]),
+                ..crate::defaults::inset_marker()
+            }),
+            ..crate::defaults::subplot()
+        });
+        root
+    }
+
+    // #414: an inset anchored in a subplot has its window projected with
+    // that subplot's axes, clipped to its plot, and its connectors join
+    // that window to the inset's plot.
+    #[test]
+    fn the_marker_is_projected_on_the_parent_subplot() {
+        use crate::layout::{RectF, axis_fraction};
+        let mut config = inset_in_a_subplot();
+        let right = config.subplot_config(0).unwrap();
+        let plot = RectF::from_rect(&right.data_area().unwrap().0);
+        let parts = config.inset_marker_parts(1).expect("a marker");
+        let w = parts.window;
+        let px = |v: f64| plot.x + axis_fraction(v, &right.bottom_x, plot.width) * plot.width;
+        let py =
+            |v: f64| plot.y + (1.0 - axis_fraction(v, &right.left_y, plot.height)) * plot.height;
+        assert!(w.x >= plot.x, "marker was produced on the root: {w:?}");
+        assert!((w.x - px(0.2)).abs() < 1e-3, "{w:?}");
+        assert!((w.x + w.width - px(0.4)).abs() < 1e-3, "{w:?}");
+        assert!((w.y - py(0.4)).abs() < 1e-3, "{w:?}");
+        assert!((w.y + w.height - py(0.2)).abs() < 1e-3, "{w:?}");
+        // The inset lies right of the window: its right corners join the
+        // inset's left corners, all within the right panel.
+        let inset = config.subplot_config(1).unwrap().data_area().unwrap().0;
+        let [top, bottom] = parts.links.expect("connectors");
+        assert_eq!(
+            top,
+            [[w.x + w.width, w.y], [inset.x as f32, inset.y as f32]]
+        );
+        assert_eq!(
+            bottom,
+            [
+                [w.x + w.width, w.y + w.height],
+                [inset.x as f32, (inset.y + inset.height) as f32]
+            ]
+        );
+        // Clipped to the parent's plot, not the root's: a window reaching
+        // past the right panel's x range is cut at its plot's right edge.
+        config.subplots[1].marker.as_mut().unwrap().window = Some([[0.5, 1.5], [0.2, 0.4]]);
+        let w = config.inset_marker_parts(1).unwrap().window;
+        assert!(
+            (w.x + w.width - (plot.x + plot.width)).abs() < 1e-3,
+            "{w:?}"
+        );
+        // A window the parent's view has moved off draws nothing, while the
+        // root still shows that range.
+        config.subplots[1].marker.as_mut().unwrap().window = Some([[0.2, 0.4], [0.2, 0.4]]);
+        config.subplots[0].config.bottom_x.min = 0.6;
+        config.subplots[0].config.bottom_x.max = 1.0;
+        assert_eq!(config.inset_marker_parts(1), None);
+    }
+
+    // #414: a window derived from the inset's limits names the categories
+    // of the panel the inset is placed in, not the root's.
+    #[test]
+    fn the_derived_window_uses_the_parent_subplot() {
+        let mut config = inset_in_a_subplot();
+        config.bottom_x.categories = Some(vec![Category::new("a", "A")]);
+        config.subplots[0].config.bottom_x.categories = Some(vec![
+            Category::new("x", "X"),
+            Category::new("y", "Y"),
+            Category::new("z", "Z"),
+        ]);
+        config.subplots[0].config.left_y.min = 0.0;
+        config.subplots[0].config.left_y.max = 100.0;
+        let inset = &mut config.subplots[1].config;
+        inset.bottom_x.categories = Some(vec![Category::new("z", "Z")]);
+        inset.left_y.min = 40.0;
+        inset.left_y.max = 50.0;
+        config.subplots[1].marker.as_mut().unwrap().window = None;
+        assert_eq!(config.inset_window(1), Some([[1.5, 2.5], [40.0, 50.0]]));
+        let plot =
+            crate::layout::RectF::from_rect(&config.subplots[0].config.data_area().unwrap().0);
+        let w = config.inset_marker_parts(1).expect("a marker").window;
+        assert!(
+            (w.x - (plot.x + plot.width * 2.0 / 3.0)).abs() < 0.5,
+            "{w:?}"
+        );
+        assert!((w.width - plot.width / 3.0).abs() < 0.5, "{w:?}");
+        assert!((w.y - (plot.y + plot.height * 0.5)).abs() < 0.5, "{w:?}");
+        // The root's slots are not consulted: dropping the inset's id from
+        // the right panel derives no window although the root names "a".
+        config.subplots[1].config.bottom_x.categories = Some(vec![Category::new("a", "A")]);
+        assert_eq!(config.inset_window(1), None);
+        assert_eq!(config.inset_marker_parts(1), None);
     }
 
     #[test]

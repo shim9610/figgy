@@ -292,7 +292,7 @@ impl Config {
     /// The panel subplot `index` is placed in: its anchor's parent, else
     /// the panel whose data area holds its frame
     /// ([`crate::layout::inset_parent`]). `None` for a panel of its own.
-    fn parent_panel(&self, index: usize) -> Option<usize> {
+    pub(crate) fn parent_panel(&self, index: usize) -> Option<usize> {
         let subplot = self.subplots.get(index)?;
         if let Some(anchor) = subplot.anchor {
             return match anchor.parent {
