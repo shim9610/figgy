@@ -62,14 +62,15 @@ def run(args, *, cwd=ROOT, env=None, capture=False, collect=False):
     return "\n".join(lines) if collect else None
 
 
-# Lints that keep product code free of panics and dropped errors (#152).
-# Only these run (`-A clippy::all` first). The assert family is listed in
-# the root `clippy.toml` (`disallowed_macros`); a derive's generated const
+# Lints that keep product code free of panics and dropped errors (#152) and
+# of locks (`disallowed_types`, CLAUDE.md rule 4). Only these run
+# (`-A clippy::all` first). The assert family and the lock types are listed in
+# the root `clippy.toml`; a derive's generated const
 # checks and `const _: () = assert!(..)` fail the build and never run, so
 # `panic_gate_findings` drops those.
 PANIC_GATE_LINTS = ("unwrap_used", "expect_used", "panic", "unreachable", "todo",
                     "unimplemented", "disallowed_macros", "let_underscore_must_use",
-                    "let_underscore_future", "unused_result_ok")
+                    "let_underscore_future", "unused_result_ok", "disallowed_types")
 PANIC_GATE_TARGETS = (
     ("--all-features",),
     ("--target", "wasm32-unknown-unknown", "--features", "figgy-renderer/serde"),
@@ -149,7 +150,7 @@ def static():
                       "--message-format=json", "--", *lints], capture=True)
         findings += panic_gate_findings(output.splitlines())
     if findings:
-        raise RuntimeError("product code has panic paths or dropped errors (#152):\n"
+        raise RuntimeError("product code has panic paths, dropped errors (#152) or locks (rule 4):\n"
                            + "\n".join(sorted(set(findings))))
     # Host defaults are for hosts (#266): the model and renderer libraries
     # build without the `helpers` feature, so their own code cannot fall back
