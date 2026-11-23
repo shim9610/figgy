@@ -283,6 +283,10 @@ impl FiggyChart {
         self.renderer
             .fit_chart_link_exits(self.chart_id)
             .map_err(js_err)?;
+        // The radius labels' ray over polar bars (#417), the same way.
+        self.renderer
+            .fit_chart_radial_labels(self.chart_id)
+            .map_err(js_err)?;
         self.request_host_redraw();
         Ok(())
     }

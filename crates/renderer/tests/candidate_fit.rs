@@ -1031,7 +1031,9 @@ fn a_range_fit_keeps_the_radius_axis_percent_format() {
 
     let mut chart = Chart::new(config.clone());
     renderer.fit_ranges(&mut chart, &mut series).unwrap();
-    assert_eq!(&fitted, chart.config(), "one fit path");
+    // One fit path for the axes; `fit_ranges` also chooses the radius
+    // labels' ray (#417), which a candidate fit leaves to its installer.
+    assert_eq!(fitted.left_y, chart.config().left_y, "one fit path");
     assert_eq!(
         chart.config().left_y.label_style.format,
         LabelFormat::Percent

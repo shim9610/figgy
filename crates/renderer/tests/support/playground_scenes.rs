@@ -1660,7 +1660,7 @@ fn polar(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     config.left_y.major_spacing = 0.5;
     config.set_polar(Some(PolarOptions {
         interpolation: PolarInterpolation::Arc { pieces: 6 },
-        radial_label_angle_degrees: 90.0,
+        radial_label_angle_degrees: Some(90.0),
         ..PolarOptions::default()
     }));
     rebuild_legends(&mut config, &series);
@@ -4430,7 +4430,7 @@ fn rose(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     config.set_polar(Some(PolarOptions {
         zero_angle_degrees: 90.0,
         clockwise: true,
-        radial_label_angle_degrees: 90.0,
+        radial_label_angle_degrees: Some(90.0),
         ..PolarOptions::default()
     }));
     config.bar_groups = Some(BarGroups {
@@ -5497,7 +5497,7 @@ fn polar_heatmap(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         clockwise: true,
         inner_radius_fraction: 0.06,
         // Between the 0° and 45° spokes, clear of the top angle label.
-        radial_label_angle_degrees: 67.5,
+        radial_label_angle_degrees: Some(67.5),
         ..PolarOptions::default()
     }));
     let mut chart = Chart::new(config);

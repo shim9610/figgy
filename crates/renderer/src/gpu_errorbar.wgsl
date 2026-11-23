@@ -659,3 +659,61 @@ fn gather_link_ends(@builtin(global_invocation_id) global_id: vec3<u32>) {
         index = index + stride;
     }
 }
+
+// ───── Polar bar rows (#417) ─────
+//
+// The drawn stack of each row of a polar chart's category bars, gathered
+// for the layout that chooses the radius labels' ray. One four-word record
+// per row, as f32 bits: the lowest and highest category position its
+// members draw at and the lowest and highest value its stack reaches. The
+// CPU writes `(f32::MAX, -f32::MAX, 0, 0)`; one dispatch per group member,
+// in group order, folds that member's row in (x = its positions column,
+// y = its values column, `mode()` the group mode). Dispatches in one
+// submission run in order, so a stack sums its members. A missing,
+// non-finite or zero value draws nothing and adds nothing. Nothing is
+// reduced across rows and no workgroup memory is used.
+
+const POLAR_BAR_WORDS: u32 = 4u;
+const POLAR_BAR_GROUPED: u32 = 0u;
+const POLAR_BAR_STACKED: u32 = 1u;
+
+@compute @workgroup_size(64)
+fn gather_polar_bar_rows(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let stride = dispatch_groups() * WORKGROUP_SIZE;
+    let rows = min(x_len(), y_len());
+    var index = global_id.x;
+    while (index < input_len()) {
+        if (index < rows) {
+            let p = load_pair(x_offset(), index);
+            let v = load_pair(y_offset(), index);
+            let position = p.x + p.y;
+            let value = v.x + v.y;
+            if (pair_is_finite(p) && lane_is_finite(position) && pair_is_finite(v)
+                && lane_is_finite(value) && value != 0.0) {
+                let base = index * POLAR_BAR_WORDS;
+                let first = bitcast<f32>(output_words[base]);
+                let last = bitcast<f32>(output_words[base + 1u]);
+                var low = bitcast<f32>(output_words[base + 2u]);
+                var high = bitcast<f32>(output_words[base + 3u]);
+                if (mode() == POLAR_BAR_STACKED) {
+                    if (value > 0.0) {
+                        high = high + value;
+                    } else {
+                        low = low + value;
+                    }
+                } else if (mode() == POLAR_BAR_GROUPED) {
+                    high = max(high, value);
+                    low = min(low, value);
+                } else if (value > 0.0) {
+                    // A percent stack spans its whole.
+                    high = max(high, 100.0);
+                }
+                output_words[base] = bitcast<u32>(min(first, position));
+                output_words[base + 1u] = bitcast<u32>(max(last, position));
+                output_words[base + 2u] = bitcast<u32>(low);
+                output_words[base + 3u] = bitcast<u32>(high);
+            }
+        }
+        index = index + stride;
+    }
+}

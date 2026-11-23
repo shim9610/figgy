@@ -3821,7 +3821,19 @@
         "layout": 3
       },
       "kind": "compute",
-      "source": "59e833dce4dec6a9"
+      "source": "5162ebf18e8a22f0"
+    },
+    {
+      "descriptor": {
+        "compute": {
+          "constants": {},
+          "entryPoint": "gather_polar_bar_rows"
+        },
+        "label": "figgy polar bar rows pipeline",
+        "layout": 3
+      },
+      "kind": "compute",
+      "source": "5162ebf18e8a22f0"
     },
     {
       "descriptor": {
@@ -4085,7 +4097,7 @@
         "layout": 3
       },
       "kind": "compute",
-      "source": "59e833dce4dec6a9"
+      "source": "5162ebf18e8a22f0"
     },
     {
       "descriptor": {
@@ -4097,7 +4109,7 @@
         "layout": 3
       },
       "kind": "compute",
-      "source": "59e833dce4dec6a9"
+      "source": "5162ebf18e8a22f0"
     },
     {
       "descriptor": {

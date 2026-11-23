@@ -246,6 +246,7 @@ impl Renderer {
                 #[cfg(target_arch = "wasm32")]
                 pick_warmup: None,
                 link_exit_fit: None,
+                radial_label_fit: None,
             },
         );
         if monotonic {
@@ -267,6 +268,7 @@ impl Renderer {
                 .is_some_and(|s| s.config.layout_state.is_fitted())
         {
             self.fit_chart_link_exits_unreported(id)?;
+            self.fit_chart_radial_labels_unreported(id)?;
         }
         Ok(id)
     }

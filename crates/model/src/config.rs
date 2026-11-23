@@ -734,6 +734,8 @@ impl Config {
                 grid_shape: _,
                 // A switch.
                 hide_first_radius_label: _,
+                // A count of labels.
+                radius_labels_skipped: _,
             }) => true,
             None => false,
         };

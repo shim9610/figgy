@@ -107,7 +107,8 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
 | `sector` | `Some([start, end])` shows only that angular window, at most one turn; drawing is clipped at its edges. `None` is the full circle |
 | `inner_radius_fraction` | A hole at the centre, `0.0..=0.9` of the outer radius; `left_y.min` sits on that ring |
 | `interpolation` | `Chord` (default): straight segments between samples. `Arc { pieces }` (`pieces` 1 to 64, otherwise `InvalidConfig`): each segment bends along the data in `pieces` chords, so a constant radius follows its ring and sparse samples still draw a spiral. `Arc` needs a `LineInterpolation::Linear` line: a step line (`StepPre`, `StepPost`, `StepMid`) under `Arc` is rejected with `InvalidSeriesConfig`; `Chord` accepts it |
-| `radial_label_angle_degrees` | The ray the radius axis line and its labels sit on, default 90 (up); dragging the ray turns it |
+| `radial_label_angle_degrees` | The ray the radius axis line and its labels sit on; dragging the ray turns it. `None` (default) is chosen by the renderer's fits over category bars, the ray where the fewest labels sit over a wedge (#417), and drawn at 90 (up) until then |
+| `radius_labels_skipped` | The innermost radius labels skipped over the bars (#417); `None` (default) is filled with the ray |
 | `grid_shape` | `None` or `Some(GridShape::Circle)` (default): circular rings. `Some(GridShape::Polygon)` joins the rings and the outer ring at the categories of a categorical angle axis, the radar look; without one it is `InvalidConfig` |
 
 Every option has a default, so `{ "polar": {} }` in JSON turns a chart
@@ -338,7 +339,8 @@ draws an antenna-like pattern and a three-leaf rose interactively
 | `sector` | `Some([start, end])`이면 그 각도 창만 보이며 경계에서 클립된다. 한 바퀴 이하. `None`은 전체 원 |
 | `inner_radius_fraction` | 중심 구멍. 바깥 반지름의 `0.0..=0.9`이며 `left_y.min`이 그 고리에 놓인다 |
 | `interpolation` | `Chord`(기본): 표본 사이를 직선으로 잇는다. `Arc { pieces }`(`pieces`는 1~64, 벗어나면 `InvalidConfig`): 각 구간을 (각도, 반지름) 공간에서 `pieces`개의 현으로 나눠 그리므로 반지름이 일정한 구간은 고리를 따르고 표본이 드물어도 나선을 그릴 수 있다. `Arc`는 `LineInterpolation::Linear` 선에만 쓸 수 있고, 계단선(`StepPre`, `StepPost`, `StepMid`)은 `InvalidSeriesConfig`로 거부한다. `Chord`는 계단선도 받는다 |
-| `radial_label_angle_degrees` | 반지름 축 선과 라벨이 놓이는 반직선. 기본 90(위). 반직선을 드래그하면 바뀐다 |
+| `radial_label_angle_degrees` | 반지름 축 선과 라벨이 놓이는 반직선. 반직선을 드래그하면 바뀐다. `None`(기본값)이면 범주 막대가 있을 때 렌더러의 맞춤이 쐐기 위에 놓이는 라벨이 가장 적은 반직선을 고르고(#417), 그전에는 90(위)으로 그린다 |
+| `radius_labels_skipped` | 막대 위에 놓여 건너뛰는 가장 안쪽 반지름 라벨 수(#417). `None`(기본값)이면 반직선과 함께 채운다 |
 | `grid_shape` | `None` 또는 `Some(GridShape::Circle)`(기본)은 원형 고리. `Some(GridShape::Polygon)`은 고리와 바깥 고리를 범주형 각도 축의 범주 각도에서 꺾어 다각형으로 그린다(레이더 모양). 범주형 각도 축이 없으면 `InvalidConfig` |
 
 모든 옵션에 기본값이 있어 JSON에서 `{ "polar": {} }`만으로 극좌표가 켜진다. 전체 필드와 검증,

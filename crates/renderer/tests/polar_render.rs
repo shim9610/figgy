@@ -897,7 +897,7 @@ fn label_offsets_move_labels_along_spokes_and_in_the_ray_frame() {
     upload(&mut renderer, vec![0.0], vec![0.5]);
     let chart_with = |angle: f64, bottom: [f32; 2], left: [f32; 2], radius_labels: bool| {
         let mut chart = bare_chart(PolarOptions {
-            radial_label_angle_degrees: angle,
+            radial_label_angle_degrees: Some(angle),
             ..PolarOptions::default()
         });
         chart.set_x_range(0.0, 360.0);
@@ -1081,7 +1081,7 @@ fn radius_labels_survive_rotating_the_ray() {
     use renderer::layout::{DrawnPart, Element, RectF, Side};
     let labels = |angle: f64, max: f64, font_size: f32| {
         let mut chart = bare_chart(PolarOptions {
-            radial_label_angle_degrees: angle,
+            radial_label_angle_degrees: Some(angle),
             ..PolarOptions::default()
         });
         chart.set_y_range(0.0, max);

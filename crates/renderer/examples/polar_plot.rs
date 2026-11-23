@@ -106,7 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 zero_angle_degrees: 90.0,
                 clockwise: true,
                 interpolation: PolarInterpolation::Arc { pieces: 6 },
-                radial_label_angle_degrees: 45.0,
+                radial_label_angle_degrees: Some(45.0),
                 ..PolarOptions::default()
             }));
             config.bottom_x.major_spacing = 45.0;
@@ -162,7 +162,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 angle_unit: AngleUnit::Radians,
                 sector: Some([-PI / 2.0, PI / 2.0]),
                 inner_radius_fraction: 0.2,
-                radial_label_angle_degrees: 90.0,
+                radial_label_angle_degrees: Some(90.0),
                 ..PolarOptions::default()
             }));
             config.bottom_x.major_spacing = PI / 4.0;
@@ -226,7 +226,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 zero_angle_degrees: 90.0,
                 clockwise: true,
                 inner_radius_fraction: 0.08,
-                radial_label_angle_degrees: 90.0,
+                radial_label_angle_degrees: Some(90.0),
                 ..PolarOptions::default()
             }));
             config.bottom_x.major_spacing = 30.0;
@@ -358,7 +358,7 @@ fn wave_spectrum(r: &mut Renderer, out: &Path) -> gallery::Result {
             clockwise: true,
             inner_radius_fraction: 0.1,
             // Up the empty north-north-west sector.
-            radial_label_angle_degrees: 112.5,
+            radial_label_angle_degrees: Some(112.5),
             ..PolarOptions::default()
         }));
         config.left_y.major_spacing = 0.05;
@@ -452,7 +452,7 @@ fn wind_rose(r: &mut Renderer, out: &Path) -> gallery::Result {
             inner_radius_fraction: 0.07,
             // Along the south-south-east spoke: the labels sit on its left,
             // over the quiet south-east.
-            radial_label_angle_degrees: -67.5,
+            radial_label_angle_degrees: Some(-67.5),
             // No 0% on the calm circle's edge (#259).
             hide_first_radius_label: true,
             ..PolarOptions::default()

@@ -233,9 +233,10 @@ area that leaves one band of angle labels inside it (`Config::polar_geometry`).
 | `sector: Option<[f64; 2]>` | The visible angular window in `angle_unit`, at most one turn; drawing is clipped at its edges. `None` (default) is the full circle, where an angle outside the axis range lands where `cos` / `sin` put it: nothing is wrapped, sorted or deduplicated |
 | `inner_radius_fraction: f32` | The hole at the centre as a fraction of the outer radius, `0.0..=0.9`; `left_y.min` maps to this ring |
 | `interpolation: PolarInterpolation` | `Chord` (default): a segment between two samples is straight on screen. `Arc { pieces }` (1–64): the segment is `pieces` chords between points interpolated linearly in (angle, radius), so a constant radius follows its ring; dashes and picking walk the same pieces |
-| `radial_label_angle_degrees: f64` | The screen direction of the ray the radius axis line and its tick labels sit on, default 90 (up). Dragging the ray turns it |
+| `radial_label_angle_degrees: Option<f64>` | The screen direction of the ray the radius axis line and its tick labels sit on. Dragging the ray turns it and stores the angle. `None` (default, key absent in JSON) is the layout's to choose ([#417](https://github.com/shim9610/figgy/issues/417)): over category bars, the renderer's fits (`fit_ranges`, a `Fitted` chart's registration, `commit_auto_fit_all`, `fit_radial_labels`) gather each row's drawn stack on the GPU and store the ray between two category slots where the fewest radius labels sit over a wedge. While it is `None` the ray is drawn at `DEFAULT_RADIAL_LABEL_ANGLE_DEGREES` (90, up). A stored angle is never moved by a fit; a document written by an earlier release stores one |
 | `grid_shape: Option<GridShape>` | How the rings join: `Circle` (default, `None`, key absent in JSON) draws circles; `Polygon` joins each ring and the outer ring with chords at the categories of a categorical angle axis (the radar spider web) and needs one |
-| `hide_first_radius_label: bool` | Skip the innermost radius ring's label, as on the calm circle of a wind rose; the ring and its tick still draw. Default `false`, key absent in JSON ([#259](https://github.com/shim9610/figgy/issues/259)) |
+| `hide_first_radius_label: bool` | Skip the innermost radius ring's label, as on the calm circle of a wind rose; the ring and its tick still draw. Default `false`, key absent in JSON ([#259](https://github.com/shim9610/figgy/issues/259)). It still applies when `radius_labels_skipped` is 0 |
+| `radius_labels_skipped: Option<u32>` | How many of the innermost drawn radius labels are skipped because their boxes would sit over the drawn bars ([#417](https://github.com/shim9610/figgy/issues/417)); the rings and ticks still draw. `None` (default, key absent in JSON) skips none and is filled by the same fit that chooses the ray, at the stored ray when there is one; a stored count is never overwritten |
 
 **Categorical angle axis.** With `bottom_x.categories` set, the angle axis
 is categorical: category `i` of `n` sits at `i / n` of the turn (or of
@@ -1691,9 +1692,10 @@ pub struct Config {
 | `sector: Option<[f64; 2]>` | `angle_unit` 단위의 가시 각도 창. 한 바퀴 이하이며 경계에서 클립된다. `None`(기본)은 전체 원이고, 축 범위 밖 각도는 `cos`/`sin`이 두는 자리에 그린다. 감싸기·정렬·중복 제거는 하지 않는다 |
 | `inner_radius_fraction: f32` | 바깥 반지름에 대한 중앙 구멍 비율, `0.0..=0.9`. `left_y.min`이 이 고리에 놓인다 |
 | `interpolation: PolarInterpolation` | `Chord`(기본): 두 표본 사이 세그먼트는 화면에서 직선. `Arc { pieces }`(1~64): (각도, 반지름)에서 선형 보간한 점들을 잇는 `pieces`개의 현으로, 반지름이 일정하면 고리를 따른다. 대시와 피킹도 같은 조각을 따라간다 |
-| `radial_label_angle_degrees: f64` | 반지름 축 선과 눈금 라벨이 놓이는 반직선의 화면 방향(도). 기본 90(위). 반직선을 드래그하면 바뀐다 |
+| `radial_label_angle_degrees: Option<f64>` | 반지름 축 선과 눈금 라벨이 놓이는 반직선의 화면 방향(도). 반직선을 드래그하면 바뀌고 그 각도가 저장된다. `None`(기본값, JSON에서 키 생략)이면 레이아웃이 정한다([#417](https://github.com/shim9610/figgy/issues/417)). 범주 막대가 있으면 렌더러의 맞춤(`fit_ranges`, `Fitted` 차트 등록, `commit_auto_fit_all`, `fit_radial_labels`)이 행마다 그려지는 누적 끝을 GPU에서 모아, 쐐기 위에 놓이는 반지름 라벨이 가장 적은 범주 칸 사이의 반직선을 저장한다. `None`인 동안에는 `DEFAULT_RADIAL_LABEL_ANGLE_DEGREES`(90, 위)로 그린다. 저장된 각도는 맞춤이 옮기지 않으며, 이전 릴리스가 쓴 문서에는 각도가 저장되어 있다 |
 | `grid_shape: Option<GridShape>` | 고리를 잇는 모양. `Circle`(기본, `None`, JSON에서 키 생략)은 원을 그리고, `Polygon`은 범주형 각도 축의 범주마다 현으로 각 고리와 바깥 고리를 잇는다(레이더의 거미줄 격자). 범주형 각도 축이 필요하다 |
-| `hide_first_radius_label: bool` | 가장 안쪽 반지름 고리의 라벨을 그리지 않는다. 바람장미의 무풍 원 가장자리처럼 쓴다. 고리와 눈금은 그대로 그린다. 기본값 `false`, JSON에서 키 생략([#259](https://github.com/shim9610/figgy/issues/259)) |
+| `hide_first_radius_label: bool` | 가장 안쪽 반지름 고리의 라벨을 그리지 않는다. 바람장미의 무풍 원 가장자리처럼 쓴다. 고리와 눈금은 그대로 그린다. 기본값 `false`, JSON에서 키 생략([#259](https://github.com/shim9610/figgy/issues/259)). `radius_labels_skipped`가 0이어도 적용된다 |
+| `radius_labels_skipped: Option<u32>` | 상자가 그려진 막대 위에 놓여 건너뛰는 가장 안쪽 반지름 라벨의 개수([#417](https://github.com/shim9610/figgy/issues/417)). 고리와 눈금은 그대로 그린다. `None`(기본값, JSON에서 키 생략)이면 건너뛰지 않으며, 반직선을 고르는 맞춤이 함께 채운다. 반직선이 저장되어 있으면 그 반직선에서 센다. 저장된 개수는 덮어쓰지 않는다 |
 
 **범주형 각도 축.** `bottom_x.categories`가 있으면 각도 축은 범주형이다. `n`개 중 `i`번째 범주는
 `zero_angle_degrees`에서 `clockwise` 방향으로 한 바퀴(또는 `sector`)의 `i / n` 자리에 놓이므로

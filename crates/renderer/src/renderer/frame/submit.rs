@@ -487,6 +487,8 @@ impl Renderer {
         self.sync_external_invalidations()?;
         // A browser's range link exit fits whose gathers completed (#357).
         self.service_link_exit_fits()?;
+        // A browser's radius label fits whose gathers completed (#417).
+        self.service_radial_label_fits()?;
         self.service_stream_requests();
         for item in items {
             let config = self.chart_config(item.chart_id)?;

@@ -559,7 +559,7 @@ mod tests {
             ray.drag_from(&mut cfg, &LaysOut, at, to[0] - at[0], to[1] - at[1]),
             NudgeResult::Moved
         );
-        let angle = cfg.polar().unwrap().radial_label_angle_degrees;
+        let angle = cfg.polar().unwrap().ray_degrees();
         assert!((angle - 45.0).abs() < 0.5, "{angle}");
         // Without a pointer, a drag across the ray by r/2 turns by 0.5 rad.
         let mut cfg = polar_cfg();
@@ -567,7 +567,7 @@ mod tests {
             ray.drag_by(&mut cfg, &LaysOut, -r * 0.5, 0.0),
             NudgeResult::Moved
         );
-        let angle = cfg.polar().unwrap().radial_label_angle_degrees;
+        let angle = cfg.polar().unwrap().ray_degrees();
         assert!(
             (angle - (90.0 + 0.5f64.to_degrees())).abs() < 0.5,
             "{angle}"
@@ -581,7 +581,7 @@ mod tests {
             0.0,
             2.0 * r,
         );
-        let angle = cfg.polar().unwrap().radial_label_angle_degrees;
+        let angle = cfg.polar().unwrap().ray_degrees();
         assert!((angle - 270.0).abs() < 0.5, "{angle}");
         let before = cfg.clone();
         assert_eq!(
@@ -649,7 +649,7 @@ mod tests {
         );
         // The same screen drag on a rightward ray reads the other way round.
         let mut cfg = polar_cfg();
-        cfg.polar_mut().unwrap().radial_label_angle_degrees = 0.0;
+        cfg.polar_mut().unwrap().radial_label_angle_degrees = Some(0.0);
         assert_eq!(
             radius_labels.drag_by(&mut cfg, &LaysOut, -7.0, -9.0),
             NudgeResult::Moved
