@@ -16,12 +16,12 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use arc_swap::ArcSwap;
 
 #[cfg(test)]
-pub(crate) static FONT_REGISTRATION_TEST_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static FONT_REGISTRATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 use swash::FontRef;
 use swash::scale::{Render, ScaleContext, Source};
@@ -266,15 +266,24 @@ struct FontRegistry {
     /// This lock is the one approved exception to rule 4 (no lock-based
     /// synchronization; maintainer decision in #160, 2026-11-15). It is held
     /// only inside [`register_font_bytes`]; lookups read the `fonts`
-    /// `ArcSwap` snapshot and never take it.
-    registered: Mutex<HashMap<&'static [u8], Vec<String>>>,
+    /// `ArcSwap` snapshot and never take it. `ci/verify.py static` refuses
+    /// every other `Mutex` and `RwLock` in product code.
+    #[allow(
+        clippy::disallowed_types,
+        reason = "the approved font registration lock (#160)"
+    )]
+    registered: std::sync::Mutex<HashMap<&'static [u8], Vec<String>>>,
 }
 
 impl FontRegistry {
     fn new() -> Self {
         Self {
             fonts: ArcSwap::from_pointee(RegisteredFonts::default()),
-            registered: Mutex::new(HashMap::new()),
+            #[allow(
+                clippy::disallowed_types,
+                reason = "the approved font registration lock (#160)"
+            )]
+            registered: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
