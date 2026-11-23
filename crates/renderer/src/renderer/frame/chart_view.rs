@@ -14,7 +14,7 @@ pub struct ChartView {
     pub(in crate::renderer) decoration_texture: TrackedTexture,
     pub(in crate::renderer) decoration_bind_group: wgpu::BindGroup,
     /// The annotation layer: spans below the data, everything else above
-    /// every decoration. `None` where the layer drew nothing on that side.
+    /// every panel of the document (#414). `None` where the layer drew nothing on that side.
     /// Refreshed by `refresh_axis*` (the anchor space may have moved) and by
     /// `refresh_annotations` (the items changed); never by anything else.
     pub(in crate::renderer) annotation_underlay: Option<crate::annotation::LayerTexture>,
@@ -22,6 +22,9 @@ pub struct ChartView {
     pub(in crate::renderer) annotation_map: crate::annotation::AnnotationMap,
     /// The annotation whose selection box the overlay carries.
     pub(in crate::renderer) annotation_selected: Option<usize>,
+    /// Where the annotation textures are drawn, in surface coordinates: the
+    /// document's area (#414), the panel rect on a view without subplots.
+    pub(in crate::renderer) annotation_rect: Rect,
     pub(in crate::renderer) layer_stamps: ChartViewLayerStamps,
     pub(in crate::renderer) transform_buffer: TrackedBuffer,
     pub(in crate::renderer) transform_bg: wgpu::BindGroup,

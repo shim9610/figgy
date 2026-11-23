@@ -103,6 +103,10 @@ fn axis_space(axis: &AxisOptions, len: f32) -> AxisSpace {
 pub struct AnnotationMap {
     state: AnnotationLayer,
     space: PixelSpace,
+    /// The logical rect the layer covers, where a pointer reaches its items:
+    /// the raster's (the document's area on a Cartesian chart, #414), the
+    /// panel for a map that drew nothing.
+    reach: RectF,
     map: HitMap<AnnotationLayer>,
     entries: Vec<(HitId, AnnotationElement)>,
     warnings: Vec<RenderWarning>,
@@ -113,6 +117,7 @@ impl AnnotationMap {
         Self {
             state: AnnotationLayer::empty(),
             space,
+            reach: space.panel,
             map: HitMap::for_state(),
             entries: Vec::new(),
             warnings: Vec::new(),
@@ -145,8 +150,7 @@ impl AnnotationMap {
     /// visually on wins, and later items win ties
     /// ([`crate::HitMap::hit_test`], #272).
     pub fn hit_test(&self, position: [f32; 2]) -> Option<HitId> {
-        if position.iter().any(|v| !v.is_finite())
-            || !self.space.panel.contains(position[0], position[1])
+        if position.iter().any(|v| !v.is_finite()) || !self.reach.contains(position[0], position[1])
         {
             return None;
         }
@@ -579,6 +583,14 @@ pub(crate) fn rasterize(request: &RasterRequest<'_>) -> crate::Result<Annotation
     let origin = request.origin;
     let mut map = AnnotationMap::empty(space);
     map.state = request.layer.clone();
+    if w > 0 && h > 0 && scale > 0.0 && scale.is_finite() {
+        map.reach = RectF {
+            x: origin[0],
+            y: origin[1],
+            width: w as f32 / scale,
+            height: h as f32 / scale,
+        };
+    }
     if w == 0 || h == 0 || scale <= 0.0 || !scale.is_finite() {
         return Ok(AnnotationRaster {
             underlay: None,

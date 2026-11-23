@@ -748,7 +748,7 @@ fn an_inset_covers_its_parent_and_takes_the_pointer() {
     let inset = chart.config().subplots[0].config.clone();
     let inset_area = inset.data_area().unwrap().0;
     // A parent reference line through the inset's probe row: drawn on the
-    // parent's overlay, it must be covered by the inset drawn after it.
+    // document's annotation overlay, it lies over the inset (#414).
     {
         use renderer::AnnotationSpace as _;
         let parent = renderer::annotation::pixel_space_for_config(chart.config());
@@ -796,14 +796,23 @@ fn an_inset_covers_its_parent_and_takes_the_pointer() {
             .unwrap();
         }
         let s = |v: f32| (v * scale).round() as u32;
-        // The inset's fill covers the parent inside it.
-        // A quarter up the inset's plot, between its axes and off the
-        // component's stroke.
+        // The annotation overlay is the document's top layer (#414): the
+        // parent's reference line crosses the inset a quarter up its plot.
         let centre = (
             s(inset_area.x as f32 + inset_area.width as f32 * 0.5),
             s(inset_area.y as f32 + inset_area.height as f32 * 0.75),
         );
-        let fill = pixel(&img, centre.0, centre.1);
+        assert!(
+            is_blue(pixel(&img, centre.0, centre.1)),
+            "{scale}x the reference line over the inset"
+        );
+        // Off the line, the inset's fill covers the parent's data inside it:
+        // a quarter down its plot, between its axes and off the component.
+        let fill = pixel(
+            &img,
+            s(inset_area.x as f32 + inset_area.width as f32 * 0.3),
+            s(inset_area.y as f32 + inset_area.height as f32 * 0.25),
+        );
         assert!(
             fill[0] >= 245 && fill[1] >= 245 && fill[2] >= 245,
             "{scale}x inset fill {fill:?}"
@@ -1037,6 +1046,110 @@ fn the_inset_marker_is_drawn_and_follows_the_inset() {
                 "{scale}x connector, moved {moved}"
             );
         }
+    }
+}
+
+// #414: an inset anchored in a subplot draws its marker in that subplot's
+// panel: the window projected with the subplot's axes and the connectors to
+// the inset, none of it on the root panel. Document export at 1x and 2x.
+#[test]
+fn an_inset_marker_lands_in_its_parent_subplot() {
+    let mut r = renderer();
+    let mut chart = chart();
+    chart.config_mut().chart_area.0.width = 400;
+    let blank = |area: Rect| {
+        let mut config = renderer::default::default_config();
+        config.chart_area = ChartArea(area);
+        config.legend.visible = false;
+        config.chart_title.visible = false;
+        config
+    };
+    let right = blank(Rect {
+        x: 420,
+        y: 0,
+        width: 400,
+        height: HEIGHT,
+    });
+    let right_plot = right.data_area().unwrap().0;
+    let zoom = blank(Rect {
+        x: right_plot.x + 90,
+        y: right_plot.y,
+        width: 220,
+        height: 200,
+    });
+    let subplot = |config, anchor, marker| renderer::Subplot {
+        config,
+        series: Vec::new(),
+        link_x: None,
+        link_y: None,
+        marker,
+        text_scale: Default::default(),
+        anchor,
+    };
+    let magenta = renderer::InsetMarker {
+        window: Some([[0.1, 0.3], [0.2, 0.4]]),
+        line: renderer::annotation::AnnotationLineStyle {
+            color: Color::from_rgb8(255, 0, 255),
+            width: 2.0,
+            style: renderer::line::LineStylePreset::Solid,
+        },
+        ..renderer::InsetMarker::default()
+    };
+    let anchor = renderer::InsetAnchor {
+        parent: renderer::CellRef::Subplot(0),
+        frame: [[0.4, 0.95], [0.0, 0.7]],
+    };
+    let config = chart.config_mut();
+    config.subplots.push(subplot(right, None, None));
+    config
+        .subplots
+        .push(subplot(zoom, Some(anchor), Some(magenta)));
+    let root = chart.config().chart_area.0;
+    let parts = chart.config().inset_marker_parts(1).expect("a marker");
+    let w = parts.window;
+    assert!(w.x >= right_plot.x as f32, "{w:?} not in {right_plot:?}");
+    let zoom_plot = chart
+        .config()
+        .subplot_config(1)
+        .unwrap()
+        .data_area()
+        .unwrap()
+        .0;
+    assert!(
+        w.x + w.width < zoom_plot.x as f32,
+        "{w:?} left of {zoom_plot:?}"
+    );
+    let [link, _] = parts.links.expect("connectors");
+    let list = [series("he", records())];
+    for scale in [1.0f32, 2.0] {
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        let s = |p: [f32; 2]| ((p[0] * scale).round() as u32, (p[1] * scale).round() as u32);
+        // The window's edges and a third of the way along a connector.
+        for (what, p) in [
+            ("bottom edge", [w.x + w.width * 0.5, w.y + w.height]),
+            ("left edge", [w.x, w.y + w.height * 0.5]),
+            (
+                "connector",
+                [
+                    link[0][0] + (link[1][0] - link[0][0]) / 3.0,
+                    link[0][1] + (link[1][1] - link[0][1]) / 3.0,
+                ],
+            ),
+        ] {
+            assert!(near(&img, s(p), 2, is_magenta), "{scale}x {what} at {p:?}");
+        }
+        // Nothing of the marker on the root panel.
+        let edge = ((root.x + root.width) as f32 * scale) as u32;
+        let stray = (0..img.height)
+            .flat_map(|y| (0..edge.min(img.width)).map(move |x| (x, y)))
+            .find(|&(x, y)| is_magenta(pixel(&img, x, y)));
+        assert_eq!(stray, None, "{scale}x marker ink on the root panel");
     }
 }
 

@@ -395,10 +395,9 @@ fn a_linked_view_state_edit_moves_the_group_in_one_call() {
     ));
 }
 
-// The document's annotation layer stays in the parent's area: it draws
-// there only, and its items answer the pointer route there only while
-// `Annotations` is active; with a subplot active the route reaches the
-// subplot's own elements.
+// An annotation placed in the parent's area draws there only, and its
+// items answer the pointer route there only while `Annotations` is active;
+// with a subplot active the route reaches the subplot's own elements.
 #[test]
 fn annotations_stay_in_the_parent_of_a_subplot_document() {
     use crate::annotation::{Anchor, Annotation, AnnotationKind};
@@ -448,6 +447,192 @@ fn annotations_stay_in_the_parent_of_a_subplot_document() {
     let route = |p| name(&hits, view.hit_test_active_layer(&config, &hits, p));
     assert_ne!(route(note), "annotation_0");
     assert_eq!(route(inside), "subplot_0:data_area");
+}
+
+// #414: the annotation layer is the document's top layer. An item over a
+// subplot (here an inset in the parent's plot, the subplot an item placed in
+// the parent's area can reach) draws over it on the display and in the
+// export at 1x and 2x, the pointer reaches it there while `Annotations` is
+// active, and selecting (`refresh_annotations`) and dragging it work there.
+#[test]
+fn an_annotation_over_a_subplot_draws_and_selects_over_it() {
+    use crate::annotation::{Anchor, Annotation, AnnotationKind};
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut config = document();
+    let plot = config.data_area().unwrap().0;
+    // Subplot 2: an opaque inset over the right half of the parent's plot.
+    let mut inset = chart(
+        Rect {
+            x: plot.x + plot.width / 2,
+            y: plot.y + 2,
+            width: plot.width / 2 - 2,
+            height: plot.height - 4,
+        },
+        (0.0, 1.0),
+    );
+    inset.chart_title.visible = false;
+    for a in [
+        &mut inset.bottom_x,
+        &mut inset.left_y,
+        &mut inset.top_x,
+        &mut inset.right_y,
+    ] {
+        a.out_margin = 4.0;
+        a.label_style.label_visible = false;
+    }
+    inset.plot_background = Some(Color::WHITE);
+    let inset_area = inset.chart_area.0;
+    config.subplots.push(Subplot {
+        config: inset,
+        series: Vec::new(),
+        link_x: None,
+        link_y: None,
+        marker: None,
+        text_scale: Default::default(),
+        anchor: None,
+    });
+    let plain = fresh_frame(&config);
+    let mut r = renderer();
+    let chart = Chart::new(config.clone());
+    let export = |r: &mut Renderer, chart: &Chart, scale: f32| {
+        r.export_rgba(
+            crate::ExportSource::chart(chart, &series()),
+            crate::ExportOptions::document(scale),
+        )
+        .block_on()
+        .unwrap()
+    };
+    let plain_exports = [export(&mut r, &chart, 1.0), export(&mut r, &chart, 2.0)];
+    // A boxed note at the inset's centre.
+    let ratio = |v: u32, from: u32, length: u32| (v as f32 - from as f32) / length as f32;
+    config.annotations.items = vec![Annotation::new(AnnotationKind::Text {
+        anchor: Anchor::Ratio {
+            x: ratio(inset_area.x + inset_area.width / 2, plot.x, plot.width),
+            y: ratio(inset_area.y + inset_area.height / 2, plot.y, plot.height),
+        },
+        text: RichText::plain("note", Color::BLACK, 10.0, ""),
+        box_style: Some(Default::default()),
+        align: Default::default(),
+    })];
+    let view = r
+        .create_chart_view(&Chart::new(config.clone()), UPPER)
+        .unwrap();
+    let map = view.annotation_map();
+    let note = map.bounds(map.find(0).unwrap()).unwrap();
+    let within = |x: f32, y: f32, area: Rect| {
+        x >= area.x as f32
+            && y >= area.y as f32
+            && x < (area.x + area.width) as f32
+            && y < (area.y + area.height) as f32
+    };
+    assert!(
+        within(note.x, note.y, inset_area)
+            && within(
+                note.x + note.width - 1.0,
+                note.y + note.height - 1.0,
+                inset_area
+            ),
+        "the note {note:?} is not over the inset {inset_area:?}"
+    );
+    let centre = [note.x + note.width / 2.0, note.y + note.height / 2.0];
+    // Display: the note's pixels change the inset's area only.
+    let annotated = fresh_frame(&config);
+    let pixels = differing(&plain, &annotated);
+    assert!(!pixels.is_empty(), "the annotation drew nothing");
+    assert!(
+        pixels
+            .iter()
+            .all(|&(x, y)| within(x as f32, y as f32, inset_area)),
+        "the note drew outside the inset"
+    );
+    assert!(
+        pixels.iter().any(|&(x, y)| {
+            let (x, y) = (x as f32, y as f32);
+            x >= note.x && x < note.x + note.width && y >= note.y && y < note.y + note.height
+        }),
+        "the note is covered by the inset"
+    );
+    // Export at 1x and 2x: the same, in the export's pixels.
+    let chart = Chart::new(config.clone());
+    for (k, scale) in [1.0f32, 2.0].into_iter().enumerate() {
+        let image = export(&mut r, &chart, scale);
+        let plain = &plain_exports[k];
+        assert_eq!((image.width, image.height), (plain.width, plain.height));
+        let at = |x: f32, y: f32| {
+            let (x, y) = ((x * scale) as u32, (y * scale) as u32);
+            let i = ((y * image.width + x) * 4) as usize;
+            (image.rgba[i..i + 4].to_vec(), plain.rgba[i..i + 4].to_vec())
+        };
+        let changed = (0..(note.height as u32))
+            .flat_map(|dy| (0..(note.width as u32)).map(move |dx| (dx, dy)))
+            .filter(|&(dx, dy)| {
+                let (a, b) = at(note.x + dx as f32, note.y + dy as f32);
+                a != b
+            })
+            .count();
+        assert!(changed > 0, "{scale}x: the note is covered by the inset");
+    }
+    // The pointer reaches the note over the inset on the annotation layer;
+    // on the inset's layer it reaches the inset.
+    let name = |hits: &HitMap, hit: Option<crate::LayerHit>| match hit {
+        Some(crate::LayerHit::Annotation { index, .. }) => format!("annotation_{index}"),
+        Some(crate::LayerHit::Element(id)) => hits.get(id).unwrap().element_id(),
+        None => "none".into(),
+    };
+    config.set_active_layer(LayerRef::Annotations);
+    let hits = HitMap::for_active_layer(&config);
+    assert_eq!(
+        name(&hits, view.hit_test_active_layer(&config, &hits, centre)),
+        "annotation_0"
+    );
+    config.set_active_layer(LayerRef::Subplot(2));
+    let hits = HitMap::for_active_layer(&config);
+    assert_ne!(
+        name(&hits, view.hit_test_active_layer(&config, &hits, centre)),
+        "annotation_0"
+    );
+    // Selecting it redraws the overlay with its box, over the inset.
+    config.set_active_layer(LayerRef::Annotations);
+    let id = r.register_chart(config.clone(), series()).unwrap();
+    let mut view = view;
+    let unselected = frame_with_view(&mut r, id, &mut view);
+    let before = view.layer_stamps().annotations;
+    r.refresh_annotations(&mut view, &Chart::new(config.clone()), UPPER, Some(0))
+        .unwrap();
+    assert_eq!(view.layer_stamps().annotations, before + 1);
+    assert_eq!(view.annotation_selected(), Some(0));
+    let selected = frame_with_view(&mut r, id, &mut view);
+    let boxed = differing(&unselected, &selected);
+    assert!(
+        boxed
+            .iter()
+            .any(|&(x, y)| within(x as f32, y as f32, inset_area)),
+        "the selection box is not drawn over the inset"
+    );
+    // Dragging it over the inset moves it there, where the pointer finds it.
+    let map = view.annotation_map();
+    let hit = map.find(0).unwrap();
+    map.drag_by(&mut config.annotations, hit, -12.0, 4.0)
+        .expect("a draggable note");
+    r.refresh_annotations(&mut view, &Chart::new(config.clone()), UPPER, Some(0))
+        .unwrap();
+    let moved = view
+        .annotation_map()
+        .bounds(view.annotation_map().find(0).unwrap())
+        .unwrap();
+    assert!((moved.x - (note.x - 12.0)).abs() < 0.5, "{moved:?}");
+    assert!((moved.y - (note.y + 4.0)).abs() < 0.5, "{moved:?}");
+    let hits = HitMap::for_active_layer(&config);
+    let moved_centre = [moved.x + moved.width / 2.0, moved.y + moved.height / 2.0];
+    assert_eq!(
+        name(
+            &hits,
+            view.hit_test_active_layer(&config, &hits, moved_centre)
+        ),
+        "annotation_0"
+    );
 }
 
 // The document export covers the union of every chart area; the panel

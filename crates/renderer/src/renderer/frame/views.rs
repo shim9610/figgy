@@ -43,8 +43,10 @@ impl Renderer {
         }
         // Annotation layer: two optional textures from one shared raster
         // pass. One layer per document, on the base view, anchored in the
-        // parent's own axis space (the group data area).
-        let (w, h) = checked_panel_raster_size(self.caps, chart.config(), panel_rect)?;
+        // parent's own axis space (the group data area) and covering the
+        // whole document (#414).
+        let (w, h) = checked_annotation_raster_size(self.caps, chart.config(), panel_rect)?;
+        view.annotation_rect = annotation_rect(chart.config(), panel_rect);
         let annotations = annotation_raster_for_chart(chart, None)?;
         view.annotation_underlay = annotations
             .underlay
@@ -123,6 +125,7 @@ impl Renderer {
                 crate::annotation::pixel_space_for_config(config),
             ),
             annotation_selected: None,
+            annotation_rect: panel_rect,
             layer_stamps: ChartViewLayerStamps {
                 grid: 1,
                 decoration: 1,
@@ -227,7 +230,7 @@ impl Renderer {
         chart: &Chart,
         panel_rect: Rect,
     ) -> Result<()> {
-        let (w, h) = checked_panel_raster_size(self.caps, chart.config(), panel_rect)?;
+        let (w, h) = checked_annotation_raster_size(self.caps, chart.config(), panel_rect)?;
         let key = AnnotationRasterKey {
             config: chart.config().clone(),
             selected: view.annotation_selected,
@@ -253,6 +256,7 @@ impl Renderer {
             h,
         )?;
         view.annotation_map = raster.map;
+        view.annotation_rect = annotation_rect(chart.config(), panel_rect);
         view.layer_stamps.annotations += 1;
         view.annotation_key = Some(key);
         view.rebuild_render_warnings();

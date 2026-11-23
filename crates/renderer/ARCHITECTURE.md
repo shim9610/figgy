@@ -27,7 +27,7 @@ JavaScript API for every renderer. [Browser product scope](https://github.com/sh
 - **Resident GPU columnar pool**: columns admitted to the resident path share a single GPU buffer with first-fit allocation. A removal schedules a ping-pong defragmentation that runs when the host calls `process_pending_maintenance()` (or `defragment()`); under `DefragPolicy::OnAllocFailure` an upload that hits `OutOfSpace` also defragments once and retries. The default policy is `Manual`. Logical values are stored as f32 hi/lo pairs when uploaded through `HiLoColumnSource`, preserving timestamp-sized offsets on the GPU. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed on the GPU by a compute scan (`line_arc.wgsl`). Per-point data enters the pool in four kinds, all through `ColumnSource`: columns, records (a box plot's fields), ragged columns (variable-length groups with `u32` offsets) and triangle index columns (#210: three `u32` vertex indices per triangle, checked and summarised in the upload's write observer). Records, ragged and triangle columns own internal member columns and are resident only.
 - **Nonresident rendering**: replayable columns are registered by logical ID, length, encoding, and revision without keeping their complete data in the GPU pool. The renderer requests bounded original ranges and accumulates the exact drawing; the host retains the source for replay after a view or output change. Contours, Milkyway lines, polar charts, histograms (`RuleKind::StreamedHistogram`, #284), line fills and step lines, vector series, point colour and size maps, and documents with overlay layers or subplots reject streamed sources with an explicit error. Admission, supported styles, cancellation, and completed-revision queries are described in the [web streaming contract](WASM.md#exact-streaming-en).
 - **Monotonic-x lines (opt-in)**: a `MonotonicLine` series in a monotonic chart (`register_monotonic_chart`) draws evenly spaced samples the host lends through a `MonotonicSource` on each call, reduced on the CPU to an M4 envelope per pixel column and drawn by the line pipeline; see [Monotonic-x lines](#monotonic-x-lines-m4-envelope) and [MONOTONIC.md](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md).
-- **Layered compositing**: grid → annotation underlay → data → axis/label/legend → annotation overlay, so grid never covers the data. A layered document draws the grid and data of every panel before the decoration of any panel, so on every layer the decoration is above the data. Axis raster can be produced as `Grid` and `Decoration` layers; `AxisLayerKind::All` remains a legacy single-pass helper.
+- **Layered compositing**: grid → annotation underlay → data → axis/label/legend → annotation overlay, so grid never covers the data. A layered document draws the grid and data of every panel before the decoration of any panel, so on every layer the decoration is above the data; insets follow, each as one unit in tree order. The annotation overlay is the document's single top layer (#414): one raster the size of the document area, composited after every panel, subplots and insets included, so annotation items and inset markers draw over them. The annotation underlay keeps its place under the base panel's data, clipped to the base panel. Axis raster can be produced as `Grid` and `Decoration` layers; `AxisLayerKind::All` remains a legacy single-pass helper.
 - **Data fidelity contract**: renderer/web consume the model contract without silently changing original coordinates, provenance, or axis↔data correspondence. Explicit clipping, log-domain skips, NaN skips, and antialiasing limits are rendering contracts rather than data rewrites.
 - **Headless PNG export**: GPU offscreen raster at `scale` 0.25 and up (24 DPI and up; `clamp_export_scale` raises smaller values, and the scaled target must fit the device texture limit, else `GpuResourceLimit`) → RGBA / PNG bytes in memory (async-first; blocking wrappers on native).
 - **SVG and PDF export**: the same document with its decorations as vector content (glyphs as outlines) and each panel group's data as an image of the PNG export's pixels; a hand-written PDF writer over `flate2`.
@@ -749,8 +749,8 @@ export_svg / export_pdf(ExportSource, ExportOptions):
                     run the panel's DataLess emit → VectorSink, clipped to
                     each data piece; a run with no GPU series writes no image
       Above(i)      emit_chart_chrome(panel i) → SlotFilter(Above) → VectorSink
-      Overlay       after the topmost panel of the parent's area, when the
-                    annotation layer is visible
+      Overlay       after every panel, insets included, when the annotation
+                    layer is visible (#414)
         ↓
     VectorSink: the canvas sink's mapping, widths, dashes and sketch curves
                 (smooth_cubics); text through place_rich_text / place_plain_text
@@ -763,8 +763,8 @@ export_svg / export_pdf(ExportSource, ExportOptions):
 ```
 
 The page is the logical size at 1 px = 0.75 pt. Each pass is clipped to the
-raster it stands for (the panel, or the parent's area for the annotation
-layer). The Milkyway glow is raster-only and omitted; no selection box is
+raster it stands for (the panel, the parent's area for the annotation
+underlay, the document's area for the annotation overlay). The Milkyway glow is raster-only and omitted; no selection box is
 drawn. The radial chart writes its frame without labels as one image
 (`layout(.., Labels::None)`, built uncached) and its title, labels, leader
 lines, split connectors and annotation overlay through the same sink
@@ -787,7 +787,7 @@ lines, split connectors and annotation overlay through the same sink
 - **상주 GPU 컬럼 풀**: 여러 컬럼이 하나의 GPU 버퍼를 공유하며, 충분한 크기의 첫 빈 공간에 할당한다. 컬럼을 제거하면 두 버퍼를 번갈아 쓰는 재배치를 예약하고, 호스트가 `process_pending_maintenance()`나 `defragment()`를 호출할 때 실행한다. `DefragPolicy::OnAllocFailure`를 지정하면 공간이 부족한 업로드도 한 번 재배치한 뒤 다시 시도한다. 기본 정책은 `Manual`이다. `HiLoColumnSource`로 올린 값은 두 f32의 hi/lo 쌍으로 저장하므로 큰 타임스탬프에서도 작은 값 차이를 보존한다. 업로드할 때 최소·최대·최소 양수 값을 저장해 자동 범위 맞춤에 사용한다. 점선의 누적 경로 길이처럼 점마다 필요한 값은 GPU 스캔 연산(`line_arc.wgsl`)으로 계산한다. 점별 데이터는 컬럼, 레코드(박스플롯의 필드), 가변 길이 컬럼(`u32` 오프셋으로 나눈 가변 길이 묶음), 삼각형 인덱스 컬럼(#210: 삼각형마다 `u32` 꼭짓점 인덱스 세 개이며, 업로드의 쓰기 관찰자가 검사하고 요약한다) 네 종류로 나뉘며 모두 `ColumnSource`로 풀에 들어온다. 레코드·가변 길이·삼각형 컬럼은 내부 멤버 컬럼을 가지며 상주 경로만 지원한다.
 - **비상주 렌더링**: 컬럼의 ID·길이·인코딩·리비전만 등록하고 전체 데이터를 GPU 풀에 보관하지 않는다. 렌더러가 제한된 크기로 원본 구간을 요청해 빠짐없이 그린다. 화면이나 출력 조건이 바뀌면 호스트가 같은 원본을 다시 공급한다. 등고선, 은하수 모드의 선, 극좌표 차트, 히스토그램(`RuleKind::StreamedHistogram`, #284), 선 채우기와 계단 보간, 벡터 시리즈, 점 색상·크기 매핑, 오버레이 레이어나 서브플롯이 있는 문서는 스트리밍 원본을 명시적인 오류로 거부한다. 실행 가능 조건, 지원 스타일, 취소와 완료 결과 조회는 [WASM 가이드](WASM.md#exact-streaming)를 참고한다.
 - **단조 x 선(선택)**: 단조 차트(`register_monotonic_chart`)의 `MonotonicLine` 시리즈는 호스트가 호출마다 `MonotonicSource`로 빌려주는 간격이 일정한 샘플을 CPU에서 픽셀 열마다 M4 엔벌로프로 줄여 선 파이프라인으로 그린다. [단조 x 선](#단조-x-선m4-엔벌로프)과 [MONOTONIC.md](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md)를 참고한다.
-- **레이어 합성**: 격자, 주석 아래층, 데이터, 축·라벨·범례, 주석 위층 순서로 그려 격자가 데이터를 가리지 않게 한다. 레이어가 있는 문서는 모든 패널의 격자와 데이터를 먼저 그리고 그다음 모든 패널의 장식을 그리므로, 어느 레이어에서든 장식이 데이터 위에 놓인다. 축 이미지는 `Grid`와 `Decoration` 레이어로 나눠 만들 수 있다. 기존 단일 패스 방식은 `AxisLayerKind::All`로 사용할 수 있다.
+- **레이어 합성**: 격자, 주석 아래층, 데이터, 축·라벨·범례, 주석 위층 순서로 그려 격자가 데이터를 가리지 않게 한다. 레이어가 있는 문서는 모든 패널의 격자와 데이터를 먼저 그리고 그다음 모든 패널의 장식을 그리므로, 어느 레이어에서든 장식이 데이터 위에 놓인다. 인셋은 그 뒤에 트리 순서대로 한 묶음씩 그린다. 주석 위층은 문서 전체를 덮는 단 하나의 최상위 층이다(#414). 문서 영역 크기의 래스터 한 장을 서브플롯과 인셋까지 모든 패널 다음에 합성하므로, 주석 항목과 인셋 마커가 그 위에 그려진다. 주석 아래층은 지금처럼 기준 패널의 데이터 아래에 기준 패널 범위로 잘라 그린다. 축 이미지는 `Grid`와 `Decoration` 레이어로 나눠 만들 수 있다. 기존 단일 패스 방식은 `AxisLayerKind::All`로 사용할 수 있다.
 - **원본 데이터 보존**: 렌더러와 웹 래퍼는 모델의 설정을 따르며 원본 좌표, 데이터 출처, 축과 데이터의 대응 관계를 임의로 바꾸지 않는다. 화면 밖 자르기, 로그축에서 0 이하 값 제외, NaN 제외, 안티앨리어싱은 표시 과정에만 적용한다.
 - **창 없이 PNG 출력**: 배율 0.25 이상(24 DPI 이상)으로 GPU에서 그린 뒤 RGBA 또는 PNG 바이트를 반환한다. 0.25보다 작은 배율은 `clamp_export_scale`이 0.25로 올린다. 배율을 적용한 렌더 타깃은 장치의 텍스처 크기 한도 안에 들어와야 하며, 넘으면 `GpuResourceLimit` 오류가 난다. 비동기 API를 기본으로 제공하며 네이티브에서는 동기 래퍼도 쓸 수 있다.
 - **SVG·PDF 출력**: 같은 문서를 장식 요소는 벡터(글자는 글리프 윤곽선)로, 패널 묶음의 데이터는 PNG 출력과 같은 픽셀의 이미지로 기록한다. PDF는 `flate2` 위에 직접 작성한 기록기로 만든다.
@@ -1227,7 +1227,7 @@ export_svg / export_pdf(ExportSource, ExportOptions):
                     이미지 한 장(DataRun), 그 뒤에 패널의 DataLess 배치 → VectorSink
                     (데이터 조각마다 잘라 기록), GPU 시리즈가 없는 구간은 이미지 생략
       Above(i)      패널 i의 emit_chart_chrome → SlotFilter(Above) → VectorSink
-      Overlay       부모 영역의 맨 위 패널 다음, 주석 층이 보일 때
+      Overlay       인셋까지 모든 패널 다음, 주석 층이 보일 때 (#414)
         ↓
     VectorSink: 캔버스 싱크와 같은 좌표 변환·선 두께·점선·스케치 곡선(smooth_cubics).
                 글자는 place_rich_text / place_plain_text와 glyph_outline으로 정확한 펜 위치에 기록.
@@ -1238,6 +1238,6 @@ export_svg / export_pdf(ExportSource, ExportOptions):
                        소프트 마스크가 있는 RGB XObject, 본문에 넣는 글리프 윤곽선)
 ```
 
-페이지 크기는 논리 크기를 1 px = 0.75 pt로 환산한 값이다. 각 단계는 PNG에서 대응하는 래스터의 범위(패널, 주석 층은 부모 영역)로 잘라 그린다. Milkyway의 발광 효과는 래스터 전용이므로 생략하며, 선택 상자는 그리지 않는다. 원형 차트는 라벨 없이 배치한 프레임(`layout(.., Labels::None)`, 캐시 없이 생성)을 이미지 한 장으로 넣고, 제목·라벨과 지시선·분할 원을 잇는 선·주석 오버레이를 같은 싱크로 기록한다(`layout(.., Labels::Into(sink))`).
+페이지 크기는 논리 크기를 1 px = 0.75 pt로 환산한 값이다. 각 단계는 PNG에서 대응하는 래스터의 범위(패널, 주석 아래층은 부모 영역, 주석 위층은 문서 영역)로 잘라 그린다. Milkyway의 발광 효과는 래스터 전용이므로 생략하며, 선택 상자는 그리지 않는다. 원형 차트는 라벨 없이 배치한 프레임(`layout(.., Labels::None)`, 캐시 없이 생성)을 이미지 한 장으로 넣고, 제목·라벨과 지시선·분할 원을 잇는 선·주석 오버레이를 같은 싱크로 기록한다(`layout(.., Labels::Into(sink))`).
 
 ---

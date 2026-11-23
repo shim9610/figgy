@@ -714,8 +714,8 @@ pub(crate) enum Pass {
     Data(Range<usize>),
     /// Panel `i`'s parts above the data.
     Above(usize),
-    /// The annotation layer's lines, arrows and text, after the topmost
-    /// panel of the parent's area.
+    /// The annotation layer's lines, arrows, text and inset markers, after
+    /// every panel of the document (#414).
     Overlay,
 }
 
@@ -771,16 +771,6 @@ fn group_end(document: &Config, panels: &[Config], start: usize) -> usize {
         end += 1;
     }
     end
-}
-
-/// The topmost panel drawn in the parent's area: where the PNG lifts the
-/// annotation overlay (`frame::lift_annotation_overlays`).
-fn overlay_panel(panels: &[Config]) -> usize {
-    let base = panels[0].chart_area.0;
-    (0..panels.len())
-        .rev()
-        .find(|&i| panels[i].chart_area.0 == base)
-        .unwrap_or(0)
 }
 
 /// The data area panel `panel` draws its data slot in (the prepared
@@ -865,9 +855,7 @@ enum Stage {
     Above {
         next: usize,
     },
-    Overlay {
-        next: usize,
-    },
+    Overlay,
     Done,
 }
 
@@ -939,18 +927,18 @@ impl Passes {
                 }
                 Stage::Above { next } => {
                     if next >= n {
-                        self.stage = Stage::Done;
+                        self.stage = if annotations {
+                            Stage::Overlay
+                        } else {
+                            Stage::Done
+                        };
                         continue;
                     }
-                    self.stage = if annotations && next == overlay_panel(panels) {
-                        Stage::Overlay { next: next + 1 }
-                    } else {
-                        Stage::Above { next: next + 1 }
-                    };
+                    self.stage = Stage::Above { next: next + 1 };
                     return Some(Pass::Above(next));
                 }
-                Stage::Overlay { next } => {
-                    self.stage = Stage::Above { next };
+                Stage::Overlay => {
+                    self.stage = Stage::Done;
                     return Some(Pass::Overlay);
                 }
                 Stage::Done => return None,
@@ -962,7 +950,7 @@ impl Passes {
 /// The annotation layer of `document` as the raster draws it
 /// (`frame::annotation_raster_for_chart`).
 fn annotation_request(document: &Config) -> RasterRequest<'_> {
-    let area = document.chart_area.0;
+    let area = document.document_area();
     RasterRequest {
         layer: &document.annotations,
         space: pixel_space_for_config(document),
@@ -1020,10 +1008,12 @@ pub(crate) fn emit_pass(
 }
 
 /// The rectangle a pass's raster covers in the PNG, which the writer clips
-/// the pass to: the panel, or the parent's area for the annotation layer.
+/// the pass to: the panel, the parent's area for the annotation underlay,
+/// the document's area for the annotation overlay (#414).
 pub(crate) fn pass_clip(document: &Config, panels: &[Config], pass: &Pass) -> Rect {
     match *pass {
         Pass::Below(i) | Pass::Above(i) => panels[i].chart_area.0,
+        Pass::Overlay => document.document_area(),
         _ => document.chart_area.0,
     }
 }
@@ -2196,10 +2186,20 @@ mod tests {
                                 pdf.image(origin, &image).unwrap();
                                 continue;
                             }
-                            Pass::Underlay | Pass::Overlay => assert!(n > 0),
+                            Pass::Underlay => assert!(n > 0),
+                            // The overlay is the document's top layer, after
+                            // every panel (#414).
+                            Pass::Overlay => assert_eq!(above, n, "{pass:?} after every panel"),
                         }
                         let clip = pass_clip(&placed, slice, &pass);
                         assert!(clip.width > 0 && clip.height > 0, "{pass:?}");
+                        if pass == Pass::Overlay {
+                            assert_eq!(
+                                clip,
+                                placed.document_area(),
+                                "the overlay covers the document"
+                            );
+                        }
                         emit_pass(&placed, slice, &pass, &mut PaintCount::default(), scale);
                         write_pass(&mut svg, &placed, slice, &pass, scale).unwrap();
                         write_pass(&mut pdf, &placed, slice, &pass, scale).unwrap();
