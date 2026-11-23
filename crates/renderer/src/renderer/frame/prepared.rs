@@ -53,6 +53,8 @@ pub(in crate::renderer) struct PreparedView {
     pub(in crate::renderer) annotation_underlay_bind_group: Option<wgpu::BindGroup>,
     pub(in crate::renderer) annotation_overlay_bind_group: Option<wgpu::BindGroup>,
     pub(in crate::renderer) annotations_visible: bool,
+    /// Where the annotation textures are drawn (`ChartView::annotation_rect`).
+    pub(in crate::renderer) annotation_rect: Rect,
     pub(in crate::renderer) _grid_charge: crate::gpu_memory::SharedCharge,
     pub(in crate::renderer) _decoration_charge: crate::gpu_memory::SharedCharge,
     pub(in crate::renderer) _annotation_charges: Vec<crate::gpu_memory::SharedCharge>,
@@ -82,6 +84,7 @@ impl PreparedView {
                 .as_ref()
                 .map(|l| l.bind_group.clone()),
             annotations_visible,
+            annotation_rect: view.annotation_rect,
             _grid_charge: view.grid_texture.shared_charge(),
             _decoration_charge: view.decoration_texture.shared_charge(),
             _annotation_charges: view

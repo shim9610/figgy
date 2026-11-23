@@ -261,9 +261,6 @@ impl PrepareContext<'_> {
         self.prepare_arc_items(items, &mut panels)?;
         let (mut prepared, column_sources) =
             self.resolve_prepared_items(items, &panels, &self.pipelines)?;
-        if layered {
-            lift_annotation_overlays(&mut prepared, &group_sizes);
-        }
         self.attach_resident_displays(items, &mut prepared);
         self.attach_ink_masks(source, &group_sizes, items, &prepared);
         Ok(PreparedFrame {

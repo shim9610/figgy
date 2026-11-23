@@ -935,10 +935,8 @@ impl Renderer {
         // item per panel. A panel export keeps the base panel only.
         let storage = PanelDrawStorage::expand(&document)?;
         let mut items = storage.items(&document)?;
-        let mut group_sizes = storage.group_sizes(&document)?;
         if scope == ExportScope::Panel {
             items.truncate(1);
-            group_sizes = vec![1];
         }
         let items = items.as_slice();
         // A monotonic series is drawn only from an envelope built for the
@@ -1072,7 +1070,6 @@ impl Renderer {
         self.prepare_arc_items(items, &mut panels)?;
         let (mut prepared_items, _) =
             self.resolve_prepared_items(items, &panels, &export_target_pipelines)?;
-        lift_annotation_overlays(&mut prepared_items, &group_sizes);
         self.attach_export_composites(
             items,
             &mut prepared_items,

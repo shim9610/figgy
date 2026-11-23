@@ -330,11 +330,12 @@ impl Renderer {
                         }
                         crate::sink::Slot::Above => super::composite::PieceSeries::shared(&[]),
                     };
-                    // Without the chrome only the data slot is drawn.
-                    let (annotation_underlay, annotation_overlay) = if chrome {
-                        item.view.annotation_layers(&item.axis_pipeline)
+                    // Without the chrome only the data slot is drawn. The
+                    // annotation overlay is drawn after every panel (#414).
+                    let annotation_underlay = if chrome {
+                        item.view.annotation_layers(&item.axis_pipeline).0
                     } else {
-                        (None, None)
+                        None
                     };
 
                     // The single style decision per panel: the chart's `DrawStyle`
@@ -368,16 +369,35 @@ impl Renderer {
                                 bind_group: &item.view.grid_bind_group,
                             }),
                             annotation_underlay,
+                            annotation_rect: item.view.annotation_rect,
                             above: chrome.then_some(AxisLayer {
                                 pipeline: &item.axis_pipeline,
                                 bind_group: &item.view.decoration_bind_group,
                             }),
-                            annotation_overlay,
+                            annotation_overlay: None,
                         },
                         series_layers,
                         cached,
                         slot,
                         steps(index),
+                    );
+                }
+            }
+        }
+        // The document's annotation overlay is its top layer (#414): over
+        // every panel, subplots and insets included, its inset markers over
+        // the insets. Only a document's base view carries one.
+        if chrome {
+            for item in prepared {
+                if item.stream_display.is_some() {
+                    continue;
+                }
+                if let (_, Some(layer)) = item.view.annotation_layers(&item.axis_pipeline) {
+                    super::composite::draw_annotation_overlay(
+                        pass,
+                        target_size,
+                        item.view.annotation_rect,
+                        &layer,
                     );
                 }
             }
