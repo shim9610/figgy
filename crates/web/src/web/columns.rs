@@ -582,9 +582,10 @@ impl FiggyChart {
     /// `indices[3t]`, `indices[3t + 1]` and `indices[3t + 2]`.
     ///
     /// `indices` is a `Uint32Array` whose length is a non-zero multiple of 3;
-    /// anything else is an error and nothing is registered. The array is
-    /// borrowed for the upload, not copied, and every index up to
-    /// `u32::MAX` reaches the GPU exactly. Resident only, as
+    /// anything else is an error and nothing is registered. wasm-bindgen
+    /// copies the JS array into wasm memory for the call; that call-scoped
+    /// copy is uploaded and dropped when the call returns, and every index up
+    /// to `u32::MAX` reaches the GPU exactly. Resident only, as
     /// `register_record`.
     pub fn register_triangles(&mut self, id: &str, indices: &[u32]) -> Result<(), JsValue> {
         if self.renderer.logical_column(id).is_some() {

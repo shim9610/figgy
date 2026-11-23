@@ -360,7 +360,7 @@ impl PreparedTriMeshLayer {
             transform_bg: layer.transform_bg.clone(),
             style_bg: layer.style_bg,
             field_bg: layer.field_bg,
-            charge: layer.charge,
+            charge: layer.charge.into_owned(),
             triangles: layer.triangles,
         }
     }
@@ -376,7 +376,7 @@ impl PreparedTriMeshLayer {
             transform_bg: transform.unwrap_or(&self.transform_bg),
             style_bg: self.style_bg.clone(),
             field_bg: self.field_bg.clone(),
-            charge: Arc::clone(&self.charge),
+            charge: std::borrow::Cow::Borrowed(&self.charge),
             triangles: self.triangles,
         }
     }
@@ -414,8 +414,8 @@ impl PreparedTernaryRegionLayer {
             transform_bg: layer.transform_bg.clone(),
             region_bg: layer.region_bg,
             count: layer.count,
-            charge: layer.charge,
-            ring_charge: layer.ring_charge,
+            charge: layer.charge.into_owned(),
+            ring_charge: layer.ring_charge.into_owned(),
         }
     }
 
@@ -426,8 +426,8 @@ impl PreparedTernaryRegionLayer {
             transform_bg: &self.transform_bg,
             region_bg: self.region_bg.clone(),
             count: self.count,
-            charge: self.charge.clone(),
-            ring_charge: self.ring_charge.clone(),
+            charge: std::borrow::Cow::Borrowed(&self.charge),
+            ring_charge: std::borrow::Cow::Borrowed(&self.ring_charge),
         }
     }
 }
@@ -442,8 +442,8 @@ impl PreparedSurfaceLayer {
             surface_bg: layer.surface_bg,
             vertices: layer.vertices,
             instances: layer.instances,
-            charge: layer.charge,
-            surface_charge: layer.surface_charge,
+            charge: layer.charge.into_owned(),
+            surface_charge: layer.surface_charge.into_owned(),
         }
     }
 
@@ -456,8 +456,8 @@ impl PreparedSurfaceLayer {
             surface_bg: self.surface_bg.clone(),
             vertices: self.vertices,
             instances: self.instances,
-            charge: Arc::clone(&self.charge),
-            surface_charge: Arc::clone(&self.surface_charge),
+            charge: std::borrow::Cow::Borrowed(&self.charge),
+            surface_charge: std::borrow::Cow::Borrowed(&self.surface_charge),
         }
     }
 }
@@ -483,7 +483,7 @@ impl PreparedVectorLayer {
             transform_bg: layer.transform_bg.clone(),
             style_bg: layer.style_bg,
             vector_bg: layer.vector_bg,
-            charge: layer.charge,
+            charge: layer.charge.into_owned(),
             count: layer.count,
             indirect: layer
                 .indirect
@@ -505,7 +505,7 @@ impl PreparedVectorLayer {
                 .unwrap_or(&self.transform_bg),
             style_bg: self.style_bg.clone(),
             vector_bg: self.vector_bg.clone(),
-            charge: Arc::clone(&self.charge),
+            charge: std::borrow::Cow::Borrowed(&self.charge),
             count: self.count,
             indirect: self
                 .indirect

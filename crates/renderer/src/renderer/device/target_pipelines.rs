@@ -55,7 +55,7 @@ pub(in crate::renderer) struct TargetPipelines {
     /// The ring-start scan the region draw and pick read (#49), from the
     /// same module.
     pub(in crate::renderer) ternary_region_scan:
-        Option<std::sync::Arc<data_render::ternary_region::RingScanPipelines>>,
+        Option<data_render::ternary_region::RingScanPipelines>,
     /// The histogram envelope's fill and scan, created with the first
     /// precise or mapped histogram.
     pub(in crate::renderer) bar_envelope: Option<data_render::bar_envelope::Pipelines>,
@@ -251,20 +251,16 @@ impl TargetPipelines {
         })
     }
 
-    /// Compile the ring-start scan when it is missing, and return it.
-    pub(in crate::renderer) fn ensure_ternary_region_scan(
-        &mut self,
-        device: &wgpu::Device,
-    ) -> std::sync::Arc<data_render::ternary_region::RingScanPipelines> {
-        if let Some(scan) = &self.ternary_region_scan {
-            return std::sync::Arc::clone(scan);
+    /// Compile the ring-start scan when it is missing.
+    pub(in crate::renderer) fn ensure_ternary_region_scan(&mut self, device: &wgpu::Device) {
+        if self.ternary_region_scan.is_some() {
+            return;
         }
-        let scan = std::sync::Arc::new(data_render::ternary_region::create_ring_scan_pipelines(
+        let scan = data_render::ternary_region::create_ring_scan_pipelines(
             device,
             self.ternary_region_module(device),
-        ));
-        self.ternary_region_scan = Some(std::sync::Arc::clone(&scan));
-        scan
+        );
+        self.ternary_region_scan = Some(scan);
     }
 
     /// Compile the ternary region module and the one pipeline `pass` when

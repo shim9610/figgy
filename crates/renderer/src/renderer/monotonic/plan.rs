@@ -168,23 +168,32 @@ impl Renderer {
     }
 
     /// `config` placed as chart `id`'s display would place it after a
-    /// change of `placement`.
-    fn placed_for(&self, id: ChartId, config: &Config, placement: Placement) -> Result<Config> {
+    /// change of `placement`; `config` itself where nothing places it.
+    fn placed_for<'c>(
+        &self,
+        id: ChartId,
+        config: &'c Config,
+        placement: Placement,
+    ) -> Result<std::borrow::Cow<'c, Config>> {
         let state = self
             .chart_states
             .get(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
         let placed = match (placement, &state.display) {
             (Placement::Surface(None), _) | (Placement::Current | Placement::Hold(_), None) => {
-                config.clone()
+                std::borrow::Cow::Borrowed(config)
             }
-            (Placement::Surface(Some(surface)), _) => display_config_for_surface(config, surface).0,
+            (Placement::Surface(Some(surface)), _) => {
+                std::borrow::Cow::Owned(display_config_for_surface(config, surface).0)
+            }
             // A release fits the document to the surface again; a hold
             // keeps the placement it begins at, the current one.
             (Placement::Hold(false), Some(display)) if display.hold.is_some() => {
-                display_config_for_surface(config, display.surface).0
+                std::borrow::Cow::Owned(display_config_for_surface(config, display.surface).0)
             }
-            (Placement::Current | Placement::Hold(_), Some(display)) => display.place(config).0,
+            (Placement::Current | Placement::Hold(_), Some(display)) => {
+                std::borrow::Cow::Owned(display.place(config).0)
+            }
         };
         Ok(placed)
     }
@@ -422,7 +431,13 @@ impl Renderer {
             error: MonotonicError::NotBuilt,
         };
         // Each member's envelope, as the last full call placed it.
-        let mut member_panels = Vec::with_capacity(members.len());
+        let mut member_panels = Vec::new();
+        member_panels
+            .try_reserve_exact(members.len())
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "monotonic member panels",
+                reason: error.to_string(),
+            })?;
         for member in &members {
             let record = self
                 .monotonic

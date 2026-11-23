@@ -669,8 +669,8 @@ struct AutomaticPlacementCacheEntry {
 }
 
 struct ContourLabelPlacementSlot {
-    anchors: GpuRef<wgpu::Buffer>,
-    indirect: GpuRef<wgpu::Buffer>,
+    anchors: wgpu::Buffer,
+    indirect: wgpu::Buffer,
     label_gap_bg: wgpu::BindGroup,
     automatic: Option<AutomaticPlacementResources>,
     _charge: SharedCharge,
@@ -1010,8 +1010,8 @@ impl ContourLabelPlacementSlot {
             params_buf,
         );
         Ok(GpuRef::new(Self {
-            anchors: GpuRef::new(anchors_buf),
-            indirect: GpuRef::new(indirect),
+            anchors: anchors_buf,
+            indirect,
             label_gap_bg,
             automatic: None,
             _charge: crate::gpu_memory::shared_charge(
@@ -1102,8 +1102,8 @@ impl ContourLabelPlacementSlot {
         let label_gap_bg =
             Self::build_label_gap_bind_group(device, pipelines, &anchors, &indirect, params_buf);
         Ok(GpuRef::new(Self {
-            anchors: GpuRef::new(anchors),
-            indirect: GpuRef::new(indirect),
+            anchors,
+            indirect,
             label_gap_bg,
             automatic: Some(AutomaticPlacementResources {
                 anchor_params_buf,

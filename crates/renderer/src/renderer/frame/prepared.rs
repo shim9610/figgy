@@ -269,7 +269,7 @@ impl PreparedSeries {
                 transform_bg: layer.transform_bg.clone(),
                 style_bg: layer.style_bg,
                 field_bg: layer.field_bg,
-                charge: layer.charge,
+                charge: layer.charge.into_owned(),
                 drawable: layer.drawable,
             }),
             bar: layers.bar.map(|layer| PreparedBarLayer {
@@ -291,7 +291,7 @@ impl PreparedSeries {
                 transform_bg: layer.transform_bg.clone(),
                 style_bg: layer.style_bg,
                 field_bg: layer.field_bg,
-                charge: layer.charge,
+                charge: layer.charge.into_owned(),
                 drawable: layer.drawable,
                 label: layer.label.map(|label| PreparedContourLabel {
                     pipeline: label.pipeline.clone(),
@@ -429,7 +429,7 @@ impl PreparedSeries {
                     transform_bg: transform.unwrap_or(&layer.transform_bg),
                     style_bg: layer.style_bg.clone(),
                     field_bg: layer.field_bg.clone(),
-                    charge: Arc::clone(&layer.charge),
+                    charge: std::borrow::Cow::Borrowed(&layer.charge),
                     drawable: layer.drawable,
                 }),
             bar: self.bar.as_ref().map(|layer| data_render::ColumnBarLayer {
@@ -466,7 +466,7 @@ impl PreparedSeries {
                     transform_bg: transform.unwrap_or(&layer.transform_bg),
                     style_bg: layer.style_bg.clone(),
                     field_bg: layer.field_bg.clone(),
-                    charge: Arc::clone(&layer.charge),
+                    charge: std::borrow::Cow::Borrowed(&layer.charge),
                     drawable: layer.drawable,
                     label: layer
                         .label

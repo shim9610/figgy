@@ -171,9 +171,18 @@ impl PrepareContext<'_> {
         self.monotonic.check_panels(items)?;
         // One Vec of per-panel products for the whole frame; each phase below
         // fills its part in place.
-        let mut panels = Vec::with_capacity(items.len());
+        let products =
+            |error: std::collections::TryReserveError| FiggyError::StateAllocationFailed {
+                resource: "prepared panel products",
+                reason: error.to_string(),
+            };
+        let mut panels = Vec::new();
+        panels.try_reserve_exact(items.len()).map_err(products)?;
         for item in items {
-            let mut per_series = Vec::with_capacity(item.series.len());
+            let mut per_series = Vec::new();
+            per_series
+                .try_reserve_exact(item.series.len())
+                .map_err(products)?;
             for series in item.series {
                 validate_contour_level_count(
                     series.config.series_id.as_str(),

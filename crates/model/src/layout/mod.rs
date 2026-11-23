@@ -6,6 +6,7 @@ mod nudge;
 mod rect;
 
 pub use fit::FitStrategy;
+pub(crate) use fit::PanelAreas;
 pub use geometry::{
     BreakKnot, BreakMap, LABEL_GAP, LEGEND_BORDER_WIDTH, LEGEND_INSET, LOG_RANGE_FALLBACK_MIN,
     MeasuredTitle, PROBABILITY_RANGE_FALLBACK, TICK_ROW_REFERENCE, TitleBand, TitlePlacement,

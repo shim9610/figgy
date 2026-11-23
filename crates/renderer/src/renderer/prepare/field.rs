@@ -266,15 +266,23 @@ impl PrepareContext<'_> {
                 len: u32::try_from(handle.len_values).unwrap_or(u32::MAX),
             })
         };
-        let grid = [
+        // Fixed tables: the value and index columns, then the height column
+        // on a 3D chart; `entries` of them are live.
+        let mut grid = [
             column(&values, "mesh value column lane")?,
             column(&indices, "mesh index column lane")?,
+            data_render::GridColumnGpu { base: 0, len: 0 },
         ];
-        let height_column = height
-            .as_ref()
-            .map(|handle| column(handle, "mesh height column lane"))
-            .transpose()?;
-        let entries = grid.len() + usize::from(height_column.is_some());
+        let mut epoch_table = [epochs[0], epochs[1], 0];
+        if let Some(handle) = height.as_ref() {
+            grid[2] = column(handle, "mesh height column lane")?;
+        }
+        if let Some(height_epoch) = height_epoch {
+            epoch_table[2] = height_epoch;
+        }
+        let entries = 2 + usize::from(height.is_some());
+        let grid = &grid[..entries];
+        let epoch_table = &epoch_table[..entries];
 
         let mut flags = data_render::FIELD_FLAG_MESH;
         if mesh.values.at == crate::tri_mesh::MeshValueLocation::Faces {
@@ -296,7 +304,6 @@ impl PrepareContext<'_> {
         if colorbar.log_z {
             flags |= data_render::FIELD_FLAG_LOG_Z;
         }
-        let ColorbarStops { stops, stop_count } = colorbar_stops("mesh colourmap stops", bar)?;
         let declared: &[f64] = mesh.contour.as_ref().map_or(&[], |c| &c.levels);
         if declared.len() > crate::data_config::MAX_CONTOUR_LEVELS {
             return Err(FiggyError::InvalidSeriesConfig {
@@ -307,33 +314,22 @@ impl PrepareContext<'_> {
                 },
             });
         }
-        let mut levels = crate::gpu_contour::try_collect(
-            "mesh contour levels",
-            declared.iter().map(|l| *l as f32),
-        )?;
-        if levels.is_empty() {
-            levels.push(0.0);
-        }
         let level_count = u32::try_from(declared.len()).unwrap_or(u32::MAX);
-        let (line_width_px, level_colors) = match &mesh.contour {
-            Some(contour) => (
-                contour.line.line_width * scale,
-                crate::gpu_contour::try_collect(
-                    "mesh contour level colours",
-                    (0..declared.len()).map(|index| {
-                        let color = contour
-                            .per_level_color
-                            .as_ref()
-                            .and_then(|colors| colors.get(index))
-                            .copied()
-                            .unwrap_or(contour.line.line_color);
-                        let a = color.a.clamp(0.0, 1.0);
-                        [color.r * a, color.g * a, color.b * a, a]
-                    }),
-                )?,
-            ),
-            None => (0.0, Vec::new()),
+        let level_color = |contour: &crate::data_config::ContourConfig, index: usize| {
+            let color = contour
+                .per_level_color
+                .as_ref()
+                .and_then(|colors| colors.get(index))
+                .copied()
+                .unwrap_or(contour.line.line_color);
+            let a = color.a.clamp(0.0, 1.0);
+            [color.r * a, color.g * a, color.b * a, a]
         };
+        let level_color_count = match &mesh.contour {
+            Some(_) => declared.len(),
+            None => 0,
+        };
+        let colormap = bar.colormap.stops();
         let params = data_render::FieldParamsGpu {
             x_base: lane_u32(x.offset / 4, "mesh x column lane")?,
             y_base: lane_u32(y.offset / 4, "mesh y column lane")?,
@@ -342,16 +338,88 @@ impl PrepareContext<'_> {
             cols: u32::try_from(entries).unwrap_or(u32::MAX),
             rows: triangle_count,
             level_count,
-            stop_count,
+            stop_count: u32::try_from(colormap.len()).unwrap_or(u32::MAX),
             flags,
             opacity,
-            line_width_px,
-            level_color_count: u32::try_from(level_colors.len()).unwrap_or(u32::MAX),
+            line_width_px: mesh
+                .contour
+                .as_ref()
+                .map_or(0.0, |contour| contour.line.line_width * scale),
+            level_color_count: u32::try_from(level_color_count).unwrap_or(u32::MAX),
             z_min: colorbar.z_min,
             z_max: colorbar.z_max,
             image: [0; 4],
         };
         let nan = bar.nan_color;
+        let nan_color = [
+            nan.r.to_bits(),
+            nan.g.to_bits(),
+            nan.b.to_bits(),
+            nan.a.to_bits(),
+        ];
+        let pool_layout_generation = self.pool.layout_generation();
+        // Compare against the config before building anything: a frame that
+        // changes nothing allocates nothing.
+        if let Some(scratch) = self.field_cache.get(cfg.series_id.as_str()) {
+            let cached = &scratch.signature;
+            let levels_match = if declared.is_empty() {
+                cached.levels.as_slice() == [0.0]
+            } else {
+                cached.levels.len() == declared.len()
+                    && cached
+                        .levels
+                        .iter()
+                        .zip(declared)
+                        .all(|(cached, level)| *cached == *level as f32)
+            };
+            let stops_match = if colormap.is_empty() {
+                cached.stops.as_slice() == [[0.0; 4]]
+            } else {
+                cached.stops.len() == colormap.len()
+                    && cached
+                        .stops
+                        .iter()
+                        .zip(colormap)
+                        .all(|(cached, color)| *cached == [color.r, color.g, color.b, color.a])
+            };
+            let level_colors_match = match &mesh.contour {
+                Some(contour) => {
+                    cached.level_colors.len() == declared.len()
+                        && cached
+                            .level_colors
+                            .iter()
+                            .enumerate()
+                            .all(|(index, cached)| *cached == level_color(contour, index))
+                }
+                None => cached.level_colors.is_empty(),
+            };
+            if cached.pool_layout_generation == pool_layout_generation
+                && cached.params == params
+                && cached.grid.as_slice() == grid
+                && cached.epochs.as_slice() == epoch_table
+                && levels_match
+                && stops_match
+                && cached.nan_color == nan_color
+                && level_colors_match
+            {
+                return Ok(Arc::clone(&scratch.sources));
+            }
+        }
+        let ColorbarStops { stops, .. } = colorbar_stops("mesh colourmap stops", bar)?;
+        let mut levels = crate::gpu_contour::try_collect(
+            "mesh contour levels",
+            declared.iter().map(|l| *l as f32),
+        )?;
+        if levels.is_empty() {
+            levels.push(0.0);
+        }
+        let level_colors = match &mesh.contour {
+            Some(contour) => crate::gpu_contour::try_collect(
+                "mesh contour level colours",
+                (0..declared.len()).map(|index| level_color(contour, index)),
+            )?,
+            None => Vec::new(),
+        };
         let alloc = |resource: &'static str| {
             move |error: std::collections::TryReserveError| FiggyError::StateAllocationFailed {
                 resource,
@@ -362,34 +430,22 @@ impl PrepareContext<'_> {
         grid_table
             .try_reserve_exact(entries)
             .map_err(alloc("mesh grid table"))?;
-        grid_table.extend_from_slice(&grid);
-        grid_table.extend(height_column);
+        grid_table.extend_from_slice(grid);
         let mut epoch_list = Vec::new();
         epoch_list
             .try_reserve_exact(entries)
             .map_err(alloc("mesh grid epochs"))?;
-        epoch_list.extend_from_slice(&epochs);
-        epoch_list.extend(height_epoch);
+        epoch_list.extend_from_slice(epoch_table);
         let signature = FieldSignature {
-            pool_layout_generation: self.pool.layout_generation(),
+            pool_layout_generation,
             params,
             grid: grid_table,
             epochs: epoch_list,
             levels,
             stops,
-            nan_color: [
-                nan.r.to_bits(),
-                nan.g.to_bits(),
-                nan.b.to_bits(),
-                nan.a.to_bits(),
-            ],
+            nan_color,
             level_colors,
         };
-        if let Some(scratch) = self.field_cache.get(cfg.series_id.as_str())
-            && scratch.signature == signature
-        {
-            return Ok(Arc::clone(&scratch.sources));
-        }
         let mut ids = Vec::new();
         ids.try_reserve_exact(entries)
             .map_err(alloc("mesh source ids"))?;
@@ -400,8 +456,7 @@ impl PrepareContext<'_> {
         owned
             .try_reserve_exact(entries)
             .map_err(alloc("mesh source epochs"))?;
-        owned.extend_from_slice(&epochs);
-        owned.extend(height_epoch);
+        owned.extend_from_slice(epoch_table);
         let sources = Arc::new(GridSources { ids, epochs: owned });
         let scratch = self.build_field_scratch(signature, sources)?;
         if !self.in_frame {

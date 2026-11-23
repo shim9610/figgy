@@ -54,7 +54,7 @@ pub struct ColumnContourLayer<'a> {
     /// group(2): pool, grid table, levels, stops, params, level colours.
     pub field_bg: wgpu::BindGroup,
     /// Keeps the group-2 lump charge alive for as long as this layer can draw.
-    pub charge: std::sync::Arc<crate::gpu_memory::GpuByteCharge>,
+    pub charge: std::borrow::Cow<'a, crate::gpu_memory::SharedCharge>,
     /// False when the grid has no cell to interpolate across.
     pub drawable: bool,
     /// `None` when the series draws no labels.
