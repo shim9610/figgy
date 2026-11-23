@@ -16,3 +16,11 @@ disallowed-macros = [
     { path = "core::debug_assert_eq", reason = "product code returns an error instead of panicking (#152)" },
     { path = "core::debug_assert_ne", reason = "product code returns an error instead of panicking (#152)" },
 ]
+
+# No lock-based synchronization in product code (CLAUDE.md rule 4). The one
+# approved exception, the font registration lock (#160), carries an
+# `allow` with its reason. Tests keep their per-binary locks.
+disallowed-types = [
+    { path = "std::sync::Mutex", reason = "no lock-based synchronization (CLAUDE.md rule 4)" },
+    { path = "std::sync::RwLock", reason = "no lock-based synchronization (CLAUDE.md rule 4)" },
+]

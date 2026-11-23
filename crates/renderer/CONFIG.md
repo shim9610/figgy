@@ -498,8 +498,14 @@ document axes that follows zoom and range changes, or
 `{"Ratio": {"x": f32, "y": f32}}`, a fraction of the plot area, `(0, 0)` at its
 top-left and `(1, 1)` at its bottom-right corner, fixed on screen. Ratio values
 outside `0..1` place a text box or arrow endpoint outside the plot area but
-inside the panel. `Anchor::converted(&space, kind)` switches between the two
-kinds while keeping the screen position.
+inside the panel. On a Cartesian chart the panel is the document area
+(`Config::document_area`, the union of the chart area and every subplot's),
+so a text box or an arrow may sit over a sibling subplot beside the chart
+area, where the overlay draws it and the pointer reaches it ([#418](https://github.com/shim9610/figgy/issues/418)); without
+subplots it is the chart area. Both kinds still resolve against the chart's
+own plot and axes, and reference lines, spans and shapes stay clipped to its
+plot. `Anchor::converted(&space, kind)` switches between the two kinds while
+keeping the screen position.
 
 The styles are `serde(default)` with these defaults:
 
