@@ -1434,7 +1434,10 @@ impl Renderer {
     ///
     /// A layer without series, and an axis whose columns have no finite
     /// span, keep their ranges; a chart nothing moves is not marked
-    /// changed. On an error the chart and the series are left as they
+    /// changed. A fitted linear axis on `Decimal` or `Power` gets the
+    /// automatic label format; any other format (`Percent`, for one) is
+    /// kept with its significant digits while the range and the spacing
+    /// move (#417). On an error the chart and the series are left as they
     /// were: a column that is not registered is `UnknownColumn`, a streamed
     /// source is refused with `ColumnNotResident` (rule 8), and a monotonic
     /// series with `MonotonicMappingEdit`, since its x range is set by

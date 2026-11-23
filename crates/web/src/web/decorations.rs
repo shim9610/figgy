@@ -259,7 +259,9 @@ impl FiggyChart {
     /// and the z axis of a 3D chart, from the columns' cached statistics
     /// with 5% padding. A chart starts at a `0..1` placeholder range; this
     /// is the call for a first plot. Synchronous, and independent of the
-    /// active layer. A layer without series keeps its ranges. Then the
+    /// active layer. A layer without series keeps its ranges. A fitted
+    /// linear axis keeps an explicit label format such as `Percent` with
+    /// its digits; `Decimal` and `Power` become `Auto` (#417). Then the
     /// scale of every auto-scaled vector series is fitted to the spacing
     /// of its arrows and its `auto_scale` flag consumed (#357), so the
     /// stored series say how long the arrows draw. Then each range link

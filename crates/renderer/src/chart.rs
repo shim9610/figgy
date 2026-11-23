@@ -54,18 +54,29 @@ pub(crate) fn apply_axis_range(
             axis.label_style.format = LabelFormat::Percent;
             axis.label_style.significant_digits = 1;
         }
-        // #357: a linear axis prints clean numbers (`0.8`, `-3`, `10`); an
-        // automatic format's own options and a timestamp format are kept.
+        // #357: a linear axis prints clean numbers (`0.8`, `-3`, `10`). The
+        // fit replaces only the formats it cannot tell from a choice: the
+        // serde default `Decimal` and `Power`, the logarithmic fit's own.
+        // An automatic format keeps its options, and every other format is
+        // the axis' explicit choice (#417: `Percent` on a wind rose's
+        // radius), kept with its significant digits.
         AxisScale::Linear => {
             axis.minor_count = 4;
-            if !matches!(
-                axis.label_style.format,
-                LabelFormat::Timestamp(_) | LabelFormat::Auto(_)
-            ) {
-                axis.label_style.format =
-                    LabelFormat::Auto(crate::format::AutoNumberFormat::DEFAULT);
+            match axis.label_style.format {
+                LabelFormat::Decimal | LabelFormat::Power => {
+                    axis.label_style.format =
+                        LabelFormat::Auto(crate::format::AutoNumberFormat::DEFAULT);
+                    axis.label_style.significant_digits = 3;
+                }
+                LabelFormat::Timestamp(_) | LabelFormat::Auto(_) => {
+                    axis.label_style.significant_digits = 3;
+                }
+                LabelFormat::Scientific
+                | LabelFormat::Degrees
+                | LabelFormat::Radians
+                | LabelFormat::Percent
+                | LabelFormat::Plain(_) => {}
             }
-            axis.label_style.significant_digits = 3;
         }
     }
     // After the label format, which decides whether the unit applies.
@@ -2012,18 +2023,23 @@ mod tests {
         assert_eq!(c.config().top_x.max, 100.0);
     }
 
-    // #357: a range helper gives a linear axis the automatic label format,
-    // and keeps one the axis already has with its own options.
+    // #357: a range helper gives a linear axis the automatic label format
+    // in place of the serde default and of the log fit's `Power`, and keeps
+    // one the axis already has with its own options.
     #[test]
     fn range_helpers_give_linear_axes_the_automatic_label_format() {
         use crate::format::{AutoNumberFormat, ExponentNotation};
         let mut axis = dummy_config().bottom_x;
-        axis.label_style.format = LabelFormat::Scientific;
-        apply_axis_range(&mut axis, 0.0, 1.0, &AxisScale::Linear);
-        assert_eq!(
-            axis.label_style.format,
-            LabelFormat::Auto(AutoNumberFormat::DEFAULT)
-        );
+        for format in [LabelFormat::Decimal, LabelFormat::Power] {
+            axis.label_style.format = format;
+            axis.label_style.significant_digits = 1;
+            apply_axis_range(&mut axis, 0.0, 1.0, &AxisScale::Linear);
+            assert_eq!(
+                axis.label_style.format,
+                LabelFormat::Auto(AutoNumberFormat::DEFAULT)
+            );
+            assert_eq!(axis.label_style.significant_digits, 3);
+        }
         let engineering = LabelFormat::Auto(AutoNumberFormat {
             notation: ExponentNotation::Engineering,
             ..AutoNumberFormat::DEFAULT
@@ -2033,6 +2049,33 @@ mod tests {
         assert_eq!(axis.label_style.format, engineering);
         apply_axis_range(&mut axis, 1.0, 100.0, &AxisScale::Logarithmic);
         assert_eq!(axis.label_style.format, LabelFormat::Power);
+    }
+
+    // #417: an explicit non-automatic format on a linear axis survives a
+    // range helper with its significant digits; the range and the spacing
+    // still move.
+    #[test]
+    fn range_helpers_keep_an_explicit_linear_label_format() {
+        use crate::format::PlainNumberFormat;
+        for format in [
+            LabelFormat::Percent,
+            LabelFormat::Scientific,
+            LabelFormat::Degrees,
+            LabelFormat::Radians,
+            LabelFormat::Plain(PlainNumberFormat::AUTO),
+        ] {
+            let mut axis = dummy_config().left_y;
+            axis.label_style.format = format.clone();
+            axis.label_style.significant_digits = 2;
+            apply_axis_range(&mut axis, 0.0, 0.14, &AxisScale::Linear);
+            assert_eq!(axis.label_style.format, format);
+            assert_eq!(axis.label_style.significant_digits, 2);
+            assert_eq!((axis.min, axis.max), (0.0, 0.14));
+            assert_eq!(
+                axis.major_spacing,
+                crate::tick::axis_major_spacing(&AxisScale::Linear, 0.0, 0.14)
+            );
+        }
     }
 
     #[test]
