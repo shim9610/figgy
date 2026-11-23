@@ -2016,6 +2016,319 @@ fn arrivals_at_one_level_take_the_side_they_come_from_in_any_order() {
     }
 }
 
+/// The chart of #413's reproduction: 1000x800, columns A, B and C over
+/// -0.5..2.5 and energies over 20..24, from the series' default config.
+fn issue_413_chart(levels: &EnergyLevelSeries) -> Chart {
+    let mut config = renderer::default::config_for_series(&mut [series("e", levels.clone())]);
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 1000,
+        height: 800,
+    });
+    config.bottom_x.categories = Some(vec![
+        Category::new("A", "A"),
+        Category::new("B", "B"),
+        Category::new("C", "C"),
+    ]);
+    for x in [&mut config.bottom_x, &mut config.top_x] {
+        (x.min, x.max, x.major_spacing) = (-0.5, 2.5, 1.0);
+    }
+    for y in [&mut config.left_y, &mut config.right_y] {
+        (y.min, y.max, y.major_spacing) = (20.0, 24.0, 1.0);
+    }
+    Chart::new(config)
+}
+
+/// Every order of `items`, by Heap's algorithm.
+fn permutations<T: Clone>(items: &[T]) -> Vec<Vec<T>> {
+    fn heap<T: Clone>(k: usize, items: &mut Vec<T>, out: &mut Vec<Vec<T>>) {
+        if k <= 1 {
+            out.push(items.clone());
+            return;
+        }
+        for i in 0..k {
+            heap(k - 1, items, out);
+            let j = if k % 2 == 0 { i } else { 0 };
+            items.swap(j, k - 1);
+        }
+    }
+    let mut out = Vec::new();
+    heap(items.len(), &mut items.to_vec(), &mut out);
+    out
+}
+
+/// The arrows of `levels` in `chart` by transition id, emission from the
+/// upper level (`.0`) to the lower (`.1`), in the order of `ids`.
+fn arrows_by_id(
+    chart: &Chart,
+    levels: &EnergyLevelSeries,
+    ids: &[&str],
+) -> Vec<([f32; 2], [f32; 2])> {
+    use renderer::energy_levels::LevelPlacement;
+    let (space, measure) = layout_of(chart, levels);
+    let placement = LevelPlacement {
+        space: &space,
+        categories: chart.config().bottom_x.categories.as_deref().unwrap(),
+        view: LevelView::Main,
+        colorbar: None,
+        picked: None,
+    };
+    let layout = placement.layout(levels, &levels.style, &measure);
+    ids.iter()
+        .map(|id| {
+            let index = levels.transitions.iter().position(|t| t.id == *id).unwrap();
+            placement.transition_arrow(&layout, index).expect("drawn")
+        })
+        .collect()
+}
+
+/// Checks the arrows meeting one lower level, listed left arrivals first
+/// in their order and then right arrivals in theirs: each takes its end in
+/// that order, every two arrowheads are at least a head apart, and no
+/// shaft crosses another.
+fn assert_arrivals_in_order(name: &str, arrows: &[([f32; 2], [f32; 2])], head: f32) {
+    for pair in arrows.windows(2) {
+        assert!(
+            pair[1].1[0] - pair[0].1[0] >= head,
+            "{name}: ends out of order or overlapping: {arrows:?}"
+        );
+    }
+    for (i, a) in arrows.iter().enumerate() {
+        for b in &arrows[i + 1..] {
+            assert!(!segments_cross(*a, *b), "{name}: {a:?} crosses {b:?}");
+        }
+    }
+}
+
+// #413: an upper level in column A and two in column C emit to one lower
+// level in B, the reproduction of the issue. The two C arrows are a bundle
+// whose offsets put its first end left of the centre, where the A arrow's
+// end lay, so the A arrow crossed one of them just above B. The arrival
+// from the left now takes the leftmost end, the two from the right keep
+// their order (the steeper one from the higher level left of the other),
+// the three arrowheads are a head apart and no shaft crosses another. The
+// geometry and the 1x and 2x exports are the same for every order of the
+// three records.
+#[test]
+fn a_left_arrival_takes_the_left_end_beside_a_right_bundle_in_any_order() {
+    let ids = ["left", "right-high", "right-low"];
+    let records = |order: &[&str]| {
+        let mut levels = EnergyLevelSeries {
+            levels: vec![
+                level("left", "A", 22.72),
+                level("lower", "B", 20.96),
+                level("right-low", "C", 23.07),
+                level("right-high", "C", 23.74),
+            ],
+            transitions: order
+                .iter()
+                .map(|upper| transition(upper, "lower", upper))
+                .collect(),
+            ..EnergyLevelSeries::default()
+        };
+        levels.style.transition.width = 2.0;
+        levels
+    };
+    let mut r = renderer();
+    let mut drawn = Vec::new();
+    for order in permutations(&["right-high", "right-low", "left"]) {
+        let levels = records(&order);
+        let chart = issue_413_chart(&levels);
+        let arrows = arrows_by_id(&chart, &levels, &ids);
+        let head = levels.style.transition.head_width;
+        assert!(head > 0.0);
+        assert_arrivals_in_order(&format!("{order:?}"), &arrows, head);
+        let series = [series("e", levels.clone())];
+        let images: Vec<_> = [1.0, 2.0]
+            .into_iter()
+            .map(|scale| export(&mut r, &chart, &series, scale))
+            .collect();
+        drawn.push((order, arrows, images));
+    }
+    assert_eq!(drawn.len(), 6);
+    let (_, arrows, images) = &drawn[0];
+    for (order, other, other_images) in &drawn[1..] {
+        assert_eq!(arrows, other, "{order:?}: the same arrows in every order");
+        for (a, b) in images.iter().zip(other_images) {
+            assert!(a.rgba == b.rgba, "{order:?}: the same image in every order");
+        }
+    }
+
+    // An explicit `x_offset` still wins (Studio's He example sets -0.14 on
+    // the left arrival): that arrow moves by exactly its offset, the others
+    // keep their ends, and it stays the leftmost, a head clear of the rest.
+    let mut offset = records(&["right-high", "right-low", "left"]);
+    offset.transitions[2].x_offset = -0.14;
+    let chart = issue_413_chart(&offset);
+    let moved = arrows_by_id(&chart, &offset, &ids);
+    use renderer::AnnotationSpace as _;
+    let space = renderer::annotation::pixel_space_for_config(chart.config());
+    let column = |x: f64| {
+        space
+            .value_to_px(renderer::annotation::AnnotationAxis::X, x)
+            .expect("on the axis")
+    };
+    let shift = column(1.0 - 0.14) - column(1.0);
+    assert!(shift < -1.0, "{shift}");
+    for (end, start) in [(moved[0].0, arrows[0].0), (moved[0].1, arrows[0].1)] {
+        assert!((end[0] - (start[0] + shift)).abs() < 1e-3, "{moved:?}");
+        assert_eq!(end[1], start[1]);
+    }
+    assert_eq!(
+        moved[1..],
+        arrows[1..],
+        "the right arrivals keep their ends"
+    );
+    assert_arrivals_in_order("x_offset", &moved, offset.style.transition.head_width);
+    let series = [series("e", offset)];
+    for scale in [1.0, 2.0] {
+        let image = export(&mut r, &chart, &series, scale);
+        assert_eq!(image.width, (1000.0 * scale) as u32);
+    }
+}
+
+// #413: two upper levels in column A and two in column C emit to one lower
+// level in B, a bundle on each side. Both arrivals from the left take ends
+// left of both from the right, each bundle keeps its order, the four
+// arrowheads are a head apart and no shaft crosses another, for every order
+// of the records; the 1x and 2x exports are the same in every order.
+#[test]
+fn bundles_from_both_sides_take_their_own_sides_in_any_order() {
+    let ids = ["left-low", "left-high", "right-high", "right-low"];
+    let records = |order: &[&str]| EnergyLevelSeries {
+        levels: vec![
+            level("left-low", "A", 22.72),
+            level("left-high", "A", 23.52),
+            level("lower", "B", 20.96),
+            level("right-low", "C", 23.07),
+            level("right-high", "C", 23.74),
+        ],
+        transitions: order
+            .iter()
+            .map(|upper| transition(upper, "lower", upper))
+            .collect(),
+        ..EnergyLevelSeries::default()
+    };
+    let mut r = renderer();
+    let mut first: Option<(Vec<_>, Vec<RasterImage>)> = None;
+    for (n, order) in permutations(&ids).into_iter().enumerate() {
+        let levels = records(&order);
+        let chart = issue_413_chart(&levels);
+        let arrows = arrows_by_id(&chart, &levels, &ids);
+        // Left arrivals: the flatter one from the lower level outermost,
+        // as the right bundle's flatter one is.
+        assert_arrivals_in_order(
+            &format!("{order:?}"),
+            &arrows,
+            levels.style.transition.head_width,
+        );
+        // Every order is checked for its geometry; the first, a middle and
+        // the last also for their images.
+        let images: Vec<RasterImage> = if [0, 11, 23].contains(&n) {
+            let series = [series("e", levels.clone())];
+            [1.0, 2.0]
+                .into_iter()
+                .map(|scale| export(&mut r, &chart, &series, scale))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        match &first {
+            None => first = Some((arrows, images)),
+            Some((a, i)) => {
+                assert_eq!(*a, arrows, "{order:?}: the same arrows in every order");
+                for (x, y) in i.iter().zip(&images) {
+                    assert!(x.rgba == y.rgba, "{order:?}: the same image");
+                }
+            }
+        }
+    }
+}
+
+// #413: in the He, Ar, Cu and U scenes, at their own size and at 800x600,
+// two arrows that meet one level from the same half (both above it, or
+// both below) and from opposite sides never cross: the one from the left
+// takes the end left of the one from the right. Before #413 the Cu 4p
+// levels broke this below them, where the 324.8 and 327.4 nm lines to the
+// left left from right of the 510.6 and 578.2 nm lines to the right. The
+// scenes export at 1x and 2x.
+#[test]
+fn scene_arrows_from_opposite_sides_never_cross_at_a_shared_level() {
+    let mut r = renderer();
+    let mut found = Vec::new();
+    for kind in [
+        scenes::SceneKind::EnergyLevels,
+        scenes::SceneKind::EnergyLevelsAr,
+        scenes::SceneKind::EnergyLevelsCu,
+        scenes::SceneKind::EnergyLevelsU,
+    ] {
+        for size in [None, Some((800, 600))] {
+            let scene = scenes::build(&mut r, kind, 1_000).expect("scene");
+            let mut chart = Chart::new(scene.config.clone());
+            if let Some((w, h)) = size {
+                chart.set_area(0, 0, w, h);
+                chart.fit_layout();
+            }
+            let name = format!("{kind:?} {size:?}");
+            each_level_panel(
+                chart.config(),
+                &scene.series,
+                |placement, levels, records, measure| {
+                    let layout = placement.layout(records, &levels.style, measure);
+                    let row = |id: &str| records.levels.iter().position(|l| l.id == id);
+                    // Per drawn arrow: its index and its two (row, end,
+                    // other end) meetings.
+                    let mut meetings = Vec::new();
+                    for (index, t) in records.transitions.iter().enumerate() {
+                        let Some(arrow) = placement.transition_arrow(&layout, index) else {
+                            continue;
+                        };
+                        let (Some(lower), Some(upper)) = (row(&t.lower), row(&t.upper)) else {
+                            continue;
+                        };
+                        // Emission: from the upper level (`.0`) to the lower.
+                        meetings.push((index, lower, arrow.1, arrow.0, arrow));
+                        meetings.push((index, upper, arrow.0, arrow.1, arrow));
+                    }
+                    for (i, a) in meetings.iter().enumerate() {
+                        for b in &meetings[i + 1..] {
+                            let (here_a, there_a, here_b, there_b) = (a.2, a.3, b.2, b.3);
+                            let same_half = (there_a[1] - here_a[1]).signum()
+                                == (there_b[1] - here_b[1]).signum();
+                            let opposite =
+                                (there_a[0] - here_a[0]) * (there_b[0] - here_b[0]) < 0.0;
+                            if a.0 != b.0
+                                && a.1 == b.1
+                                && same_half
+                                && opposite
+                                && segments_cross(a.4, b.4)
+                            {
+                                let id = |k: usize| records.transitions[k].id.clone();
+                                found.push(format!(
+                                    "{name}: {} crosses {} at level {}",
+                                    id(a.0),
+                                    id(b.0),
+                                    records.levels[a.1].id
+                                ));
+                            }
+                        }
+                    }
+                },
+            );
+            for scale in [1.0, 2.0] {
+                let image = export(&mut r, &chart, &scene.series, scale);
+                assert_eq!(
+                    image.width,
+                    (chart.config().chart_area.0.width as f32 * scale) as u32,
+                    "{name} {scale}x"
+                );
+            }
+        }
+    }
+    assert!(found.is_empty(), "{found:#?}");
+}
+
 // #248: in the He, Ar, Cu, U and every-level Ar scenes no drawn level or
 // band label lies on another column's level stroke or band fill, on a limit
 // line, or on another label, and no transition label on another label.

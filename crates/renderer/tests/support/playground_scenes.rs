@@ -5209,15 +5209,17 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             uncertainty: Some(0.000_000_025),
             reference: "L17714".into(),
         }],
+        // The arrivals at 2p from 3s, to the left, take the left ends by
+        // themselves (#413); their `x_offset` only spreads them further.
         transitions: vec![
             line(501.6, "2s1S", "3p1P", 0.0),
             line(667.8, "2p1P", "3d1D", 0.0),
             line(728.1, "2p1P", "3s1S", -0.15),
-            line(492.2, "2p1P", "4d1D", 0.15),
+            line(492.2, "2p1P", "4d1D", 0.0),
             line(388.9, "2s3S", "3p3P", 0.0),
             line(587.6, "2p3P", "3d3D", 0.0),
             line(706.5, "2p3P", "3s3S", -0.15),
-            line(447.1, "2p3P", "4d3D", 0.15),
+            line(447.1, "2p3P", "4d3D", 0.0),
         ],
         ..EnergyLevelSeries::default()
     };
