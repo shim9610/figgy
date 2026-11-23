@@ -37,17 +37,22 @@ use model::select::SelectionGeometry;
 use model::sink::{Sink, Slot};
 use model::{AnnotationLayer, DecorationId, LayerRef, layout::NudgeResult};
 
-/// The anchor space of a Cartesian chart: the chart area is the panel, the
-/// data area the plot, and `bottom_x` / `left_y` the two value axes (the
+/// The anchor space of a Cartesian chart: the document area is the panel,
+/// the data area the plot, and `bottom_x` / `left_y` the two value axes (the
 /// axes the data transform draws against; a polar chart has none).
 /// Logarithmic ranges are guarded the same way the data transform guards
 /// them.
+///
+/// The panel is [`Config::document_area`], where the annotation overlay is
+/// drawn and hit-tested (#414): text boxes and arrows may sit over sibling
+/// subplots beside the chart area (#418). Without subplots it is the chart
+/// area. Anchors still resolve against the chart's own plot and axes.
 pub fn pixel_space_for_config(config: &Config) -> PixelSpace {
-    let panel = RectF::from_rect(&config.chart_area.0);
+    let panel = RectF::from_rect(&config.document_area());
     let plot = config
         .data_area()
         .map(|area| RectF::from_rect(&area.0))
-        .unwrap_or(panel);
+        .unwrap_or_else(|_| RectF::from_rect(&config.chart_area.0));
     // A polar, ternary or 3D chart has no separable axes: data anchors,
     // reference lines and spans are reported as `NoValueAxis` skips, and
     // ratio anchors stay relative to the data area.
@@ -1531,5 +1536,34 @@ mod tests {
         assert!((mid - (da.y + da.height * 0.5)).abs() < 1e-3);
         assert_eq!(s.value_to_px(AnnotationAxis::Y, 0.), None);
         assert_eq!(s.value_axes(), [true, true]);
+    }
+
+    // #418: with a subplot beside the chart area the panel (where text boxes
+    // and arrows may sit) is the document area; the plot, the axes and so
+    // every anchor stay the chart's own.
+    #[test]
+    fn cartesian_space_panel_is_the_document_area() {
+        let config = crate::default::default_config();
+        let alone = pixel_space_for_config(&config);
+        let mut document = config.clone();
+        let mut sibling = config.clone();
+        let area = config.chart_area.0;
+        sibling.chart_area.0.x = area.x + area.width;
+        document.subplots.push(crate::Subplot {
+            config: sibling,
+            series: Vec::new(),
+            link_x: None,
+            link_y: None,
+            marker: None,
+            text_scale: Default::default(),
+            anchor: None,
+        });
+        let s = pixel_space_for_config(&document);
+        assert_eq!(s.panel, RectF::from_rect(&document.document_area()));
+        assert_eq!(s.panel.width, 2.0 * area.width as f32);
+        assert_eq!(s.plot, alone.plot);
+        assert_eq!((s.x, s.y), (alone.x, alone.y));
+        let anchor = Anchor::Ratio { x: 1.5, y: 0.5 };
+        assert_eq!(s.anchor_to_px(&anchor), alone.anchor_to_px(&anchor));
     }
 }
