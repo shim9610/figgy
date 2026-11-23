@@ -873,11 +873,12 @@ pub fn choose_radial_label_ray(
         return None;
     }
     // Every label drawn, at the candidate ray.
-    let probe = |angle: f64| PolarOptions {
-        radial_label_angle_degrees: Some(angle),
-        radius_labels_skipped: Some(0),
-        hide_first_radius_label: false,
-        ..polar.clone()
+    let probe = |angle: f64| {
+        let mut at = polar.clone();
+        at.radial_label_angle_degrees = Some(angle);
+        at.radius_labels_skipped = Some(0);
+        at.hide_first_radius_label = false;
+        at
     };
     // (labels drawn, labels to skip) at `angle`.
     let evaluate = |angle: f64, clear: bool| -> (u32, u32) {
