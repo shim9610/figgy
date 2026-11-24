@@ -92,36 +92,97 @@ fn outlined(pixel: vec2<f32>,h: Hit,s: Sector,surface: vec3<f32>) -> vec3<f32> {
     }
     return rgb;
 }
-// Flat, level, unlit and unoutlined sectors (#41). At depth and tilt zero a
-// sector is hit exactly where its footprint is at most zero, at a depth that
-// is the same at every pixel, in a Flat colour that does not depend on where
-// it is hit. The footprint changes by at most sqrt(2) times the distance
-// moved, so when every sector's footprint at the pixel center is at least
-// `margin` pixels from zero, every antialiasing sample lies on the same side
-// of every footprint and the sampled path returns this one colour for each of them.
-// Otherwise, or when a sector needs another feature, `exact` is false and the
-// samples are taken.
+// Flat, level and unlit sectors (#41). At depth and tilt zero a sector is hit
+// exactly where its footprint is at most zero, at a depth that is the same at
+// every pixel, in a Flat colour that does not depend on where it is hit, and
+// its normal is straight up, so `outlined` inks a hit exactly where one of
+// the four neighbours `band` away along x or y misses the sector: where the
+// largest of their footprints is above zero. Both change by at most sqrt(2)
+// times the distance moved, so when every sector's footprint and ink boundary
+// at the pixel center are at least `margin` pixels from zero, every
+// antialiasing sample lies on the same side of each and the sampled path
+// returns one colour for each of them: the nearest covering sector's, inked
+// or not. Nearer an edge the pixel takes analytic coverage instead (no
+// supersampling): each boundary's distance in physical pixels smoothed over
+// the footprint's `fwidth`,
+// so a slanted edge, a thin angular gap or a separator ramps through every
+// value rather than the quarter steps of the 2 x 2 grid. Adjacent sectors
+// (the rings of a sunburst, slices without a gap) measure complementary
+// distances, so their coverages add to one across a shared edge and no
+// background shows through. Only how an edge is antialiased depends on this:
+// which sector covers a point, its colour and its ink are as on the sampled
+// path. `exact` is false when a sector needs another feature, or for a NaN
+// distance, and the samples are taken.
 struct FlatPixel { exact: bool, color: vec4<f32> };
 fn flat_pixel(pixel: vec2<f32>,margin: f32) -> FlatPixel {
-    var color=vec4(globals.background.rgb*globals.background.a,globals.background.a);
+    let background=vec4(globals.background.rgb*globals.background.a,globals.background.a);
+    var color=background;
     var closest=10000.0;
+    var near=false;var finite=true;
+    var covered=vec3(0.0);var total=0.0;
     for(var i=0u;i<u32(globals.size.z);i++) {
         let s=sectors[i];
-        if u32(s.material.params.x)!=MATERIAL_FLAT || s.arc.w>0.0 || s.arc.z!=0.0 || s.light.w>0.0
-            || (max(s.outline.x,max(s.outline.y,s.outline.z))>0.0 && s.outline.w>0.0) {
+        // Uniform: the sectors are read-only storage, so leaving here keeps
+        // the derivatives below in uniform control flow.
+        if u32(s.material.params.x)!=MATERIAL_FLAT || s.arc.w>0.0 || s.arc.z!=0.0 || s.light.w>0.0 {
             return FlatPixel(false,color);
         }
         let mid=s.arc.x+s.arc.y*0.5;
         let center=s.geometry.xy+s.detail.x*s.geometry.z*vec2(cos(mid),sin(mid));
-        let d=footprint((pixel-center)/s.geometry.z,s);
-        // Also false for a NaN distance.
-        if !(abs(d)*s.geometry.z>=margin) { return FlatPixel(false,color); }
+        let xy=(pixel-center)/s.geometry.z;
+        let d=footprint(xy,s)*s.geometry.z;
+        // Taken for every sector before any choice made per pixel.
+        // The footprint is a distance: its gradient has unit length, so its
+        // `fwidth` lies between 1 and sqrt(2) on an edge. Across a crease (a
+        // pie's apex, where two edges meet) the quad's differences cancel,
+        // so the width keeps at least 1; at most 1.5 keeps its smoothing
+        // inside `margin`.
+        let aa=clamp(fwidth(d),1.0,1.5);
+        let flat=min(s.color.rgb+vec3(s.material.finish.w),vec3(1.0));
+        // `outlined` at a level Flat hit: the rim's band or half the
+        // separators', the hit inked where one of its four neighbours that
+        // far along x or y misses the sector. `ink` is the largest of their
+        // footprints, in physical pixels: above zero where the hit is inked.
+        // A neighbour is at most `band` away, so where the footprint is below
+        // minus `band` and `margin` none can miss.
+        let e=edges(xy,s);
+        let is_rim=min(abs(e.x),abs(e.y))<=abs(e.z);
+        let amount=max(select(s.outline.y,s.outline.x,is_rim),s.outline.z);
+        let inks=amount>0.0 && s.outline.w>0.0;
+        let band=s.outline.w*select(0.5,1.0,is_rim);
+        var ink=d+band;
+        if inks && d+band>-margin && d<margin {
+            ink=-10000.0;
+            let offsets=array<vec2<f32>,4>(vec2(band,0.0),vec2(-band,0.0),vec2(0.0,band),vec2(0.0,-band));
+            for(var j=0u;j<4u;j++) {
+                ink=max(ink,footprint((pixel+offsets[j]-center)/s.geometry.z,s)*s.geometry.z);
+            }
+        }
+        let inked=select(flat,mix(flat,s.outline_color.rgb,s.outline_color.a*amount),inks);
+        // A NaN distance is neither.
+        let edge=min(abs(d),select(10000.0,abs(ink),inks));
+        near=near || edge<margin;
+        finite=finite && (edge>=margin || edge<margin);
+        let a=1.0-smoothstep(-0.5*aa,0.5*aa,d);
+        // The inked band's inner boundary, smoothed over the footprint's own
+        // width: both are distances, moved together along an edge.
+        let plain=select(a,1.0-smoothstep(-0.5*aa,0.5*aa,ink),inks);
+        // Ink adds its difference from the fill over its band, so an ink
+        // that changes no colour (a transparent one) changes no bit.
+        covered+=flat*a+(inked-flat)*(a-plain);total+=a;
         // `hit_sector`'s depth at zero tilt: the ray starts at 3 - lift.
         let t=max((s.arc.w-(3.0-s.rounding.z))/-1.0,0.0);
         if d<=0.0 && t<closest {
             closest=t;
-            color=vec4(min(s.color.rgb+vec3(s.material.finish.w),vec3(1.0)),1.0);
+            color=vec4(select(flat,inked,inks && ink>0.0),1.0);
         }
+    }
+    if !finite { return FlatPixel(false,color); }
+    if near {
+        // Overlapping coverage (more than one in all) shares the pixel.
+        let share=min(total,1.0);
+        // Premultiplied: the sectors are opaque, so `covered` already is.
+        color=vec4(covered/max(total,1.0)+background.rgb*(1.0-share),share+background.a*(1.0-share));
     }
     return FlatPixel(true,color);
 }
@@ -173,8 +234,8 @@ fn label_pixel(pixel: vec2<f32>) -> vec4<f32> {
     // Branch once, outside the sample loops: the same choice made per sample
     // inside them left some pixels zero on lavapipe (Mesa 25.2.8).
     if flat.exact {
-        // The same sum in the same order as the samples, so the pixel is
-        // bit-identical to theirs.
+        // The same sum in the same order as the samples, so a pixel away
+        // from every edge is bit-identical to theirs.
         for(var k=0u;k<grid*grid;k++) { color+=flat.color; }
     } else {
         // Supersample coverage, shade once per surface (#349). Every sample
