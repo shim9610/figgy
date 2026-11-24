@@ -53,6 +53,48 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 `color` and the transition arrows' `color_by_wavelength` and
 `label_knockout`) are additive.
 
+- **Calendar ticks plan once per axis and stop measuring rejected
+  candidates** ([#444](https://github.com/shim9610/figgy/issues/444)). On a
+  date axis with automatic calendar ticks, pan and zoom spent most of each
+  frame in the tick planner: every candidate step it tried had all its
+  labels formatted and measured before the fit was decided, and the grid,
+  the ticks, the labels, the corner labels and the tick warnings each planned
+  the same axis again. The walk now rejects a candidate whose gaps alone
+  overflow the axis without formatting a label, measures the other
+  candidates' labels one at a time and stops as soon as the widest so far
+  overflows, and builds ticks only for the candidate it takes; the plan,
+  the tick values and the labels are the same (the walk before is kept as a
+  test oracle over ranges from a fraction of a second to millennia). A
+  chrome pass (`chrome::emit_chart_chrome`) and each element placement
+  (`chrome::emit_part_of`) plan each axis once and hand the plan to
+  everything that reads it, and the renderer's tick warnings read whether
+  each axis has a plan from the raster pass that drew it. Frames are byte
+  for byte unchanged.
+  **Migration** (the `chrome` module carries no compatibility promise; these
+  are its public signatures): `emit_chart_chrome` returns `[bool; 4]`,
+  whether each axis in `chrome::CHART_SIDES` order has a timestamp plan
+  (ignore it to keep the call as before). The plan of an axis is
+  `timestamp_tick_plan(axis, side, plot, measure)`; pass `plan.as_ref()`
+  where these now take it: `emit_axis(.., corners, plan, measure, sink,
+  scale)`, `emit_axis_strokes(axis, side, plot, cross, across, plan, sink,
+  scale)` (no measure), `emit_axis_tick_labels_clear_of(.., clearance, plan,
+  measure, sink)`, `each_axis_stroke(.., across, plan, majors, scale, each)`
+  (the plan in place of the measure), `each_kept_axis_tick_label(..,
+  majors, plan, each)`, `each_axis_tick_label(.., majors, plan, each)` and
+  `visible_timestamp_labels(.., majors, plan)`; `emit_grid(config, plot,
+  [bottom_x_plan, left_y_plan], sink, scale)` takes the two plans in place of
+  the measure, and a `CornerAxis { .. }` literal adds `plan`. The new
+  `major_tick_values_of(axis, plan)` and `minor_tick_values_of(axis, plan)`
+  are `major_tick_values_for_axis` and `minor_tick_values_for_axis` for a
+  plan already made; `timestamp_plan_sides(config, plot, measure)` gives
+  whether each axis has one. Tests:
+  `the_early_rejecting_walk_returns_the_measuring_walks_plan`,
+  `the_early_rejecting_walk_keeps_the_unreadable_ranges` and
+  `a_thirty_day_plan_measures_a_bounded_number_of_labels`
+  (`chrome/time.rs`), `a_chrome_pass_plans_each_axis_once` and
+  `placing_an_axis_element_plans_each_axis_it_reads_once`
+  (`chrome/tick_plan.rs`).
+
 - **The layout chooses each range link's exit, links draw under their bars,
   and a chart of links takes the timeline frame**
   ([#357](https://github.com/shim9610/figgy/issues/357), approved in

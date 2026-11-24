@@ -2755,6 +2755,7 @@ mod category_group_tests {
             &plot,
             &Fixed,
             &[],
+            None,
             |text, _| {
                 texts.push(matches!(text, crate::chrome::TickText::Power(_)));
             },

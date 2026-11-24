@@ -24,6 +24,7 @@ use crate::text::{MeasureText, RichSegment, RichText, TextAlign, TextExtents};
 mod tick_plan;
 pub mod time;
 pub use tick_plan::*;
+use time::TimestampTickPlan;
 mod grid;
 pub use grid::*;
 mod line;
@@ -54,12 +55,18 @@ pub(crate) use ternary::ternary_label_reach;
 /// export scale `config`'s pixel values carry (1 for a config drawn as
 /// stored): a broken axis snaps its piece frames to whole logical pixels
 /// through it (#205), and nothing else reads it.
+///
+/// Each of the four axes is planned once ([`timestamp_tick_plan`], #444):
+/// the grid, the axis' ticks and labels, and the labels of the axes across
+/// it read that plan. Returns whether each axis, in [`CHART_SIDES`] order,
+/// has a timestamp plan, which decides the tick warnings
+/// ([`timestamp_plan_sides`]); all `false` without a data area.
 pub fn emit_chart_chrome(
     config: &Config,
     measure: &dyn MeasureText,
     sink: &mut dyn Sink,
     scale: f32,
-) {
+) -> [bool; 4] {
     // The chart's own fill, under everything it draws (#265).
     if let Some(fill) = config.background {
         sink.rect(
@@ -69,9 +76,24 @@ pub fn emit_chart_chrome(
             None,
         );
     }
-    let Ok(da) = config.data_area() else { return };
+    let Ok(da) = config.data_area() else {
+        return [false; 4];
+    };
     // The Cartesian walks take the plot rectangle.
     let plot = data_area_rect(&da);
+    let (top, right) = (
+        drawn_axis(config, &Side::Top),
+        drawn_axis(config, &Side::Right),
+    );
+    let axis_of = |side: &Side| match side {
+        Side::Top => top.as_ref(),
+        Side::Bottom => &config.bottom_x,
+        Side::Left => &config.left_y,
+        Side::Right => right.as_ref(),
+    };
+    // The one plan of each axis in this pass, in `CHART_SIDES` order.
+    let plans = CHART_SIDES.map(|side| timestamp_tick_plan(axis_of(&side), side, &plot, measure));
+    let plan_of = |side: &Side| plans[side_index(side)].as_ref();
 
     if config.polar().is_some() {
         polar::emit_polar_grid(config, &da, measure, sink);
@@ -100,10 +122,12 @@ pub fn emit_chart_chrome(
         for (axis, side) in [(&config.top_x, Side::Top), (&config.bottom_x, Side::Bottom)] {
             let cross = crate::layout::axis_cross(config, &side);
             if side == Side::Bottom && names != Side::Bottom {
-                emit_axis_strokes(axis, side, &plot, cross, None, measure, sink, scale);
+                let plan = plan_of(&side);
+                emit_axis_strokes(axis, side, &plot, cross, None, plan, sink, scale);
                 emit_axis_tick_labels(axis, names.clone(), &plot, measure, sink);
                 continue;
             }
+            let plan = plan_of(&side);
             emit_axis(
                 axis,
                 side,
@@ -111,6 +135,7 @@ pub fn emit_chart_chrome(
                 cross,
                 None,
                 [None, None],
+                plan,
                 measure,
                 sink,
                 scale,
@@ -122,21 +147,18 @@ pub fn emit_chart_chrome(
         if let Some(fill) = config.plot_background {
             sink.rect(crate::sink::Slot::Below, plot, Some(fill), None);
         }
-        emit_grid(config, &plot, measure, sink, scale);
-        let (top, right) = (
-            drawn_axis(config, &Side::Top),
-            drawn_axis(config, &Side::Right),
+        emit_grid(
+            config,
+            &plot,
+            [plan_of(&Side::Bottom), plan_of(&Side::Left)],
+            sink,
+            scale,
         );
-        let axis_of = |side: &Side| match side {
-            Side::Top => top.as_ref(),
-            Side::Bottom => &config.bottom_x,
-            Side::Left => &config.left_y,
-            Side::Right => right.as_ref(),
-        };
-        for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
+        for side in CHART_SIDES {
             let cross = crate::layout::axis_cross(config, &side);
             let across = across_axis(config, &side);
-            let corners = corner_axes(config, &side, axis_of);
+            let corners = corner_axes(config, &side, axis_of, plan_of);
+            let plan = plan_of(&side);
             emit_axis(
                 axis_of(&side),
                 side,
@@ -144,6 +166,7 @@ pub fn emit_chart_chrome(
                 cross,
                 across,
                 corners,
+                plan,
                 measure,
                 sink,
                 scale,
@@ -168,6 +191,38 @@ pub fn emit_chart_chrome(
     }
     emit_element(config, &Element::ChartTitle, measure, sink);
     emit_element(config, &Element::Legend, measure, sink);
+    plans.each_ref().map(Option::is_some)
+}
+
+/// The four sides of a chart in the order [`emit_chart_chrome`] reports
+/// its axes' timestamp plans.
+pub const CHART_SIDES: [Side; 4] = [Side::Top, Side::Bottom, Side::Left, Side::Right];
+
+/// The index of `side` in [`CHART_SIDES`].
+pub fn side_index(side: &Side) -> usize {
+    match side {
+        Side::Top => 0,
+        Side::Bottom => 1,
+        Side::Left => 2,
+        Side::Right => 3,
+    }
+}
+
+/// Whether each axis of `config`, in [`CHART_SIDES`] order, has a timestamp
+/// plan ([`timestamp_tick_plan`]) on `plot`. Whether a plan exists does not
+/// depend on the measure or the axis length, only on the axis' range, scale
+/// and label format, so any measure answers it; the renderer reads it from
+/// the chrome pass it draws ([`emit_chart_chrome`]) where it has one.
+pub fn timestamp_plan_sides(config: &Config, plot: &RectF, measure: &dyn MeasureText) -> [bool; 4] {
+    CHART_SIDES.map(|side| {
+        let axis = match side {
+            Side::Top => &config.top_x,
+            Side::Bottom => &config.bottom_x,
+            Side::Left => &config.left_y,
+            Side::Right => &config.right_y,
+        };
+        timestamp_tick_plan(axis, side, plot, measure).is_some()
+    })
 }
 
 /// The axis on `side` as the chrome draws it: a top or right axis with
@@ -269,16 +324,20 @@ pub fn emit_part_of(
             Side::Left | Side::Right => {}
         },
         Element::Axis(side) if config.parallel().is_some() => match side {
-            Side::Top | Side::Bottom => emit_axis_strokes(
-                axis_of(side),
-                side.clone(),
-                &data_area_rect(&da),
-                crate::layout::axis_cross(config, side),
-                None,
-                measure,
-                sink,
-                scale,
-            ),
+            Side::Top | Side::Bottom => {
+                let plot = data_area_rect(&da);
+                let plan = timestamp_tick_plan(axis_of(side), side.clone(), &plot, measure);
+                emit_axis_strokes(
+                    axis_of(side),
+                    side.clone(),
+                    &plot,
+                    crate::layout::axis_cross(config, side),
+                    None,
+                    plan.as_ref(),
+                    sink,
+                    scale,
+                );
+            }
             Side::Left | Side::Right => {}
         },
         Element::ParallelAxisLabel(i) => {
@@ -307,28 +366,40 @@ pub fn emit_part_of(
             }
         }
         Element::AxisLabel(side) => {
+            // This axis and the two across it, each planned once (#444).
+            let plot = data_area_rect(&da);
+            let plans = CHART_SIDES.map(|s| {
+                let needed = s == *side || side_index(&s) / 2 != side_index(side) / 2;
+                needed
+                    .then(|| timestamp_tick_plan(axis_of(&s), s, &plot, measure))
+                    .flatten()
+            });
+            let plan_of = |s: &Side| plans[side_index(s)].as_ref();
             let clearance = LabelClearance {
                 cross: crate::layout::axis_cross(config, side),
                 scale,
-                corners: corner_axes(config, side, axis_of),
+                corners: corner_axes(config, side, axis_of, plan_of),
             };
             emit_axis_tick_labels_clear_of(
                 axis_of(side),
                 side.clone(),
-                &data_area_rect(&da),
+                &plot,
                 &clearance,
+                plan_of(side),
                 measure,
                 sink,
             );
         }
         Element::Axis(side) => {
+            let plot = data_area_rect(&da);
+            let plan = timestamp_tick_plan(axis_of(side), side.clone(), &plot, measure);
             emit_axis_strokes(
                 axis_of(side),
                 side.clone(),
-                &data_area_rect(&da),
+                &plot,
                 crate::layout::axis_cross(config, side),
                 across_axis(config, side),
-                measure,
+                plan.as_ref(),
                 sink,
                 scale,
             );
@@ -481,11 +552,12 @@ pub fn drawn_colorbar<'a>(
 /// The axes whose tick labels meet the labels of a rectangular chart's
 /// axis on `side` at its two ends (#272): the x axes across a y axis and
 /// the y axes across an x axis, as `axis_of` draws them, each with where
-/// its line crosses.
+/// its line crosses and its timestamp plan in this pass (`plan_of`, #444).
 fn corner_axes<'a>(
     config: &Config,
     side: &Side,
     axis_of: impl Fn(&Side) -> &'a AxisOptions,
+    plan_of: impl Fn(&Side) -> Option<&'a TimestampTickPlan>,
 ) -> [Option<CornerAxis<'a>>; 2] {
     const X: [Side; 2] = [Side::Bottom, Side::Top];
     const Y: [Side; 2] = [Side::Left, Side::Right];
@@ -499,6 +571,7 @@ fn corner_axes<'a>(
             axis: axis_of(side),
             side,
             cross: crate::layout::axis_cross(config, side),
+            plan: plan_of(side),
         })
     })
 }
