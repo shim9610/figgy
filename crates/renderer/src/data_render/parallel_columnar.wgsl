@@ -220,7 +220,9 @@ const PARALLEL_PICK_WORKGROUP_SIZE: u32 = 64u;
 
 @group(1) @binding(1) var<uniform> data_pick_query: DataPickQuery;
 @group(1) @binding(2) var<storage, read> data_pick_pool: array<f32>;
-@group(1) @binding(3) var<storage, read_write> data_pick_output: DataPickCandidate;
+// One candidate per workgroup (#445); `pick_reduce_parallel` folds them.
+@group(1) @binding(3) var<storage, read_write> data_pick_partials: array<DataPickCandidate>;
+@group(1) @binding(8) var<storage, read_write> data_pick_output: DataPickCandidate;
 
 var<workgroup> parallel_pick_shared: array<DataPickCandidate, PARALLEL_PICK_WORKGROUP_SIZE>;
 
@@ -283,20 +285,10 @@ fn parallel_pick_candidate(inst: u32) -> DataPickCandidate {
     return DataPickCandidate(1u, data_pick_query.data.y, 0u, row, nearer, 0u, distance, 0u);
 }
 
-@compute @workgroup_size(PARALLEL_PICK_WORKGROUP_SIZE)
-fn pick_parallel(@builtin(local_invocation_index) local_index: u32) {
-    figgy_zero_workgroup(local_index);
-    var best = parallel_pick_invalid();
-    let segments = max(parallel_params.axes, 2u) - 1u;
-    let count = parallel_params.rows * segments;
-    var index = local_index;
-    while (index < count) {
-        let candidate = parallel_pick_candidate(index);
-        if (parallel_pick_better(candidate, best)) {
-            best = candidate;
-        }
-        index = index + PARALLEL_PICK_WORKGROUP_SIZE;
-    }
+// The workgroup's best of each lane's `best`; every lane gets it. Nearer
+// wins and the earlier row on a tie, so the picked row and distance do
+// not depend on how segments are split between workgroups.
+fn parallel_pick_fold(local_index: u32, best: DataPickCandidate) -> DataPickCandidate {
     parallel_pick_shared[local_index] = best;
     workgroupBarrier();
     for (var stride = PARALLEL_PICK_WORKGROUP_SIZE / 2u; stride > 0u; stride = stride / 2u) {
@@ -308,7 +300,51 @@ fn pick_parallel(@builtin(local_invocation_index) local_index: u32) {
         }
         workgroupBarrier();
     }
+    return parallel_pick_shared[0];
+}
+
+// One segment per lane over `ceil(segments / 64)` workgroups, split into
+// two dimensions past the per-dimension limit (#445).
+@compute @workgroup_size(PARALLEL_PICK_WORKGROUP_SIZE)
+fn pick_parallel(
+    @builtin(local_invocation_index) local_index: u32,
+    @builtin(workgroup_id) workgroup_id: vec3<u32>,
+    @builtin(num_workgroups) groups: vec3<u32>,
+) {
+    figgy_zero_workgroup(local_index);
+    let group = workgroup_id.x + workgroup_id.y * groups.x;
+    let index = group * PARALLEL_PICK_WORKGROUP_SIZE + local_index;
+    var best = parallel_pick_invalid();
+    let segments = max(parallel_params.axes, 2u) - 1u;
+    let count = parallel_params.rows * segments;
+    if (index < count) {
+        let candidate = parallel_pick_candidate(index);
+        if (parallel_pick_better(candidate, best)) {
+            best = candidate;
+        }
+    }
+    let folded = parallel_pick_fold(local_index, best);
     if (local_index == 0u) {
-        data_pick_output = parallel_pick_shared[0];
+        data_pick_partials[group] = folded;
+    }
+}
+
+// The second pass (#445): one workgroup folds the workgroup partials.
+@compute @workgroup_size(PARALLEL_PICK_WORKGROUP_SIZE)
+fn pick_reduce_parallel(@builtin(local_invocation_index) local_index: u32) {
+    figgy_zero_workgroup(local_index);
+    var best = parallel_pick_invalid();
+    let count = arrayLength(&data_pick_partials);
+    var index = local_index;
+    while (index < count) {
+        let candidate = data_pick_partials[index];
+        if (parallel_pick_better(candidate, best)) {
+            best = candidate;
+        }
+        index = index + PARALLEL_PICK_WORKGROUP_SIZE;
+    }
+    let folded = parallel_pick_fold(local_index, best);
+    if (local_index == 0u) {
+        data_pick_output = folded;
     }
 }

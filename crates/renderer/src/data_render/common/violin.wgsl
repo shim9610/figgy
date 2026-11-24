@@ -589,31 +589,22 @@ fn violin_pick_row(g: u32) -> DataPickCandidate {
 }
 
 @compute @workgroup_size(DATA_PICK_WORKGROUP_SIZE)
-fn pick_violin(@builtin(local_invocation_index) local_index: u32) {
+fn pick_violin(
+    @builtin(local_invocation_index) local_index: u32,
+    @builtin(workgroup_id) workgroup_id: vec3<u32>,
+    @builtin(num_workgroups) groups: vec3<u32>,
+) {
     figgy_zero_workgroup(local_index);
+    let group = data_pick_group(workgroup_id, groups);
+    let g = data_pick_row(group, local_index);
     var best = data_pick_invalid();
-    var g = local_index;
-    while (g < category_params.count) {
+    if (g < category_params.count) {
         let candidate = violin_pick_row(g);
         if (data_pick_better(candidate, best)) {
             best = candidate;
         }
-        g = g + DATA_PICK_WORKGROUP_SIZE;
     }
-    data_pick_shared[local_index] = best;
-    workgroupBarrier();
-    for (var stride = DATA_PICK_WORKGROUP_SIZE / 2u; stride > 0u; stride = stride / 2u) {
-        if (local_index < stride) {
-            let candidate = data_pick_shared[local_index + stride];
-            if (data_pick_better(candidate, data_pick_shared[local_index])) {
-                data_pick_shared[local_index] = candidate;
-            }
-        }
-        workgroupBarrier();
-    }
-    if (local_index == 0u) {
-        data_pick_output = data_pick_shared[0];
-    }
+    data_pick_store(local_index, group, best);
 }
 
 // ───── Raw points ─────

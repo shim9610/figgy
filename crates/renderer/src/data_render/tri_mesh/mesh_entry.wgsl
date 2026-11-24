@@ -171,7 +171,11 @@ const DATA_PICK_KIND_MESH_TRIANGLE: u32 = 5u;
 const MESH_PICK_FRINGE_PX: f32 = 1.0;
 
 @group(1) @binding(1) var<uniform> data_pick_query: DataPickQuery;
-@group(1) @binding(3) var<storage, read_write> data_pick_output: DataPickCandidate;
+// Two candidates per workgroup (#445): the fill's best in the first half,
+// the contour test's nearest triangle in the second; `pick_reduce_tri_mesh`
+// folds them and runs the contour test once.
+@group(1) @binding(3) var<storage, read_write> data_pick_partials: array<DataPickCandidate>;
+@group(1) @binding(8) var<storage, read_write> data_pick_output: DataPickCandidate;
 
 var<workgroup> mesh_pick_shared: array<DataPickCandidate, MESH_PICK_WORKGROUP_SIZE>;
 /// Per lane, the drawn triangle nearest the cursor within the fringe, for
@@ -402,31 +406,10 @@ fn mesh_pick_contour(tri: u32, cursor: vec2<f32>) -> DataPickCandidate {
     return best;
 }
 
-@compute @workgroup_size(MESH_PICK_WORKGROUP_SIZE)
-fn pick_tri_mesh(@builtin(local_invocation_index) local_index: u32) {
-    figgy_zero_workgroup(local_index);
-    let cursor = mesh_pick_cursor();
-    let fill = (data_pick_query.data.x & DATA_PICK_FLAG_FILL) != 0u;
-    let contour = (data_pick_query.data.x & DATA_PICK_FLAG_CONTOUR) != 0u;
-    var best = mesh_pick_invalid();
-    var near = mesh_pick_invalid();
-    let count = mesh_triangle_count();
-    var tri = local_index;
-    while (tri < count) {
-        if (fill) {
-            let candidate = mesh_pick_candidate(tri, cursor);
-            if (mesh_pick_better(candidate, best)) {
-                best = candidate;
-            }
-        }
-        if (contour) {
-            let candidate = mesh_pick_near_candidate(tri, cursor);
-            if (mesh_pick_better(candidate, near)) {
-                near = candidate;
-            }
-        }
-        tri = tri + MESH_PICK_WORKGROUP_SIZE;
-    }
+// The workgroup's best of each lane's `best` and `near`, by
+// `mesh_pick_better` (a total order: every candidate names its own
+// triangle), left in `mesh_pick_shared[0]` and `mesh_pick_near[0]`.
+fn mesh_pick_fold(local_index: u32, best: DataPickCandidate, near: DataPickCandidate) {
     mesh_pick_shared[local_index] = best;
     mesh_pick_near[local_index] = near;
     workgroupBarrier();
@@ -443,11 +426,72 @@ fn pick_tri_mesh(@builtin(local_invocation_index) local_index: u32) {
         }
         workgroupBarrier();
     }
+}
+
+// One triangle per lane over `ceil(triangles / 64)` workgroups, split into
+// two dimensions past the per-dimension limit (#445).
+@compute @workgroup_size(MESH_PICK_WORKGROUP_SIZE)
+fn pick_tri_mesh(
+    @builtin(local_invocation_index) local_index: u32,
+    @builtin(workgroup_id) workgroup_id: vec3<u32>,
+    @builtin(num_workgroups) groups: vec3<u32>,
+) {
+    figgy_zero_workgroup(local_index);
+    let cursor = mesh_pick_cursor();
+    let fill = (data_pick_query.data.x & DATA_PICK_FLAG_FILL) != 0u;
+    let contour = (data_pick_query.data.x & DATA_PICK_FLAG_CONTOUR) != 0u;
+    let group = workgroup_id.x + workgroup_id.y * groups.x;
+    let tri = group * MESH_PICK_WORKGROUP_SIZE + local_index;
+    var best = mesh_pick_invalid();
+    var near = mesh_pick_invalid();
+    if (tri < mesh_triangle_count()) {
+        if (fill) {
+            let candidate = mesh_pick_candidate(tri, cursor);
+            if (mesh_pick_better(candidate, best)) {
+                best = candidate;
+            }
+        }
+        if (contour) {
+            let candidate = mesh_pick_near_candidate(tri, cursor);
+            if (mesh_pick_better(candidate, near)) {
+                near = candidate;
+            }
+        }
+    }
+    mesh_pick_fold(local_index, best, near);
+    if (local_index == 0u) {
+        let half = arrayLength(&data_pick_partials) / 2u;
+        data_pick_partials[group] = mesh_pick_shared[0];
+        data_pick_partials[half + group] = mesh_pick_near[0];
+    }
+}
+
+// The second pass (#445): one workgroup folds the fill and contour-test
+// partials, then the nearest triangle's contour stroke wins over the fill.
+@compute @workgroup_size(MESH_PICK_WORKGROUP_SIZE)
+fn pick_reduce_tri_mesh(@builtin(local_invocation_index) local_index: u32) {
+    figgy_zero_workgroup(local_index);
+    let half = arrayLength(&data_pick_partials) / 2u;
+    var best = mesh_pick_invalid();
+    var near = mesh_pick_invalid();
+    var index = local_index;
+    while (index < half) {
+        let candidate = data_pick_partials[index];
+        if (mesh_pick_better(candidate, best)) {
+            best = candidate;
+        }
+        let other = data_pick_partials[half + index];
+        if (mesh_pick_better(other, near)) {
+            near = other;
+        }
+        index = index + MESH_PICK_WORKGROUP_SIZE;
+    }
+    mesh_pick_fold(local_index, best, near);
     if (local_index == 0u) {
         var answer = mesh_pick_shared[0];
         let near_triangle = mesh_pick_near[0];
         if (near_triangle.valid != 0u) {
-            let stroke = mesh_pick_contour(near_triangle.index0, cursor);
+            let stroke = mesh_pick_contour(near_triangle.index0, mesh_pick_cursor());
             if (stroke.valid != 0u) {
                 answer = stroke;
             }

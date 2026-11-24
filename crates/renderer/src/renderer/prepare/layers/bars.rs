@@ -241,7 +241,7 @@ impl PrepareContext<'_> {
                 &mut lookup,
                 points,
             )
-            .and_then(|(data, count)| {
+            .and_then(|(data, count, _)| {
                 Ok(data_render::ColumnCategoryBarLayer {
                     pipeline: pipeline
                         .ok_or(FiggyError::internal("prepare ensured the violin pipelines"))?,
