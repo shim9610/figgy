@@ -87,6 +87,9 @@ pub(in crate::web) async fn create_chart_kernel(
         hitmap_categories: Vec::new(),
         dragging: false,
         drag_pointer: [0.0; 2],
+        drag_snap: renderer::layout::DragSnap::off(),
+        snap_modifier: false,
+        annotation_guides: renderer::layout::SnapGuides::NONE,
         resizing: None,
         // A new series takes the default palette's next colour (#357).
         cycle: renderer::ColorCycle::DEFAULT,

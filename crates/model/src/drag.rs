@@ -32,7 +32,7 @@
 //! angle labels move along the spoke at the zero angle.
 
 use crate::config::Config;
-use crate::layout::{Element, NudgeResult};
+use crate::layout::{Element, NudgeResult, RectF, SnapAreas};
 use crate::select::{
     AxisElement, AxisLabelElement, AxisTitleElement, ChartTitleElement, ColorBarAxisElement,
     ColorBarElement, ColorBarLabelElement, ColorBarTitleElement, DataAreaElement, LegendElement,
@@ -139,17 +139,74 @@ pub trait Draggable<C: DragConfig = Config>: Selectable<C> {
         let _ = at;
         self.drag_by(cfg, measure, dx, dy)
     }
+
+    /// Whether a drag of this element snaps to guides (#440): decorations
+    /// moved by an offset do; axis lines, the plot area and moves that
+    /// follow a polar frame do not. The default is `false`.
+    fn snaps(&self, cfg: &C) -> bool {
+        let _ = cfg;
+        false
+    }
+
+    /// Whether moving this element moves the element `other_id` names with
+    /// it (a colourbar strip carries its axis, labels and title; a subplot
+    /// frame its subplot's decorations), so `other_id` is no snap target of
+    /// this drag. The default is `false`.
+    fn snap_carries(&self, other_id: &str) -> bool {
+        let _ = other_id;
+        false
+    }
+
+    /// The chart and plot whose centres this element snaps to: `areas`, the
+    /// ones of the state the drag edits, unless the element sits in a
+    /// panel of its own (a subplot's element snaps to its subplot's).
+    fn snap_areas(&self, cfg: &C, areas: SnapAreas) -> SnapAreas {
+        let _ = cfg;
+        areas
+    }
+
+    /// The drawn box of this element's own axis, whose centre lines it
+    /// snaps to: an axis title's axis. The default is `None`.
+    fn snap_axis(&self, cfg: &C, measure: &dyn MeasureText) -> Option<RectF> {
+        let _ = (cfg, measure);
+        None
+    }
+}
+
+/// Whether a Cartesian decoration moved by an offset snaps (#440): every
+/// such element except the tick labels of a polar chart, which move along
+/// its spokes and ray.
+fn offset_snaps(cfg: &Config, element: &Element) -> bool {
+    !(cfg.polar().is_some() && matches!(element, Element::AxisLabel(_)))
 }
 
 impl Draggable for ChartTitleElement {
     fn nudge_element(&self) -> Element {
         Element::ChartTitle
     }
+
+    fn snaps(&self, cfg: &Config) -> bool {
+        offset_snaps(cfg, &self.nudge_element())
+    }
 }
 
 impl Draggable for AxisTitleElement {
     fn nudge_element(&self) -> Element {
         Element::AxisTitle(self.side.clone())
+    }
+
+    fn snaps(&self, cfg: &Config) -> bool {
+        offset_snaps(cfg, &self.nudge_element())
+    }
+
+    /// The title's axis: its drawn line and ticks, whose centre is where a
+    /// title sits centred on it, on a 2D, ternary or 3D box axis alike.
+    fn snap_axis(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
+        use crate::select::SelectionGeometry;
+        AxisElement {
+            side: self.side.clone(),
+        }
+        .bounds(cfg, measure)
     }
 }
 
@@ -168,6 +225,10 @@ impl Draggable for AxisLabelElement {
     ) -> NudgeResult {
         cfg.nudge_at(self.nudge_element(), measure, at, dx, dy)
     }
+
+    fn snaps(&self, cfg: &Config) -> bool {
+        offset_snaps(cfg, &self.nudge_element())
+    }
 }
 
 impl Draggable for crate::select::CategoryGroupLabelElement {
@@ -185,6 +246,10 @@ impl Draggable for crate::select::CategoryGroupLabelElement {
     ) -> NudgeResult {
         cfg.nudge_at(self.nudge_element(), measure, at, dx, dy)
     }
+
+    fn snaps(&self, cfg: &Config) -> bool {
+        offset_snaps(cfg, &self.nudge_element())
+    }
 }
 
 impl Draggable for crate::select::ParallelAxisLabelElement {
@@ -201,6 +266,10 @@ impl Draggable for crate::select::ParallelAxisLabelElement {
         dy: f32,
     ) -> NudgeResult {
         cfg.nudge_at(self.nudge_element(), measure, at, dx, dy)
+    }
+
+    fn snaps(&self, cfg: &Config) -> bool {
+        offset_snaps(cfg, &self.nudge_element())
     }
 }
 
@@ -242,6 +311,10 @@ impl Draggable for LegendElement {
     fn nudge_element(&self) -> Element {
         Element::Legend
     }
+
+    fn snaps(&self, cfg: &Config) -> bool {
+        offset_snaps(cfg, &self.nudge_element())
+    }
 }
 
 impl Draggable for DataAreaElement {
@@ -253,6 +326,15 @@ impl Draggable for DataAreaElement {
 impl Draggable for ColorBarElement {
     fn nudge_element(&self) -> Element {
         Element::ColorBar
+    }
+
+    fn snaps(&self, cfg: &Config) -> bool {
+        offset_snaps(cfg, &self.nudge_element())
+    }
+
+    /// The strip carries its axis, tick labels and title.
+    fn snap_carries(&self, other_id: &str) -> bool {
+        other_id.starts_with("colorbar_")
     }
 }
 
@@ -266,11 +348,19 @@ impl Draggable for ColorBarLabelElement {
     fn nudge_element(&self) -> Element {
         Element::ColorBarLabel
     }
+
+    fn snaps(&self, cfg: &Config) -> bool {
+        offset_snaps(cfg, &self.nudge_element())
+    }
 }
 
 impl Draggable for ColorBarTitleElement {
     fn nudge_element(&self) -> Element {
         Element::ColorBarTitle
+    }
+
+    fn snaps(&self, cfg: &Config) -> bool {
+        offset_snaps(cfg, &self.nudge_element())
     }
 }
 
@@ -671,5 +761,100 @@ mod tests {
         );
         assert_eq!(cfg.chart_title.offset_x, 4.0);
         assert_eq!(cfg.chart_title.offset_y, 3.0);
+    }
+
+    // #440: a title dragged near the chart centre snaps onto it and shows
+    // its guide; the snapped move is stored as the title's usual offset.
+    #[test]
+    fn a_title_drag_snaps_to_a_centre_and_shows_its_guide() {
+        use crate::layout::{DragSnap, SnapGuides};
+        use crate::select::HitMap;
+        let mut cfg = cfg_800x600();
+        cfg.chart_title.text.segments = rich_segments_from_text("Title");
+        let map = HitMap::standard_chart();
+        let id = map.find("chart_title").expect("the title is registered");
+        // Move it well off centre first, with snapping off.
+        let mut off = DragSnap::off();
+        let areas = cfg.snap_areas();
+        map.drag_snapped(id, &mut cfg, &LaysOut, None, 120.0, 0.0, areas, &mut off);
+        assert!(off.guides().is_empty());
+        let centre = |cfg: &Config| ChartTitleElement.bounds(cfg, &LaysOut).unwrap().center();
+        let chart_cx = 400.0;
+        let plot_cx = cfg.snap_areas().plot.unwrap().center().0;
+        // A drag that ends 3 px short of the chart centre.
+        let dx = chart_cx - centre(&cfg).0 - 3.0;
+        let mut snap = DragSnap::new(1.0);
+        let moved = map.drag_snapped(id, &mut cfg, &LaysOut, None, dx, 0.0, areas, &mut snap);
+        assert_eq!(moved, Some(NudgeResult::Moved));
+        let landed = centre(&cfg).0;
+        let target = if (plot_cx - (chart_cx - 3.0)).abs() < 3.0 {
+            plot_cx
+        } else {
+            chart_cx
+        };
+        assert!((landed - target).abs() < 1e-3, "{landed} != {target}");
+        let guide = snap.guides().vertical.expect("a vertical guide");
+        assert!((guide.from[0] - target).abs() < 1e-3);
+        // The offset is the stored SSOT; release drops the guide.
+        assert!((cfg.chart_title.offset_x - (120.0 + dx + 3.0)).abs() < 1e-3);
+        snap.release();
+        assert_eq!(snap.guides(), SnapGuides::NONE);
+    }
+
+    // #440: an axis title snaps to its axis' centre line.
+    #[test]
+    fn an_axis_title_snaps_to_its_axis_centre() {
+        use crate::layout::DragSnap;
+        use crate::select::HitMap;
+        let mut cfg = cfg_800x600();
+        cfg.bottom_x.title_option.text.segments = rich_segments_from_text("X axis");
+        // The title alone, so no tick label edge is nearer than its axis.
+        let mut map = HitMap::new();
+        let id = map.register(AxisTitleElement { side: Side::Bottom });
+        let title = AxisTitleElement { side: Side::Bottom };
+        let axis = title
+            .snap_axis(&cfg, &LaysOut)
+            .expect("the bottom axis box");
+        let before = title.bounds(&cfg, &LaysOut).unwrap().center().0;
+        let dx = axis.center().0 - before + 4.0;
+        let mut snap = DragSnap::new(1.0);
+        let areas = cfg.snap_areas();
+        map.drag_snapped(id, &mut cfg, &LaysOut, None, dx, 0.0, areas, &mut snap);
+        let after = title.bounds(&cfg, &LaysOut).unwrap().center().0;
+        assert!((after - axis.center().0).abs() < 1e-3, "{after}");
+        assert!(snap.guides().vertical.is_some());
+    }
+
+    // #440: with the modifier held (snapping off for the gesture) the same
+    // drag follows the pointer exactly and shows no guide.
+    #[test]
+    fn a_held_modifier_disables_the_snap() {
+        use crate::layout::DragSnap;
+        use crate::select::HitMap;
+        let mut cfg = cfg_800x600();
+        cfg.chart_title.text.segments = rich_segments_from_text("Title");
+        let map = HitMap::standard_chart();
+        let id = map.find("chart_title").unwrap();
+        let before = cfg.chart_title.offset_x;
+        let mut snap = DragSnap::new(1.0);
+        snap.set_enabled(false);
+        let areas = cfg.snap_areas();
+        map.drag_snapped(id, &mut cfg, &LaysOut, None, 2.5, 0.0, areas, &mut snap);
+        assert_eq!(cfg.chart_title.offset_x, before + 2.5);
+        assert!(snap.guides().is_empty());
+    }
+
+    // #440: a colourbar strip carries its chrome, so its title is no
+    // snap target of the strip's drag; a subplot frame carries its own
+    // subplot's decorations only.
+    #[test]
+    fn carried_elements_are_not_snap_targets() {
+        use crate::select::{ColorBarElement, SubplotFrameElement};
+        assert!(ColorBarElement.snap_carries("colorbar_title"));
+        assert!(!ColorBarElement.snap_carries("legend"));
+        let frame = SubplotFrameElement { subplot: 1 };
+        assert!(frame.snap_carries("subplot_1:legend"));
+        assert!(!frame.snap_carries("subplot_10:legend"));
+        assert!(!frame.snap_carries("subplot_2:legend"));
     }
 }

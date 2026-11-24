@@ -1012,6 +1012,8 @@ impl FiggyChart {
             self.resizing = None;
             self.dragging = true;
             self.annotation_pointer = true;
+            // The annotation map's frame is the display's canvas pixels.
+            self.drag_snap = self.new_drag_snap(1.0)?;
             return Ok(true);
         }
         self.annotation_pointer = false;
@@ -1056,6 +1058,10 @@ impl FiggyChart {
         self.resizing = None;
         self.dragging = dragging;
         self.drag_pointer = self.display_point_to_document(x, y)?;
+        // Decorations drag in document pixels, the display shows them at
+        // its scale: the reach is the same on screen at every zoom (#440).
+        let (scale, _) = self.display_scale_and_panel()?;
+        self.drag_snap = self.new_drag_snap(scale)?;
         let frame = new_sel
             .and_then(|id| self.hitmap.get(id))
             .and_then(|el| el.as_draggable())
@@ -1137,16 +1143,88 @@ impl FiggyChart {
             return Ok(());
         }
         if self.dragging
-            && let Some(drag) = self.hitmap.get(id).and_then(|el| el.as_draggable())
+            && self
+                .hitmap
+                .get(id)
+                .is_some_and(|el| el.as_draggable().is_some())
         {
             let at = self.drag_pointer;
             self.drag_pointer = [at[0] + dx, at[1] + dy];
             let mut config = self.chart_config()?.clone();
-            if drag.drag_from(&mut config, &measure, at, dx, dy) == NudgeResult::Moved {
+            // The move snaps to guides (#440) and goes through the
+            // element's own drag policy, as before.
+            let areas = config.snap_areas();
+            let moved = self.hitmap.drag_snapped(
+                id,
+                &mut config,
+                &measure,
+                Some(at),
+                dx,
+                dy,
+                areas,
+                &mut self.drag_snap,
+            );
+            if moved == Some(NudgeResult::Moved) {
                 self.drag_chart_config(config)?;
             }
+            self.show_snap_guides(self.drag_snap.guides())?;
         }
         Ok(())
+    }
+
+    /// Hold or release the snap modifier (Alt / Option, #440): while it is
+    /// held, a decoration or annotation drag follows the pointer exactly
+    /// and shows no guide; released, the drag snaps again. A host calls
+    /// it from its key or pointer events (`event.altKey`).
+    ///
+    /// JS: `chart.set_snap_modifier(event.altKey);`
+    pub fn set_snap_modifier(&mut self, held: bool) -> Result<(), JsValue> {
+        if self.snap_modifier == held {
+            return Ok(());
+        }
+        self.snap_modifier = held;
+        let enabled = !held && self.chart_config()?.snaps_while_dragging();
+        self.drag_snap.set_enabled(enabled);
+        if !enabled {
+            self.show_snap_guides(renderer::layout::SnapGuides::NONE)?;
+            self.show_annotation_guides(renderer::layout::SnapGuides::NONE);
+        }
+        Ok(())
+    }
+
+    /// The snap state of a new drag: snapping within the reach on screen
+    /// for a frame shown at `display_scale`, off when the document turns
+    /// snapping off (`snap_to_guides: false`) or the modifier is held.
+    fn new_drag_snap(&self, display_scale: f32) -> Result<renderer::layout::DragSnap, JsValue> {
+        Ok(
+            if self.snap_modifier || !self.chart_config()?.snaps_while_dragging() {
+                renderer::layout::DragSnap::off()
+            } else {
+                renderer::layout::DragSnap::new(display_scale)
+            },
+        )
+    }
+
+    /// Show `guides` with the chart element's selection box (#440).
+    fn show_snap_guides(&mut self, guides: renderer::layout::SnapGuides) -> Result<(), JsValue> {
+        match self.monotonic {
+            Some(id) => self
+                .renderer
+                .monotonic_chart(id)
+                .and_then(|mut chart| chart.set_snap_guides(guides)),
+            None => self.renderer.set_chart_snap_guides(self.chart_id, guides),
+        }
+        .map_err(js_err)
+    }
+
+    /// Show `guides` with the selected annotation's box (#440): the next
+    /// frame redraws the annotation overlay.
+    pub(super) fn show_annotation_guides(&mut self, guides: renderer::layout::SnapGuides) {
+        if self.annotation_guides != guides {
+            self.annotation_guides = guides;
+            self.annotation_selection_dirty = true;
+            self.redraw_pending = true;
+        }
     }
 
     /// Pointer release: ends the drag or handle drag, and releases a held
@@ -1166,6 +1244,10 @@ impl FiggyChart {
         self.annotation_pointer = false;
         self.value_label_pointer = false;
         self.feynman_pointer = None;
+        // The guides go with the drag (#440).
+        self.drag_snap.release();
+        self.show_snap_guides(renderer::layout::SnapGuides::NONE)?;
+        self.show_annotation_guides(renderer::layout::SnapGuides::NONE);
         if self.display_held {
             self.display_held = false;
             self.renderer
@@ -1232,6 +1314,9 @@ impl FiggyChart {
         self.value_label_pointer = false;
         self.feynman_pointer = None;
         self.plot_resize = None;
+        self.drag_snap.release();
+        self.show_snap_guides(renderer::layout::SnapGuides::NONE)?;
+        self.show_annotation_guides(renderer::layout::SnapGuides::NONE);
         if self.display_held {
             self.display_held = false;
             self.renderer

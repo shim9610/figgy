@@ -30,6 +30,7 @@ pub fn fit_display_panel(logical_size: (u32, u32), surface_size: (u32, u32)) -> 
 pub(in crate::renderer) fn annotation_raster_for_chart(
     chart: &Chart,
     selected: Option<usize>,
+    guides: crate::layout::SnapGuides,
 ) -> Result<crate::annotation::AnnotationRaster> {
     let config = chart.config();
     let Config {
@@ -65,6 +66,8 @@ pub(in crate::renderer) fn annotation_raster_for_chart(
         background: _,
         // Who owns the layout: the annotations follow the data area it set.
         layout_state: _,
+        // An interaction option (#440): no raster, no view state.
+        snap_to_guides: _,
     } = config;
     // The layer covers the whole document (#414): its overlay is the
     // document's top layer, over every panel, subplots and insets included.
@@ -76,6 +79,7 @@ pub(in crate::renderer) fn annotation_raster_for_chart(
         size: (area.width.max(1), area.height.max(1)),
         scale: 1.0,
         selected,
+        guides,
         policy: crate::text_render::FontPolicy::for_style(draw_style),
         markers: Some(config),
     })

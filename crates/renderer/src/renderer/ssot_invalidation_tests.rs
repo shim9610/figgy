@@ -2122,6 +2122,7 @@ fn config_fields_are_classified() {
         plot_background: _, // edit!(plot_background): Prefix, raster
         background: _,      // edit!(background): Prefix, raster
         layout_state: _,    // layout_state_* tests: no raster, no pixels
+        snap_to_guides: _,  // interaction option (#440): no raster, no pixels
     } = baseline_with_colorbar();
     let AxisOptions {
         scale: _,

@@ -24,6 +24,9 @@ mod annotation_layer;
 #[path = "resident_display_tests.rs"]
 mod resident_display;
 
+#[path = "snap_guide_tests.rs"]
+mod snap_guides;
+
 fn limits(slots: usize) -> StreamLimits {
     StreamLimits {
         max_jobs: 4,

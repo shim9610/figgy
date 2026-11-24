@@ -272,6 +272,13 @@ impl MonotonicChart<'_> {
         self.renderer.set_chart_selection(self.id, selected)
     }
 
+    /// Shows the snap guides of the decoration drag in progress with the
+    /// selection box ([`Renderer::set_chart_snap_guides`], #440). Chrome
+    /// only: the x-to-pixel mapping and the document are untouched.
+    pub fn set_snap_guides(&mut self, guides: crate::layout::SnapGuides) -> Result<()> {
+        self.renderer.set_chart_snap_guides(self.id, guides)
+    }
+
     /// A typed data pick ([`Renderer::pick_chart_data`]): a monotonic
     /// series reports the logical sample index of a kept point.
     pub fn pick_data(&mut self, request: GpuPickRequest) -> Result<crate::GpuDataPickTicket> {

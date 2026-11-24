@@ -239,6 +239,7 @@ impl Renderer {
                 series,
                 prepared_styles: None,
                 selected: None,
+                snap_guides: crate::layout::SnapGuides::NONE,
                 stream_auto_fit_padding: None,
                 revisions: ChartRevisions::initial(chart_revision),
                 fit_extents: HashMap::new(),
@@ -454,6 +455,7 @@ impl Renderer {
         )?;
         if clear_selection {
             chart_state.selected = None;
+            chart_state.snap_guides = crate::layout::SnapGuides::NONE;
         }
         PreparedChartMutation {
             chart_state,

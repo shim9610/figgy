@@ -47,7 +47,8 @@ impl Renderer {
         // whole document (#414).
         let (w, h) = checked_annotation_raster_size(self.caps, chart.config(), panel_rect)?;
         view.annotation_rect = annotation_rect(chart.config(), panel_rect);
-        let annotations = annotation_raster_for_chart(chart, None)?;
+        let annotations =
+            annotation_raster_for_chart(chart, None, crate::layout::SnapGuides::NONE)?;
         view.annotation_underlay = annotations
             .underlay
             .as_deref()
@@ -62,6 +63,7 @@ impl Renderer {
         view.annotation_key = Some(AnnotationRasterKey {
             config: chart.config().clone(),
             selected: None,
+            guides: crate::layout::SnapGuides::NONE,
             font_generation,
             panel_rect,
         });
@@ -125,6 +127,7 @@ impl Renderer {
                 crate::annotation::pixel_space_for_config(config),
             ),
             annotation_selected: None,
+            annotation_guides: crate::layout::SnapGuides::NONE,
             annotation_rect: panel_rect,
             layer_stamps: ChartViewLayerStamps {
                 grid: 1,
@@ -204,7 +207,31 @@ impl Renderer {
         panel_rect: Rect,
         selected: Option<usize>,
     ) -> Result<()> {
-        let result = self.refresh_annotations_unreported(view, chart, panel_rect, selected);
+        let result = self.refresh_annotations_unreported(
+            view,
+            chart,
+            panel_rect,
+            selected,
+            crate::layout::SnapGuides::NONE,
+        );
+        self.reported(result)
+    }
+
+    /// [`Self::refresh_annotations`] with the snap guides of the annotation
+    /// drag in progress (#440), drawn with the selection box of `selected`
+    /// in the frame of the view's annotation map (the host's
+    /// [`crate::layout::DragSnap::guides`] for that drag).
+    /// [`crate::layout::SnapGuides::NONE`] removes them, as a host does on
+    /// release. The guides are chrome: no export draws them.
+    pub fn refresh_annotations_with_guides(
+        &mut self,
+        view: &mut ChartView,
+        chart: &Chart,
+        panel_rect: Rect,
+        selected: Option<usize>,
+        guides: crate::layout::SnapGuides,
+    ) -> Result<()> {
+        let result = self.refresh_annotations_unreported(view, chart, panel_rect, selected, guides);
         self.reported(result)
     }
 
@@ -214,9 +241,15 @@ impl Renderer {
         chart: &Chart,
         panel_rect: Rect,
         selected: Option<usize>,
+        guides: crate::layout::SnapGuides,
     ) -> Result<()> {
         self.health.check()?;
         view.annotation_selected = selected;
+        view.annotation_guides = if selected.is_some() {
+            guides
+        } else {
+            crate::layout::SnapGuides::NONE
+        };
         if view.panel_rect != panel_rect {
             return self.refresh_axis(view, chart, panel_rect);
         }
@@ -234,6 +267,7 @@ impl Renderer {
         let key = AnnotationRasterKey {
             config: chart.config().clone(),
             selected: view.annotation_selected,
+            guides: view.annotation_guides,
             font_generation: crate::text_render::font_generation(),
             panel_rect,
         };
@@ -242,7 +276,8 @@ impl Renderer {
         }
         // Unknown until the raster is uploaded: a failure leaves it stale.
         view.annotation_key = None;
-        let raster = annotation_raster_for_chart(chart, view.annotation_selected)?;
+        let raster =
+            annotation_raster_for_chart(chart, view.annotation_selected, view.annotation_guides)?;
         self.refresh_optional_layer(
             &mut view.annotation_underlay,
             raster.underlay.as_deref(),
@@ -383,8 +418,10 @@ impl Renderer {
         // Unknown until the raster is drawn: a failure leaves the view stale.
         view.raster_source = None;
         view.display_scale = scale;
+        // The drag in progress shows its snap guides with the box (#440).
         let selection: Vec<crate::select::SelectionBox> = selected
             .and_then(|id| self.selection_box(chart, id))
+            .map(|selection| selection.with_snap_guides(chart.snap_guides()))
             .into_iter()
             .collect();
         let selection = &selection[..];

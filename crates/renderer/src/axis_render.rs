@@ -17,7 +17,7 @@ use crate::text_render::{CpuTextMeasure, FontPolicy};
 pub(crate) use crate::data_render::{bake_contour_label_atlas, contour_label_texts};
 
 use crate::decoration_render::*;
-pub use crate::decoration_render::{draw_selection_box, draw_selection_boxes};
+pub use crate::decoration_render::{SNAP_GUIDE_COLOR, draw_selection_box, draw_selection_boxes};
 
 mod space;
 pub(crate) use space::*;

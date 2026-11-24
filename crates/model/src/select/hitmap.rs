@@ -1,6 +1,7 @@
 //! The hit map: registering selectable elements and hit-testing a point.
 
 use super::*;
+use crate::layout::{DragSnap, SnapTarget};
 
 /// Id of an entry registered in a [`HitMap`]. Stable for the map's lifetime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,6 +107,76 @@ impl<C: DragConfig> HitMap<C> {
         measure: &dyn MeasureText,
     ) -> Option<SelectionBox> {
         self.get(id)?.selection_box(cfg, measure)
+    }
+
+    /// Drag `id` by a pointer delta through its own drag policy
+    /// ([`Draggable::drag_from`] with the pointer position `at`, or
+    /// [`Draggable::drag_by`] without one), snapping the move to guides
+    /// first (#440). `None` when `id` names no draggable element.
+    ///
+    /// An element that [`Draggable::snaps`] snaps its drawn box to the
+    /// centres of `areas` (as the element's [`Draggable::snap_areas`] maps
+    /// them), to the centre lines of its own axis
+    /// ([`Draggable::snap_axis`]) and to the edges and centres of every
+    /// other snapping element of this map that it does not carry
+    /// ([`Draggable::snap_carries`]), within `snap`'s reach. The snapped
+    /// delta is applied through the usual nudge path, so the result is
+    /// stored as the element's usual offset, and `snap` keeps the guides
+    /// of the move for the selection overlay. An element that does not
+    /// snap, or a gesture whose snapping is off, moves by the pointer delta
+    /// and shows no guide.
+    ///
+    /// The targets are visited in one pass over the map, keeping only the
+    /// nearest alignment per axis: no list is built, and every registered
+    /// element is visited (rule 10).
+    #[allow(clippy::too_many_arguments)]
+    pub fn drag_snapped(
+        &self,
+        id: HitId,
+        cfg: &mut C,
+        measure: &dyn MeasureText,
+        at: Option<[f32; 2]>,
+        dx: f32,
+        dy: f32,
+        areas: SnapAreas,
+        snap: &mut DragSnap,
+    ) -> Option<NudgeResult> {
+        let element = self.get(id)?;
+        let drag = element.as_draggable()?;
+        let proposal = (snap.is_enabled() && drag.snaps(cfg))
+            .then(|| element.bounds(cfg, measure))
+            .flatten()
+            .map(|moving| {
+                let state: &C = cfg;
+                let areas = drag.snap_areas(state, areas);
+                let axis = drag.snap_axis(state, measure);
+                snap.propose(moving, dx, dy, &mut |offer| {
+                    for area in [areas.chart, areas.plot, axis].into_iter().flatten() {
+                        offer(SnapTarget::Centre(area));
+                    }
+                    for (index, other) in self.entries.iter().enumerate() {
+                        if index == id.0
+                            || !other.as_draggable().is_some_and(|other| other.snaps(state))
+                            || drag.snap_carries(&other.element_id())
+                        {
+                            continue;
+                        }
+                        if let Some(rect) = other.bounds(state, measure) {
+                            offer(SnapTarget::Edges(rect));
+                        }
+                    }
+                })
+            });
+        let [dx, dy] = proposal.map_or([dx, dy], |proposal| proposal.delta);
+        let result = match at {
+            Some(at) => drag.drag_from(cfg, measure, at, dx, dy),
+            None => drag.drag_by(cfg, measure, dx, dy),
+        };
+        match proposal {
+            Some(proposal) => snap.settle(&proposal, result == NudgeResult::Moved),
+            None => snap.release(),
+        }
+        Some(result)
     }
 
     pub fn len(&self) -> usize {

@@ -245,13 +245,15 @@ impl FiggyChart {
         // chart, its selection or its display placement changed (#265).
         if (annotation_dirty && !refresh_raster)
             || self.view.annotation_selected() != self.selected_annotation
+            || self.view.annotation_snap_guides() != self.annotation_guides
         {
             self.renderer
-                .refresh_annotations(
+                .refresh_annotations_with_guides(
                     &mut self.view,
                     &display_chart,
                     panel_rect,
                     self.selected_annotation,
+                    self.annotation_guides,
                 )
                 .map_err(js_err)?;
         }

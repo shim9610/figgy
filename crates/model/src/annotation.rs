@@ -1670,6 +1670,17 @@ impl Draggable<AnnotationLayer> for AnnotationElement {
             ..self.clone()
         }
     }
+
+    /// Text boxes and arrows snap while they drag (#440); reference lines
+    /// and spans mark a value and move by their own rule.
+    fn snaps(&self, cfg: &AnnotationLayer) -> bool {
+        cfg.items.get(self.index).is_some_and(|item| {
+            matches!(
+                item.kind,
+                AnnotationKind::Text { .. } | AnnotationKind::Arrow { .. }
+            )
+        })
+    }
 }
 
 impl Resizable<AnnotationLayer> for AnnotationElement {
