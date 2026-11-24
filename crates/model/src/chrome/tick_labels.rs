@@ -839,6 +839,7 @@ mod category_stagger_tests {
                 Side::Bottom,
                 &plot,
                 &crate::chrome::line::LabelClearance::LONE,
+                None,
                 &measure,
                 &mut Nothing,
             );
@@ -847,6 +848,7 @@ mod category_stagger_tests {
                 axis: &bottom,
                 side: &Side::Bottom,
                 cross: None,
+                plan: None,
             };
             crate::chrome::line::emit_axis_tick_labels_clear_of(
                 &left,
@@ -857,6 +859,7 @@ mod category_stagger_tests {
                     scale: 1.0,
                     corners: [Some(corner), None],
                 },
+                None,
                 &measure,
                 &mut Nothing,
             );
