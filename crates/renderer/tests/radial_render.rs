@@ -1572,12 +1572,15 @@ fn a_split_past_the_slices_is_refused_by_prepare_and_every_export() {
     drain(&r);
 }
 
-/// The Flat fast path (#41): a level, unlit, unoutlined Flat chart shades a
-/// pixel once when no sector edge is near it, instead of once per
-/// antialiasing sample. An outline with a fully transparent colour changes no
-/// pixel but sends every pixel through the sampled path, so both exports must
-/// match byte for byte: pies and donuts, many slices, gaps, rounded corners,
-/// explode, hover lift, moving inside labels and a detail chart, at 1x and 2x.
+/// The Flat fast path (#41): a level, unlit Flat chart shades a pixel once,
+/// its ink included, with analytic coverage at an edge. An outline with a
+/// fully transparent colour changes no pixel, on that path as on the sampled
+/// one, so both exports must match byte for byte: pies and donuts, many
+/// slices, gaps, rounded corners, explode, hover lift, moving inside labels
+/// and a detail chart, at 1x and 2x. The comparison of the fast path with the
+/// 2 x 2 samples it replaces at edges is the unit test
+/// `analytic_flat_edges_stay_within_the_pinned_difference` (`radial.rs`),
+/// over these same cases.
 #[test]
 fn a_flat_chart_draws_the_same_pixels_as_its_sampled_path() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());

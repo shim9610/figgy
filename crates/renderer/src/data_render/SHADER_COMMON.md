@@ -1430,6 +1430,27 @@ geometry, the fast path, the labels and the pick are as before. A unit test
 shaded at its own position (`tests/support/radial_per_sample.wgsl`) and pins
 the difference.
 
+The Flat fast path (`flat_pixel`) takes a chart whose sectors are all Flat,
+level (no tilt, no depth) and unshadowed, outlined or not; any other chart
+takes the samples above. A pixel at least `margin` (0.75 px) from every
+sector's footprint and ink boundary takes the nearest covering sector's
+colour, inked or not, bit-identical to its samples. Nearer an edge it takes
+analytic coverage instead: per sector, the footprint in physical pixels and
+the ink boundary inside it (`outlined`'s band, reached along x or y: the
+band times the larger component of the footprint's unit gradient), each
+smoothed by `smoothstep` over plus or minus half its own `fwidth`, and the
+sector's fill and ink weighted by them. Coverages add; the background takes
+the rest. Touching sectors measure complementary distances, so their
+coverages sum to one across a shared edge. The derivatives are taken for
+every sector before any choice made per pixel, so they stay in uniform
+control flow (the sector checks read read-only storage). A unit test
+(`analytic_flat_edges_stay_within_the_pinned_difference` in `radial.rs`)
+compares it with the 2 × 2 samples (`fs_supersampled` in
+`tests/support/radial_per_sample.wgsl`): byte-identical beyond a pixel of
+any edge, the difference at edges pinned by its mean and percentiles; a
+second (`a_slanted_flat_separator_has_a_smooth_monotonic_edge_profile`)
+checks the profile across a slanted gap and a slanted ink separator.
+
 Rust twin: `radial::Sector` (`radial.rs`), built per slice by
 `radial_layout.rs`; `mirrored_struct_layouts_match_their_rust_twins` holds
 both modules' `Sector` to it. The pick module reads one
