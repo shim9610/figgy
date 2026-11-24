@@ -981,7 +981,8 @@ fn created_data_kernels(
 /// #327: a typed data pick compiles only the kernels its chart
 /// dispatches. Enabling picking and picking a radar chart and an XY line
 /// chart create no data pick kernel at all; a histogram pick then creates
-/// its own kernel once and nothing else, and a second pick creates none.
+/// its own kernel and its reduction (#445) once and nothing else, and a
+/// second pick creates none.
 #[test]
 fn a_data_pick_compiles_only_the_kernels_its_chart_dispatches() {
     use crate::gpu_compile::capture;
@@ -1114,7 +1115,7 @@ fn a_data_pick_compiles_only_the_kernels_its_chart_dispatches() {
     }
     assert_eq!(
         created_data_kernels(&capture::snapshot_pipelines()),
-        [DataPickKernel::Histogram]
+        [DataPickKernel::Histogram, DataPickKernel::ReduceHistogram]
     );
     // What any pick of each chart can dispatch (#363): the histogram's
     // kernel, and none for the radar or XY chart.
@@ -1148,7 +1149,7 @@ fn a_data_pick_compiles_only_the_kernels_its_chart_dispatches() {
     crate::test_gpu::block_on(renderer.pick_chart_data(hist, request).unwrap().resolve()).unwrap();
     assert_eq!(
         created_data_kernels(&capture::snapshot_pipelines()),
-        [DataPickKernel::Histogram]
+        [DataPickKernel::Histogram, DataPickKernel::ReduceHistogram]
     );
     // Once no registered chart dispatches it, the host's release of unused
     // GPU memory drops it, and the next histogram creates it again, once.
@@ -1173,7 +1174,12 @@ fn a_data_pick_compiles_only_the_kernels_its_chart_dispatches() {
     }
     assert_eq!(
         created_data_kernels(&capture::snapshot_pipelines()),
-        [DataPickKernel::Histogram, DataPickKernel::Histogram],
+        [
+            DataPickKernel::Histogram,
+            DataPickKernel::Histogram,
+            DataPickKernel::ReduceHistogram,
+            DataPickKernel::ReduceHistogram
+        ],
         "created again after the release, once"
     );
     drop(session);
@@ -16853,4 +16859,249 @@ fn the_blocking_adapter_and_device_requests_open_a_device() {
     let mut renderer = wait_test_renderer(RendererDevice::blocking(device, queue));
     renderer.wait_submitted_work_blocking().unwrap();
     renderer.prewarm_all_blocking().unwrap();
+}
+
+/// The kinds of typed body the parallel pick tests compare (#445).
+#[derive(Clone, Copy, Debug)]
+enum ParallelPickKind {
+    RangeBars,
+    CategoryBars,
+    /// Category bars with a value label over each bar: the label kernel.
+    ValueLabels,
+}
+
+/// `n` categories, one bar each, on a 480 × 360 chart over 0..100.
+fn parallel_pick_config(n: usize) -> Config {
+    let mut config = typed_pick_config((-0.5, n as f64 - 0.5), (0.0, 100.0));
+    config.bottom_x.categories = Some(
+        (0..n)
+            .map(|k| crate::config::Category::new(format!("c{k}"), format!("C{k}")))
+            .collect(),
+    );
+    config.bar_groups = Some(crate::data_config::BarGroups {
+        mode: crate::data_config::CategoryBarMode::Grouped,
+        direction: crate::data_config::CategoryBarDirection::Vertical,
+        group_width: 0.8,
+        bar_gap: 0.0,
+    });
+    config
+}
+
+/// One series of `kind` over the columns `pick.{n}.*`: equal heights
+/// every three rows (ties) and a missing end every seventh row.
+fn parallel_pick_series(kind: ParallelPickKind, n: usize) -> SeriesConfig {
+    let render_type = match kind {
+        ParallelPickKind::RangeBars => DataRenderType::RangeBars(RangeBarSeries {
+            color: Color::BLACK,
+            style: Default::default(),
+            start: format!("pick.{n}.start"),
+            whiskers: None,
+            color_by: Default::default(),
+            progress: None,
+            connector: None,
+            slot_width: None,
+            labels: Default::default(),
+        }),
+        ParallelPickKind::CategoryBars | ParallelPickKind::ValueLabels => {
+            let mut labels: crate::data_config::CategoryBarSeriesLabels = Default::default();
+            if matches!(kind, ParallelPickKind::ValueLabels) {
+                labels.placement = crate::data_config::CategoryBarLabels::Outside;
+            }
+            DataRenderType::CategoryBars(CategoryBarSeries {
+                color: Color::BLACK,
+                style: Default::default(),
+                labels,
+                label_format: Default::default(),
+                overrides: None,
+            })
+        }
+    };
+    SeriesConfig {
+        series_id: "bars".into(),
+        source_id: None,
+        label: None,
+        x_column: format!("pick.{n}.pos"),
+        y_column: format!("pick.{n}.end"),
+        z_column: None,
+        render_type,
+    }
+}
+
+fn add_parallel_pick_columns(renderer: &mut Renderer, n: usize) {
+    renderer
+        .add_column(
+            &format!("pick.{n}.pos"),
+            &col_f64((0..n).map(|k| k as f64).collect()),
+        )
+        .unwrap();
+    renderer
+        .add_column(
+            &format!("pick.{n}.start"),
+            &col_f64((0..n).map(|k| 10.0 + (k % 5) as f64).collect()),
+        )
+        .unwrap();
+    renderer
+        .add_column(
+            &format!("pick.{n}.end"),
+            &col_f64(
+                (0..n)
+                    .map(|k| {
+                        if k % 7 == 3 {
+                            f64::NAN
+                        } else {
+                            60.0 + (k % 3) as f64
+                        }
+                    })
+                    .collect(),
+            ),
+        )
+        .unwrap();
+}
+
+/// The requests a parallel pick test makes on `config` over `n` rows: on
+/// the first, middle and last rows, between two rows, above the bars
+/// (equal heights tie within reach) and on a missing row, each with no
+/// reach and with a reach past many bars.
+fn parallel_pick_requests(config: &Config, n: usize) -> Vec<GpuPickRequest> {
+    let mut requests = Vec::new();
+    for (x, y) in [
+        (0.0, 40.0),
+        ((n / 2) as f64, 40.0),
+        (n as f64 - 1.0, 40.0),
+        ((n / 2) as f64 + 0.5, 40.0),
+        ((n / 2) as f64 + 0.5, 70.0),
+        (0.0, 95.0),
+        (3.0, 40.0),
+    ] {
+        for reach in [0.0, 24.0] {
+            let mut request = typed_pick_request(config, typed_pick_position(config, x, y));
+            request.max_distance_px = reach;
+            requests.push(request);
+        }
+    }
+    requests
+}
+
+/// #445: the typed body picks spread over `ceil(N / 64)` workgroups (two
+/// dimensions past the per-dimension limit, lowered here so the test
+/// reaches it) answer exactly what the single-workgroup kernels they
+/// replaced answered, at 1, 63, 64, 65, 5k and 70k rows, with ties and
+/// missing rows: range bars, category bars and value labels.
+#[test]
+fn parallel_typed_picks_answer_as_the_single_workgroup_kernels() {
+    let Some(mut oracle) = state_test_renderer_with_capacity(16 * 1024 * 1024) else {
+        return;
+    };
+    let mut parallel = state_test_renderer_with_capacity(16 * 1024 * 1024).unwrap();
+    oracle.enable_gpu_picking().unwrap();
+    parallel.enable_gpu_picking().unwrap();
+    oracle.picker.data_kernels.single_workgroup = true;
+    parallel.picker.data_kernels.max_groups_per_dimension = Some(16);
+    let mut picked = 0;
+    for n in [1usize, 63, 64, 65, 5_000, 70_000] {
+        add_parallel_pick_columns(&mut oracle, n);
+        add_parallel_pick_columns(&mut parallel, n);
+        let config = parallel_pick_config(n);
+        for kind in [
+            ParallelPickKind::RangeBars,
+            ParallelPickKind::CategoryBars,
+            ParallelPickKind::ValueLabels,
+        ] {
+            let series = vec![parallel_pick_series(kind, n)];
+            let a = oracle
+                .register_chart(config.clone(), series.clone())
+                .unwrap();
+            let b = parallel.register_chart(config.clone(), series).unwrap();
+            for request in parallel_pick_requests(&config, n) {
+                let expected = oracle
+                    .pick_chart_data(a, request)
+                    .unwrap()
+                    .resolve_full_blocking()
+                    .unwrap();
+                let actual = parallel
+                    .pick_chart_data(b, request)
+                    .unwrap()
+                    .resolve_full_blocking()
+                    .unwrap();
+                assert_eq!(actual, expected, "{kind:?} over {n} rows at {request:?}");
+                picked += usize::from(expected.data.is_some());
+            }
+            oracle.remove_chart(a).unwrap();
+            parallel.remove_chart(b).unwrap();
+        }
+    }
+    assert!(picked > 0, "the requests hit bars");
+}
+
+/// #445: repeated typed picks reuse the prepared work and the readback
+/// ring: after the first two picks no readback buffer is created, a pick
+/// at another cursor keeps the prepared scratch, and an edit of the chart
+/// prepares it again.
+#[test]
+fn repeated_typed_picks_reuse_their_buffers() {
+    let Some(mut renderer) = state_test_renderer_with_capacity(4 * 1024 * 1024) else {
+        return;
+    };
+    renderer.enable_gpu_picking().unwrap();
+    let n = 300;
+    add_parallel_pick_columns(&mut renderer, n);
+    let config = parallel_pick_config(n);
+    let id = renderer
+        .register_chart(
+            config.clone(),
+            vec![parallel_pick_series(ParallelPickKind::RangeBars, n)],
+        )
+        .unwrap();
+    let requests = parallel_pick_requests(&config, n);
+    // Held as a `Weak`: a strong reference would mark the entry in use.
+    let prepared = |renderer: &Renderer| {
+        assert_eq!(renderer.picker.typed_prepared.len(), 1);
+        Arc::downgrade(&renderer.picker.typed_prepared[0].prepared)
+    };
+    for request in requests.iter().take(2) {
+        renderer
+            .pick_chart_data(id, *request)
+            .unwrap()
+            .resolve_full_blocking()
+            .unwrap();
+    }
+    let created = renderer.picker.data_readbacks.created;
+    assert!(created <= 2, "{created} readback buffers for two picks");
+    let first = prepared(&renderer);
+    for request in &requests {
+        renderer
+            .pick_chart_data(id, *request)
+            .unwrap()
+            .resolve_full_blocking()
+            .unwrap();
+    }
+    assert_eq!(renderer.picker.data_readbacks.created, created);
+    assert!(first.ptr_eq(&prepared(&renderer)));
+    // A ticket still held keeps its prepared work: the next pick prepares
+    // its own instead of writing the held one's queries.
+    let held = renderer.pick_chart_data(id, requests[0]).unwrap();
+    renderer
+        .pick_chart_data(id, requests[1])
+        .unwrap()
+        .resolve_full_blocking()
+        .unwrap();
+    assert!(!first.ptr_eq(&prepared(&renderer)));
+    held.resolve_full_blocking().unwrap();
+    // An edit moves the chart's revision: the next pick prepares again.
+    let again = prepared(&renderer);
+    let mut edited = config.clone();
+    edited.left_y.max = 120.0;
+    renderer.set_chart_config(id, edited).unwrap();
+    renderer
+        .pick_chart_data(id, requests[0])
+        .unwrap()
+        .resolve_full_blocking()
+        .unwrap();
+    assert!(!again.ptr_eq(&prepared(&renderer)));
+    // The host's release of unused memory drops the cache.
+    renderer.remove_chart(id).unwrap();
+    renderer
+        .release_unused_pool_memory_blocking(1024 * 1024)
+        .unwrap();
+    assert!(renderer.picker.typed_prepared.is_empty());
 }
