@@ -212,13 +212,17 @@ impl PrepareContext<'_> {
     /// It rides in the signature, so switching between a window frame and an
     /// export rebuilds the level styles rather than drawing one at the other's
     /// stroke width.
+    ///
+    /// `labels` names the registered chart each panel draws, whose value
+    /// labels then reuse their atlas and cells across frames (#443).
     pub(in crate::renderer) fn ensure_contour_scratches(
         &mut self,
         items: &[PanelDraw<'_>],
         scale: f32,
         panels: &mut [PreparedPanelProducts],
+        labels: ValueLabelSources<'_>,
     ) -> Result<Vec<Arc<GridSources>>> {
-        self.frame_batch(|ctx| ctx.ensure_contour_scratches_in_frame(items, scale, panels))
+        self.frame_batch(|ctx| ctx.ensure_contour_scratches_in_frame(items, scale, panels, labels))
     }
 
     fn ensure_contour_scratches_in_frame(
@@ -226,6 +230,7 @@ impl PrepareContext<'_> {
         items: &[PanelDraw<'_>],
         scale: f32,
         panels: &mut [PreparedPanelProducts],
+        labels: ValueLabelSources<'_>,
     ) -> Result<Vec<Arc<GridSources>>> {
         retain_frame_series(&mut self.contour_cache, items, CONTOUR_SCRATCH_CACHE_LIMIT);
         let mut receipts = Vec::new();
@@ -234,7 +239,10 @@ impl PrepareContext<'_> {
                 "one contour spacing list per draw item",
             ));
         }
-        for (item, panel) in items.iter().zip(panels.iter_mut()) {
+        for (index, (item, panel)) in items.iter().zip(panels.iter_mut()).enumerate() {
+            let label_slot = labels
+                .of(index, items.len())
+                .map(|source| (source, ValueLabelRole::Draw));
             let item_spacings = &panel.contour_spacings;
             if item.series.len() != item_spacings.len() {
                 return Err(FiggyError::internal("one contour spacing per series"));
@@ -255,7 +263,8 @@ impl PrepareContext<'_> {
                 // series bake through this module's atlas builder too, at
                 // the panel config's tick label size (an export's config is
                 // scaled already).
-                let value_labels = self.ensure_value_label_scratch(item.chart_config, cfg)?;
+                let value_labels =
+                    self.ensure_value_label_scratch(item.chart_config, cfg, label_slot)?;
                 // An energy-level series rasters on the CPU here, beside the
                 // other CPU bakes (#203).
                 let energy_levels = self.ensure_energy_level_scratch(
@@ -270,6 +279,7 @@ impl PrepareContext<'_> {
                     per_series.push(PreparedContourSeries {
                         scratch: None,
                         value_labels,
+                        value_label_data: None,
                         energy_levels,
                     });
                     continue;
@@ -318,11 +328,36 @@ impl PrepareContext<'_> {
                         label,
                     }),
                     value_labels,
+                    value_label_data: None,
                     energy_levels,
                 });
             }
             if let Some(encoder) = encoder {
                 self.queue.submit(std::iter::once(encoder.finish()));
+            }
+            // A registered panel's value label cells, once every member's
+            // atlas is resolved (a radar group's), from the entry that keeps
+            // them across frames (#443).
+            if label_slot.is_some() {
+                for (index, series) in item.series.iter().enumerate() {
+                    let Some(atlas) = per_series[index].value_labels.clone() else {
+                        continue;
+                    };
+                    let data = self.ensure_value_label_data(
+                        item.chart_config,
+                        item.series.iter().map(|spec| spec.config),
+                        series.config,
+                        &atlas,
+                        series.style.display_scale,
+                        label_slot,
+                        |_, member, _| {
+                            Ok(per_series
+                                .get(member)
+                                .and_then(|series| series.value_labels.clone()))
+                        },
+                    )?;
+                    per_series[index].value_label_data = data;
+                }
             }
             panel.contour = PreparedContourItem { series: per_series };
         }
@@ -781,9 +816,12 @@ impl Renderer {
         scale: f32,
         panels: &mut [PreparedPanelProducts],
     ) -> Result<Vec<Arc<GridSources>>> {
-        self.preparation_parts()
-            .1
-            .ensure_contour_scratches(items, scale, panels)
+        self.preparation_parts().1.ensure_contour_scratches(
+            items,
+            scale,
+            panels,
+            super::value_label::ValueLabelSources::NONE,
+        )
     }
 
     /// Build or reuse one contour series' GPU state.

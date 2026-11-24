@@ -76,6 +76,48 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
     document still shares it; to add or remove one, collect a new list.
     The model's `serde` feature now enables serde's `rc` feature.
 
+- **Calendar ticks plan once per axis and stop measuring rejected
+  candidates** ([#444](https://github.com/shim9610/figgy/issues/444)). On a
+  date axis with automatic calendar ticks, pan and zoom spent most of each
+  frame in the tick planner: every candidate step it tried had all its
+  labels formatted and measured before the fit was decided, and the grid,
+  the ticks, the labels, the corner labels and the tick warnings each planned
+  the same axis again. The walk now rejects a candidate whose gaps alone
+  overflow the axis without formatting a label, measures the other
+  candidates' labels one at a time and stops as soon as the widest so far
+  overflows, and builds ticks only for the candidate it takes; the plan,
+  the tick values and the labels are the same (the walk before is kept as a
+  test oracle over ranges from a fraction of a second to millennia). A
+  chrome pass (`chrome::emit_chart_chrome`) and each element placement
+  (`chrome::emit_part_of`) plan each axis once and hand the plan to
+  everything that reads it, and the renderer's tick warnings read whether
+  each axis has a plan from the raster pass that drew it. Frames are byte
+  for byte unchanged.
+  **Migration** (the `chrome` module carries no compatibility promise; these
+  are its public signatures): `emit_chart_chrome` returns `[bool; 4]`,
+  whether each axis in `chrome::CHART_SIDES` order has a timestamp plan
+  (ignore it to keep the call as before). The plan of an axis is
+  `timestamp_tick_plan(axis, side, plot, measure)`; pass `plan.as_ref()`
+  where these now take it: `emit_axis(.., corners, plan, measure, sink,
+  scale)`, `emit_axis_strokes(axis, side, plot, cross, across, plan, sink,
+  scale)` (no measure), `emit_axis_tick_labels_clear_of(.., clearance, plan,
+  measure, sink)`, `each_axis_stroke(.., across, plan, majors, scale, each)`
+  (the plan in place of the measure), `each_kept_axis_tick_label(..,
+  majors, plan, each)`, `each_axis_tick_label(.., majors, plan, each)` and
+  `visible_timestamp_labels(.., majors, plan)`; `emit_grid(config, plot,
+  [bottom_x_plan, left_y_plan], sink, scale)` takes the two plans in place of
+  the measure, and a `CornerAxis { .. }` literal adds `plan`. The new
+  `major_tick_values_of(axis, plan)` and `minor_tick_values_of(axis, plan)`
+  are `major_tick_values_for_axis` and `minor_tick_values_for_axis` for a
+  plan already made; `timestamp_plan_sides(config, plot, measure)` gives
+  whether each axis has one. Tests:
+  `the_early_rejecting_walk_returns_the_measuring_walks_plan`,
+  `the_early_rejecting_walk_keeps_the_unreadable_ranges` and
+  `a_thirty_day_plan_measures_a_bounded_number_of_labels`
+  (`chrome/time.rs`), `a_chrome_pass_plans_each_axis_once` and
+  `placing_an_axis_element_plans_each_axis_it_reads_once`
+  (`chrome/tick_plan.rs`).
+
 - **The layout chooses each range link's exit, links draw under their bars,
   and a chart of links takes the timeline frame**
   ([#357](https://github.com/shim9610/figgy/issues/357), approved in
@@ -2398,6 +2440,8 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 <a id="unreleased-renderer"></a>
 
 ### Renderer (`figgy-renderer` 0.19.0)
+
+- **Typed data picks spread over the rows and reuse their buffers** ([#445](https://github.com/shim9610/figgy/issues/445)). The typed body picks of histograms, category bars, box plots, range bars, range links, violins, value labels, parallel coordinates and triangle meshes each ran one 64-lane workgroup that walked every row. Each is now dispatched over `ceil(N / 64)` workgroups, one row per lane (two dimensions past the per-dimension limit; no row is skipped and nothing is capped, rule 10): each workgroup reduces its rows to one candidate in a partials buffer, and a second pass per series (`pick_reduce_data` in the bar module, `pick_reduce_parallel`, `pick_reduce_tri_mesh`, which also runs the mesh's contour test once) folds them into the series' answer. Every comparator is a total order on valid candidates, so the answers are those of the single-workgroup kernels, ties included. A pick's prepared work (its series' bind groups, style maps, kernels, query templates and scratch buffers) is kept by the picker per chart layer while the chart's desired revision, the renderer's visual revision, the pool layout, the font generation, the shader set and the display scale and panel are unchanged, and a pick writes only the transform and its cursor; the readback buffers are a ring of two. The field and grid vector kernels are unchanged, and streamed sources keep their own path (rule 8). The shader prewarm contract is regenerated. Timings (debug build, a 480 × 360 range bar chart, median of ten picks): native on lavapipe 0.69 → 0.44 ms at 5k rows, 2.57 → 2.07 ms at 50k, 30.6 → 26.0 ms at 50k with value labels; in headed Chromium on SwiftShader under Xvfb the pick's CPU encode drops to about 0.2 ms, but its GPU wait is unchanged (about 9 ms at 5k, 55 ms at 50k), since SwiftShader's cost there grows with the rows whatever the split. Tests: `parallel_typed_picks_answer_as_the_single_workgroup_kernels` (range bars, category bars and value labels at 1, 63, 64, 65, 5k and 70k rows with ties and missing rows, against the replaced kernels compiled as a test oracle, the 2D dispatch forced by a lowered per-dimension limit) and `repeated_typed_picks_reuse_their_buffers` (no readback buffer after the first two picks, the prepared work kept across cursors, prepared again after an edit or while a ticket holds it, dropped by the host's memory release).
 
 - **Snap guides on the selection overlay** ([#440](https://github.com/shim9610/figgy/issues/440)). `Renderer::set_chart_snap_guides` (and `MonotonicChart::set_snap_guides`, `Chart::set_snap_guides`) shows the guides of a decoration drag in progress with the chart's selection box, drawn by `draw_selection_box` as thin magenta lines (`axis_render::SNAP_GUIDE_COLOR`) one device pixel wide; `SnapGuides::NONE` removes them, and a changed selection drops them. `Renderer::refresh_annotations_with_guides` does the same for the selected annotation, and `AnnotationMap::drag_snapped` snaps a text box or arrow. Guides are selection chrome: they redraw the selection overlay only, are not part of the document, and no PNG, SVG or PDF export draws them. Tests: `snap_guides::a_drag_shows_its_guide_until_release_and_no_export_draws_it` (PNG at 1x and 2x and SVG byte-equal with and without guides), `snap_guides_are_drawn_only_with_the_selection_box`, `annotation_snap_guides_draw_with_the_selection_box`.
 - **Polar bars choose a radius label ray they do not cover** ([#417](https://github.com/shim9610/figgy/issues/417)). On a 16-sector stacked wind rose the default ray ran through the N and NNW wedges and the innermost labels, the zero label included, sat over the bars. The renderer's fits now choose it where the document leaves it `None`: `Renderer::fit_ranges`, a `Fitted` chart's registration, `commit_auto_fit_all` and the new `Renderer::fit_radial_labels` (native) / `fit_chart_radial_labels` (a registered chart; a browser's frame writes it when its gather completes, `service_radial_label_fits`) gather each row's drawn stack of every polar cell's category bars on the GPU (the extent engine's new `gather_polar_bar_rows` entry, 16 bytes per row, read back once by the layout and kept nowhere) and store the ray and the innermost labels to skip in `PolarOptions` (model). A stored angle or count is kept; only the skip count is chosen at a stored ray. A streamed source is refused with `ColumnNotResident` (rule 8). There is no cap on rows, members or categories (rule 10): the choice's walk grows with the square of the categories (2000 categories: under a second in a debug build). `Renderer::begin_radial_label_fit` and `RadialLabelFitTicket` are the parts for a host that waits on its own.

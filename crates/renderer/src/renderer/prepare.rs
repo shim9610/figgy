@@ -130,6 +130,11 @@ pub(super) struct PrepareContext<'a> {
     /// item order: its panels' ink masks are drawn (#381). Empty for every
     /// other preparation (a pick's, a host-owned chart's, an export's).
     pub(super) ink_charts: &'a [ChartId],
+    /// The registered chart each item of an on-screen prepare draws and
+    /// the revisions its value labels are keyed by, in item order (#443).
+    /// Empty for a host-held chart's and an export's preparation, whose
+    /// atlases are keyed by their strings.
+    pub(super) label_sources: &'a [value_label::ValueLabelSource],
     pub(super) contour_label_pipelines: &'a mut Option<crate::gpu_contour::ContourLabelPipelines>,
     pub(super) arc_pipelines: &'a mut Option<data_render::line_arc::ArcScanPipelines>,
     pub(super) surface_format: wgpu::TextureFormat,
@@ -264,7 +269,11 @@ impl PrepareContext<'_> {
         let mut grid_sources = self.ensure_field_scratches(items)?;
         self.ensure_value_map_scratches(items, 1.0)?;
         grid_sources.append(&mut self.ensure_vector_scratches(items, None)?);
-        let mut contour_sources = self.ensure_contour_scratches(items, 1.0, &mut panels)?;
+        let labels = value_label::ValueLabelSources {
+            items: self.label_sources,
+            group_sizes: &group_sizes,
+        };
+        let mut contour_sources = self.ensure_contour_scratches(items, 1.0, &mut panels, labels)?;
         grid_sources.append(&mut contour_sources);
         grid_sources.append(&mut self.ensure_mesh_scratches(items, 1.0)?);
         self.prepare_arc_items(items, &mut panels)?;
@@ -317,7 +326,10 @@ impl PrepareContext<'_> {
                         continue;
                     };
                     *self.resident_display_serial = serial;
-                    let key = ResidentDisplayKey::from_probe(&probe);
+                    let key = ResidentDisplayKey::from_probe(
+                        &probe,
+                        slot.map(|i| &mut self.resident_displays[i].key),
+                    );
                     let reusable = slot.filter(|&i| {
                         let display = &self.resident_displays[i];
                         display.texture.width() == w
@@ -452,7 +464,10 @@ impl PrepareContext<'_> {
                     continue;
                 }
                 let (w, h) = probe.size;
-                let key = ResidentDisplayKey::from_probe(&probe);
+                let key = ResidentDisplayKey::from_probe(
+                    &probe,
+                    slot.map(|slot| &mut self.ink_masks[slot].key),
+                );
                 let reusable = slot.filter(|&slot| {
                     let texture = &self.ink_masks[slot].texture;
                     texture.width() == w && texture.height() == h

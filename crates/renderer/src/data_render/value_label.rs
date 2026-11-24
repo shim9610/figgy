@@ -202,6 +202,19 @@ impl ValueLabelAtlas {
 /// no non-empty string, or a radar series whose `Emphasized` labels have no
 /// selection. `selected` is whether the series has a selected vertex or
 /// label (radar `Emphasized`).
+/// A series' value-label strings (`labels.text`) whether or not they are
+/// shown; empty for a series kind without value labels. What the labels
+/// revision of a registered chart compares (#443).
+pub(crate) fn value_label_text(render_type: &DataRenderType) -> &[String] {
+    match render_type {
+        DataRenderType::CategoryBars(CategoryBarSeries { labels, .. }) => &labels.text,
+        DataRenderType::BoxPlot(BoxSeries { labels, .. }) => &labels.text,
+        DataRenderType::RangeBars(RangeBarSeries { labels, .. }) => &labels.text,
+        DataRenderType::Radar(RadarPolygonSeries { labels, .. }) => &labels.text,
+        _ => &[],
+    }
+}
+
 pub(crate) fn value_label_kind(
     render_type: &DataRenderType,
     selected: bool,
