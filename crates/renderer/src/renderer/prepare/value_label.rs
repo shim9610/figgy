@@ -74,7 +74,10 @@ struct RegisteredValueLabelAtlas {
     /// `None` when the strings measure to nothing.
     atlas: Option<Arc<data_render::ValueLabelAtlas>>,
     /// The label uniform, the 16 B cell per label and their group 1, kept
-    /// across frames and picks while [`ValueLabelCellsKey`] holds (#443).
+    /// across frames while [`ValueLabelCellsKey`] holds (#443). Only the
+    /// draw's entry holds them; a pick at the draw's scale reuses them, and
+    /// a pick at another scale's are owned by the picker's prepared-pick
+    /// cache (#445).
     cells: Option<(ValueLabelCellsKey, data_render::ValueLabelData)>,
 }
 
@@ -780,7 +783,12 @@ impl PrepareContext<'_> {
         let data = this.value_label_data(config, series, cfg, atlas, scale, |index, member| {
             member_atlas(this, index, member)
         })?;
-        if let Some(data) = &data
+        // The draw's entry owns the data it keeps. A pick's is owned by
+        // the picker's prepared-pick cache, which keys it by the chart's
+        // desired revision and the display (#445): one owner each, so the
+        // pick entry keeps only its atlas.
+        if role == ValueLabelRole::Draw
+            && let Some(data) = &data
             && let Some(ScratchEntry::ValueLabels(scratch)) =
                 self.contour_cache.get_mut(cfg.series_id.as_str())
             && let Some(entries) = scratch.registered.get_mut(&source.chart)

@@ -71,7 +71,8 @@ pub fn emit_parallel_axis_strokes(
     };
     let plot = axis_plot(config, &data_area_rect(da), i);
     let (off_x, off_y) = axis_offset(Side::Left, axis.line_offset);
-    let majors = major_tick_values_for_axis(&axis, Side::Left, &plot, measure);
+    let plan = timestamp_tick_plan(&axis, Side::Left, &plot, measure);
+    let majors = major_tick_values_of(&axis, plan.as_ref());
     let dash = axis.line_style.pattern();
     // A parallel axis has no breaks, so the frame snap's scale is unused.
     each_axis_stroke(
@@ -80,7 +81,7 @@ pub fn emit_parallel_axis_strokes(
         &plot,
         None,
         None,
-        measure,
+        plan.as_ref(),
         &majors,
         1.0,
         |stroke, mut a, mut b| {

@@ -2309,7 +2309,8 @@ fn category_ticks_and_grid_lines_are_at_the_category_positions() {
         &data_area_rect(&da),
         None,
         None,
-        &CpuTextMeasure::with_policy(FontPolicy::Standard),
+        // A categorical axis has no timestamp plan.
+        None,
         &majors,
         1.0,
         |stroke, a, _| {
@@ -2349,13 +2350,7 @@ fn category_ticks_and_grid_lines_are_at_the_category_positions() {
     cfg.grid.show_major_x = true;
     cfg.grid.show_minor_x = true;
     let mut grid = GridLog(Vec::new());
-    emit_grid(
-        &cfg,
-        &data_area_rect(&da),
-        &CpuTextMeasure::with_policy(FontPolicy::Standard),
-        &mut grid,
-        1.0,
-    );
+    emit_grid(&cfg, &data_area_rect(&da), [None, None], &mut grid, 1.0);
     let major_x: Vec<f32> = grid
         .0
         .iter()
@@ -2401,7 +2396,7 @@ fn the_axis_walks_take_a_fractional_plot_rectangle() {
         &plot,
         None,
         None,
-        &CpuTextMeasure::with_policy(fp),
+        None,
         &majors,
         1.0,
         |stroke, a, b| match stroke {

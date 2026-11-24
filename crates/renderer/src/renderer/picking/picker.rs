@@ -69,6 +69,12 @@ pub(in crate::renderer) struct RendererPicker {
     /// The nearest-datum pipelines (#381), created on the first nearest
     /// pick for the bundle's shader set.
     pub(in crate::renderer) nearest: Option<crate::gpu_pick::NearestPickPipelines>,
+    /// The typed picks prepared for the chart picked last, one per layer
+    /// (#445): kept while the key's generations hold, so a pick at another
+    /// cursor reuses the series' bind groups, style maps and scratch.
+    pub(in crate::renderer) typed_prepared: Vec<TypedPickCacheEntry>,
+    /// The typed picks' readback ring (#445).
+    pub(in crate::renderer) data_readbacks: crate::gpu_data_pick::DataPickReadbacks,
     #[cfg(test)]
     pub(in crate::renderer) injected_activation_failure: Option<crate::gpu_pick::GpuPickError>,
 }
@@ -81,11 +87,88 @@ impl RendererPicker {
             exact: crate::gpu_pick::PickExactPipelines::default(),
             data_kernels: crate::gpu_data_pick::DataPickKernels::default(),
             nearest: None,
+            typed_prepared: Vec::new(),
+            data_readbacks: crate::gpu_data_pick::DataPickReadbacks::default(),
             #[cfg(test)]
             injected_activation_failure: None,
         }
     }
 
+    /// The prepared typed pick of `key` when one is cached and no pick
+    /// still holds it (allocation identity: the cache's reference is the
+    /// only one), so its queries can be written for a new pick (#445).
+    pub(in crate::renderer) fn reusable_typed_pick(
+        &self,
+        key: &TypedPickKey,
+    ) -> Option<Arc<crate::gpu_data_pick::PreparedDataPick>> {
+        self.typed_prepared
+            .iter()
+            .find(|entry| entry.key == *key)
+            .filter(|entry| Arc::strong_count(&entry.prepared) == 1)
+            .map(|entry| Arc::clone(&entry.prepared))
+    }
+
+    /// Cache `prepared` under `key`, replacing the entry of its layer; an
+    /// entry of another chart is dropped first, so the cache holds one
+    /// chart's layers at most.
+    pub(in crate::renderer) fn keep_typed_pick(
+        &mut self,
+        key: TypedPickKey,
+        prepared: &Arc<crate::gpu_data_pick::PreparedDataPick>,
+    ) -> Result<()> {
+        self.typed_prepared
+            .retain(|entry| entry.key.chart == key.chart && entry.key.layer != key.layer);
+        self.typed_prepared
+            .try_reserve(1)
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "typed pick cache",
+                reason: error.to_string(),
+            })?;
+        self.typed_prepared.push(TypedPickCacheEntry {
+            key,
+            prepared: Arc::clone(prepared),
+        });
+        Ok(())
+    }
+
+    /// Drop every cached typed pick and readback buffer (#445); a pick
+    /// still holding one keeps it until it resolves.
+    pub(in crate::renderer) fn release_typed_picks(&mut self) {
+        self.typed_prepared.clear();
+        self.data_readbacks.clear();
+    }
+}
+
+/// What a prepared typed pick was prepared for (#445): the chart (its
+/// issued id) and layer, and the generations of everything its series'
+/// bind groups, style maps and query templates are built from. A
+/// staleness check by generation (`ARCHITECTURE.md`, "Identity and
+/// staleness checks"): any change moves one of them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::renderer) struct TypedPickKey {
+    pub(in crate::renderer) chart: ChartId,
+    pub(in crate::renderer) layer: crate::LayerRef,
+    /// The chart's desired revision: its document, series and columns.
+    pub(in crate::renderer) desired: RenderRevision,
+    /// The renderer's visual revision: anything drawn anywhere.
+    pub(in crate::renderer) visual: RenderRevision,
+    /// The pool's layout generation: the buffer the bind groups read.
+    pub(in crate::renderer) pool_layout: u64,
+    /// The text renderer's font generation: the value label atlases.
+    pub(in crate::renderer) font: u64,
+    pub(in crate::renderer) set: ShaderSet,
+    /// The display the pick places the document in.
+    pub(in crate::renderer) display_scale: f32,
+    pub(in crate::renderer) display_panel_px: Rect,
+}
+
+/// One prepared typed pick of the cache (#445).
+pub(in crate::renderer) struct TypedPickCacheEntry {
+    pub(in crate::renderer) key: TypedPickKey,
+    pub(in crate::renderer) prepared: Arc<crate::gpu_data_pick::PreparedDataPick>,
+}
+
+impl RendererPicker {
     #[allow(clippy::too_many_arguments)]
     pub(in crate::renderer) fn enable_observed(
         &mut self,

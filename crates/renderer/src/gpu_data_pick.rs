@@ -124,6 +124,8 @@ pub(crate) enum GpuDataPickGeometry {
     /// whose index is its row.
     CategoryBars {
         data: crate::data_render::CategoryBarData,
+        /// The rows its kernel tests, which size its dispatch (#445).
+        rows: u32,
     },
     /// A box plot series' boxes, picked by the box plot entry
     /// (`pick_box_plot`) over the draw's group 3 and style map at the
@@ -132,6 +134,8 @@ pub(crate) enum GpuDataPickGeometry {
     /// index is its row.
     BoxPlot {
         data: crate::data_render::CategoryBarData,
+        /// The rows its kernel tests, which size its dispatch (#445).
+        rows: u32,
     },
     /// A range bar series' bars, picked by the range bar entry
     /// (`pick_range_bar`) over the draw's group 3 and style map at the
@@ -139,6 +143,8 @@ pub(crate) enum GpuDataPickGeometry {
     /// bar answer it as a histogram bin whose index is its row.
     RangeBars {
         data: crate::data_render::CategoryBarData,
+        /// The rows its kernel tests, which size its dispatch (#445).
+        rows: u32,
     },
     /// A range link series' links (#357), picked by the range link entry
     /// (`pick_range_links`) over the group 3 of the bars they join, at the
@@ -146,6 +152,8 @@ pub(crate) enum GpuDataPickGeometry {
     /// histogram bin whose index is its row.
     RangeLinks {
         data: crate::data_render::CategoryBarData,
+        /// The rows its kernel tests, which size its dispatch (#445).
+        rows: u32,
     },
     /// A box plot series' violins, picked by the violin entry
     /// (`pick_violin`) over the violin draw's group 3 and style map at the
@@ -153,6 +161,8 @@ pub(crate) enum GpuDataPickGeometry {
     /// category as a histogram bin.
     Violin {
         data: crate::data_render::CategoryBarData,
+        /// The rows its kernel tests, which size its dispatch (#445).
+        rows: u32,
     },
     /// A series' value labels, picked by the bar module's label entry
     /// (`pick_value_labels`) over the draw's label uniform, category bar
@@ -177,6 +187,9 @@ pub(crate) enum GpuDataPickGeometry {
     TriMesh {
         field_bg: wgpu::BindGroup,
         charge: SharedCharge,
+        /// At least the triangles its kernel tests, which size its
+        /// dispatch (#445).
+        triangles: u32,
         has_fill: bool,
         has_contour: bool,
         contour_width_px: f32,
@@ -442,14 +455,19 @@ impl GpuStreamDataPick {
                     ),
                     identities: self.identities,
                     gpu_reduced: true,
+                    slot: None,
+                    _prepared: None,
                     _field_charges: vec![FieldPickHold {
                         _charge: self.charge,
                         _label: None,
                     }],
-                    _scratch_charge: ChargeTally::new()
-                        .into_charge(&self.bundle.ledger, GpuResourceKind::PickScratch),
-                    _readback_charge: tally
-                        .into_charge(&self.bundle.ledger, GpuResourceKind::Readback),
+                    _scratch_charge: Some(
+                        ChargeTally::new()
+                            .into_charge(&self.bundle.ledger, GpuResourceKind::PickScratch),
+                    ),
+                    _readback_charge: Some(
+                        tally.into_charge(&self.bundle.ledger, GpuResourceKind::Readback),
+                    ),
                 },
             }),
         })
@@ -507,10 +525,23 @@ pub(crate) enum DataPickKernel {
     StreamReduceData,
     /// The streamed typed pick's running reduction of the point answer.
     StreamReducePoint,
+    /// The second pass of a histogram pick (#445): its workgroup partials
+    /// folded into the series' answer, over the histogram layout.
+    ReduceHistogram,
+    /// The second pass of a category bar, box plot, range bar, range link
+    /// or violin pick (#445), over the category layout.
+    ReduceCategory,
+    /// The second pass of a value label pick (#445).
+    ReduceValueLabels,
+    /// The second pass of a parallel coordinates pick (#445).
+    ReduceParallel,
+    /// The second pass of a triangle mesh pick (#445), with its contour
+    /// test.
+    ReduceTriMesh,
 }
 
 impl DataPickKernel {
-    pub(crate) const ALL: [Self; 14] = [
+    pub(crate) const ALL: [Self; 19] = [
         Self::Histogram,
         Self::FieldContour,
         Self::FieldCell,
@@ -525,7 +556,36 @@ impl DataPickKernel {
         Self::ValueLabels,
         Self::StreamReduceData,
         Self::StreamReducePoint,
+        Self::ReduceHistogram,
+        Self::ReduceCategory,
+        Self::ReduceValueLabels,
+        Self::ReduceParallel,
+        Self::ReduceTriMesh,
     ];
+
+    /// The second pass that folds this body kernel's workgroup partials
+    /// (#445); `None` for a kernel that writes its series' answer itself.
+    pub(crate) const fn reducer(self) -> Option<Self> {
+        match self {
+            Self::Histogram => Some(Self::ReduceHistogram),
+            Self::CategoryBar | Self::BoxPlot | Self::RangeBar | Self::RangeLink | Self::Violin => {
+                Some(Self::ReduceCategory)
+            }
+            Self::ValueLabels => Some(Self::ReduceValueLabels),
+            Self::Parallel => Some(Self::ReduceParallel),
+            Self::TriMesh => Some(Self::ReduceTriMesh),
+            _ => None,
+        }
+    }
+
+    /// Workgroup partials one body workgroup writes (#445): a triangle
+    /// mesh writes its fill's and its contour test's.
+    const fn partials_per_group(self) -> u64 {
+        match self {
+            Self::TriMesh => 2,
+            _ => 1,
+        }
+    }
 
     /// Its slot in [`DataPickKernels`] and its bit in [`DataPickKernelSet`].
     const fn index(self) -> usize {
@@ -549,6 +609,11 @@ impl DataPickKernel {
             Self::ValueLabels => "pick_value_labels",
             Self::StreamReduceData => "accumulate_data",
             Self::StreamReducePoint => "accumulate_point",
+            Self::ReduceHistogram | Self::ReduceCategory | Self::ReduceValueLabels => {
+                "pick_reduce_data"
+            }
+            Self::ReduceParallel => "pick_reduce_parallel",
+            Self::ReduceTriMesh => "pick_reduce_tri_mesh",
         }
     }
 
@@ -569,6 +634,11 @@ impl DataPickKernel {
             Self::ValueLabels => "figgy value label data pick pipeline",
             Self::StreamReduceData => "accumulate_data",
             Self::StreamReducePoint => "accumulate_point",
+            Self::ReduceHistogram => "figgy histogram data pick reduction pipeline",
+            Self::ReduceCategory => "figgy category data pick reduction pipeline",
+            Self::ReduceValueLabels => "figgy value label data pick reduction pipeline",
+            Self::ReduceParallel => "figgy parallel data pick reduction pipeline",
+            Self::ReduceTriMesh => "figgy triangle mesh data pick reduction pipeline",
         }
     }
 
@@ -582,7 +652,10 @@ impl DataPickKernel {
             | Self::RangeBar
             | Self::RangeLink
             | Self::Violin
-            | Self::ValueLabels => crate::data_render::BAR_SHADER_BY_SET.of(set).source,
+            | Self::ValueLabels
+            | Self::ReduceHistogram
+            | Self::ReduceCategory
+            | Self::ReduceValueLabels => crate::data_render::BAR_SHADER_BY_SET.of(set).source,
             Self::FieldContour | Self::FieldCell => {
                 crate::data_render::FIELD_SHADER_BY_SET.of(set).source
             }
@@ -590,8 +663,10 @@ impl DataPickKernel {
                 crate::data_render::vector::VectorInput::Grid,
                 set,
             ),
-            Self::Parallel => crate::data_render::LINE_SHADER_BY_SET.of(set).source,
-            Self::TriMesh => {
+            Self::Parallel | Self::ReduceParallel => {
+                crate::data_render::LINE_SHADER_BY_SET.of(set).source
+            }
+            Self::TriMesh | Self::ReduceTriMesh => {
                 crate::data_render::tri_mesh::TRI_MESH_SHADER_BY_SET
                     .of(set)
                     .source
@@ -603,16 +678,141 @@ impl DataPickKernel {
 
 const STREAM_REDUCE_SHADER: &str = include_str!("gpu_stream_data_pick.wgsl");
 
+/// The single-workgroup body kernels the parallel picks replaced (#445),
+/// for tests: one workgroup of 64 lanes strides over every row, then folds
+/// the lanes, as each kernel did before. Each is appended to its own
+/// module and writes the first workgroup partial, which the module's
+/// reduction folds into the series' answer.
+#[cfg(test)]
+mod single_workgroup_oracle {
+    use super::DataPickKernel;
+    use crate::shader_assembly::ShaderSet;
+
+    /// The module source with the oracle of `kernel` appended, and the
+    /// oracle's entry point.
+    pub(super) fn source(kernel: DataPickKernel, set: ShaderSet) -> (String, String) {
+        let bar = |count: &str, candidate: &str| {
+            format!(
+                r#"
+@compute @workgroup_size(64)
+fn oracle_{entry}(@builtin(local_invocation_index) local_index: u32) {{
+    figgy_zero_workgroup(local_index);
+    var best = data_pick_invalid();
+    var row = local_index;
+    while (row < {count}) {{
+        let candidate = {candidate};
+        if (data_pick_better(candidate, best)) {{
+            best = candidate;
+        }}
+        row = row + 64u;
+    }}
+    let folded = data_pick_fold(local_index, best);
+    if (local_index == 0u) {{
+        data_pick_partials[0] = folded;
+    }}
+}}
+"#,
+                entry = kernel.entry(),
+            )
+        };
+        let base = match kernel {
+            DataPickKernel::Parallel => crate::data_render::LINE_SHADER_BY_SET.of(set).source,
+            DataPickKernel::TriMesh => {
+                crate::data_render::tri_mesh::TRI_MESH_SHADER_BY_SET
+                    .of(set)
+                    .source
+            }
+            _ => crate::data_render::BAR_SHADER_BY_SET.of(set).source,
+        };
+        let oracle = match kernel {
+            DataPickKernel::Histogram => bar("data_pick_query.data.z", "data_pick_bar(row)"),
+            DataPickKernel::CategoryBar => bar("category_params.count", "category_pick_bar(row)"),
+            DataPickKernel::BoxPlot => bar("category_params.count", "box_pick_row(row)"),
+            DataPickKernel::RangeBar => bar("category_params.count", "range_pick_row(row)"),
+            DataPickKernel::RangeLink => bar("range_link_count()", "range_link_pick(row)"),
+            DataPickKernel::Violin => bar("category_params.count", "violin_pick_row(row)"),
+            DataPickKernel::ValueLabels => bar("value_label.shape.y", "value_label_pick(row)"),
+            DataPickKernel::Parallel => r#"
+@compute @workgroup_size(64)
+fn oracle_pick_parallel(@builtin(local_invocation_index) local_index: u32) {
+    figgy_zero_workgroup(local_index);
+    var best = parallel_pick_invalid();
+    let segments = max(parallel_params.axes, 2u) - 1u;
+    let count = parallel_params.rows * segments;
+    var index = local_index;
+    while (index < count) {
+        let candidate = parallel_pick_candidate(index);
+        if (parallel_pick_better(candidate, best)) {
+            best = candidate;
+        }
+        index = index + 64u;
+    }
+    let folded = parallel_pick_fold(local_index, best);
+    if (local_index == 0u) {
+        data_pick_partials[0] = folded;
+    }
+}
+"#
+            .to_owned(),
+            DataPickKernel::TriMesh => r#"
+@compute @workgroup_size(64)
+fn oracle_pick_tri_mesh(@builtin(local_invocation_index) local_index: u32) {
+    figgy_zero_workgroup(local_index);
+    let cursor = mesh_pick_cursor();
+    let fill = (data_pick_query.data.x & DATA_PICK_FLAG_FILL) != 0u;
+    let contour = (data_pick_query.data.x & DATA_PICK_FLAG_CONTOUR) != 0u;
+    var best = mesh_pick_invalid();
+    var near = mesh_pick_invalid();
+    let count = mesh_triangle_count();
+    var tri = local_index;
+    while (tri < count) {
+        if (fill) {
+            let candidate = mesh_pick_candidate(tri, cursor);
+            if (mesh_pick_better(candidate, best)) {
+                best = candidate;
+            }
+        }
+        if (contour) {
+            let candidate = mesh_pick_near_candidate(tri, cursor);
+            if (mesh_pick_better(candidate, near)) {
+                near = candidate;
+            }
+        }
+        tri = tri + 64u;
+    }
+    mesh_pick_fold(local_index, best, near);
+    if (local_index == 0u) {
+        data_pick_partials[0] = mesh_pick_shared[0];
+        data_pick_partials[1] = mesh_pick_near[0];
+    }
+}
+"#
+            .to_owned(),
+            _ => panic!("{kernel:?} has no single-workgroup oracle"),
+        };
+        (
+            format!("{base}\n{oracle}"),
+            format!("oracle_{}", kernel.entry()),
+        )
+    }
+}
+
 /// A set of [`DataPickKernel`]s, one bit each: the kernels a pick of one
 /// chart dispatches (#327).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct DataPickKernelSet(u16);
+pub(crate) struct DataPickKernelSet(u32);
 
 impl DataPickKernelSet {
     pub(crate) const EMPTY: Self = Self(0);
 
+    /// The set with `kernel` and the second pass that folds its partials
+    /// (#445), which every dispatch of it runs.
     pub(crate) const fn with(self, kernel: DataPickKernel) -> Self {
-        Self(self.0 | (1 << kernel.index()))
+        let reducer = match kernel.reducer() {
+            Some(reducer) => 1 << reducer.index(),
+            None => 0,
+        };
+        Self(self.0 | (1 << kernel.index()) | reducer)
     }
 
     pub(crate) const fn union(self, other: Self) -> Self {
@@ -643,6 +843,15 @@ pub(crate) struct DataPickKernels {
     tri_mesh_module: Option<wgpu::ShaderModule>,
     /// The streamed typed pick's reduction module, shared by both reducers.
     stream_module: Option<wgpu::ShaderModule>,
+    /// Tests: compile every body kernel as the single-workgroup kernel it
+    /// replaced (#445), one workgroup striding over every row, to compare
+    /// the parallel picks with. Set before any kernel is created.
+    #[cfg(test)]
+    pub(crate) single_workgroup: bool,
+    /// Tests: a smaller per-dimension workgroup limit, so a test reaches
+    /// the two-dimensional dispatch with rows it can afford (#445).
+    #[cfg(test)]
+    pub(crate) max_groups_per_dimension: Option<u32>,
 }
 
 impl DataPickKernels {
@@ -652,10 +861,13 @@ impl DataPickKernels {
         bundle: &DataPickPipelineBundle,
         kernel: DataPickKernel,
     ) -> Result<&wgpu::ComputePipeline, crate::gpu_pick::GpuPickError> {
+        #[cfg(test)]
+        let single_workgroup = self.single_workgroup && kernel.reducer().is_some();
         let Self {
             pipelines,
             tri_mesh_module,
             stream_module,
+            ..
         } = self;
         let slot =
             pipelines
@@ -676,8 +888,13 @@ impl DataPickKernels {
                 | DataPickKernel::RangeBar
                 | DataPickKernel::RangeLink
                 | DataPickKernel::Violin => (&bundle.category_layout, &bundle.bar),
-                DataPickKernel::Parallel => (&bundle.parallel_layout, &bundle.line),
-                DataPickKernel::TriMesh => (
+                DataPickKernel::ReduceHistogram => (&bundle.histogram_layout, &bundle.bar),
+                DataPickKernel::ReduceCategory => (&bundle.category_layout, &bundle.bar),
+                DataPickKernel::ReduceValueLabels => (&bundle.value_label_layout, &bundle.bar),
+                DataPickKernel::Parallel | DataPickKernel::ReduceParallel => {
+                    (&bundle.parallel_layout, &bundle.line)
+                }
+                DataPickKernel::TriMesh | DataPickKernel::ReduceTriMesh => (
                     &bundle.tri_mesh_layout,
                     &*tri_mesh_module.get_or_insert_with(|| {
                         crate::data_render::tri_mesh::shader_module(device, bundle.set)
@@ -708,17 +925,41 @@ impl DataPickKernels {
                 | DataPickKernel::StreamReducePoint => wgpu::PipelineCompilationOptions::default(),
                 _ => crate::gpu_compile::workgroup_options(device),
             };
-            *slot = Some(crate::gpu_compile::compute_pipeline(
-                device,
-                &wgpu::ComputePipelineDescriptor {
-                    label: Some(kernel.label()),
-                    layout: Some(layout),
-                    module,
-                    entry_point: Some(kernel.entry()),
-                    compilation_options,
-                    cache: None,
-                },
-            ));
+            #[cfg(test)]
+            if single_workgroup {
+                let (source, entry) = single_workgroup_oracle::source(kernel, bundle.set);
+                let module = crate::gpu_compile::shader_module(
+                    device,
+                    wgpu::ShaderModuleDescriptor {
+                        label: Some("figgy single-workgroup data pick oracle"),
+                        source: wgpu::ShaderSource::Wgsl(source.into()),
+                    },
+                );
+                *slot = Some(crate::gpu_compile::compute_pipeline(
+                    device,
+                    &wgpu::ComputePipelineDescriptor {
+                        label: Some(kernel.label()),
+                        layout: Some(layout),
+                        module: &module,
+                        entry_point: Some(&entry),
+                        compilation_options: compilation_options.clone(),
+                        cache: None,
+                    },
+                ));
+            }
+            if slot.is_none() {
+                *slot = Some(crate::gpu_compile::compute_pipeline(
+                    device,
+                    &wgpu::ComputePipelineDescriptor {
+                        label: Some(kernel.label()),
+                        layout: Some(layout),
+                        module,
+                        entry_point: Some(kernel.entry()),
+                        compilation_options,
+                        cache: None,
+                    },
+                ));
+            }
         }
         slot.as_ref().ok_or(crate::gpu_pick::GpuPickError::Internal(
             "a data pick kernel was just created",
@@ -758,6 +999,10 @@ pub(crate) struct DataPickPipelineBundle {
     /// Group 0 of every resident kernel: the pick's display transform.
     transform_bgl: wgpu::BindGroupLayout,
     query_bgl: wgpu::BindGroupLayout,
+    /// Group 1 of a body kernel that spreads over many workgroups (#445):
+    /// the query (1), the pool (2), its workgroup partials (3) and the
+    /// series' answer (8).
+    partials_query_bgl: wgpu::BindGroupLayout,
     /// The renderer's modules the kernels' entries live in.
     bar: wgpu::ShaderModule,
     field: wgpu::ShaderModule,
@@ -775,8 +1020,9 @@ pub(crate) struct DataPickPipelineBundle {
     parallel_layout: wgpu::PipelineLayout,
     /// The triangle mesh pick over the field's layout as group 2 (#210).
     tri_mesh_layout: wgpu::PipelineLayout,
-    /// Group 1 of the value label pick: the query (1, 2, 3), the series'
-    /// label uniform (4) and its label cells (7).
+    /// Group 1 of the value label pick: the query (1, 2), its workgroup
+    /// partials (3), the series' label uniform (4), its label cells (7)
+    /// and its answer (8).
     value_label_query_bgl: wgpu::BindGroupLayout,
     value_label_layout: wgpu::PipelineLayout,
     empty_bar_style_map: wgpu::BindGroup,
@@ -824,11 +1070,27 @@ impl DataPickPipelineBundle {
                 ],
             },
         );
+        let partials_query_bgl = crate::gpu_compile::bind_group_layout(
+            &device,
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("figgy typed data pick partials query bgl"),
+                entries: &[
+                    uniform_entry(1),
+                    storage_entry(2, true),
+                    storage_entry(3, false),
+                    storage_entry(8, false),
+                ],
+            },
+        );
         let histogram_layout = crate::gpu_compile::pipeline_layout(
             &device,
             &wgpu::PipelineLayoutDescriptor {
                 label: Some("figgy histogram data pick layout"),
-                bind_group_layouts: &[Some(transform_bgl), Some(&query_bgl), Some(bar_style_bgl)],
+                bind_group_layouts: &[
+                    Some(transform_bgl),
+                    Some(&partials_query_bgl),
+                    Some(bar_style_bgl),
+                ],
                 immediate_size: 0,
             },
         );
@@ -864,7 +1126,7 @@ impl DataPickPipelineBundle {
                 label: Some("figgy category bar data pick layout"),
                 bind_group_layouts: &[
                     Some(transform_bgl),
-                    Some(&query_bgl),
+                    Some(&partials_query_bgl),
                     Some(bar_style_bgl),
                     Some(category_bgl),
                 ],
@@ -877,7 +1139,7 @@ impl DataPickPipelineBundle {
                 label: Some("figgy parallel data pick layout"),
                 bind_group_layouts: &[
                     Some(transform_bgl),
-                    Some(&query_bgl),
+                    Some(&partials_query_bgl),
                     None,
                     Some(parallel_bgl),
                 ],
@@ -888,7 +1150,11 @@ impl DataPickPipelineBundle {
             &device,
             &wgpu::PipelineLayoutDescriptor {
                 label: Some("figgy triangle mesh data pick layout"),
-                bind_group_layouts: &[Some(transform_bgl), Some(&query_bgl), Some(field_bgl)],
+                bind_group_layouts: &[
+                    Some(transform_bgl),
+                    Some(&partials_query_bgl),
+                    Some(field_bgl),
+                ],
                 immediate_size: 0,
             },
         );
@@ -902,6 +1168,7 @@ impl DataPickPipelineBundle {
                     storage_entry(3, false),
                     uniform_entry(4),
                     storage_entry(7, true),
+                    storage_entry(8, false),
                 ],
             },
         );
@@ -946,6 +1213,7 @@ impl DataPickPipelineBundle {
             health,
             transform_bgl: transform_bgl.clone(),
             query_bgl,
+            partials_query_bgl,
             bar: bar.clone(),
             field: field.clone(),
             vector_grid: vector_grid.clone(),
@@ -966,18 +1234,288 @@ impl DataPickPipelineBundle {
         }))
     }
 
-    /// Encode one typed data pick: its commands and buffers, which run
-    /// only when [`EncodedDataPick::submit`] submits them and are released
-    /// unrun when it is dropped (#381: a layer other than the picked one
-    /// runs its typed pick only when its series owns the ink at the
-    /// cursor). Each series' kernel is created from `kernels` when it is
-    /// the first pick that dispatches it (#327).
-    pub(crate) fn encode(
+    /// Prepare one typed data pick's work (#445): every series' query
+    /// template, bind groups, kernels and dispatch size, and the scratch
+    /// buffers they write. The display transform, the cursor and the pick
+    /// distance are left to [`Self::encode`], so the renderer keeps the result while the
+    /// series and the display it was prepared for are unchanged and a pick
+    /// at another cursor reuses it. Each series' kernel is created from
+    /// `kernels` when it is the first pick that dispatches it (#327).
+    pub(crate) fn prepare(
         &self,
         kernels: &mut DataPickKernels,
         pool: &ColumnPool,
-        query: GpuDataPickQuery,
         series: Vec<GpuDataPickSeries>,
+    ) -> Result<Arc<PreparedDataPick>, crate::gpu_pick::GpuPickError> {
+        let candidate_count = u64::try_from(series.len()).map_err(|_| {
+            crate::gpu_pick::GpuPickError::AllocationFailed {
+                resource: "typed data pick candidate count",
+            }
+        })?;
+        let candidate_bytes = candidate_count
+            .checked_mul(DATA_PICK_CANDIDATE_BYTES)
+            .ok_or(crate::gpu_pick::GpuPickError::AllocationFailed {
+                resource: "typed data pick candidate bytes",
+            })?;
+        let limits = self.device.limits();
+        let candidate_stride =
+            u64::from(limits.min_storage_buffer_offset_alignment).max(DATA_PICK_CANDIDATE_BYTES);
+        let query_stride = u64::from(limits.min_uniform_buffer_offset_alignment)
+            .max(std::mem::size_of::<DataPickQueryGpu>() as u64);
+        let output_bytes = candidate_count.checked_mul(candidate_stride).ok_or(
+            crate::gpu_pick::GpuPickError::AllocationFailed {
+                resource: "typed data pick aligned output bytes",
+            },
+        )?;
+        let query_bytes = candidate_count.checked_mul(query_stride).ok_or(
+            crate::gpu_pick::GpuPickError::AllocationFailed {
+                resource: "typed data pick query bytes",
+            },
+        )?;
+        let largest = candidate_bytes.max(output_bytes).max(query_bytes);
+        if largest > limits.max_buffer_size {
+            return Err(crate::gpu_pick::GpuPickError::DeviceLimit {
+                resource: "typed data pick candidate buffer",
+                requested: largest,
+                limit: limits.max_buffer_size,
+            });
+        }
+
+        let scratch_tally = ChargeTally::new();
+        let transform_buffer = charged_buffer(
+            &scratch_tally,
+            &self.device,
+            &wgpu::BufferDescriptor {
+                label: Some("figgy typed data pick transform"),
+                size: std::mem::size_of::<ScatterTransform>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            },
+        )
+        .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
+        let transform_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("figgy typed data pick transform bg"),
+            layout: &self.transform_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: transform_buffer.as_entire_binding(),
+            }],
+        });
+        let candidates = charged_buffer(
+            &scratch_tally,
+            &self.device,
+            &wgpu::BufferDescriptor {
+                label: Some("figgy typed data pick candidates"),
+                size: output_bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            },
+        )
+        .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
+        let queries = charged_buffer(
+            &scratch_tally,
+            &self.device,
+            &wgpu::BufferDescriptor {
+                label: Some("figgy typed data pick queries"),
+                size: query_bytes,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            },
+        )
+        .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
+
+        let max_groups = self.max_groups_per_dimension(kernels);
+        let (staged, identities, field_charges) =
+            self.stage_data_pick_series(kernels, series, max_groups)?;
+
+        // One partials buffer for every body series, each at an offset the
+        // device can bind (#445).
+        let partial_alignment = u64::from(limits.min_storage_buffer_offset_alignment).max(1);
+        let mut partials_bytes = 0u64;
+        for item in &staged {
+            if let Some(bytes) = item.partial_bytes()? {
+                partials_bytes = partials_bytes
+                    .checked_next_multiple_of(partial_alignment)
+                    .and_then(|offset| offset.checked_add(bytes))
+                    .ok_or(crate::gpu_pick::GpuPickError::AllocationFailed {
+                        resource: "typed data pick partial bytes",
+                    })?;
+            }
+        }
+        if partials_bytes > limits.max_buffer_size {
+            return Err(crate::gpu_pick::GpuPickError::DeviceLimit {
+                resource: "typed data pick partials buffer",
+                requested: partials_bytes,
+                limit: limits.max_buffer_size,
+            });
+        }
+        let partials = if partials_bytes == 0 {
+            None
+        } else {
+            Some(
+                charged_buffer(
+                    &scratch_tally,
+                    &self.device,
+                    &wgpu::BufferDescriptor {
+                        label: Some("figgy typed data pick workgroup partials"),
+                        size: partials_bytes,
+                        usage: wgpu::BufferUsages::STORAGE,
+                        mapped_at_creation: false,
+                    },
+                )
+                .map_err(crate::gpu_pick::GpuPickError::from_figgy)?,
+            )
+        };
+
+        let mut prepared = Vec::new();
+        prepared.try_reserve_exact(staged.len()).map_err(|_| {
+            crate::gpu_pick::GpuPickError::AllocationFailed {
+                resource: "typed data pick prepared series",
+            }
+        })?;
+        let mut params = Vec::new();
+        params.try_reserve_exact(staged.len()).map_err(|_| {
+            crate::gpu_pick::GpuPickError::AllocationFailed {
+                resource: "typed data pick query templates",
+            }
+        })?;
+        let mut partial_offset = 0u64;
+        for (index, item) in staged.into_iter().enumerate() {
+            let at = |stride: u64, resource| {
+                u64::try_from(index)
+                    .ok()
+                    .and_then(|index| index.checked_mul(stride))
+                    .ok_or(crate::gpu_pick::GpuPickError::AllocationFailed { resource })
+            };
+            let output_offset = at(candidate_stride, "typed data pick output offset")?;
+            let query_offset = at(query_stride, "typed data pick query offset")?;
+            let output = wgpu::BufferBinding {
+                buffer: &candidates,
+                offset: output_offset,
+                size: NonZeroU64::new(DATA_PICK_CANDIDATE_BYTES),
+            };
+            let query_entry = wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &queries,
+                    offset: query_offset,
+                    size: NonZeroU64::new(std::mem::size_of::<DataPickQueryGpu>() as u64),
+                }),
+            };
+            let pool_entry = wgpu::BindGroupEntry {
+                binding: 2,
+                resource: pool.buffer().as_entire_binding(),
+            };
+            let query_bg = match (item.partial_bytes()?, &partials) {
+                (Some(bytes), Some(partials)) => {
+                    partial_offset = partial_offset
+                        .checked_next_multiple_of(partial_alignment)
+                        .ok_or(crate::gpu_pick::GpuPickError::AllocationFailed {
+                            resource: "typed data pick partial offset",
+                        })?;
+                    let partial_entry = wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: partials,
+                            offset: partial_offset,
+                            size: NonZeroU64::new(bytes),
+                        }),
+                    };
+                    partial_offset += bytes;
+                    let output_entry = wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: wgpu::BindingResource::Buffer(output),
+                    };
+                    match &item.label_params {
+                        None => self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("figgy typed data pick partials query bg"),
+                            layout: &self.partials_query_bgl,
+                            entries: &[query_entry, pool_entry, partial_entry, output_entry],
+                        }),
+                        Some((label_params, cells)) => {
+                            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("figgy value label pick query bg"),
+                                layout: &self.value_label_query_bgl,
+                                entries: &[
+                                    query_entry,
+                                    pool_entry,
+                                    partial_entry,
+                                    output_entry,
+                                    wgpu::BindGroupEntry {
+                                        binding: 4,
+                                        resource: label_params.as_entire_binding(),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 7,
+                                        resource: cells.as_entire_binding(),
+                                    },
+                                ],
+                            })
+                        }
+                    }
+                }
+                _ => self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("figgy typed data pick query bg"),
+                    layout: &self.query_bgl,
+                    entries: &[
+                        query_entry,
+                        pool_entry,
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::Buffer(output),
+                        },
+                    ],
+                }),
+            };
+            params.push(item.params);
+            prepared.push(PreparedSeries {
+                query_bg,
+                kind: item.kind,
+                pipeline: item.pipeline,
+                reduce: item.reduce,
+                dispatch: item.dispatch,
+            });
+        }
+        Ok(Arc::new(PreparedDataPick {
+            transform: transform_buffer,
+            transform_bg,
+            series: prepared,
+            identities: identities.into(),
+            params,
+            queries,
+            query_stride,
+            candidates,
+            candidate_count,
+            candidate_stride,
+            _field_charges: field_charges,
+            _scratch_charge: scratch_tally.into_charge(&self.ledger, GpuResourceKind::PickScratch),
+        }))
+    }
+
+    /// The largest workgroup count of one dispatch dimension (#445).
+    fn max_groups_per_dimension(&self, kernels: &DataPickKernels) -> u32 {
+        #[cfg(test)]
+        if let Some(limit) = kernels.max_groups_per_dimension {
+            return limit;
+        }
+        #[cfg(not(test))]
+        let _ = kernels;
+        self.device.limits().max_compute_workgroups_per_dimension
+    }
+
+    /// Encode one typed data pick of `prepared` at `query`'s cursor and
+    /// pick distance: its commands and readback, which run only when
+    /// [`EncodedDataPick::submit`] submits them and are released unrun
+    /// when it is dropped (#381: a layer other than the picked one runs its
+    /// typed pick only when its series owns the ink at the cursor). The
+    /// readback comes from `readbacks`, a ring of two reused across picks
+    /// (#445). `prepared` must be held by nothing but the caller's cache:
+    /// its queries are written here for this pick.
+    pub(crate) fn encode(
+        &self,
+        prepared: &Arc<PreparedDataPick>,
+        readbacks: &mut DataPickReadbacks,
+        query: GpuDataPickQuery,
     ) -> Result<EncodedDataPick, crate::gpu_pick::GpuPickError> {
         let [cursor_x, cursor_y] = query.canvas_position_px;
         if !cursor_x.is_finite()
@@ -1012,34 +1550,8 @@ impl DataPickPipelineBundle {
                 return Ok(EncodedDataPick::none());
             }
         }
-        if series.is_empty() {
+        if prepared.series.is_empty() {
             return Ok(EncodedDataPick::none());
-        }
-
-        let candidate_count = u64::try_from(series.len()).map_err(|_| {
-            crate::gpu_pick::GpuPickError::AllocationFailed {
-                resource: "typed data pick candidate count",
-            }
-        })?;
-        let candidate_bytes = candidate_count
-            .checked_mul(DATA_PICK_CANDIDATE_BYTES)
-            .ok_or(crate::gpu_pick::GpuPickError::AllocationFailed {
-                resource: "typed data pick candidate bytes",
-            })?;
-        let limits = self.device.limits();
-        let candidate_stride =
-            u64::from(limits.min_storage_buffer_offset_alignment).max(DATA_PICK_CANDIDATE_BYTES);
-        let output_bytes = candidate_count.checked_mul(candidate_stride).ok_or(
-            crate::gpu_pick::GpuPickError::AllocationFailed {
-                resource: "typed data pick aligned output bytes",
-            },
-        )?;
-        if candidate_bytes > limits.max_buffer_size || output_bytes > limits.max_buffer_size {
-            return Err(crate::gpu_pick::GpuPickError::DeviceLimit {
-                resource: "typed data pick candidate buffer",
-                requested: candidate_bytes.max(output_bytes),
-                limit: limits.max_buffer_size,
-            });
         }
 
         let cursor_ndc_x = ((cursor_x - chart_x) / chart_width) * 2.0 - 1.0;
@@ -1050,81 +1562,29 @@ impl DataPickPipelineBundle {
             (cursor_ndc_x + 1.0) * 0.5,
             (cursor_ndc_y + 1.0) * 0.5,
         ];
+        self.queue
+            .write_buffer(&prepared.transform, 0, bytemuck::bytes_of(&query.transform));
+        for (index, template) in prepared.params.iter().enumerate() {
+            let mut params = *template;
+            params.cursor_ndc_t = cursor;
+            params.limits[0] = query.max_distance_px;
+            self.queue.write_buffer(
+                &prepared.queries,
+                index as u64 * prepared.query_stride,
+                bytemuck::bytes_of(&params),
+            );
+        }
 
-        let scratch_tally = ChargeTally::new();
-        let readback_tally = ChargeTally::new();
-        let transform_buffer = charged_buffer_init(
-            &scratch_tally,
-            &self.device,
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("figgy typed data pick transform"),
-                contents: bytemuck::bytes_of(&query.transform),
-                usage: wgpu::BufferUsages::UNIFORM,
-            },
-        )
-        .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
-        let transform_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("figgy typed data pick transform bg"),
-            layout: &self.transform_bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: transform_buffer.as_entire_binding(),
-            }],
-        });
-        let candidates = charged_buffer(
-            &scratch_tally,
-            &self.device,
-            &wgpu::BufferDescriptor {
-                label: Some("figgy typed data pick candidates"),
-                size: output_bytes,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            },
-        )
-        .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
-        let readback = charged_buffer(
-            &readback_tally,
-            &self.device,
-            &wgpu::BufferDescriptor {
-                label: Some("figgy typed data pick readback"),
-                size: candidate_bytes,
-                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            },
-        )
-        .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
-
-        let (prepared, identities, field_charges) = self.prepare_data_pick_series(
-            kernels,
-            pool,
-            &query,
-            series,
-            cursor,
-            candidate_stride,
-            &candidates,
-            &scratch_tally,
-        )?;
-
-        let commands = self.encode_data_pick(
-            transform_bg,
-            prepared,
-            &candidates,
-            &readback,
-            candidate_count,
-            candidate_stride,
-        );
+        let candidate_bytes = prepared.candidate_count * DATA_PICK_CANDIDATE_BYTES;
+        let readback = readbacks.take(&self.device, &self.ledger, candidate_bytes)?;
+        let commands = self.encode_data_pick(prepared, &readback.buffer);
 
         Ok(EncodedDataPick {
             encoded: Some(EncodedState {
                 commands,
                 readback,
                 candidate_bytes,
-                identities,
-                field_charges,
-                scratch_charge: scratch_tally
-                    .into_charge(&self.ledger, GpuResourceKind::PickScratch),
-                readback_charge: readback_tally
-                    .into_charge(&self.ledger, GpuResourceKind::Readback),
+                prepared: Arc::clone(prepared),
                 device: self.device.clone(),
                 queue: self.queue.clone(),
                 health: self.health.clone(),
@@ -1132,31 +1592,21 @@ impl DataPickPipelineBundle {
         })
     }
 
-    /// [`Self::encode`]'s per-series preparation: each series' query, bind
-    /// groups, identity and kernel, in series order.
-    #[allow(clippy::too_many_arguments)]
-    fn prepare_data_pick_series(
+    /// [`Self::prepare`]'s per-series staging: each series' query
+    /// template, kernels, dispatch and identity, in series order.
+    fn stage_data_pick_series(
         &self,
         kernels: &mut DataPickKernels,
-        pool: &ColumnPool,
-        query: &GpuDataPickQuery,
         series: Vec<GpuDataPickSeries>,
-        cursor: [f32; 4],
-        candidate_stride: u64,
-        candidates: &wgpu::Buffer,
-        scratch_tally: &ChargeTally,
+        max_groups: u32,
     ) -> Result<
-        (
-            Vec<PreparedSeries>,
-            Vec<DataPickIdentity>,
-            Vec<FieldPickHold>,
-        ),
+        (Vec<StagedSeries>, Vec<DataPickIdentity>, Vec<FieldPickHold>),
         crate::gpu_pick::GpuPickError,
     > {
-        let mut prepared = Vec::new();
-        prepared.try_reserve_exact(series.len()).map_err(|_| {
+        let mut staged = Vec::new();
+        staged.try_reserve_exact(series.len()).map_err(|_| {
             crate::gpu_pick::GpuPickError::AllocationFailed {
-                resource: "typed data pick prepared series",
+                resource: "typed data pick staged series",
             }
         })?;
         let mut identities = Vec::new();
@@ -1166,8 +1616,11 @@ impl DataPickPipelineBundle {
             }
         })?;
         let mut field_charges = Vec::new();
+        // The cursor and the pick distance are written by each pick.
+        let cursor = [0.0; 4];
+        let max_distance_px = 0.0;
 
-        for (index, item) in series.into_iter().enumerate() {
+        for item in series {
             // A value label pick binds the series' label uniform beside the
             // query in group 1.
             let mut label_params = None;
@@ -1176,6 +1629,8 @@ impl DataPickPipelineBundle {
                 item.geometry,
                 GpuDataPickGeometry::RangeBars { .. } | GpuDataPickGeometry::RangeLinks { .. }
             );
+            // The rows a body kernel spreads over its workgroups (#445).
+            let mut rows = 0u32;
             let (params, kind) = match item.geometry {
                 GpuDataPickGeometry::Histogram {
                     edges,
@@ -1186,18 +1641,21 @@ impl DataPickPipelineBundle {
                     width_ratio,
                     horizontal,
                     style_map,
-                } => (
-                    DataPickQueryGpu {
-                        cursor_ndc_t: cursor,
-                        limits: [query.max_distance_px, gap_px, width_ratio, 0.0],
-                        data: [0, item.paint_order, bin_count, u32::from(horizontal)],
-                        bases: [lane_base(edges)?, lane_base(values)?, 0, 0],
-                        baseline: [baseline[0], baseline[1], 0.0, 0.0],
-                    },
-                    PreparedKind::Histogram(
-                        style_map.unwrap_or_else(|| self.empty_bar_style_map.clone()),
-                    ),
-                ),
+                } => {
+                    rows = bin_count;
+                    (
+                        DataPickQueryGpu {
+                            cursor_ndc_t: cursor,
+                            limits: [max_distance_px, gap_px, width_ratio, 0.0],
+                            data: [0, item.paint_order, bin_count, u32::from(horizontal)],
+                            bases: [lane_base(edges)?, lane_base(values)?, 0, 0],
+                            baseline: [baseline[0], baseline[1], 0.0, 0.0],
+                        },
+                        PreparedKind::Histogram(
+                            style_map.unwrap_or_else(|| self.empty_bar_style_map.clone()),
+                        ),
+                    )
+                }
                 GpuDataPickGeometry::Field {
                     field_bg,
                     charge,
@@ -1225,7 +1683,7 @@ impl DataPickPipelineBundle {
                     (
                         DataPickQueryGpu {
                             cursor_ndc_t: cursor,
-                            limits: [query.max_distance_px, 0.0, contour_width_px, 0.0],
+                            limits: [max_distance_px, 0.0, contour_width_px, 0.0],
                             data: [flags, item.paint_order, 0, 0],
                             bases: [0; 4],
                             baseline: nan_color_premul,
@@ -1245,7 +1703,7 @@ impl DataPickPipelineBundle {
                     (
                         DataPickQueryGpu {
                             cursor_ndc_t: cursor,
-                            limits: [query.max_distance_px, 0.0, 0.0, 0.0],
+                            limits: [max_distance_px, 0.0, 0.0, 0.0],
                             data: [0, item.paint_order, 0, 0],
                             bases: [0; 4],
                             baseline: [0.0; 4],
@@ -1253,74 +1711,82 @@ impl DataPickPipelineBundle {
                         PreparedKind::VectorGrid(vector_bg),
                     )
                 }
-                GpuDataPickGeometry::CategoryBars { data } => {
+                GpuDataPickGeometry::CategoryBars { data, rows: count } => {
+                    rows = count;
                     field_charges.push(FieldPickHold {
                         _charge: Arc::clone(&data.charge),
                         _label: None,
                     });
                     (
-                        category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
+                        category_axis_pick_query(cursor, max_distance_px, item.paint_order),
                         PreparedKind::CategoryBars(data),
                     )
                 }
-                GpuDataPickGeometry::BoxPlot { data } => {
+                GpuDataPickGeometry::BoxPlot { data, rows: count } => {
+                    rows = count;
                     field_charges.push(FieldPickHold {
                         _charge: Arc::clone(&data.charge),
                         _label: None,
                     });
                     (
-                        category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
+                        category_axis_pick_query(cursor, max_distance_px, item.paint_order),
                         PreparedKind::BoxPlot(data),
                     )
                 }
-                GpuDataPickGeometry::RangeBars { data } => {
+                GpuDataPickGeometry::RangeBars { data, rows: count } => {
+                    rows = count;
                     field_charges.push(FieldPickHold {
                         _charge: Arc::clone(&data.charge),
                         _label: None,
                     });
                     (
-                        category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
+                        category_axis_pick_query(cursor, max_distance_px, item.paint_order),
                         PreparedKind::RangeBars(data),
                     )
                 }
-                GpuDataPickGeometry::RangeLinks { data } => {
+                GpuDataPickGeometry::RangeLinks { data, rows: count } => {
+                    rows = count;
                     field_charges.push(FieldPickHold {
                         _charge: Arc::clone(&data.charge),
                         _label: None,
                     });
                     (
-                        category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
+                        category_axis_pick_query(cursor, max_distance_px, item.paint_order),
                         PreparedKind::RangeLinks(data),
                     )
                 }
-                GpuDataPickGeometry::Violin { data } => {
+                GpuDataPickGeometry::Violin { data, rows: count } => {
+                    rows = count;
                     field_charges.push(FieldPickHold {
                         _charge: Arc::clone(&data.charge),
                         _label: None,
                     });
                     (
-                        category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
+                        category_axis_pick_query(cursor, max_distance_px, item.paint_order),
                         PreparedKind::Violin(data),
                     )
                 }
                 GpuDataPickGeometry::Parallel { data } => {
+                    rows = data.instances();
                     field_charges.push(FieldPickHold {
                         _charge: Arc::clone(&data.charge),
                         _label: None,
                     });
                     (
-                        category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
+                        category_axis_pick_query(cursor, max_distance_px, item.paint_order),
                         PreparedKind::Parallel(data),
                     )
                 }
                 GpuDataPickGeometry::TriMesh {
                     field_bg,
                     charge,
+                    triangles,
                     has_fill,
                     has_contour,
                     contour_width_px,
                     nan_color_premul,
                 } => {
+                    rows = triangles;
                     let mut flags = 0;
                     if has_fill {
                         flags |= DATA_PICK_FLAG_FILL;
@@ -1335,7 +1801,7 @@ impl DataPickPipelineBundle {
                     (
                         DataPickQueryGpu {
                             cursor_ndc_t: cursor,
-                            limits: [query.max_distance_px, 0.0, contour_width_px, 0.0],
+                            limits: [max_distance_px, 0.0, contour_width_px, 0.0],
                             data: [flags, item.paint_order, 0, 0],
                             bases: [0; 4],
                             baseline: nan_color_premul,
@@ -1344,6 +1810,7 @@ impl DataPickPipelineBundle {
                     )
                 }
                 GpuDataPickGeometry::ValueLabels { data, labels } => {
+                    rows = labels.count;
                     field_charges.push(FieldPickHold {
                         _charge: Arc::clone(&data.charge),
                         _label: None,
@@ -1354,70 +1821,9 @@ impl DataPickPipelineBundle {
                     });
                     label_params = Some((labels.params.clone(), labels.cells.clone()));
                     (
-                        category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
+                        category_axis_pick_query(cursor, max_distance_px, item.paint_order),
                         PreparedKind::ValueLabels(data),
                     )
-                }
-            };
-            let query_buffer = charged_buffer_init(
-                &scratch_tally,
-                &self.device,
-                &wgpu::util::BufferInitDescriptor {
-                    label: Some("figgy typed data pick query"),
-                    contents: bytemuck::bytes_of(&params),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                },
-            )
-            .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
-            let offset = u64::try_from(index)
-                .ok()
-                .and_then(|index| index.checked_mul(candidate_stride))
-                .ok_or(crate::gpu_pick::GpuPickError::AllocationFailed {
-                    resource: "typed data pick output offset",
-                })?;
-            let query_entries = [
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: query_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: pool.buffer().as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &candidates,
-                        offset,
-                        size: NonZeroU64::new(DATA_PICK_CANDIDATE_BYTES),
-                    }),
-                },
-            ];
-            let query_bg = match &label_params {
-                None => self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("figgy typed data pick query bg"),
-                    layout: &self.query_bgl,
-                    entries: &query_entries,
-                }),
-                Some((params, cells)) => {
-                    let [query_entry, pool_entry, output_entry] = query_entries;
-                    self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("figgy value label pick query bg"),
-                        layout: &self.value_label_query_bgl,
-                        entries: &[
-                            query_entry,
-                            pool_entry,
-                            output_entry,
-                            wgpu::BindGroupEntry {
-                                binding: 4,
-                                resource: params.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 7,
-                                resource: cells.as_entire_binding(),
-                            },
-                        ],
-                    })
                 }
             };
             identities.push(DataPickIdentity {
@@ -1441,24 +1847,31 @@ impl DataPickPipelineBundle {
                 PreparedKind::TriMesh(_) => DataPickKernel::TriMesh,
             };
             let pipeline = kernels.ensure(self, kernel)?.clone();
-            prepared.push(PreparedSeries {
-                query_bg,
+            let (reduce, dispatch) = match kernel.reducer() {
+                Some(reducer) => (
+                    Some(kernels.ensure(self, reducer)?.clone()),
+                    BodyDispatch::of(kernels, rows, max_groups, kernel.partials_per_group()),
+                ),
+                None => (None, BodyDispatch::SINGLE),
+            };
+            staged.push(StagedSeries {
+                params,
                 kind,
                 pipeline,
+                reduce,
+                dispatch,
+                label_params,
             });
         }
-        Ok((prepared, identities, field_charges))
+        Ok((staged, identities, field_charges))
     }
 
-    /// [`Self::encode`]'s dispatches and the copies into the readback.
+    /// [`Self::encode`]'s dispatches and the copies into the readback: each
+    /// body series' workgroups, then its reduction (#445).
     fn encode_data_pick(
         &self,
-        transform_bg: wgpu::BindGroup,
-        prepared: Vec<PreparedSeries>,
-        candidates: &wgpu::Buffer,
+        prepared: &PreparedDataPick,
         readback: &wgpu::Buffer,
-        candidate_count: u64,
-        candidate_stride: u64,
     ) -> wgpu::CommandBuffer {
         let mut encoder = self
             .device
@@ -1470,8 +1883,8 @@ impl DataPickPipelineBundle {
                 label: Some("figgy typed data pick pass"),
                 timestamp_writes: None,
             });
-            pass.set_bind_group(0, &transform_bg, &[]);
-            for item in &prepared {
+            pass.set_bind_group(0, &prepared.transform_bg, &[]);
+            for item in &prepared.series {
                 match &item.kind {
                     PreparedKind::Histogram(style_map) => {
                         pass.set_bind_group(2, style_map, &[]);
@@ -1506,19 +1919,223 @@ impl DataPickPipelineBundle {
                 }
                 pass.set_pipeline(&item.pipeline);
                 pass.set_bind_group(1, &item.query_bg, &[]);
-                pass.dispatch_workgroups(1, 1, 1);
+                pass.dispatch_workgroups(item.dispatch.x, item.dispatch.y, 1);
+                if let Some(reduce) = &item.reduce {
+                    pass.set_pipeline(reduce);
+                    pass.dispatch_workgroups(1, 1, 1);
+                }
             }
         }
-        for index in 0..candidate_count {
+        for index in 0..prepared.candidate_count {
             encoder.copy_buffer_to_buffer(
-                &candidates,
-                index * candidate_stride,
-                &readback,
+                &prepared.candidates,
+                index * prepared.candidate_stride,
+                readback,
                 index * DATA_PICK_CANDIDATE_BYTES,
                 DATA_PICK_CANDIDATE_BYTES,
             );
         }
         encoder.finish()
+    }
+}
+
+/// A typed data pick's prepared work (#445): every series' bind groups,
+/// kernels, dispatch size and query template, and the scratch buffers they
+/// write. The renderer keeps it while the chart's series and the display
+/// it was prepared for are unchanged; each pick writes only its cursor and
+/// pick distance into `queries`. A pick's encoded commands and its ticket
+/// hold it, so a cache holding the only other reference knows no pick is
+/// still using it (allocation identity, `ARCHITECTURE.md`).
+pub(crate) struct PreparedDataPick {
+    transform: wgpu::Buffer,
+    transform_bg: wgpu::BindGroup,
+    series: Vec<PreparedSeries>,
+    identities: Arc<[DataPickIdentity]>,
+    /// Each series' query with the cursor and the pick distance left to
+    /// the pick.
+    params: Vec<DataPickQueryGpu>,
+    queries: wgpu::Buffer,
+    query_stride: u64,
+    candidates: wgpu::Buffer,
+    candidate_count: u64,
+    candidate_stride: u64,
+    _field_charges: Vec<FieldPickHold>,
+    _scratch_charge: GpuByteCharge,
+}
+
+/// A body kernel's dispatch (#445): one lane per row over
+/// `ceil(rows / 64)` workgroups, split into two dimensions past the
+/// per-dimension limit. Every workgroup writes its partials, so the
+/// partials hold `x * y` of them.
+#[derive(Clone, Copy)]
+struct BodyDispatch {
+    x: u32,
+    y: u32,
+    /// Partials per workgroup (a triangle mesh writes two).
+    per_group: u64,
+}
+
+impl BodyDispatch {
+    /// A kernel that writes its series' answer itself.
+    const SINGLE: Self = Self {
+        x: 1,
+        y: 1,
+        per_group: 0,
+    };
+
+    fn of(kernels: &DataPickKernels, rows: u32, max_groups: u32, per_group: u64) -> Self {
+        #[cfg(test)]
+        if kernels.single_workgroup {
+            return Self {
+                x: 1,
+                y: 1,
+                per_group,
+            };
+        }
+        #[cfg(not(test))]
+        let _ = kernels;
+        let groups = rows.div_ceil(DATA_PICK_WORKGROUP_SIZE).max(1);
+        let max_groups = max_groups.max(1);
+        let x = groups.min(max_groups);
+        Self {
+            x,
+            y: groups.div_ceil(x),
+            per_group,
+        }
+    }
+}
+
+/// Lanes per workgroup of every typed body kernel (`DATA_PICK_WORKGROUP_SIZE`,
+/// `PARALLEL_PICK_WORKGROUP_SIZE`, `MESH_PICK_WORKGROUP_SIZE`).
+const DATA_PICK_WORKGROUP_SIZE: u32 = 64;
+
+struct StagedSeries {
+    params: DataPickQueryGpu,
+    kind: PreparedKind,
+    pipeline: wgpu::ComputePipeline,
+    reduce: Option<wgpu::ComputePipeline>,
+    dispatch: BodyDispatch,
+    label_params: Option<(wgpu::Buffer, wgpu::Buffer)>,
+}
+
+impl StagedSeries {
+    /// Bytes of its workgroup partials; `None` for a kernel without them.
+    fn partial_bytes(&self) -> Result<Option<u64>, crate::gpu_pick::GpuPickError> {
+        if self.reduce.is_none() {
+            return Ok(None);
+        }
+        u64::from(self.dispatch.x)
+            .checked_mul(u64::from(self.dispatch.y))
+            .and_then(|groups| groups.checked_mul(self.dispatch.per_group))
+            .and_then(|partials| partials.checked_mul(DATA_PICK_CANDIDATE_BYTES))
+            .map(Some)
+            .ok_or(crate::gpu_pick::GpuPickError::AllocationFailed {
+                resource: "typed data pick partial bytes",
+            })
+    }
+}
+
+/// A readback buffer of the ring (#445). `idle` is set once the pick that
+/// read it has unmapped it; a ticket dropped before then leaves it unset,
+/// and the ring replaces the buffer instead of copying into one whose map
+/// may still be pending.
+pub(crate) struct ReadbackSlot {
+    buffer: wgpu::Buffer,
+    idle: std::sync::atomic::AtomicBool,
+    _charge: GpuByteCharge,
+}
+
+/// The typed data pick's readback buffers (#445): a ring of two reused
+/// across picks. A slot is reused when no ticket holds it (allocation
+/// identity: the ring's reference is the only one) and its last pick
+/// unmapped it; otherwise the ring makes a new buffer in its place.
+#[derive(Default)]
+pub(crate) struct DataPickReadbacks {
+    ring: [Option<Arc<ReadbackSlot>>; 2],
+    next: usize,
+    /// Readback buffers created, for tests.
+    #[cfg(test)]
+    pub(crate) created: usize,
+}
+
+impl DataPickReadbacks {
+    fn take(
+        &mut self,
+        device: &wgpu::Device,
+        ledger: &Arc<GpuLedger>,
+        bytes: u64,
+    ) -> Result<Arc<ReadbackSlot>, crate::gpu_pick::GpuPickError> {
+        use std::sync::atomic::Ordering;
+        let reusable = |slot: &Option<Arc<ReadbackSlot>>| {
+            slot.as_ref().is_some_and(|slot| {
+                Arc::strong_count(slot) == 1
+                    && slot.idle.load(Ordering::Acquire)
+                    && slot.buffer.size() >= bytes
+            })
+        };
+        let first = self.next % self.ring.len();
+        let second = (first + 1) % self.ring.len();
+        let at = if reusable(&self.ring[first]) {
+            Some(first)
+        } else if reusable(&self.ring[second]) {
+            Some(second)
+        } else {
+            None
+        };
+        if let Some(at) = at
+            && let Some(slot) = &self.ring[at]
+        {
+            slot.idle.store(false, Ordering::Release);
+            self.next = at + 1;
+            return Ok(Arc::clone(slot));
+        }
+        // A slot no ticket holds is replaced; with both held, the older
+        // one's place is taken and its ticket keeps its own buffer.
+        let at = if self.ring[first]
+            .as_ref()
+            .is_none_or(|slot| Arc::strong_count(slot) == 1)
+        {
+            first
+        } else if self.ring[second]
+            .as_ref()
+            .is_none_or(|slot| Arc::strong_count(slot) == 1)
+        {
+            second
+        } else {
+            first
+        };
+        let size = self.ring[at]
+            .as_ref()
+            .map_or(bytes, |slot| slot.buffer.size().max(bytes));
+        let tally = ChargeTally::new();
+        let buffer = charged_buffer(
+            &tally,
+            device,
+            &wgpu::BufferDescriptor {
+                label: Some("figgy typed data pick readback"),
+                size,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            },
+        )
+        .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
+        #[cfg(test)]
+        {
+            self.created += 1;
+        }
+        let slot = Arc::new(ReadbackSlot {
+            buffer,
+            idle: std::sync::atomic::AtomicBool::new(false),
+            _charge: tally.into_charge(ledger, GpuResourceKind::Readback),
+        });
+        self.ring[at] = Some(Arc::clone(&slot));
+        self.next = at + 1;
+        Ok(slot)
+    }
+
+    /// Drop the ring's buffers; a ticket still holding one keeps it.
+    pub(crate) fn clear(&mut self) {
+        self.ring = [None, None];
     }
 }
 
@@ -1532,12 +2149,9 @@ pub(crate) struct EncodedDataPick {
 
 struct EncodedState {
     commands: wgpu::CommandBuffer,
-    readback: wgpu::Buffer,
+    readback: Arc<ReadbackSlot>,
     candidate_bytes: u64,
-    identities: Vec<DataPickIdentity>,
-    field_charges: Vec<FieldPickHold>,
-    scratch_charge: GpuByteCharge,
-    readback_charge: GpuByteCharge,
+    prepared: Arc<PreparedDataPick>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     health: crate::renderer::DeviceHealth,
@@ -1549,8 +2163,8 @@ impl EncodedDataPick {
     }
 
     /// Submit the pick and request its readback.
-    pub(crate) fn submit(self) -> DataPickTicket {
-        let Some(encoded) = self.encoded else {
+    pub(crate) fn submit(mut self) -> DataPickTicket {
+        let Some(encoded) = self.encoded.take() else {
             return DataPickTicket::ready_none();
         };
         encoded.queue.submit(std::iter::once(encoded.commands));
@@ -1559,15 +2173,30 @@ impl EncodedDataPick {
                 readback: GpuReadback::map(
                     &encoded.device,
                     &encoded.health,
-                    &encoded.readback,
+                    &encoded.readback.buffer,
                     Some(encoded.candidate_bytes),
                 ),
-                identities: encoded.identities.into(),
+                identities: Arc::clone(&encoded.prepared.identities),
                 gpu_reduced: false,
-                _field_charges: encoded.field_charges,
-                _scratch_charge: encoded.scratch_charge,
-                _readback_charge: encoded.readback_charge,
+                slot: Some(encoded.readback),
+                _prepared: Some(encoded.prepared),
+                _field_charges: Vec::new(),
+                _scratch_charge: None,
+                _readback_charge: None,
             },
+        }
+    }
+}
+
+impl Drop for EncodedDataPick {
+    /// A pick dropped unrun never mapped its readback: the ring may copy
+    /// into it again (#445).
+    fn drop(&mut self) {
+        if let Some(encoded) = &self.encoded {
+            encoded
+                .readback
+                .idle
+                .store(true, std::sync::atomic::Ordering::Release);
         }
     }
 }
@@ -1593,6 +2222,10 @@ struct PreparedSeries {
     /// The kernel the series dispatches; a field's cell kernel,
     /// after its contour kernel.
     pipeline: wgpu::ComputePipeline,
+    /// The second pass that folds a body kernel's workgroup partials into
+    /// the series' answer (#445).
+    reduce: Option<wgpu::ComputePipeline>,
+    dispatch: BodyDispatch,
 }
 
 fn lane_base(handle: ColumnHandle) -> Result<u32, crate::gpu_pick::GpuPickError> {
@@ -1610,9 +2243,14 @@ enum DataPickTicketState {
         readback: GpuReadback,
         identities: Arc<[DataPickIdentity]>,
         gpu_reduced: bool,
+        /// A resident pick's readback slot of the ring (#445), marked idle
+        /// once read and unmapped.
+        slot: Option<Arc<ReadbackSlot>>,
+        /// A resident pick's prepared work, held until it is read.
+        _prepared: Option<Arc<PreparedDataPick>>,
         _field_charges: Vec<FieldPickHold>,
-        _scratch_charge: GpuByteCharge,
-        _readback_charge: GpuByteCharge,
+        _scratch_charge: Option<GpuByteCharge>,
+        _readback_charge: Option<GpuByteCharge>,
     },
 }
 
@@ -1660,6 +2298,8 @@ impl DataPickTicket {
             mut readback,
             identities,
             gpu_reduced,
+            slot,
+            _prepared,
             _field_charges,
             _scratch_charge,
             _readback_charge,
@@ -1720,7 +2360,11 @@ impl DataPickTicket {
                     .transpose()
             },
         )?;
-        drop((_field_charges, _scratch_charge, _readback_charge));
+        // The read unmapped the slot: the ring may copy into it again.
+        if let Some(slot) = slot {
+            slot.idle.store(true, std::sync::atomic::Ordering::Release);
+        }
+        drop((_prepared, _field_charges, _scratch_charge, _readback_charge));
         result
     }
 }

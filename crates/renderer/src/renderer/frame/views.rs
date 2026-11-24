@@ -67,7 +67,11 @@ impl Renderer {
             font_generation,
             panel_rect,
         });
-        view.tick_warnings = merged_render_warnings(chart.config(), &panels);
+        // Each panel's own warnings, from its raster pass (#444).
+        let own = std::iter::once(&view.tick_warnings)
+            .chain(view.overlay_views.iter().map(|layer| &layer.tick_warnings))
+            .map(Vec::as_slice);
+        view.tick_warnings = merged_render_warnings(chart.config(), own);
         view.rebuild_render_warnings();
         // Drawn from the chart as it stands, without a selection: what
         // `prepare` would draw for it, so the first prepare keeps it.
@@ -100,7 +104,8 @@ impl Renderer {
         // data) and the decoration (drawn above). An overlay panel in the
         // Milkyway style gets a transparent grid: the backdrop is the base
         // panel's.
-        let (grid_rgba, dec_rgba) = raster_panel_layers(config, overlay, &[], true, scale)?;
+        let (grid_rgba, dec_rgba, tick_warnings) =
+            raster_panel_layers(config, overlay, &[], true, scale)?;
         let grid = self.create_layer_texture(&grid_rgba, w, h)?;
         let decoration = self.create_layer_texture(&dec_rgba, w, h)?;
 
@@ -141,7 +146,7 @@ impl Renderer {
             panel_rect,
             display_scale: scale,
             grid_space_gen: None,
-            tick_warnings: axis_render::tick_warnings(config),
+            tick_warnings,
             render_warnings: Vec::new(),
             overlay_views: Vec::new(),
             raster_key: Some(PanelRasterKey::new(
@@ -464,7 +469,11 @@ impl Renderer {
             )?;
         }
         view.panel_rect = panel_rect;
-        view.tick_warnings = merged_render_warnings(chart.config(), &panels);
+        // Each panel's own warnings, from its raster pass (#444).
+        let own = std::iter::once(&view.tick_warnings)
+            .chain(view.overlay_views.iter().map(|layer| &layer.tick_warnings))
+            .map(Vec::as_slice);
+        view.tick_warnings = merged_render_warnings(chart.config(), own);
         // The anchor space follows the axes and the data area, which this
         // refresh may have moved, so the annotation layer is redone here as
         // well (its key skips an unchanged one); its own revision covers item
@@ -522,7 +531,10 @@ impl Renderer {
             // before this call is retired, exactly as for a real rewrite.
             // The Milkyway backdrop keeps its own cache and stamp: a view
             // created with a direct grid raster adopts the shared bake here.
+            // Its own tick warnings are the ones this raster had; a base
+            // view holds the merged list, so they are derived again.
             view.advance_content_revision()?;
+            view.tick_warnings = axis_render::tick_warnings(config);
             if let crate::config::DrawStyle::Milkyway(c) = &config.draw_style
                 && !overlay
             {
@@ -535,7 +547,7 @@ impl Renderer {
         // Milkyway style takes its grid texture from the cached backdrop
         // instead of a grid raster.
         let backdrop = matches!(config.draw_style, DrawStyle::Milkyway(_)) && !overlay;
-        let (grid_rgba, dec_rgba) =
+        let (grid_rgba, dec_rgba, tick_warnings) =
             raster_panel_layers(config, overlay, selection, !backdrop, scale)?;
         if view.panel_rect != panel_rect {
             view.advance_stream_revision()?;
@@ -572,7 +584,7 @@ impl Renderer {
         )?;
         view.layer_stamps.decoration += 1;
         view.panel_rect = panel_rect;
-        view.tick_warnings = axis_render::tick_warnings(config);
+        view.tick_warnings = tick_warnings;
         view.raster_key = Some(key);
         view.raster_generation = view.raster_generation.wrapping_add(1);
 

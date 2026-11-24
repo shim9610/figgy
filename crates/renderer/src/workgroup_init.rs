@@ -28,6 +28,9 @@ pub(super) const EXPLICIT_ZERO_ENTRIES: &[&str] = &[
     "pick_value_labels",
     "pick_parallel",
     "pick_tri_mesh",
+    "pick_reduce_data",
+    "pick_reduce_parallel",
+    "pick_reduce_tri_mesh",
     "scan_block",
     "ring_scan_block",
 ];

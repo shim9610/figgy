@@ -18,17 +18,29 @@ use super::*;
 /// The decoration layer walks all four chart axes whatever their tick and
 /// label visibility, and the colourbar's axis whenever the bar is drawn, so
 /// those are the axes reported. Depends on `config` alone; the renderer
-/// derives it exactly when it rasterizes a `ChartView`.
+/// derives it exactly when it rasterizes a `ChartView`, from the plans of
+/// that raster's pass ([`raster_tick_warnings`], #444).
 pub(crate) fn tick_warnings(config: &Config) -> Vec<RenderWarning> {
-    let mut out = Vec::new();
     let Ok(config) = raster_frame_config(config) else {
-        return out;
+        return Vec::new();
     };
+    let Ok(da) = config.data_area() else {
+        return Vec::new();
+    };
+    let measure = CpuTextMeasure::for_style(&config.draw_style);
+    let planned = timestamp_plan_sides(&config, &data_area_rect(&da), &measure);
+    raster_tick_warnings(&config, planned)
+}
+
+/// [`tick_warnings`] of the raster frame config `config` whose axes, in
+/// [`CHART_SIDES`] order, have a timestamp plan where `planned` says so:
+/// what its chrome pass reported ([`emit_chart_chrome`]). Whether an axis
+/// has a plan does not depend on the measure ([`timestamp_plan_sides`]).
+pub(crate) fn raster_tick_warnings(config: &Config, planned: [bool; 4]) -> Vec<RenderWarning> {
+    let mut out = Vec::new();
     let Ok(da) = config.data_area() else {
         return out;
     };
-    let plot = data_area_rect(&da);
-    let measure = CpuTextMeasure::for_style(&config.draw_style);
     for (which, axis, side) in [
         (WarningAxis::BottomX, &config.bottom_x, Side::Bottom),
         (WarningAxis::TopX, &config.top_x, Side::Top),
@@ -37,13 +49,13 @@ pub(crate) fn tick_warnings(config: &Config) -> Vec<RenderWarning> {
     ] {
         // The plan the raster uses: calendar ticks walk neither
         // `major_spacing` nor `minor_count`.
-        if timestamp_tick_plan(axis, side, &plot, &measure).is_some() {
+        if planned[side_index(&side)] {
             continue;
         }
         push_walker_warnings(&mut out, which, axis);
     }
     // The colourbar walks the numeric walkers directly (no calendar plan).
-    if let Some((bar, _)) = drawn_colorbar(&config, &da) {
+    if let Some((bar, _)) = drawn_colorbar(config, &da) {
         push_walker_warnings(&mut out, WarningAxis::ColorBar, &bar.axis);
     }
     out

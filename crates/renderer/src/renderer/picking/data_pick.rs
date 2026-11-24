@@ -310,6 +310,7 @@ impl Renderer {
             }
         }
         self.picker.data_kernels.retain(live);
+        self.picker.release_typed_picks();
     }
 
     /// Submit one typed data pick across points/lines, histogram bins, heatmap
@@ -360,6 +361,7 @@ impl Renderer {
             self.require_resident_series(series)?;
         }
         let labels = ValueLabelSource::of(id, &state.revisions);
+        let desired = state.revisions.desired;
         // The chart's config and series are lent to the typed pick, not
         // cloned (#443): the registry is set aside while the pick encodes,
         // which reads none of it, and put back whatever the outcome.
@@ -377,7 +379,7 @@ impl Renderer {
                             (config, series, display_config, styles, layer),
                             &state.series,
                             request,
-                            labels,
+                            (id, desired, labels),
                         )
                     },
                 )
@@ -428,7 +430,7 @@ impl Renderer {
         ),
         all_series: &[SeriesConfig],
         given: GpuPickRequest,
-        labels: ValueLabelSource,
+        (id, desired, labels): (ChartId, RenderRevision, ValueLabelSource),
     ) -> Result<TypedPick> {
         // Everything here reads the request moved out of the gaps.
         let (request, moved) = pick_request_outside_gaps(display_config, given);
@@ -449,8 +451,15 @@ impl Renderer {
                 "a chart with an axis break, a probability axis or polar coordinates is picked with the full shaders",
             ));
         }
-        let encoded =
-            self.encode_typed_layer(config, series, display_config, request, moved, labels)?;
+        let encoded = self.encode_typed_layer(
+            (id, layer, desired),
+            config,
+            series,
+            display_config,
+            request,
+            moved,
+            labels,
+        )?;
         Ok(TypedPick::Encoded {
             encoded,
             cpu,
@@ -458,11 +467,15 @@ impl Renderer {
         })
     }
 
-    /// The typed data pick of one layer (`config`, `series`, its panel as
-    /// displayed), encoded and not submitted: every series' typed geometry
-    /// and its value labels (#381).
+    /// The typed data pick of chart `id`'s layer `layer` (`config`,
+    /// `series`, its panel as displayed), encoded and not submitted: every
+    /// series' typed geometry and its value labels (#381). The prepared
+    /// work is reused from the picker's cache while its key's generations
+    /// hold and no other pick holds it (#445); only the cursor is written.
+    #[allow(clippy::too_many_arguments)]
     fn encode_typed_layer(
         &mut self,
+        (id, layer, desired): (ChartId, crate::LayerRef, RenderRevision),
         config: &Config,
         series: &[SeriesConfig],
         display_config: &Config,
@@ -470,6 +483,71 @@ impl Renderer {
         moved: [f32; 2],
         labels: ValueLabelSource,
     ) -> Result<crate::gpu_data_pick::EncodedDataPick> {
+        // `desired` is read by the caller: the registry is lent while a
+        // typed pick encodes (#443).
+        let key = super::picker::TypedPickKey {
+            chart: id,
+            layer,
+            desired,
+            visual: self.visual_revision,
+            pool_layout: self.pool.layout_generation(),
+            font: crate::text_render::font_generation(),
+            set: self.picker.ready_data_bundle()?.set,
+            display_scale: request.display_scale,
+            display_panel_px: request.display_panel_px,
+        };
+        let prepared = match self.picker.reusable_typed_pick(&key) {
+            Some(prepared) => prepared,
+            None => {
+                let data_series =
+                    self.typed_layer_series(config, series, display_config, request, labels)?;
+                let data_bundle = self.picker.ready_data_bundle()?;
+                let prepared =
+                    data_bundle.prepare(&mut self.picker.data_kernels, &self.pool, data_series)?;
+                self.picker.keep_typed_pick(key, &prepared)?;
+                prepared
+            }
+        };
+
+        let chart_rect = display_config.chart_area.0;
+        let data_area_px = display_config.data_area().ok().map(|area| {
+            let rect = area.0;
+            [
+                rect.x as f32 + moved[0],
+                rect.y as f32 + moved[1],
+                rect.width as f32,
+                rect.height as f32,
+            ]
+        });
+        let data_bundle = self.picker.ready_data_bundle()?;
+        Ok(data_bundle.encode(
+            &prepared,
+            &mut self.picker.data_readbacks,
+            crate::gpu_data_pick::GpuDataPickQuery {
+                transform: data_render::scatter_transform_from_config(display_config),
+                chart_rect_px: [
+                    chart_rect.x as f32,
+                    chart_rect.y as f32,
+                    chart_rect.width as f32,
+                    chart_rect.height as f32,
+                ],
+                data_area_px,
+                canvas_position_px: request.canvas_position_px,
+                max_distance_px: request.max_distance_px,
+            },
+        )?)
+    }
+
+    /// Every series' typed geometry and value labels of one layer, for
+    /// [`Self::encode_typed_layer`] to prepare.
+    fn typed_layer_series(
+        &mut self,
+        config: &Config,
+        series: &[SeriesConfig],
+        display_config: &Config,
+        request: GpuPickRequest,
+        labels: ValueLabelSource,
+    ) -> Result<Vec<crate::gpu_data_pick::GpuDataPickSeries>> {
         let mut data_series = Vec::new();
         // One entry per series and one per series' value labels.
         data_series
@@ -620,34 +698,7 @@ impl Renderer {
             });
         }
 
-        let chart_rect = display_config.chart_area.0;
-        let data_area_px = display_config.data_area().ok().map(|area| {
-            let rect = area.0;
-            [
-                rect.x as f32 + moved[0],
-                rect.y as f32 + moved[1],
-                rect.width as f32,
-                rect.height as f32,
-            ]
-        });
-        let data_bundle = self.picker.ready_data_bundle()?;
-        Ok(data_bundle.encode(
-            &mut self.picker.data_kernels,
-            &self.pool,
-            crate::gpu_data_pick::GpuDataPickQuery {
-                transform: data_render::scatter_transform_from_config(&display_config),
-                chart_rect_px: [
-                    chart_rect.x as f32,
-                    chart_rect.y as f32,
-                    chart_rect.width as f32,
-                    chart_rect.height as f32,
-                ],
-                data_area_px,
-                canvas_position_px: request.canvas_position_px,
-                max_distance_px: request.max_distance_px,
-            },
-            data_series,
-        )?)
+        Ok(data_series)
     }
 
     /// The typed picks of the layers drawn with `picked`'s group (the base
@@ -698,12 +749,15 @@ impl Renderer {
             }
         })?;
         let set = self.picker.ready_data_bundle()?.set;
-        let labels = {
+        let (labels, desired) = {
             let state = self
                 .chart_states
                 .get(&id)
                 .ok_or(FiggyError::UnknownChart { id })?;
-            ValueLabelSource::of(id, &state.revisions)
+            (
+                ValueLabelSource::of(id, &state.revisions),
+                state.revisions.desired,
+            )
         };
         // As the active layer's pick: the registry is lent, not cloned.
         let states = std::mem::take(&mut self.chart_states);
@@ -731,6 +785,7 @@ impl Renderer {
                             let (request, moved) =
                                 pick_request_outside_gaps(display_config, request);
                             self.encode_typed_layer(
+                                (id, layer, desired),
                                 config,
                                 series,
                                 display_config,
