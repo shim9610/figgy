@@ -150,7 +150,53 @@ impl ResidentDisplayKey {
                 })
     }
 
-    pub(in crate::renderer) fn from_probe(probe: &ResidentDisplayProbe<'_>) -> Self {
+    /// The key of `probe`. Its series configurations and categories are
+    /// taken from `previous` (the key it replaces, left empty) where they
+    /// are equal, compared in place, and cloned only where they changed: a
+    /// pan or a resize copies no label string or category (#443).
+    pub(in crate::renderer) fn from_probe(
+        probe: &ResidentDisplayProbe<'_>,
+        previous: Option<&mut ResidentDisplayKey>,
+    ) -> Self {
+        let categories_now = has_category_bars(probe.series).then_some([
+            &probe.chart_config.bottom_x.categories,
+            &probe.chart_config.left_y.categories,
+        ]);
+        let (mut series, mut categories) = (None, None);
+        if let Some(previous) = previous {
+            let same_series = previous.series.len() == probe.series.len()
+                && previous
+                    .series
+                    .iter()
+                    .zip(probe.series)
+                    .all(|((config, _), now)| config == now.config);
+            if same_series {
+                series = Some(std::mem::take(&mut previous.series));
+            }
+            let same_categories = match (&previous.categories, categories_now) {
+                (Some([bottom, left]), Some([now_bottom, now_left])) => {
+                    bottom == now_bottom && left == now_left
+                }
+                _ => false,
+            };
+            if same_categories {
+                categories = previous.categories.take();
+            }
+        }
+        let series = match series {
+            // The scales are scalars: written in place.
+            Some(mut kept) => {
+                for ((_, scale), now) in kept.iter_mut().zip(probe.series) {
+                    *scale = now.style.display_scale.to_bits();
+                }
+                kept
+            }
+            None => probe
+                .series
+                .iter()
+                .map(|series| (series.config.clone(), series.style.display_scale.to_bits()))
+                .collect(),
+        };
         Self {
             size: probe.size,
             data_area: probe.data_area,
@@ -160,18 +206,10 @@ impl ResidentDisplayKey {
             parallel: probe.chart_config.parallel().cloned(),
             colorbar: probe.chart_config.colorbar.clone(),
             bar_groups: probe.chart_config.bar_groups.clone(),
-            categories: has_category_bars(probe.series).then(|| {
-                [
-                    probe.chart_config.bottom_x.categories.clone(),
-                    probe.chart_config.left_y.categories.clone(),
-                ]
-            }),
+            categories: categories
+                .or_else(|| categories_now.map(|[bottom, left]| [bottom.clone(), left.clone()])),
             label_font: probe.chart_config.bottom_x.label_style.label_font.clone(),
-            series: probe
-                .series
-                .iter()
-                .map(|series| (series.config.clone(), series.style.display_scale.to_bits()))
-                .collect(),
+            series,
             font_generation: probe.font_generation,
             columns: probe.columns,
             pool_layout_generation: probe.pool_layout_generation,

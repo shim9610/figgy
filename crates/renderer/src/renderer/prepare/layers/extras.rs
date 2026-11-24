@@ -120,9 +120,15 @@ impl PrepareContext<'_> {
                 // A radar series' labels are placed with those of its label
                 // group's members (#272), whose cells come from the atlases
                 // this prepare resolved for them.
-                match (
-                    data,
-                    self.value_label_data(
+                // A registered series' data is kept by its atlas entry
+                // (#443); any other is built here.
+                let kept = products
+                    .contours
+                    .get(idx)
+                    .and_then(|series| series.value_label_data.clone());
+                let labels = match kept {
+                    Some(labels) => Some(labels),
+                    None => self.value_label_data(
                         chart_config,
                         s.series_specs.iter().map(|spec| spec.config),
                         cfg,
@@ -135,8 +141,8 @@ impl PrepareContext<'_> {
                                 .and_then(|series| series.value_labels.clone()))
                         },
                     )?,
-                    pipelines.precise(PrecisePipeline::ValueLabel),
-                ) {
+                };
+                match (data, labels, pipelines.precise(PrecisePipeline::ValueLabel)) {
                     (Some(data), Some(labels), Some(pipeline)) => {
                         Some(data_render::ColumnValueLabelLayer {
                             pipeline,
