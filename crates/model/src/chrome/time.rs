@@ -132,6 +132,16 @@ where
 /// Walks the candidates from fine to coarse, skipping those finer than
 /// `floor`, and returns the first whose labels fit (or the coarsest valid
 /// one). The outer `None` is a range the formatter cannot read.
+///
+/// A candidate fits when it has one tick, or when its widest label `w`
+/// and its tick count `n` satisfy `w·n + gap·(n−1) ≤ axis_len_px` (#444).
+/// The walk decides that with as little work as it can: a candidate whose
+/// gaps alone overflow the axis is rejected without formatting a label, and
+/// the labels of the others are formatted and measured one at a time, the
+/// candidate rejected as soon as the running widest label overflows the
+/// axis (the widest label of all can only be wider). Only the candidate
+/// taken builds its ticks. The plan is the one a walk measuring every label
+/// of every candidate returns.
 #[allow(clippy::too_many_arguments)]
 fn walk_candidates<F>(
     axis: &AxisOptions,
@@ -146,37 +156,90 @@ fn walk_candidates<F>(
 where
     F: FnMut(&str) -> f32,
 {
-    let mut last_valid = None;
+    let axis_len = axis_len_px.max(1.0);
+    // The last candidate with a drawable tick count, with its tick values:
+    // the plan when no candidate fits.
+    let mut last_valid: Option<(Candidate, Vec<f64>)> = None;
 
     for candidate in candidates() {
         if floor.is_some_and(|floor| step_field_rank(candidate.step) < floor) {
             continue;
         }
-        let ticks = ticks_for_candidate(axis, cfg, candidate, start, end)?;
-        if ticks.is_empty() {
+        let values = candidate_values(axis, cfg, candidate.step)?;
+        // A label the formatter cannot write makes the range unreadable,
+        // whichever candidate it belongs to.
+        if !values.iter().all(|&value| label_formats(value, cfg)) {
+            return None;
+        }
+        if values.is_empty() {
             continue;
         }
-        let count = ticks.len();
+        let count = values.len();
         if count > MAX_TIME_TICKS {
             continue;
         }
 
-        let max_extent = ticks
-            .iter()
-            .map(|tick| measure_extent_px(&tick.label))
-            .fold(0.0_f32, f32::max);
-        let required = max_extent * count as f32 + min_gap_px * count.saturating_sub(1) as f32;
-        last_valid = Some(TimestampTickPlan {
-            labels: ticks.clone(),
-            majors: ticks,
-            minor_values: Vec::new(),
-        });
-        if count <= 1 || required <= axis_len_px.max(1.0) {
-            return Some(last_valid);
+        let gaps = min_gap_px * count.saturating_sub(1) as f32;
+        let fits = count <= 1
+            || (gaps <= axis_len && {
+                let mut max_extent = 0.0_f32;
+                let mut fits = true;
+                for &value in &values {
+                    let label = format_timestamp_with_kind(value, cfg, candidate.kind, start, end)?;
+                    max_extent = max_extent.max(measure_extent_px(&label));
+                    if max_extent * count as f32 + gaps > axis_len {
+                        fits = false;
+                        break;
+                    }
+                }
+                fits && max_extent * count as f32 + gaps <= axis_len
+            });
+        last_valid = Some((candidate, values));
+        if fits {
+            break;
         }
     }
 
-    Some(last_valid)
+    let Some((candidate, values)) = last_valid else {
+        return Some(None);
+    };
+    let mut ticks = Vec::with_capacity(values.len());
+    for value in values {
+        let label = format_timestamp_with_kind(value, cfg, candidate.kind, start, end)?;
+        ticks.push(TimestampTick { value, label });
+    }
+    Some(Some(TimestampTickPlan {
+        labels: ticks.clone(),
+        majors: ticks,
+        minor_values: Vec::new(),
+    }))
+}
+
+/// Whether [`format_timestamp_with_kind`] writes a label at `value`,
+/// whatever the candidate: an automatic or pattern label needs the value's
+/// date, a relative or custom one its period's text.
+fn label_formats(value: f64, cfg: &TimestampLabelFormat) -> bool {
+    match &cfg.label {
+        TimestampLabelMode::Auto | TimestampLabelMode::Pattern(_) => {
+            parts_from_value(value, cfg).is_some()
+        }
+        TimestampLabelMode::Relative { .. } | TimestampLabelMode::Custom { .. } => {
+            period_text(value, cfg).is_some()
+        }
+    }
+}
+
+/// The tick values of a candidate step over the axis range.
+fn candidate_values(
+    axis: &AxisOptions,
+    cfg: &TimestampLabelFormat,
+    step: TimeStep,
+) -> Option<Vec<f64>> {
+    match step {
+        TimeStep::FixedNs(step) => fixed_step_values(axis.min, axis.max, cfg, step),
+        TimeStep::Months(step) => calendar_month_values(axis.min, axis.max, cfg, step),
+        TimeStep::Years(step) => calendar_year_values(axis.min, axis.max, cfg, step),
+    }
 }
 
 /// The rank of the calendar field a step advances: 0 sub-second, 1 second,
@@ -232,27 +295,6 @@ pub fn format_timestamp_numeric_tick(
     let seconds = (major_spacing.abs() * seconds_per_unit(cfg.unit)).max(0.0);
     let kind = label_kind_from_seconds(seconds, cfg);
     format_timestamp_with_kind(value, cfg, kind, start, end)
-}
-
-fn ticks_for_candidate(
-    axis: &AxisOptions,
-    cfg: &TimestampLabelFormat,
-    candidate: Candidate,
-    start: DateTimeParts,
-    end: DateTimeParts,
-) -> Option<Vec<TimestampTick>> {
-    let values = match candidate.step {
-        TimeStep::FixedNs(step) => fixed_step_values(axis.min, axis.max, cfg, step)?,
-        TimeStep::Months(step) => calendar_month_values(axis.min, axis.max, cfg, step)?,
-        TimeStep::Years(step) => calendar_year_values(axis.min, axis.max, cfg, step)?,
-    };
-
-    let mut out = Vec::with_capacity(values.len());
-    for value in values {
-        let label = format_timestamp_with_kind(value, cfg, candidate.kind, start, end)?;
-        out.push(TimestampTick { value, label });
-    }
-    Some(out)
 }
 
 fn candidates() -> Vec<Candidate> {
@@ -1425,5 +1467,325 @@ mod tests {
         let old: TimestampLabelFormat =
             serde_json::from_str(r#"{"unit":"Seconds","label":{"Pattern":"%m/%d"}}"#).unwrap();
         assert_eq!((old.step, old.period_labels), (None, false));
+    }
+
+    // ── The walk before #444, kept as the oracle of the walk ────────────
+
+    /// Every tick of a candidate with its label: what the walk before #444
+    /// built for every candidate it tried.
+    fn ticks_for_candidate(
+        axis: &AxisOptions,
+        cfg: &TimestampLabelFormat,
+        candidate: Candidate,
+        start: DateTimeParts,
+        end: DateTimeParts,
+    ) -> Option<Vec<TimestampTick>> {
+        let values = match candidate.step {
+            TimeStep::FixedNs(step) => fixed_step_values(axis.min, axis.max, cfg, step)?,
+            TimeStep::Months(step) => calendar_month_values(axis.min, axis.max, cfg, step)?,
+            TimeStep::Years(step) => calendar_year_values(axis.min, axis.max, cfg, step)?,
+        };
+
+        let mut out = Vec::with_capacity(values.len());
+        for value in values {
+            let label = format_timestamp_with_kind(value, cfg, candidate.kind, start, end)?;
+            out.push(TimestampTick { value, label });
+        }
+        Some(out)
+    }
+
+    /// The walk before #444: every label of every candidate it tries is
+    /// formatted and measured before the fit is decided.
+    #[allow(clippy::too_many_arguments)]
+    fn oracle_walk(
+        axis: &AxisOptions,
+        cfg: &TimestampLabelFormat,
+        start: DateTimeParts,
+        end: DateTimeParts,
+        floor: Option<u8>,
+        axis_len_px: f32,
+        min_gap_px: f32,
+        measure_extent_px: &mut dyn FnMut(&str) -> f32,
+    ) -> Option<Option<TimestampTickPlan>> {
+        let mut last_valid = None;
+        for candidate in candidates() {
+            if floor.is_some_and(|floor| step_field_rank(candidate.step) < floor) {
+                continue;
+            }
+            let ticks = ticks_for_candidate(axis, cfg, candidate, start, end)?;
+            if ticks.is_empty() {
+                continue;
+            }
+            let count = ticks.len();
+            if count > MAX_TIME_TICKS {
+                continue;
+            }
+            let max_extent = ticks
+                .iter()
+                .map(|tick| measure_extent_px(&tick.label))
+                .fold(0.0_f32, f32::max);
+            let required = max_extent * count as f32 + min_gap_px * count.saturating_sub(1) as f32;
+            last_valid = Some(TimestampTickPlan {
+                labels: ticks.clone(),
+                majors: ticks,
+                minor_values: Vec::new(),
+            });
+            if count <= 1 || required <= axis_len_px.max(1.0) {
+                return Some(last_valid);
+            }
+        }
+        Some(last_valid)
+    }
+
+    /// [`build_timestamp_tick_plan`] before #444, over [`oracle_walk`].
+    fn oracle_plan(
+        axis: &AxisOptions,
+        axis_len_px: f32,
+        min_gap_px: f32,
+        measure_extent_px: &mut dyn FnMut(&str) -> f32,
+    ) -> Option<TimestampTickPlan> {
+        let cfg = timestamp_format(axis)?;
+        if let Some(step) = cfg.step {
+            if !matches!(axis.scale, AxisScale::Linear) || !crate::tick::walkable_range(axis) {
+                return None;
+            }
+            return forced_step_plan(axis, cfg, step, axis_len_px, measure_extent_px);
+        }
+        if !uses_calendar_ticks(axis, cfg) || !crate::tick::walkable_range(axis) {
+            return None;
+        }
+        let start = parts_from_value(axis.min, cfg)?;
+        let end = parts_from_value(axis.max, cfg)?;
+        let floor = match &cfg.label {
+            TimestampLabelMode::Pattern(pattern) => finest_pattern_field(pattern),
+            _ => None,
+        };
+        if let Some(floor) = floor {
+            let plan = oracle_walk(
+                axis,
+                cfg,
+                start,
+                end,
+                Some(floor),
+                axis_len_px,
+                min_gap_px,
+                measure_extent_px,
+            )?;
+            if plan.is_some() {
+                return plan;
+            }
+        }
+        oracle_walk(
+            axis,
+            cfg,
+            start,
+            end,
+            None,
+            axis_len_px,
+            min_gap_px,
+            measure_extent_px,
+        )?
+    }
+
+    /// The plan as comparable values: every tick's value bits and label.
+    fn plan_key(plan: &Option<TimestampTickPlan>) -> Option<[Vec<(u64, String)>; 3]> {
+        let ticks = |ticks: &[TimestampTick]| {
+            ticks
+                .iter()
+                .map(|t| (t.value.to_bits(), t.label.clone()))
+                .collect::<Vec<_>>()
+        };
+        plan.as_ref().map(|p| {
+            [
+                ticks(&p.majors),
+                ticks(&p.labels),
+                p.minor_values
+                    .iter()
+                    .map(|v| (v.to_bits(), String::new()))
+                    .collect(),
+            ]
+        })
+    }
+
+    /// A label measure: a monospace width, a proportional one (digits
+    /// narrow, letters wide, so labels differ in width) or a fixed height.
+    fn measure_of(kind: usize, text: &str) -> f32 {
+        match kind {
+            0 => text.chars().count() as f32 * 7.0,
+            1 => text
+                .chars()
+                .map(|c| match c {
+                    '0'..='9' => 6.5,
+                    ':' | '.' | '-' | ' ' => 3.0,
+                    _ => 9.25,
+                })
+                .sum(),
+            _ => 16.0,
+        }
+    }
+
+    /// The timestamp axis the sweep plans: `span` seconds from `start`,
+    /// in `unit`, with `label` and `zone`.
+    fn sweep_axis(
+        start: f64,
+        span: f64,
+        unit: TimestampUnit,
+        label: TimestampLabelMode,
+        zone: TimestampZone,
+    ) -> AxisOptions {
+        let per = seconds_per_unit(unit);
+        let mut format = crate::defaults::timestamp_label_format();
+        format.unit = unit;
+        format.timezone = zone;
+        format.label = label;
+        format.tick_policy = TimestampTickPolicy::AutoCalendar;
+        let mut axis = crate::defaults::axis_options_x();
+        axis.min = start / per;
+        axis.max = (start + span) / per;
+        axis.label_style.format = LabelFormat::Timestamp(format);
+        axis
+    }
+
+    /// #444: the walk that rejects early returns exactly the plan the walk
+    /// measuring every label returned, over ranges from a fraction of a
+    /// second to centuries, several axis lengths, label patterns, units,
+    /// zones and measures.
+    #[test]
+    fn the_early_rejecting_walk_returns_the_measuring_walks_plan() {
+        const DAY: f64 = 86_400.0;
+        const YEAR: f64 = 365.2425 * DAY;
+        let spans = [
+            0.004,
+            0.35,
+            3.0,
+            47.0,
+            600.0,
+            3.0 * 3_600.0,
+            2.0 * DAY,
+            30.0 * DAY,
+            200.0 * DAY,
+            3.0 * YEAR,
+            40.0 * YEAR,
+            300.0 * YEAR,
+            2_500.0 * YEAR,
+        ];
+        let starts = [0.0, 1_700_000_000.0, 1_700_012_345.678, -1_000_000_000.5];
+        let labels = [
+            TimestampLabelMode::Auto,
+            TimestampLabelMode::Pattern("%Y-%m-%d".into()),
+            TimestampLabelMode::Pattern("%H:%M".into()),
+            TimestampLabelMode::Pattern("%b %Y".into()),
+            TimestampLabelMode::Pattern("%S.%f".into()),
+            TimestampLabelMode::Pattern("%Y".into()),
+        ];
+        let units = [TimestampUnit::Seconds, TimestampUnit::Milliseconds];
+        let zones = [TimestampZone::Utc, TimestampZone::FixedOffsetMinutes(-330)];
+        let lengths = [0.0, 50.0, 300.0, 900.0, 2_400.0];
+        let mut planned = 0usize;
+        for &span in &spans {
+            for &start in &starts {
+                for label in &labels {
+                    for &unit in &units {
+                        for &zone in &zones {
+                            let axis = sweep_axis(start, span, unit, label.clone(), zone);
+                            for &len in &lengths {
+                                for kind in 0..3 {
+                                    let new = build_timestamp_tick_plan(&axis, len, 8.0, |t| {
+                                        measure_of(kind, t)
+                                    });
+                                    let old =
+                                        oracle_plan(&axis, len, 8.0, &mut |t| measure_of(kind, t));
+                                    assert_eq!(
+                                        plan_key(&new),
+                                        plan_key(&old),
+                                        "span {span} start {start} {label:?} {unit:?} \
+                                         {zone:?} len {len} measure {kind}"
+                                    );
+                                    planned += usize::from(new.is_some());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            planned > 1_000,
+            "the sweep plans most of its axes: {planned}"
+        );
+    }
+
+    /// #444: the edges the walk reads as unreadable stay unreadable: a
+    /// range at the formatter's limit, and a relative label without the
+    /// step it counts in.
+    #[test]
+    fn the_early_rejecting_walk_keeps_the_unreadable_ranges() {
+        let relative = TimestampLabelMode::Relative {
+            origin: 0,
+            prefix: "D".into(),
+        };
+        let custom = TimestampLabelMode::Custom {
+            origin: 0,
+            labels: vec!["a".into(), "b".into()],
+        };
+        let edge = MAX_ABS_SECONDS - 3_600.0;
+        for (start, span, label) in [
+            (1_700_000_000.0, 30.0 * 86_400.0, relative.clone()),
+            (1_700_000_000.0, 600.0, custom),
+            (edge, 7_200.0, TimestampLabelMode::Auto),
+            (-edge - 7_200.0, 7_200.0, TimestampLabelMode::Auto),
+            (edge - 86_400.0 * 400.0, 86_400.0 * 400.0, relative),
+        ] {
+            let axis = sweep_axis(
+                start,
+                span,
+                TimestampUnit::Seconds,
+                label,
+                TimestampZone::Utc,
+            );
+            for len in [10.0, 300.0, 5_000.0] {
+                let new = build_timestamp_tick_plan(&axis, len, 8.0, |t| measure_of(0, t));
+                let old = oracle_plan(&axis, len, 8.0, &mut |t| measure_of(0, t));
+                assert_eq!(plan_key(&new), plan_key(&old), "{start} {span} {len}");
+            }
+        }
+    }
+
+    /// #444: a 30-day automatic axis measures the labels of the plan it
+    /// takes and at most one label of each candidate it rejects, where the
+    /// walk before it measured about 1,500 labels.
+    #[test]
+    fn a_thirty_day_plan_measures_a_bounded_number_of_labels() {
+        let axis = sweep_axis(
+            1_700_000_000.0,
+            30.0 * 86_400.0,
+            TimestampUnit::Seconds,
+            TimestampLabelMode::Auto,
+            TimestampZone::Utc,
+        );
+        let mut measured = 0usize;
+        let plan =
+            build_timestamp_tick_plan(&axis, 900.0, crate::chrome::LABEL_COLLISION_GAP, |t| {
+                measured += 1;
+                measure_of(0, t)
+            })
+            .unwrap();
+        let mut old_measured = 0usize;
+        let old = oracle_plan(&axis, 900.0, crate::chrome::LABEL_COLLISION_GAP, &mut |t| {
+            old_measured += 1;
+            measure_of(0, t)
+        });
+        assert_eq!(plan_key(&Some(plan.clone())), plan_key(&old));
+        // Each candidate the walk rejects is one it tried before the plan.
+        let rejected = candidates().len();
+        assert!(
+            measured <= plan.majors.len() + rejected,
+            "measured {measured} labels for a plan of {} ticks",
+            plan.majors.len()
+        );
+        assert!(
+            old_measured >= 1_500,
+            "the old walk measured {old_measured}"
+        );
     }
 }
