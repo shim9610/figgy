@@ -324,6 +324,15 @@ pub(crate) fn output_rect(origin: [f32; 2], scale: f32, r: RectF) -> RectF {
     }
 }
 
+/// The colour of a snap guide (#440): a magenta that stands apart from the
+/// blue selection box and from typical series colours.
+pub const SNAP_GUIDE_COLOR: Color = Color {
+    r: 0.93,
+    g: 0.16,
+    b: 0.62,
+    a: 0.9,
+};
+
 /// Draw one selection highlight box, the raster realization of the model's
 /// selection policy. `b` is in the chart frame; the canvas shows the chart
 /// from `origin` at `scale`, so every coordinate and the stroke width are
@@ -381,6 +390,35 @@ pub fn draw_selection_box(canvas: &mut Canvas, b: &SelectionBox, origin: [f32; 2
             })
             .collect();
         canvas.draw_polyline(&pts, &paint);
+    }
+
+    // Snap guides of the drag in progress (#440): thin lines in the
+    // selection colour, one device pixel wide at every scale. They are
+    // chrome, drawn only with a live selection, never by an export.
+    let guides = b.snap_guides();
+    if !guides.is_empty() {
+        let width = scale.max(1.0).round();
+        let paint = Paint::stroke(&SNAP_GUIDE_COLOR, width);
+        // A crisp line: centred on a device pixel column or row for an odd
+        // width, on a pixel edge for an even one. Appearance only.
+        let crisp = |v: f32| {
+            if width as u32 % 2 == 1 {
+                v.floor() + 0.5
+            } else {
+                v.round()
+            }
+        };
+        for guide in guides.iter() {
+            let (mut a, mut b) = (map(guide.from), map(guide.to));
+            if guide.from[0] == guide.to[0] {
+                a.0 = crisp(a.0);
+                b.0 = a.0;
+            } else {
+                a.1 = crisp(a.1);
+                b.1 = a.1;
+            }
+            canvas.draw_polyline(&[a, b], &paint);
+        }
     }
 
     if b.handles().is_empty() {

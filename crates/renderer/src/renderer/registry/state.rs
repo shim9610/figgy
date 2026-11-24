@@ -50,6 +50,8 @@ pub(in crate::renderer) fn raster_config_equal(left: &Config, right: &Config) ->
         // Who owns the layout: the margins it chose are drawn through the
         // axes, the title and the legend above; the state draws nothing.
         layout_state: _,
+        // An interaction option (#440): no raster, no view state.
+        snap_to_guides: _,
     } = left;
     chart_area == &right.chart_area
         && top_x == &right.top_x
@@ -216,6 +218,9 @@ pub(in crate::renderer) struct ChartRenderState {
     pub(in crate::renderer) series: Vec<SeriesConfig>,
     pub(in crate::renderer) prepared_styles: Option<RegisteredChartStyles>,
     pub(in crate::renderer) selected: Option<HitId>,
+    /// The snap guides of the decoration drag in progress (#440), drawn
+    /// with the selection box only: selection chrome, never the document.
+    pub(in crate::renderer) snap_guides: crate::layout::SnapGuides,
     /// One-shot renderer-owned request consumed by the next automatic stream.
     /// `None` preserves the caller-specified axis ranges.
     pub(in crate::renderer) stream_auto_fit_padding: Option<f64>,
@@ -430,6 +435,7 @@ impl ChartReplacementPlan {
             target.series = self.series;
             if self.clear_selection {
                 target.selected = None;
+                target.snap_guides = crate::layout::SnapGuides::NONE;
             }
         }
         for update in self.revisions {

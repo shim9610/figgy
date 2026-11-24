@@ -132,6 +132,7 @@ impl Renderer {
             .prepare_active_chart_mutation(&self.pool, id, &config, &series)?;
         if clear_selection {
             chart_state.selected = None;
+            chart_state.snap_guides = crate::layout::SnapGuides::NONE;
         }
         PreparedChartMutation {
             chart_state,
@@ -562,6 +563,45 @@ impl Renderer {
         id: ChartId,
         selected: Option<HitId>,
     ) -> Result<()> {
+        self.edit_selection_chrome(id, |state| {
+            if state.selected != selected {
+                // Guides belong to the drag of the element they were shown
+                // for (#440).
+                state.snap_guides = crate::layout::SnapGuides::NONE;
+            }
+            state.selected = selected;
+        })
+    }
+
+    /// Show `guides`, the snap guides of the decoration drag in progress,
+    /// with the selection box of chart `id` (#440); [`SnapGuides::NONE`]
+    /// removes them, as a host does on release. The guides are selection
+    /// chrome, not part of the document: they are drawn only with the
+    /// selection box, never by an export, and setting them redraws the
+    /// selection overlay only. Setting the guides already shown changes
+    /// nothing.
+    ///
+    /// [`SnapGuides::NONE`]: crate::layout::SnapGuides::NONE
+    pub fn set_chart_snap_guides(
+        &mut self,
+        id: ChartId,
+        guides: crate::layout::SnapGuides,
+    ) -> Result<()> {
+        let result = match self.chart_states.get(&id) {
+            None => Err(FiggyError::UnknownChart { id }),
+            Some(state) if state.snap_guides == guides => Ok(()),
+            Some(_) => self.edit_selection_chrome(id, |state| state.snap_guides = guides),
+        };
+        self.reported(result)
+    }
+
+    /// Apply `edit` to chart `id`'s selection chrome (its selected element
+    /// or its snap guides) and advance the revisions that redraw it.
+    fn edit_selection_chrome(
+        &mut self,
+        id: ChartId,
+        edit: impl FnOnce(&mut ChartRenderState),
+    ) -> Result<()> {
         let state = self
             .chart_states
             .get(&id)
@@ -587,7 +627,7 @@ impl Renderer {
             .chart_states
             .get_mut(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
-        state.selected = selected;
+        edit(state);
         state.revisions = ChartRevisions {
             desired,
             config,

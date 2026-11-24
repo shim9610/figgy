@@ -210,7 +210,19 @@ impl Renderer {
                 .get(hit)
                 .map(|element| element.element_id())
         });
-        let chart = Chart::stored(config.into_owned());
+        // The guides are in the document's frame; the display draws the
+        // document placed at `scale` (#440).
+        let guides = {
+            let document = state.config.document_area();
+            let placed = config.document_area();
+            state.snap_guides.mapped(
+                [document.x as f32, document.y as f32],
+                scale,
+                [placed.x as f32, placed.y as f32],
+            )
+        };
+        let mut chart = Chart::stored(config.into_owned());
+        chart.set_snap_guides(guides);
         self.refresh_axis_with_selection_unreported(
             view,
             &chart,

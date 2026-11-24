@@ -22,6 +22,9 @@ pub struct ChartView {
     pub(in crate::renderer) annotation_map: crate::annotation::AnnotationMap,
     /// The annotation whose selection box the overlay carries.
     pub(in crate::renderer) annotation_selected: Option<usize>,
+    /// The snap guides of the annotation drag in progress (#440), drawn
+    /// with that selection box; never part of the document.
+    pub(in crate::renderer) annotation_guides: crate::layout::SnapGuides,
     /// Where the annotation textures are drawn, in surface coordinates: the
     /// document's area (#414), the panel rect on a view without subplots.
     pub(in crate::renderer) annotation_rect: Rect,
@@ -113,6 +116,7 @@ pub(in crate::renderer) enum RasterChart {
 pub(in crate::renderer) struct AnnotationRasterKey {
     pub(in crate::renderer) config: Config,
     pub(in crate::renderer) selected: Option<usize>,
+    pub(in crate::renderer) guides: crate::layout::SnapGuides,
     pub(in crate::renderer) font_generation: u64,
     pub(in crate::renderer) panel_rect: Rect,
 }
@@ -219,6 +223,13 @@ impl ChartView {
     /// last passed to [`Renderer::refresh_annotations`].
     pub fn annotation_selected(&self) -> Option<usize> {
         self.annotation_selected
+    }
+
+    /// The snap guides the annotation overlay currently draws with its
+    /// selection box (#440), as last passed to
+    /// [`Renderer::refresh_annotations_with_guides`].
+    pub fn annotation_snap_guides(&self) -> crate::layout::SnapGuides {
+        self.annotation_guides
     }
 
     pub fn layer_stamps(&self) -> ChartViewLayerStamps {

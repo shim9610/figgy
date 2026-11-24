@@ -146,6 +146,8 @@ impl RadialRenderer {
                 size,
                 scale,
                 selected: None,
+                // An export draws no selection and no snap guide (#440).
+                guides: crate::layout::SnapGuides::NONE,
                 policy: crate::text_render::FontPolicy::Standard,
                 markers: None,
             };
@@ -288,6 +290,8 @@ pub fn written_vector_parts(
             size,
             scale,
             selected: None,
+            // An export draws no selection and no snap guide (#440).
+            guides: crate::layout::SnapGuides::NONE,
             policy: crate::text_render::FontPolicy::Standard,
             markers: None,
         };

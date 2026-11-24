@@ -591,6 +591,16 @@ pub struct Config {
         serde(default, skip_serializing_if = "LayoutState::is_fixed")
     )]
     pub layout_state: LayoutState,
+    /// Whether a decoration drag snaps to the chart and plot centres, its
+    /// axis' centre line and the other movable elements, with guides shown
+    /// while it drags (#440). `None` (key absent in JSON) is on; read it
+    /// with [`Config::snaps_while_dragging`]. An interaction option: drawn
+    /// and exported pixels do not depend on it.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub snap_to_guides: Option<bool>,
 }
 
 /// Who owns a chart's layout: the margins, axis bands, title band and
@@ -635,6 +645,24 @@ impl LayoutState {
 }
 
 impl Config {
+    /// Whether decoration drags snap to guides ([`Self::snap_to_guides`],
+    /// #440): on unless the option is `Some(false)`.
+    pub fn snaps_while_dragging(&self) -> bool {
+        self.snap_to_guides.unwrap_or(true)
+    }
+
+    /// The areas a decoration drag snaps to the centres of (#440): the
+    /// chart area and, where the chart has one, its data area.
+    pub fn snap_areas(&self) -> crate::layout::SnapAreas {
+        crate::layout::SnapAreas {
+            chart: Some(crate::layout::RectF::from_rect(&self.chart_area.0)),
+            plot: self
+                .data_area()
+                .ok()
+                .map(|area| crate::layout::RectF::from_rect(&area.0)),
+        }
+    }
+
     /// Multiply every **pixel-based visual dim** by `scale`. Data ranges, colors,
     /// and scale enums are untouched. For resolution-invariant high-DPI export.
     pub fn scaled(&self, scale: f32) -> Self {
@@ -679,6 +707,8 @@ impl Config {
             background: _,
             // Who owns the layout: set below.
             layout_state,
+            // An interaction option: not a dimension.
+            snap_to_guides: _,
         } = self;
         // A scaled config is a drawing of the layout at another scale (an
         // export, a display): it is drawn as it is, never fitted again at

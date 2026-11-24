@@ -707,6 +707,10 @@ pub struct Chart {
     /// The element the raster draws selected, by its element id
     /// (`Selectable::element_id`).
     selected: Option<String>,
+    /// The snap guides of the decoration drag in progress (#440), drawn
+    /// with the selection box only. Selection chrome, not the document: a
+    /// scaled or exported chart has none.
+    snap_guides: crate::layout::SnapGuides,
     /// Moves on every raster-affecting change: [`Renderer::prepare`] redraws
     /// a view drawn at another stamp (#265). Each value is an issued number
     /// from one process-wide counter ([`issue_raster_stamp`]), so two charts
@@ -768,6 +772,7 @@ impl Chart {
             data_dirty: true,
             raster_dirty: true,
             selected: None,
+            snap_guides: crate::layout::SnapGuides::NONE,
             raster_stamp: issue_raster_stamp(),
         }
     }
@@ -827,6 +832,25 @@ impl Chart {
     pub fn select(&mut self, element_id: Option<&str>) {
         if self.selected.as_deref() != element_id {
             self.selected = element_id.map(str::to_owned);
+            // Guides belong to the drag of the element they were shown for.
+            self.snap_guides = crate::layout::SnapGuides::NONE;
+            self.mark_raster();
+        }
+    }
+
+    /// The snap guides drawn with the selection box (#440).
+    pub fn snap_guides(&self) -> crate::layout::SnapGuides {
+        self.snap_guides
+    }
+
+    /// Show `guides`, the snap guides of the decoration drag in progress
+    /// (a host's [`crate::layout::DragSnap::guides`]), with the selection
+    /// box; [`crate::layout::SnapGuides::NONE`] removes them, as a host does
+    /// on release. They are drawn in the chart's own frame and only with a
+    /// selection, never by an export ([`Self::scaled`] has none).
+    pub fn set_snap_guides(&mut self, guides: crate::layout::SnapGuides) {
+        if self.snap_guides != guides {
+            self.snap_guides = guides;
             self.mark_raster();
         }
     }
