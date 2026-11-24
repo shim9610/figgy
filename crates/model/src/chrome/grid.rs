@@ -13,14 +13,17 @@ use crate::line::LineStylePreset;
 /// them, like the rectangular grid always did.
 ///
 /// `scale` is the display or export scale `config`'s pixel values carry, the
-/// grid the axis frames snap to (#249).
+/// grid the axis frames snap to (#249). `plans` are the timestamp plans of
+/// `bottom_x` and `left_y` in this pass ([`timestamp_tick_plan`], #444), the
+/// plans their ticks and labels read.
 pub fn emit_grid(
     config: &Config,
     plot: &RectF,
-    measure: &dyn MeasureText,
+    plans: [Option<&TimestampTickPlan>; 2],
     sink: &mut dyn Sink,
     scale: f32,
 ) {
+    let [x_plan, y_plan] = plans;
     let g = &config.grid;
     // A grid line across a broken axis is drawn per piece and leaves its
     // gaps empty, like the data (#200): vertical lines over `left_y`'s
@@ -73,7 +76,7 @@ pub fn emit_grid(
 
     // Draw minor first so major can paint over it.
     if g.show_minor_x {
-        for (i, v) in minor_tick_values_for_axis(&config.bottom_x, Side::Bottom, plot, measure)
+        for (i, v) in minor_tick_values_of(&config.bottom_x, x_plan)
             .into_iter()
             .enumerate()
         {
@@ -90,7 +93,7 @@ pub fn emit_grid(
         }
     }
     if g.show_minor_y {
-        for (i, v) in minor_tick_values_for_axis(&config.left_y, Side::Left, plot, measure)
+        for (i, v) in minor_tick_values_of(&config.left_y, y_plan)
             .into_iter()
             .enumerate()
         {
@@ -108,7 +111,7 @@ pub fn emit_grid(
     }
 
     if g.show_major_x {
-        for (i, v) in major_tick_values_for_axis(&config.bottom_x, Side::Bottom, plot, measure)
+        for (i, v) in major_tick_values_of(&config.bottom_x, x_plan)
             .into_iter()
             .enumerate()
         {
@@ -125,7 +128,7 @@ pub fn emit_grid(
         }
     }
     if g.show_major_y {
-        for (i, v) in major_tick_values_for_axis(&config.left_y, Side::Left, plot, measure)
+        for (i, v) in major_tick_values_of(&config.left_y, y_plan)
             .into_iter()
             .enumerate()
         {
@@ -289,10 +292,12 @@ mod tests {
 
     fn rects(config: &Config) -> Vec<RectF> {
         let mut out = Vec::new();
+        let x = timestamp_tick_plan(&config.bottom_x, Side::Bottom, &PLOT, &NoMeasure);
+        let y = timestamp_tick_plan(&config.left_y, Side::Left, &PLOT, &NoMeasure);
         emit_grid(
             config,
             &PLOT,
-            &NoMeasure,
+            [x.as_ref(), y.as_ref()],
             &mut Parts(&mut |part| {
                 if let DrawnPart::Rect(r) = part {
                     out.push(r);

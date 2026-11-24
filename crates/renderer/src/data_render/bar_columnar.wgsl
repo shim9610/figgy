@@ -488,7 +488,11 @@ const DATA_PICK_WORKGROUP_SIZE: u32 = 64u;
 
 @group(1) @binding(1) var<uniform> data_pick_query: DataPickQuery;
 @group(1) @binding(2) var<storage, read> data_pick_pool: array<f32>;
-@group(1) @binding(3) var<storage, read_write> data_pick_output: DataPickCandidate;
+// One candidate per workgroup of a body pick (#445): each workgroup reduces
+// its own `DATA_PICK_WORKGROUP_SIZE` rows to one, and `pick_reduce_data`
+// folds them into the series' answer.
+@group(1) @binding(3) var<storage, read_write> data_pick_partials: array<DataPickCandidate>;
+@group(1) @binding(8) var<storage, read_write> data_pick_output: DataPickCandidate;
 
 var<workgroup> data_pick_shared: array<DataPickCandidate, DATA_PICK_WORKGROUP_SIZE>;
 
@@ -635,18 +639,17 @@ fn data_pick_bar(bin_index: u32) -> DataPickCandidate {
     );
 }
 
-@compute @workgroup_size(DATA_PICK_WORKGROUP_SIZE)
-fn pick_histogram_bin(@builtin(local_invocation_index) local_index: u32) {
-    figgy_zero_workgroup(local_index);
-    var best = data_pick_invalid();
-    var index = local_index;
-    while (index < data_pick_query.data.z) {
-        let candidate = data_pick_bar(index);
-        if (data_pick_better(candidate, best)) {
-            best = candidate;
-        }
-        index = index + DATA_PICK_WORKGROUP_SIZE;
-    }
+// The linear index of a body pick's workgroup: the dispatch is split into
+// two dimensions past the per-dimension limit (#445).
+fn data_pick_group(workgroup_id: vec3<u32>, groups: vec3<u32>) -> u32 {
+    return workgroup_id.x + workgroup_id.y * groups.x;
+}
+
+// The workgroup's best of each lane's `best`, by `data_pick_better`, which
+// is a total order on valid candidates (every row answers with its own
+// `primitive_order`), so the answer does not depend on how rows are split
+// between workgroups. Every lane gets it.
+fn data_pick_fold(local_index: u32, best: DataPickCandidate) -> DataPickCandidate {
     data_pick_shared[local_index] = best;
     workgroupBarrier();
     for (var stride = DATA_PICK_WORKGROUP_SIZE / 2u; stride > 0u; stride = stride / 2u) {
@@ -658,8 +661,60 @@ fn pick_histogram_bin(@builtin(local_invocation_index) local_index: u32) {
         }
         workgroupBarrier();
     }
+    return data_pick_shared[0];
+}
+
+// A body pick's workgroup result: the fold of its lanes' candidates, in
+// the workgroup's partial.
+fn data_pick_store(local_index: u32, group: u32, best: DataPickCandidate) {
+    let folded = data_pick_fold(local_index, best);
     if (local_index == 0u) {
-        data_pick_output = data_pick_shared[0];
+        data_pick_partials[group] = folded;
+    }
+}
+
+// Row `row` of a body pick's workgroup `group`, lane `local_index`.
+fn data_pick_row(group: u32, local_index: u32) -> u32 {
+    return group * DATA_PICK_WORKGROUP_SIZE + local_index;
+}
+
+@compute @workgroup_size(DATA_PICK_WORKGROUP_SIZE)
+fn pick_histogram_bin(
+    @builtin(local_invocation_index) local_index: u32,
+    @builtin(workgroup_id) workgroup_id: vec3<u32>,
+    @builtin(num_workgroups) groups: vec3<u32>,
+) {
+    figgy_zero_workgroup(local_index);
+    let group = data_pick_group(workgroup_id, groups);
+    let index = data_pick_row(group, local_index);
+    var best = data_pick_invalid();
+    if (index < data_pick_query.data.z) {
+        let candidate = data_pick_bar(index);
+        if (data_pick_better(candidate, best)) {
+            best = candidate;
+        }
+    }
+    data_pick_store(local_index, group, best);
+}
+
+// The second pass of every bar module body pick (#445): one workgroup
+// folds the series' workgroup partials into its answer.
+@compute @workgroup_size(DATA_PICK_WORKGROUP_SIZE)
+fn pick_reduce_data(@builtin(local_invocation_index) local_index: u32) {
+    figgy_zero_workgroup(local_index);
+    var best = data_pick_invalid();
+    let count = arrayLength(&data_pick_partials);
+    var index = local_index;
+    while (index < count) {
+        let candidate = data_pick_partials[index];
+        if (data_pick_better(candidate, best)) {
+            best = candidate;
+        }
+        index = index + DATA_PICK_WORKGROUP_SIZE;
+    }
+    let folded = data_pick_fold(local_index, best);
+    if (local_index == 0u) {
+        data_pick_output = folded;
     }
 }
 

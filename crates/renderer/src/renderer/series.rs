@@ -1399,8 +1399,9 @@ pub(super) fn box_points_params<'c>(
 
 /// The group 3 and style map a box plot series' violin (`points` false) or
 /// raw points (`points` true) of the panel `config` are drawn, picked and
-/// highlighted with at `display_scale`, and their instance count: curve
-/// segments, or points. Every pass builds it here, so they all see the
+/// highlighted with at `display_scale`, their instance count (curve
+/// segments, or points) and their category count, which the violin pick
+/// tests one by one (#445). Every pass builds it here, so they all see the
 /// same bodies and points.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn box_extras_data<'c>(
@@ -1416,7 +1417,7 @@ pub(super) fn box_extras_data<'c>(
     display_scale: f32,
     lookup: impl FnMut(&str) -> Result<ColumnHandle>,
     points: bool,
-) -> Result<(data_render::CategoryBarData, u32)> {
+) -> Result<(data_render::CategoryBarData, u32, u32)> {
     let boxes = series
         .render_type
         .box_plot()
@@ -1452,7 +1453,11 @@ pub(super) fn box_extras_data<'c>(
             style,
             display_scale,
         )?;
-        Ok((create(&params, &lanes, style_map)?, params.count))
+        Ok((
+            create(&params, &lanes, style_map)?,
+            params.count,
+            params.count,
+        ))
     } else {
         let (params, lanes, segments) =
             violin_params(config, group, series, display_scale, pool, lookup)?;
@@ -1468,7 +1473,7 @@ pub(super) fn box_extras_data<'c>(
             violin,
             display_scale,
         )?;
-        Ok((create(&params, &lanes, style_map)?, segments))
+        Ok((create(&params, &lanes, style_map)?, segments, params.count))
     }
 }
 

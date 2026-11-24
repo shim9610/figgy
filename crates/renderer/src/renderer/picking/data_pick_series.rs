@@ -105,6 +105,7 @@ impl Renderer {
                 series_id: cfg.series_id.clone(),
                 paint_order,
                 geometry: crate::gpu_data_pick::GpuDataPickGeometry::BoxPlot {
+                    rows: params.count,
                     data: data_render::create_category_bar_data_bind_group(
                         &self.device,
                         &self.gpu_ledger,
@@ -125,7 +126,7 @@ impl Renderer {
         // its draw, after the boxes: a box painted over its violin
         // wins a tie. Its raw points are picked by the point picker.
         if primitives.violin {
-            let (data, segments) = box_extras_data(
+            let (data, segments, rows) = box_extras_data(
                 &self.device,
                 &self.gpu_ledger,
                 &self.category_bar_data_bgl,
@@ -150,7 +151,7 @@ impl Renderer {
                     source_id: cfg.source_id.clone(),
                     series_id: cfg.series_id.clone(),
                     paint_order,
-                    geometry: crate::gpu_data_pick::GpuDataPickGeometry::Violin { data },
+                    geometry: crate::gpu_data_pick::GpuDataPickGeometry::Violin { data, rows },
                 });
             }
         }
@@ -194,7 +195,10 @@ impl Renderer {
                 source_id: cfg.source_id.clone(),
                 series_id: cfg.series_id.clone(),
                 paint_order,
-                geometry: crate::gpu_data_pick::GpuDataPickGeometry::RangeBars { data },
+                geometry: crate::gpu_data_pick::GpuDataPickGeometry::RangeBars {
+                    data,
+                    rows: count,
+                },
             });
         }
         Ok(())
@@ -237,7 +241,10 @@ impl Renderer {
                 source_id: cfg.source_id.clone(),
                 series_id: cfg.series_id.clone(),
                 paint_order,
-                geometry: crate::gpu_data_pick::GpuDataPickGeometry::RangeLinks { data },
+                geometry: crate::gpu_data_pick::GpuDataPickGeometry::RangeLinks {
+                    data,
+                    rows: count,
+                },
             });
         }
         Ok(())
@@ -289,6 +296,7 @@ impl Renderer {
                 series_id: cfg.series_id.clone(),
                 paint_order,
                 geometry: crate::gpu_data_pick::GpuDataPickGeometry::CategoryBars {
+                    rows: params.count,
                     data: data_render::create_category_bar_data_bind_group(
                         &self.device,
                         &self.gpu_ledger,
@@ -397,6 +405,13 @@ impl Renderer {
         }
         let [r, g, b, a] = scratch.signature.nan_color.map(f32::from_bits);
         let nan_color_premul = PrimitiveStyle::from_color(Color { r, g, b, a }).color_premul;
+        // The triangles the mesh entry tests at most, which size its
+        // dispatch (#445); the entry reads the drawn count itself.
+        let triangles = cfg
+            .render_type
+            .tri_mesh()
+            .and_then(|mesh| self.pool.triangles(&mesh.triangles))
+            .map_or(0, |triangles| triangles.stats().triangles);
         let contour_width_px = cfg
             .render_type
             .tri_mesh()
@@ -410,6 +425,7 @@ impl Renderer {
             geometry: crate::gpu_data_pick::GpuDataPickGeometry::TriMesh {
                 field_bg: scratch.field_bg.clone(),
                 charge: Arc::clone(&scratch.charge),
+                triangles,
                 has_fill: primitives.mesh,
                 has_contour: primitives.mesh_contour,
                 contour_width_px,

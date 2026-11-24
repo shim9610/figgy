@@ -1568,7 +1568,16 @@ the flat vertex outputs, sampled at 2×2 subpixels against `sdf`; the outline
 is the inside band of `line_width_px` in the outline colour. The selection
 entries (`vs/fs_category_bar_selection`) draw the picked bar's inside ring
 in the highlight colour and add its emphasis brightness to what is drawn
-under it, additively. The compute entry `pick_category_bar` answers the
+under it, additively. The compute entry `pick_category_bar` (two passes,
+#445: one bar per lane over `ceil(rows / 64)` workgroups, each writing its
+best to `data_pick_partials` at its linear workgroup index, two
+dimensions past the per-dimension limit; `pick_reduce_data` folds the
+partials into `data_pick_output`, group 1 binding 8; every bar module
+body pick, `pick_histogram_bin`, `pick_box_plot`, `pick_range_bar`,
+`pick_range_links`, `pick_violin` and `pick_value_labels`, works the same
+way, and `data_pick_better` is a total order on valid candidates, each
+row naming its own `primitive_order`, so the answer does not depend on
+the split) answers the
 nearest bar within the pick distance by the rounded rect's distance, as a
 `DATA_PICK_KIND_HISTOGRAM_BIN` candidate whose index is the row; it reads
 the geometry from `CategoryBarParams` and the overrides' gap and width
@@ -2347,8 +2356,10 @@ every series body. The pipelines are `PrecisePipeline::LineParallel` /
 layouts `[transform, style, —, parallel]`).
 
 `pick_parallel` (compute, the data pick query of `data_pick.wgsl` as
-group 1, bindings 1 to 3, and the same group 3) walks every segment with
-its workgroup: a segment whose ends are placeable is a candidate at the
+group 1, bindings 1 to 3 and 8, and the same group 3) tests one segment
+per lane over `ceil(segments / 64)` workgroups and writes one partial per
+workgroup; `pick_reduce_parallel` folds them (the two-pass typed pick,
+#445, as the bar module's): a segment whose ends are placeable is a candidate at the
 pixel distance from the cursor (in the draw's pixel frame, `data_to_px`)
 to the segment, within `limits.x`; nearer wins and the earlier row on a
 tie. The candidate is kind 0 (a point) with `index0` the row and `index1`
@@ -2467,9 +2478,11 @@ continuous across a shared edge, so a stroke continues into the neighbour;
 at the mesh boundary half the stroke is clipped.
 
 **Pick.** `pick_tri_mesh` is a compute entry over the same group 2 (layout:
-transform, the data pick query, the field's group 2), in one 64-lane
-workgroup that walks every triangle and reduces in shared memory, as
-`pick_parallel` does. It works in the draw's pixel frame (axis `t` times the
+transform, the data pick query, the field's group 2), one triangle per lane
+over `ceil(triangles / 64)` workgroups (#445). Each workgroup writes two
+partials, its fill's best in the first half of the partials and its
+contour test's nearest triangle in the second; `pick_reduce_tri_mesh`
+folds both halves and runs the contour test on the nearest triangle once. It works in the draw's pixel frame (axis `t` times the
 target size) at the centre of the cursor's pixel:
 
 - A triangle is a candidate inside it (distance 0) or within one output

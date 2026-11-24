@@ -328,44 +328,46 @@ pub struct PlainTickLabel {
     pub text: String,
 }
 
+/// The timestamp labels of `axis` on `side` that do not overlap: its
+/// timestamp plan's labels (`plan`, the axis' [`timestamp_tick_plan`] in
+/// this pass, #444), or without one each of `majors` formatted.
 pub fn visible_timestamp_labels(
     axis: &AxisOptions,
     side: Side,
     plot: &RectF,
     measure: &dyn MeasureText,
     majors: &[f64],
+    plan: Option<&crate::chrome::time::TimestampTickPlan>,
 ) -> Vec<PlainTickLabel> {
     let Some(cfg) = crate::chrome::time::timestamp_format(axis) else {
         return Vec::new();
     };
-    let labels: Vec<PlainTickLabel> =
-        if let Some(plan) = timestamp_tick_plan(axis, side.clone(), plot, measure) {
-            // Each label at the value it is drawn at (a period's centre
-            // with `period_labels`, #357); a period with no string draws
-            // nothing.
-            plan.labels
-                .into_iter()
-                .filter(|tick| !tick.label.is_empty())
-                .map(|tick| PlainTickLabel {
-                    value: tick.value,
-                    text: tick.label,
-                })
-                .collect()
-        } else {
-            majors
-                .iter()
-                .filter_map(|v| {
-                    crate::chrome::time::format_timestamp_numeric_tick(
-                        *v,
-                        cfg,
-                        axis.min,
-                        axis.max,
-                        effective_major_spacing(axis),
-                    )
-                    .map(|text| PlainTickLabel { value: *v, text })
-                })
-                .collect()
-        };
+    let labels: Vec<PlainTickLabel> = if let Some(plan) = plan {
+        // Each label at the value it is drawn at (a period's centre with
+        // `period_labels`, #357); a period with no string draws nothing.
+        plan.labels
+            .iter()
+            .filter(|tick| !tick.label.is_empty())
+            .map(|tick| PlainTickLabel {
+                value: tick.value,
+                text: tick.label.clone(),
+            })
+            .collect()
+    } else {
+        majors
+            .iter()
+            .filter_map(|v| {
+                crate::chrome::time::format_timestamp_numeric_tick(
+                    *v,
+                    cfg,
+                    axis.min,
+                    axis.max,
+                    effective_major_spacing(axis),
+                )
+                .map(|text| PlainTickLabel { value: *v, text })
+            })
+            .collect()
+    };
 
     prune_overlapping_plain_labels(axis, side, plot, measure, labels)
 }
@@ -547,13 +549,15 @@ pub fn colorbar_labels_reach(
 }
 
 /// Every tick label the axis on `side` draws, with its tick position, in
-/// draw order, before the detached-axis translation.
+/// draw order, before the detached-axis translation. `majors` and `plan`
+/// are the axis' major ticks and timestamp plan in this pass (#444).
 pub fn each_axis_tick_label(
     axis: &AxisOptions,
     side: Side,
     plot: &RectF,
     measure: &dyn MeasureText,
     majors: &[f64],
+    plan: Option<&crate::chrome::time::TimestampTickPlan>,
     mut each: impl FnMut(TickText<'_>, (f32, f32)),
 ) {
     let ls = &axis.label_style;
@@ -572,7 +576,7 @@ pub fn each_axis_tick_label(
         return;
     }
     if let LabelFormat::Timestamp(_) = &ls.format {
-        for label in visible_timestamp_labels(axis, side.clone(), plot, measure, majors) {
+        for label in visible_timestamp_labels(axis, side.clone(), plot, measure, majors, plan) {
             let pos = value_to_screen(label.value, axis, side.clone(), plot);
             each(TickText::Plain(&label.text), pos);
         }

@@ -152,6 +152,12 @@ fn all_shader_compilation_times_and_entry_coverage() {
                     | "pick_range_bar"
                     | "pick_violin"
                     | "pick_value_labels"
+                    | "pick_range_links"
+                    | "pick_parallel"
+                    | "pick_tri_mesh"
+                    | "pick_reduce_data"
+                    | "pick_reduce_parallel"
+                    | "pick_reduce_tri_mesh"
                     | "scan_block"
             )
         ) {
