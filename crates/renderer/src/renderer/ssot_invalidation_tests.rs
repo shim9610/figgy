@@ -517,12 +517,15 @@ fn edits() -> Vec<Edit> {
 }
 
 /// Three categories, for the categorical axis edits.
-fn three_categories() -> Option<Vec<crate::config::Category>> {
-    Some(vec![
-        crate::config::Category::new("a", "Alpha"),
-        crate::config::Category::new("b", "Beta"),
-        crate::config::Category::new("c", "Gamma"),
-    ])
+fn three_categories() -> Option<std::sync::Arc<[crate::config::Category]>> {
+    Some(
+        vec![
+            crate::config::Category::new("a", "Alpha"),
+            crate::config::Category::new("b", "Beta"),
+            crate::config::Category::new("c", "Gamma"),
+        ]
+        .into(),
+    )
 }
 
 /// The baseline with categorical top and bottom axes (three categories
@@ -557,24 +560,27 @@ fn category_edits() -> Vec<Edit> {
     }
     category!(
         "top_x.categories[1].label",
-        |c| c.top_x.categories.as_mut().unwrap()[1].label = "Changed".into(),
+        |c| std::sync::Arc::make_mut(c.top_x.categories.as_mut().unwrap())[1].label =
+            "Changed".into(),
         Prefix,
         Changed
     );
     category!(
         "top_x.categories[1].id",
-        |c| c.top_x.categories.as_mut().unwrap()[1].id = "changed".into(),
+        |c| std::sync::Arc::make_mut(c.top_x.categories.as_mut().unwrap())[1].id = "changed".into(),
         Prefix,
         Unchanged
     );
     category!(
         "top_x.categories (one more)",
-        |c| c
-            .top_x
-            .categories
-            .as_mut()
-            .unwrap()
-            .push(crate::config::Category::new("d", "Delta")),
+        |c| {
+            let categories = c.top_x.categories.as_mut().unwrap();
+            *categories = categories
+                .iter()
+                .cloned()
+                .chain([crate::config::Category::new("d", "Delta")])
+                .collect();
+        },
         Prefix,
         Changed
     );
@@ -625,24 +631,28 @@ fn category_edits() -> Vec<Edit> {
     );
     category!(
         "bottom_x.categories[1].label",
-        |c| c.bottom_x.categories.as_mut().unwrap()[1].label = "Changed".into(),
+        |c| std::sync::Arc::make_mut(c.bottom_x.categories.as_mut().unwrap())[1].label =
+            "Changed".into(),
         Prefix,
         Changed
     );
     category!(
         "bottom_x.categories[1].id",
-        |c| c.bottom_x.categories.as_mut().unwrap()[1].id = "changed".into(),
+        |c| std::sync::Arc::make_mut(c.bottom_x.categories.as_mut().unwrap())[1].id =
+            "changed".into(),
         Prefix,
         Unchanged
     );
     category!(
         "bottom_x.categories (one more)",
-        |c| c
-            .bottom_x
-            .categories
-            .as_mut()
-            .unwrap()
-            .push(crate::config::Category::new("d", "Delta")),
+        |c| {
+            let categories = c.bottom_x.categories.as_mut().unwrap();
+            *categories = categories
+                .iter()
+                .cloned()
+                .chain([crate::config::Category::new("d", "Delta")])
+                .collect();
+        },
         Replay,
         Changed
     );
@@ -655,7 +665,7 @@ fn category_edits() -> Vec<Edit> {
     // A rich tick label and the group headers (#203) are tick chrome.
     category!(
         "bottom_x.categories[1].rich_label (None -> Some)",
-        |c| c.bottom_x.categories.as_mut().unwrap()[1].rich_label = Some(
+        |c| std::sync::Arc::make_mut(c.bottom_x.categories.as_mut().unwrap())[1].rich_label = Some(
             crate::text::RichText::plain("B₂", crate::Color::BLACK, 12.0, "")
         ),
         Prefix,
@@ -666,7 +676,8 @@ fn category_edits() -> Vec<Edit> {
     // `tests/polar_category_labels.rs`).
     category!(
         "bottom_x.categories[1].label_offset",
-        |c| c.bottom_x.categories.as_mut().unwrap()[1].label_offset = [6.0, -2.0],
+        |c| std::sync::Arc::make_mut(c.bottom_x.categories.as_mut().unwrap())[1].label_offset =
+            [6.0, -2.0],
         Prefix,
         Unchanged
     );

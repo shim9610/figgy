@@ -53,6 +53,29 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 `color` and the transition arrows' `color_by_wavelength` and
 `label_knockout`) are additive.
 
+- **A categorical axis shares its categories instead of copying them**
+  ([#442](https://github.com/shim9610/figgy/issues/442)). A pick, a
+  `step_selection`, a document edit and a resize no longer copy the
+  category list: `AxisOptions::categories` is shared storage, so a
+  document's clone, its display placement (`place_document`) and its pick
+  inputs share one list whatever its length. The resident display cache
+  compares an unchanged list by its allocation (`Arc::ptr_eq`) and keeps
+  a clone of the `Arc`, not of the categories. A typed data pick reads a
+  named layer from the stored document and moves its displayed panel
+  instead of copying it; the browser's frame builds its display chart only
+  when it redraws the annotation layer, and a drag of a range link exit or
+  a value label writes the series alone (`set_chart_series`). With 50 000
+  categories (lavapipe, 1200 × 700) a hover pick allocates 11.7 KB instead
+  of 7.8 MB, and a click, `step_selection`, a title edit and a resize
+  allocate the same as with 5 000. The wire form is unchanged.
+  - **Migration:** `AxisOptions::categories` is
+    `Option<Arc<[Category]>>` (was `Option<Vec<Category>>`). Build it
+    with `Some(vec![..].into())` or `collect()` it; read it as a slice as
+    before (`as_deref()`). To edit categories in place, take
+    `Arc::make_mut(categories)`, which copies the list only while another
+    document still shares it; to add or remove one, collect a new list.
+    The model's `serde` feature now enables serde's `rc` feature.
+
 - **The layout chooses each range link's exit, links draw under their bars,
   and a chart of links takes the timeline frame**
   ([#357](https://github.com/shim9610/figgy/issues/357), approved in

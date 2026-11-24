@@ -1923,10 +1923,13 @@ pub(super) mod tests {
         let mut kept = long_cfg.clone();
         kept.left_y.label_style.format =
             LabelFormat::Timestamp(crate::defaults::timestamp_label_format());
-        kept.bottom_x.categories = Some(vec![
-            crate::config::Category::new("a", "A"),
-            crate::config::Category::new("b", "B"),
-        ]);
+        kept.bottom_x.categories = Some(
+            vec![
+                crate::config::Category::new("a", "A"),
+                crate::config::Category::new("b", "B"),
+            ]
+            .into(),
+        );
         let out = auto_layout(&kept, &long);
         assert_eq!(
             out.left_y.label_style.format,

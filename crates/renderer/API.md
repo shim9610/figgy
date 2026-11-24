@@ -390,7 +390,7 @@ let mut cfg = default_config();
 cfg.bottom_x.categories = Some(vec![
     Category::new("north", "North"),
     Category::new("south", "South"),
-]);
+].into());
 assert_eq!(cfg.bottom_x.data_range(), (-0.5, 1.5));
 assert_eq!(cfg.bottom_x.validate_categories(), Ok(()));
 ```

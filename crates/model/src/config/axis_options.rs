@@ -341,11 +341,18 @@ pub struct AxisOptions {
     /// flips the walk: the first category sits at the far end, and the ticks,
     /// labels, grid, data and picks follow the same `axis_fraction`. A polar chart's angle and radius axes and the colourbar axis
     /// cannot be categorical yet.
+    ///
+    /// The list is shared storage (#442): cloning a document, scaling it for
+    /// display or placing it for a pick shares the one list instead of
+    /// copying every category, and the renderer tells an unchanged list by
+    /// its allocation (`Arc::ptr_eq`). Build it from a `Vec` with `.into()`
+    /// or `collect()` it; edit one category through `Arc::make_mut`, which
+    /// copies the list only while another document still shares it.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub categories: Option<Vec<Category>>,
+    pub categories: Option<std::sync::Arc<[Category]>>,
 
     /// The slots a categorical axis shows (#205): `[from, to]` in category
     /// coordinates, where category `i` is centred at `i` and its slot runs
@@ -654,7 +661,7 @@ impl AxisOptions {
     /// The number of categories of a categorical axis, `None` for a numeric
     /// one.
     pub fn category_count(&self) -> Option<usize> {
-        self.categories.as_ref().map(Vec::len)
+        self.categories.as_deref().map(<[Category]>::len)
     }
 
     /// The range the axis maps: its [`Self::category_window`] on a
@@ -917,7 +924,9 @@ pub(super) mod category_axis_tests {
         let labels = crate::RuleKind::CategoryLabels;
         let edit = |f: &dyn Fn(&mut Vec<Category>)| {
             let mut axis = categorical(3);
-            f(axis.categories.as_mut().unwrap());
+            let mut categories = axis.categories.take().unwrap().to_vec();
+            f(&mut categories);
+            axis.categories = Some(categories.into());
             axis.validate_categories()
         };
         assert_eq!(edit(&|c| c[1].id.clear()), Err(ids.clone()));
@@ -1115,7 +1124,7 @@ mod axis_break_config_tests {
             assert_eq!(config.validate_chart().unwrap_err().field, field);
         }
         let mut config = crate::defaults::config();
-        config.bottom_x.categories = Some(vec![super::Category::new("a", "A")]);
+        config.bottom_x.categories = Some(vec![super::Category::new("a", "A")].into());
         config.bottom_x.breaks = Some(broken());
         assert!(
             config
@@ -1502,7 +1511,7 @@ mod axis_unit_tests {
         );
         refused(
             |c| {
-                c.bottom_x.categories = Some(vec![super::Category::new("a", "A")]);
+                c.bottom_x.categories = Some(vec![super::Category::new("a", "A")].into());
                 c.bottom_x.unit = Some(AxisUnit::new(2.0, 0.0));
             },
             "bottom_x",

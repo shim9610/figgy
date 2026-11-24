@@ -520,10 +520,13 @@ mod tests {
 
     fn chart() -> Config {
         let mut config = crate::default::default_config();
-        config.bottom_x.categories = Some(vec![
-            crate::config::Category::new("a", "A"),
-            crate::config::Category::new("b", "B"),
-        ]);
+        config.bottom_x.categories = Some(
+            vec![
+                crate::config::Category::new("a", "A"),
+                crate::config::Category::new("b", "B"),
+            ]
+            .into(),
+        );
         config
     }
 

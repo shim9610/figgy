@@ -349,7 +349,8 @@ mod tests {
         config.bottom_x.categories = Some(
             ["a", "b", "c"]
                 .map(|id| Category::new(id, id.to_uppercase()))
-                .to_vec(),
+                .to_vec()
+                .into(),
         );
         config.left_y.min = 0.0;
         config.left_y.max = 1.0;
@@ -472,9 +473,7 @@ mod tests {
                 .bottom_x
                 .categories
                 .as_mut()
-                .unwrap()
-                .pop()
-                .map(|_| ())
+                .map(|categories| *categories = categories[..categories.len() - 1].into())
                 .unwrap()),
             crate::RuleKind::ParallelBottomXCategories
         );

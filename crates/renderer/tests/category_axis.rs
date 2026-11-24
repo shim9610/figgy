@@ -34,7 +34,7 @@ use renderer::{
 const WIDTH: u32 = 640;
 const HEIGHT: u32 = 480;
 
-fn categories(labels: &[&str]) -> Option<Vec<Category>> {
+fn categories(labels: &[&str]) -> Option<std::sync::Arc<[Category]>> {
     Some(
         labels
             .iter()
@@ -45,7 +45,7 @@ fn categories(labels: &[&str]) -> Option<Vec<Category>> {
 }
 
 /// The labels "0", "1", … of `n` categories.
-fn digit_categories(n: usize) -> Option<Vec<Category>> {
+fn digit_categories(n: usize) -> Option<std::sync::Arc<[Category]>> {
     let labels: Vec<String> = (0..n).map(|i| i.to_string()).collect();
     let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
     categories(&refs)

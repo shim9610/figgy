@@ -424,7 +424,7 @@ fn timeline_bars_colour_each_row_and_draw_flat() {
     assert_eq!(range.labels, crate::defaults::category_bar_series_labels());
     assert_eq!(range.progress, None);
     let mut config = crate::default::default_timeline_config();
-    config.left_y.categories = Some(vec![Category::new("a", "A"), Category::new("b", "B")]);
+    config.left_y.categories = Some(vec![Category::new("a", "A"), Category::new("b", "B")].into());
     valid(&config, &bars);
 }
 

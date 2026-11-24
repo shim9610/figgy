@@ -1832,8 +1832,14 @@ impl Theme {
         // An energy-level chart names its term columns on `bottom_x`.
         if self.kind == ChartKind::EnergyLevels {
             let energy = &self.series.energy_levels;
-            let columns = config.bottom_x.categories.iter_mut().flatten();
             if let Some(look) = energy.column_labels {
+                let columns = config
+                    .bottom_x
+                    .categories
+                    .as_mut()
+                    .map(std::sync::Arc::make_mut)
+                    .into_iter()
+                    .flatten();
                 for label in columns.filter_map(|column| column.rich_label.as_mut()) {
                     self.style_text(label, look.color, look.size);
                 }

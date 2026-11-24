@@ -830,8 +830,7 @@ impl FiggyChart {
                 .any(|s| s.series_id == series_id && s.render_type.range_links().is_some())
         {
             let (dx, dy) = self.display_delta_to_document(dx, dy)?;
-            let config = self.chart_config()?.clone();
-            let along = crate::range_link_drag_along(&config, &series_id, dx, dy);
+            let along = crate::range_link_drag_along(self.chart_config()?, &series_id, dx, dy);
             let mut series = self.chart_series()?.to_vec();
             if let Some(links) = series
                 .iter_mut()
@@ -840,7 +839,7 @@ impl FiggyChart {
                 && links.drag_link_exit(bin_index, along, self.link_exit_limit)
                     == NudgeResult::Moved
             {
-                self.replace_chart_state(config, series)?;
+                self.replace_chart_series(series)?;
             }
             return Ok(());
         }
@@ -866,15 +865,13 @@ impl FiggyChart {
         // An energy-level label moves its row's own offset (#203).
         if let (Some(part), Some(levels)) = (part, item.render_type.energy_levels_mut()) {
             if levels.drag_label(part, category_index, dx, dy) == NudgeResult::Moved {
-                let config = self.chart_config()?.clone();
-                self.replace_chart_state(config, series)?;
+                self.replace_chart_series(series)?;
             }
             return Ok(());
         }
         let count = item.value_label_text().map_or(0, <[String]>::len);
         if item.drag_value_label(category_index, count, dx, dy) == NudgeResult::Moved {
-            let config = self.chart_config()?.clone();
-            self.replace_chart_state(config, series)?;
+            self.replace_chart_series(series)?;
         }
         Ok(())
     }

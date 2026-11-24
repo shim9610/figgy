@@ -227,7 +227,7 @@ fn unit_prints_the_axis_in_another_unit() {
     // A unit the axis refuses is kept for validation to name; the spacing
     // stays as it was.
     let mut categorical = counts.clone();
-    categorical.categories = Some(vec![crate::config::Category::new("a", "A")]);
+    categorical.categories = Some(vec![crate::config::Category::new("a", "A")].into());
     let refused = categorical.clone().unit(2.0, 0.0);
     assert_eq!(refused.major_spacing, categorical.major_spacing);
     assert_eq!(

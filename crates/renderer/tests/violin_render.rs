@@ -225,11 +225,14 @@ fn chart(direction: CategoryBarDirection) -> Chart {
     ] {
         axis.line_visible = false;
     }
-    let categories = Some(vec![
-        Category::new("a", "A"),
-        Category::new("b", "B"),
-        Category::new("c", "C"),
-    ]);
+    let categories = Some(
+        vec![
+            Category::new("a", "A"),
+            Category::new("b", "B"),
+            Category::new("c", "C"),
+        ]
+        .into(),
+    );
     match direction {
         CategoryBarDirection::Vertical => config.bottom_x.categories = categories,
         CategoryBarDirection::Horizontal => config.left_y.categories = categories,

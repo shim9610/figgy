@@ -440,37 +440,34 @@ impl Renderer {
         // any subplot elsewhere, #203, #205) belongs to the subplot drawn
         // on top there: on the base layer it is routed there.
         // A layer named by the caller is picked as it is drawn, on its
-        // own panel (#381: the ink owner's layer).
-        // A layer named by the caller may be out of range and falls back as
-        // `Config::active_layer` does, so it is set on a copy; a subplot
-        // route always names a subplot the document has.
-        let named = layer.map(|layer| {
-            let mut config = state.config.clone();
-            config.active_layer = layer;
-            config
-        });
-        let routed = match &named {
+        // own panel (#381: the ink owner's layer). It is one of the layers
+        // the document draws as a panel (`deferred_typed_layers`), so it is
+        // read from the stored document without copying it (#442).
+        let routed = match layer {
             Some(_) => None,
             None => subplot_route(&state.config, &displayed, request.canvas_position_px),
         };
-        if let Some(layer) = named.as_ref().map(|config| config.active_layer).or(routed) {
+        if let Some(layer) = layer.or(routed) {
             displayed.active_layer = layer;
         }
-        let active = match (&named, routed) {
-            (Some(config), _) => config.active_layer(),
-            (None, Some(layer)) => layer,
-            (None, None) => state.config.active_layer(),
-        };
+        let active = layer
+            .or(routed)
+            .unwrap_or_else(|| state.config.active_layer());
         let picked_layer = match active {
             crate::LayerRef::Annotations => crate::LayerRef::Base,
             layer => layer,
         };
-        let inputs = match (&named, routed) {
-            (Some(config), _) => active_layer_pick_inputs(config, &state.series)?,
-            (None, Some(layer)) => layer_pick_inputs(&state.config, layer, &state.series)?,
-            (None, None) => active_layer_pick_inputs(&state.config, &state.series)?,
+        let inputs = match layer.or(routed) {
+            Some(layer) => layer_pick_inputs(&state.config, layer, &state.series)?,
+            None => active_layer_pick_inputs(&state.config, &state.series)?,
         };
-        let display_config = active_layer_pick_inputs(&displayed, &state.series)?.panel;
+        // The panel as displayed: `displayed` itself when the document is
+        // its own panel, moved rather than copied (#442).
+        let display_panel = match active_layer_pick_inputs(&displayed, &state.series)?.panel {
+            std::borrow::Cow::Owned(panel) => Some(panel),
+            std::borrow::Cow::Borrowed(_) => None,
+        };
+        let display_config = display_panel.unwrap_or(displayed);
         // The prepared styles of the layer's series, for a 3D chart's
         // point picks (#132): a series not prepared yet has none.
         let styles: Vec<Option<super::surface_pick::PickStyle3d>> = inputs
@@ -500,7 +497,7 @@ impl Renderer {
         Ok((
             inputs.panel.into_owned(),
             inputs.series.into_owned(),
-            display_config.into_owned(),
+            display_config,
             styles,
             picked_layer,
         ))
