@@ -972,10 +972,12 @@ fn categorical_interaction_costs(
 }
 
 /// #442: on a categorical axis, a pick, `step_selection`, a config edit and
-/// a resize allocate nothing that grows with the number of categories. The
-/// categories are shared storage of the document (SSOT), never copied by a
-/// hot path; ten times the categories may cost no more host heap per
-/// interaction than a fixed allowance.
+/// a resize copy no category. The categories are shared storage of the
+/// document (SSOT), never copied by a hot path; ten times the categories
+/// may cost no more host heap per pick or resize than a fixed allowance.
+/// An interaction that edits the document also validates it, whose
+/// duplicate-id check indexes the borrowed ids in a transient hash set
+/// (#450): it may add that index, far less than a copy of the categories.
 ///
 /// The draw is printed, not held to it: its axis chrome measures the tick
 /// label of every category to thin them (`each_category_tick_label`), work
@@ -989,6 +991,17 @@ fn categorical_interactions_do_not_copy_the_categories() {
     /// whatever the category count: 50 000 categories' storage is several
     /// MB, so one copy of them is far past it.
     const ALLOWANCE: u64 = 64 * 1024;
+    /// What a document edit may add per category: the validation's index
+    /// of borrowed ids (`validate_categories`, #450), a transient hash set
+    /// of `&str` of about 22 B per category. One copy of a category (its
+    /// struct and its two strings) is about 156 B, so a copy still fails.
+    const ID_INDEX_PER_CATEGORY: u64 = 32;
+    /// The interactions that validate the edited document.
+    const EDITS: [&str; 3] = [
+        "click: typed pick and select",
+        "step_selection",
+        "config edit (title)",
+    ];
     const SMALL: usize = 5_000;
     const LARGE: usize = 50_000;
     let mut growths = Vec::new();
@@ -1008,8 +1021,13 @@ fn categorical_interactions_do_not_copy_the_categories() {
         }
     }
     for (kind, name, small_bytes, large_bytes) in growths {
+        let allowance = if EDITS.contains(&name) {
+            ALLOWANCE + ID_INDEX_PER_CATEGORY * (LARGE - SMALL) as u64
+        } else {
+            ALLOWANCE
+        };
         assert!(
-            large_bytes.saturating_sub(small_bytes) <= ALLOWANCE,
+            large_bytes.saturating_sub(small_bytes) <= allowance,
             "{kind:?} {name}: {LARGE} categories allocated {large_bytes} B, \
              {SMALL} allocated {small_bytes} B; the difference grows with \
              the categories"

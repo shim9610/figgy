@@ -53,6 +53,21 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 `color` and the transition arrows' `color_by_wavelength` and
 `label_knockout`) are additive.
 
+- **A large categorical axis validates and places its labels in linear
+  time** ([#450](https://github.com/shim9610/figgy/issues/450)). Same
+  results, same errors, same pixels.
+  - `AxisOptions::validate_categories` finds a repeated id in one pass
+    over a hash set of the borrowed ids instead of comparing every pair; it
+    returns the same `Result` (the same first failing category and rule).
+    With 50 000 categories a `set_chart_config` takes 4 ms instead of
+    5.7 s (lavapipe, release).
+  - The staggered rows of category tick labels are searched on boxes
+    measured once per placement (`each_category_tick_label`) instead of
+    measuring two labels again for every candidate row count. With 50 000
+    categories an axis raster takes 2.4 s instead of 29 s; the frames of
+    category bars, range bars and the Grotrian scenes are byte-identical at
+    1x and 2x.
+
 - **A categorical axis shares its categories instead of copying them**
   ([#442](https://github.com/shim9610/figgy/issues/442)). A pick, a
   `step_selection`, a document edit and a resize no longer copy the
