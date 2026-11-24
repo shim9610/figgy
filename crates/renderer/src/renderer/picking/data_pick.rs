@@ -235,7 +235,7 @@ impl Renderer {
         let mut needed = DataPickKernelSet::EMPTY;
         for cfg in inputs.series.iter() {
             needed = needed.union(series_data_pick_kernels(&inputs.panel, cfg, |cfg| {
-                value_label_atlas_input(&display_config, cfg).is_some()
+                value_label_face(&display_config, cfg).is_some()
             }));
         }
         Ok(needed)
@@ -352,47 +352,57 @@ impl Renderer {
         {
             self.ensure_registered_styles(id)?;
         }
-        let (config, series, display_config, styles, layer) =
-            self.typed_layer_inputs(id, request, None)?;
-        // `pick_chart` moves the cursor itself, so it gets the request as
-        // given; everything else here reads it moved.
-        let given = request;
-        let (request, moved) = pick_request_outside_gaps(&display_config, request);
-        // The layer's DataLess series pick on the CPU (#203, #234); a gap
-        // moved the request out of reach, so none answers there.
-        let cpu = {
-            let state = self
-                .chart_states
-                .get(&id)
-                .ok_or(FiggyError::UnknownChart { id })?;
-            pick_energy_levels(&display_config, &series, &state.series, &request)?
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        for series in &state.series {
+            self.require_resident_series(series)?;
+        }
+        let labels = ValueLabelSource::of(id, &state.revisions);
+        // The chart's config and series are lent to the typed pick, not
+        // cloned (#443): the registry is set aside while the pick encodes,
+        // which reads none of it, and put back whatever the outcome.
+        let states = std::mem::take(&mut self.chart_states);
+        let typed = states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })
+            .and_then(|state| {
+                with_typed_layer_inputs(
+                    state,
+                    request,
+                    None,
+                    |config, series, display_config, styles, layer| {
+                        self.typed_pick_encode(
+                            (config, series, display_config, styles, layer),
+                            &state.series,
+                            request,
+                            labels,
+                        )
+                    },
+                )
+            });
+        self.chart_states = states;
+        let (encoded, cpu, layer) = match typed? {
+            TypedPick::Surface(ticket) => return Ok(ticket),
+            TypedPick::Encoded {
+                encoded,
+                cpu,
+                layer,
+            } => (encoded, cpu, layer),
         };
-
-        // A 3D chart's surfaces, markers and strokes are picked by their ID
-        // render: the draw's own rasterizer and depth test, so a hidden
-        // quad or point never answers.
-        if display_config.view_3d().is_some() {
-            return self.pick_surface(&display_config, &series, &styles, &request);
-        }
-        // The registered chart's pick first (#381): every series' nearest
-        // datum and the ink hit, routed to the same subplot. Its datum and
-        // the typed hits below are separate answers; neither competes with
-        // the other by distance.
-        let point_ticket = self.pick_chart_inked(id, given)?;
-        let data_bundle = self.picker.ready_data_bundle()?;
-        if data_bundle.set == ShaderSet::Basic && config_needs_full_shaders(&display_config) {
-            return Err(FiggyError::internal(
-                "a chart with an axis break, a probability axis or polar coordinates is picked with the full shaders",
-            ));
-        }
-
-        let data_ticket = self
-            .encode_typed_layer(&config, &series, &display_config, request, moved)?
-            .submit();
+        // `pick_chart` moves the cursor itself, so it gets the request as
+        // given.
+        // The registered chart's pick (#381): every series' nearest datum
+        // and the ink hit, routed to the same subplot. Its datum and the
+        // typed hits are separate answers; neither competes with the other
+        // by distance.
+        let point_ticket = self.pick_chart_inked(id, request)?;
+        let data_ticket = encoded.submit();
         // The group's other layers with body or fill series: their typed
         // picks are encoded and not run; the ticket runs the one whose
         // layer has the ink owner, when that owner is a body (#381).
-        let deferred = self.deferred_typed_layers(id, given, layer)?;
+        let deferred = self.deferred_typed_layers(id, request, layer)?;
         Ok(crate::gpu_data_pick::GpuDataPickTicket::new(
             point_ticket,
             data_ticket,
@@ -402,108 +412,50 @@ impl Renderer {
         ))
     }
 
-    /// The typed data pick's inputs for chart `id` at `request` (#381): the
-    /// layer's panel and series, its panel as displayed, its series' 3D
-    /// pick styles, and the layer. `layer` names the layer to pick; `None`
-    /// picks the active one, or the subplot drawn at the cursor.
+    /// The typed half of a pick of a registered chart over its lent
+    /// inputs ([`with_typed_layer_inputs`]): the CPU picks of its DataLess
+    /// series, a 3D chart's ID render, or the typed kernels encoded and not
+    /// submitted.
     #[allow(clippy::type_complexity)]
-    fn typed_layer_inputs(
-        &self,
-        id: ChartId,
-        request: GpuPickRequest,
-        layer: Option<crate::LayerRef>,
-    ) -> Result<(
-        Config,
-        Vec<SeriesConfig>,
-        Config,
-        Vec<Option<super::surface_pick::PickStyle3d>>,
-        crate::LayerRef,
-    )> {
-        let state = self
-            .chart_states
-            .get(&id)
-            .ok_or(FiggyError::UnknownChart { id })?;
-        for series in &state.series {
-            self.require_resident_series(series)?;
+    fn typed_pick_encode(
+        &mut self,
+        (config, series, display_config, styles, layer): (
+            &Config,
+            &[SeriesConfig],
+            &Config,
+            &[Option<super::surface_pick::PickStyle3d>],
+            crate::LayerRef,
+        ),
+        all_series: &[SeriesConfig],
+        given: GpuPickRequest,
+        labels: ValueLabelSource,
+    ) -> Result<TypedPick> {
+        // Everything here reads the request moved out of the gaps.
+        let (request, moved) = pick_request_outside_gaps(display_config, given);
+        // The layer's DataLess series pick on the CPU (#203, #234); a gap
+        // moved the request out of reach, so none answers there.
+        let cpu = pick_energy_levels(display_config, series, all_series, &request)?;
+        // A 3D chart's surfaces, markers and strokes are picked by their ID
+        // render: the draw's own rasterizer and depth test, so a hidden
+        // quad or point never answers.
+        if display_config.view_3d().is_some() {
+            return self
+                .pick_surface(display_config, series, styles, &request)
+                .map(TypedPick::Surface);
         }
-        // The typed query answers for the active layer only, with that
-        // layer's panel (its Y range) and the series it scales, so its
-        // paint orders agree with the point query's registry. The query
-        // geometry is the panel as displayed: the document is scaled and
-        // placed first and expanded after, exactly as it is drawn.
-        let mut displayed = place_document(
-            &state.config,
-            request.display_scale,
-            request.display_panel_px,
-        );
-        // A pointer over a subplot's frame (an inset over the parent, or
-        // any subplot elsewhere, #203, #205) belongs to the subplot drawn
-        // on top there: on the base layer it is routed there.
-        // A layer named by the caller is picked as it is drawn, on its
-        // own panel (#381: the ink owner's layer).
-        // A layer named by the caller may be out of range and falls back as
-        // `Config::active_layer` does, so it is set on a copy; a subplot
-        // route always names a subplot the document has.
-        let named = layer.map(|layer| {
-            let mut config = state.config.clone();
-            config.active_layer = layer;
-            config
-        });
-        let routed = match &named {
-            Some(_) => None,
-            None => subplot_route(&state.config, &displayed, request.canvas_position_px),
-        };
-        if let Some(layer) = named.as_ref().map(|config| config.active_layer).or(routed) {
-            displayed.active_layer = layer;
+        let data_bundle = self.picker.ready_data_bundle()?;
+        if data_bundle.set == ShaderSet::Basic && config_needs_full_shaders(display_config) {
+            return Err(FiggyError::internal(
+                "a chart with an axis break, a probability axis or polar coordinates is picked with the full shaders",
+            ));
         }
-        let active = match (&named, routed) {
-            (Some(config), _) => config.active_layer(),
-            (None, Some(layer)) => layer,
-            (None, None) => state.config.active_layer(),
-        };
-        let picked_layer = match active {
-            crate::LayerRef::Annotations => crate::LayerRef::Base,
-            layer => layer,
-        };
-        let inputs = match (&named, routed) {
-            (Some(config), _) => active_layer_pick_inputs(config, &state.series)?,
-            (None, Some(layer)) => layer_pick_inputs(&state.config, layer, &state.series)?,
-            (None, None) => active_layer_pick_inputs(&state.config, &state.series)?,
-        };
-        let display_config = active_layer_pick_inputs(&displayed, &state.series)?.panel;
-        // The prepared styles of the layer's series, for a 3D chart's
-        // point picks (#132): a series not prepared yet has none.
-        let styles: Vec<Option<super::surface_pick::PickStyle3d>> = inputs
-            .series
-            .iter()
-            .map(|cfg| {
-                let position = state
-                    .series
-                    .iter()
-                    .position(|s| s.series_id == cfg.series_id)?;
-                // The styles the chart is drawn with: at the display
-                // scale when the pick is in that display (#160).
-                let display = state.display.as_ref().and_then(|display| {
-                    display
-                        .styles
-                        .as_ref()
-                        .filter(|(bits, _)| *bits == request.display_scale.to_bits())
-                });
-                match display {
-                    Some((_, styles)) => Some(styles),
-                    None => state.prepared_styles.as_ref(),
-                }
-                .and_then(|prepared| prepared.styles.get(position))
-                .map(super::surface_pick::PickStyle3d::of)
-            })
-            .collect();
-        Ok((
-            inputs.panel.into_owned(),
-            inputs.series.into_owned(),
-            display_config.into_owned(),
-            styles,
-            picked_layer,
-        ))
+        let encoded =
+            self.encode_typed_layer(config, series, display_config, request, moved, labels)?;
+        Ok(TypedPick::Encoded {
+            encoded,
+            cpu,
+            layer,
+        })
     }
 
     /// The typed data pick of one layer (`config`, `series`, its panel as
@@ -516,6 +468,7 @@ impl Renderer {
         display_config: &Config,
         request: GpuPickRequest,
         moved: [f32; 2],
+        labels: ValueLabelSource,
     ) -> Result<crate::gpu_data_pick::EncodedDataPick> {
         let mut data_series = Vec::new();
         // One entry per series and one per series' value labels.
@@ -606,11 +559,12 @@ impl Renderer {
         // with a paint order after every series and win the ties against
         // the data under them. The same atlas, uniform and group 3 the draw
         // places them with, at the pick's display transform and scale.
+        let slot = Some((labels, ValueLabelRole::Pick));
         for (index, cfg) in series.iter().enumerate() {
-            let Some(atlas) = self
-                .preparation_parts()
-                .1
-                .ensure_value_label_scratch(&display_config, cfg)?
+            let Some(atlas) =
+                self.preparation_parts()
+                    .1
+                    .ensure_value_label_scratch(display_config, cfg, slot)?
             else {
                 continue;
             };
@@ -628,22 +582,25 @@ impl Renderer {
             // group's members, as the draw places them (#272): their atlases
             // are resolved first and stay resident through the frame batch.
             let mut preparation = self.preparation_parts().1;
-            let labels = preparation.frame_batch(|preparation| {
+            let cells = preparation.frame_batch(|preparation| {
                 if cfg.render_type.radar().is_some() {
-                    for (_, member) in radar_label_members(&display_config, series.iter()) {
-                        preparation.ensure_value_label_scratch(&display_config, member)?;
+                    for (_, member) in radar_label_members(display_config, series.iter()) {
+                        preparation.ensure_value_label_scratch(display_config, member, slot)?;
                     }
                 }
-                preparation.value_label_data(
-                    &display_config,
+                preparation.ensure_value_label_data(
+                    display_config,
                     series.iter(),
                     cfg,
                     &atlas,
                     request.display_scale,
-                    |_, member| Ok(preparation.resident_value_label_atlas(&display_config, member)),
+                    slot,
+                    |preparation, _, member| {
+                        Ok(preparation.resident_value_label_atlas(display_config, member, slot))
+                    },
                 )
             })?;
-            let Some(labels) = labels else {
+            let Some(labels) = cells else {
                 continue;
             };
             if labels.count == 0 {
@@ -741,26 +698,171 @@ impl Renderer {
             }
         })?;
         let set = self.picker.ready_data_bundle()?.set;
-        for layer in layers {
-            let (config, series, display_config, _, _) =
-                self.typed_layer_inputs(id, request, Some(layer))?;
-            let bodies = series.iter().any(|cfg| {
-                series_data_pick_kernels(&config, cfg, |_| false)
-                    != crate::gpu_data_pick::DataPickKernelSet::EMPTY
+        let labels = {
+            let state = self
+                .chart_states
+                .get(&id)
+                .ok_or(FiggyError::UnknownChart { id })?;
+            ValueLabelSource::of(id, &state.revisions)
+        };
+        // As the active layer's pick: the registry is lent, not cloned.
+        let states = std::mem::take(&mut self.chart_states);
+        let encoded = states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })
+            .and_then(|state| {
+                for layer in layers {
+                    let encoded = with_typed_layer_inputs(
+                        state,
+                        request,
+                        Some(layer),
+                        |config, series, display_config, _, _| {
+                            let bodies = series.iter().any(|cfg| {
+                                series_data_pick_kernels(config, cfg, |_| false)
+                                    != crate::gpu_data_pick::DataPickKernelSet::EMPTY
+                            });
+                            if !bodies
+                                || display_config.view_3d().is_some()
+                                || (set == ShaderSet::Basic
+                                    && config_needs_full_shaders(display_config))
+                            {
+                                return Ok(None);
+                            }
+                            let (request, moved) =
+                                pick_request_outside_gaps(display_config, request);
+                            self.encode_typed_layer(
+                                config,
+                                series,
+                                display_config,
+                                request,
+                                moved,
+                                labels,
+                            )
+                            .map(Some)
+                        },
+                    )?;
+                    if let Some(encoded) = encoded {
+                        deferred.push((layer, encoded));
+                    }
+                }
+                Ok(())
             });
-            if !bodies
-                || display_config.view_3d().is_some()
-                || (set == ShaderSet::Basic && config_needs_full_shaders(&display_config))
-            {
-                continue;
-            }
-            let (request, moved) = pick_request_outside_gaps(&display_config, request);
-            let encoded =
-                self.encode_typed_layer(&config, &series, &display_config, request, moved)?;
-            deferred.push((layer, encoded));
-        }
+        self.chart_states = states;
+        encoded?;
         Ok(deferred)
     }
+}
+
+/// The typed data pick's inputs for the registered chart `state` at
+/// `request` (#381), lent to `f`: the layer's panel and series, its panel
+/// as displayed, its series' 3D pick styles, and the layer. `layer` names
+/// the layer to pick; `None` picks the active one, or the subplot drawn at
+/// the cursor. The series are borrowed from the chart, never cloned: a
+/// pick copies no label string (#443).
+fn with_typed_layer_inputs<R>(
+    state: &ChartRenderState,
+    request: GpuPickRequest,
+    layer: Option<crate::LayerRef>,
+    f: impl FnOnce(
+        &Config,
+        &[SeriesConfig],
+        &Config,
+        &[Option<super::surface_pick::PickStyle3d>],
+        crate::LayerRef,
+    ) -> Result<R>,
+) -> Result<R> {
+    // The typed query answers for the active layer only, with that
+    // layer's panel (its Y range) and the series it scales, so its
+    // paint orders agree with the point query's registry. The query
+    // geometry is the panel as displayed: the document is scaled and
+    // placed first and expanded after, exactly as it is drawn.
+    let mut displayed = place_document(
+        &state.config,
+        request.display_scale,
+        request.display_panel_px,
+    );
+    // A pointer over a subplot's frame (an inset over the parent, or
+    // any subplot elsewhere, #203, #205) belongs to the subplot drawn
+    // on top there: on the base layer it is routed there.
+    // A layer named by the caller is picked as it is drawn, on its
+    // own panel (#381: the ink owner's layer).
+    // A layer named by the caller may be out of range and falls back as
+    // `Config::active_layer` does, so it is set on a copy; a subplot
+    // route always names a subplot the document has.
+    let named = layer.map(|layer| {
+        let mut config = state.config.clone();
+        config.active_layer = layer;
+        config
+    });
+    let routed = match &named {
+        Some(_) => None,
+        None => subplot_route(&state.config, &displayed, request.canvas_position_px),
+    };
+    if let Some(layer) = named.as_ref().map(|config| config.active_layer).or(routed) {
+        displayed.active_layer = layer;
+    }
+    let active = match (&named, routed) {
+        (Some(config), _) => config.active_layer(),
+        (None, Some(layer)) => layer,
+        (None, None) => state.config.active_layer(),
+    };
+    let picked_layer = match active {
+        crate::LayerRef::Annotations => crate::LayerRef::Base,
+        layer => layer,
+    };
+    let inputs = match (&named, routed) {
+        (Some(config), _) => active_layer_pick_inputs(config, &state.series)?,
+        (None, Some(layer)) => layer_pick_inputs(&state.config, layer, &state.series)?,
+        (None, None) => active_layer_pick_inputs(&state.config, &state.series)?,
+    };
+    let display_inputs = active_layer_pick_inputs(&displayed, &state.series)?;
+    let display_config = &*display_inputs.panel;
+    // The prepared styles of the layer's series, for a 3D chart's
+    // point picks (#132): a series not prepared yet has none.
+    let styles: Vec<Option<super::surface_pick::PickStyle3d>> = inputs
+        .series
+        .iter()
+        .map(|cfg| {
+            let position = state
+                .series
+                .iter()
+                .position(|s| s.series_id == cfg.series_id)?;
+            // The styles the chart is drawn with: at the display
+            // scale when the pick is in that display (#160).
+            let display = state.display.as_ref().and_then(|display| {
+                display
+                    .styles
+                    .as_ref()
+                    .filter(|(bits, _)| *bits == request.display_scale.to_bits())
+            });
+            match display {
+                Some((_, styles)) => Some(styles),
+                None => state.prepared_styles.as_ref(),
+            }
+            .and_then(|prepared| prepared.styles.get(position))
+            .map(super::surface_pick::PickStyle3d::of)
+        })
+        .collect();
+    f(
+        &inputs.panel,
+        &inputs.series,
+        display_config,
+        &styles,
+        picked_layer,
+    )
+}
+
+/// The typed half of a registered chart's pick.
+enum TypedPick {
+    /// A 3D chart's ID render: the whole answer.
+    Surface(crate::GpuDataPickTicket),
+    /// The typed kernels, encoded and not submitted, with the CPU picks of
+    /// the layer's DataLess series and the layer picked.
+    Encoded {
+        encoded: crate::gpu_data_pick::EncodedDataPick,
+        cpu: Option<crate::gpu_data_pick::RankedPickedData>,
+        layer: crate::LayerRef,
+    },
 }
 
 /// The typed data pick kernels a pick of series `cfg` on `panel`

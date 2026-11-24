@@ -760,3 +760,155 @@ fn a_batch_upload_costs_less_host_heap_per_column_than_one_at_a_time() {
         "batch allocation count grew {growth_per_mib:.2} per MiB of input (limit 8)"
     );
 }
+
+/// A registered candlestick of `n` rows with one value label per row
+/// (#443), on a renderer of its own: its chart and a view of it.
+fn labelled_candles(n: usize) -> (Renderer, renderer::ChartId, renderer::ChartView, Chart) {
+    let mut renderer = renderer_with_pool(16 << 20).expect("required GPU test: renderer");
+    let column = |data: Vec<f32>| Column { data };
+    renderer
+        .add_column("pos", &column((0..n).map(|i| i as f32).collect()))
+        .unwrap();
+    renderer.add_column("open", &column(vec![20.0; n])).unwrap();
+    renderer
+        .add_column("close", &column(vec![60.0; n]))
+        .unwrap();
+    renderer.end_gpu_frame();
+    let mut config = panel_config(480, 360);
+    config.legend.visible = false;
+    config.bottom_x.min = -1.0;
+    config.bottom_x.max = n as f64;
+    config.left_y.min = 0.0;
+    config.left_y.max = 100.0;
+    let series = renderer::SeriesConfig {
+        series_id: "candles".into(),
+        source_id: None,
+        label: None,
+        x_column: "pos".into(),
+        y_column: "close".into(),
+        z_column: None,
+        render_type: renderer::DataRenderType::RangeBars(renderer::RangeBarSeries {
+            color: renderer::Color::new(0.2, 0.3, 0.8, 1.0),
+            style: Default::default(),
+            start: "open".into(),
+            whiskers: None,
+            color_by: Default::default(),
+            progress: None,
+            connector: None,
+            slot_width: Some(0.8),
+            labels: renderer::data_config::CategoryBarSeriesLabels {
+                placement: renderer::data_config::CategoryBarLabels::Outside,
+                text: (0..n).map(|i| (i % 1000).to_string()).collect(),
+                ..Default::default()
+            },
+        }),
+    };
+    let id = renderer
+        .register_chart(config.clone(), vec![series])
+        .unwrap();
+    renderer.enable_gpu_picking().unwrap();
+    let chart = Chart::new(config);
+    let view = renderer
+        .create_chart_view(&chart, chart.config().chart_area.0)
+        .unwrap();
+    (renderer, id, view, chart)
+}
+
+/// The host bytes and allocations one step of a labelled chart costs at
+/// its peak: an idle frame, a pan (a view edit and its frame) and a pick at
+/// display scale 1.5.
+fn labelled_step_costs(n: usize) -> [(i64, u64); 3] {
+    let (mut renderer, id, mut view, chart) = labelled_candles(n);
+    let draw = |renderer: &mut Renderer, view: &mut renderer::ChartView| {
+        let frame = renderer
+            .prepare_registered(&mut [renderer::RegisteredChartDrawItem { chart_id: id, view }])
+            .unwrap();
+        drop(frame);
+        settle_gpu(renderer);
+    };
+    let rect = chart.config().chart_area.0;
+    let request = renderer::GpuPickRequest {
+        canvas_position_px: [rect.width as f32 * 0.75, rect.height as f32 * 0.75],
+        display_panel_px: renderer::layout::Rect {
+            x: 0,
+            y: 0,
+            width: rect.width * 3 / 2,
+            height: rect.height * 3 / 2,
+        },
+        display_scale: 1.5,
+        max_distance_px: 4.0,
+    };
+    let pick = |renderer: &mut Renderer| {
+        let ticket = renderer.pick_chart_data(id, request).unwrap();
+        let _ = test_gpu::block_on(ticket.resolve());
+        settle_gpu(renderer);
+    };
+    let pan = |renderer: &mut Renderer, view: &mut renderer::ChartView, by: f64| {
+        let mut state = renderer.chart_view_state(id).unwrap();
+        state.bottom_x.min += by;
+        state.bottom_x.max += by;
+        renderer.set_chart_view_state(id, state).unwrap();
+        draw(renderer, view);
+    };
+    // Warm every step: the first of each bakes, compiles and fills caches.
+    for _ in 0..2 {
+        draw(&mut renderer, &mut view);
+        pick(&mut renderer);
+        pan(&mut renderer, &mut view, 1.0);
+        pan(&mut renderer, &mut view, -1.0);
+    }
+    let mut measure = |step: &mut dyn FnMut(&mut Renderer, &mut renderer::ChartView)| {
+        let start = reset_peak_live_bytes();
+        let before = calls();
+        step(&mut renderer, &mut view);
+        (peak_live_bytes() - start, calls() - before)
+    };
+    let edit = measure(&mut |renderer, _| {
+        let mut state = renderer.chart_view_state(id).unwrap();
+        state.bottom_x.min += 0.5;
+        state.bottom_x.max += 0.5;
+        renderer.set_chart_view_state(id, state).unwrap();
+    });
+    let after_edit = measure(&mut |renderer, view| draw(renderer, view));
+    println!("DIAG {n}: edit {edit:?} frame after edit {after_edit:?}");
+    let idle = measure(&mut |renderer, view| draw(renderer, view));
+    let picked = measure(&mut |renderer, _| pick(renderer));
+    let panned = measure(&mut |renderer, view| pan(renderer, view, 2.0));
+    [idle, picked, panned]
+}
+
+/// Value labels cost a frame, a pick or a pan nothing that grows with their
+/// count (#443): the atlas, the 16 B cell per label and its bind group are
+/// kept across them, and no label string is copied. 5k and 50k labels peak
+/// at the same host bytes, within a margin far below one byte per label.
+#[test]
+fn value_label_frames_picks_and_pans_do_not_allocate_per_label() {
+    let Some(_measurement) =
+        measured("value_label_frames_picks_and_pans_do_not_allocate_per_label")
+    else {
+        return;
+    };
+    let small = labelled_step_costs(5_000);
+    let large = labelled_step_costs(50_000);
+    for (step, (small, large)) in ["idle frame", "pick", "pan"]
+        .iter()
+        .zip(small.iter().zip(large))
+    {
+        println!(
+            "{step}: 5k labels peak {} B in {} allocations, 50k labels peak {} B in {} allocations",
+            small.0, small.1, large.0, large.1
+        );
+        assert!(
+            large.0 <= small.0 + 16 * 1024,
+            "{step}: 45k more labels raised the peak host bytes from {} to {}",
+            small.0,
+            large.0
+        );
+        assert!(
+            large.1.abs_diff(small.1) <= 8,
+            "{step}: 45k more labels changed the allocation count from {} to {}",
+            small.1,
+            large.1
+        );
+    }
+}

@@ -74,6 +74,7 @@ impl Renderer {
             selection: selection_before,
             raster: raster_before,
             annotation: annotation_before,
+            labels: labels_before,
         } = state.revisions;
         let desired = if config_changed || series_changed {
             desired_before.successor("chart desired revision")?
@@ -122,6 +123,11 @@ impl Renderer {
             selection,
             raster,
             annotation: annotation_config_revision(annotation_before, &state.config, &config)?,
+            labels: labels_revision(
+                labels_before,
+                (&state.config, &state.series),
+                (&config, &series),
+            )?,
         };
 
         let chart_state = self.chart_states.get_mut(&id).ok_or(FiggyError::internal(
@@ -525,6 +531,7 @@ impl Renderer {
             selection,
             raster,
             annotation,
+            labels,
         } = state.revisions;
         let desired = desired.successor("chart desired revision")?;
         let config = config.successor("chart config revision")?;
@@ -548,6 +555,7 @@ impl Renderer {
             selection,
             raster,
             annotation,
+            labels,
         };
         self.visual_revision = visual;
         Ok(())
@@ -617,6 +625,7 @@ impl Renderer {
             selection,
             raster,
             annotation,
+            labels,
         } = state.revisions;
         let desired = desired.successor("chart desired revision")?;
         let selection = selection.successor("chart selection revision")?;
@@ -637,6 +646,7 @@ impl Renderer {
             selection,
             raster,
             annotation,
+            labels,
         };
         self.visual_revision = visual;
         Ok(())
@@ -703,6 +713,7 @@ impl Renderer {
                 selection: _,
                 raster: raster_slot,
                 annotation: annotation_slot,
+                labels: _,
             } = &mut state.revisions;
             *desired_slot = desired;
             *raster_slot = raster;

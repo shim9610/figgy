@@ -16854,3 +16854,257 @@ fn the_blocking_adapter_and_device_requests_open_a_device() {
     renderer.wait_submitted_work_blocking().unwrap();
     renderer.prewarm_all_blocking().unwrap();
 }
+
+/// A registered candlestick of `n` rows with one value label per row
+/// (#443): positions `0..n`, bars from 20 to 60, the label of row `i` its
+/// index.
+fn labelled_candles(renderer: &mut Renderer, n: usize) -> (Config, SeriesConfig) {
+    let positions: Vec<f64> = (0..n).map(|i| i as f64).collect();
+    renderer.add_column("pos", &col_f64(positions)).unwrap();
+    renderer
+        .add_column("open", &col_f64(vec![20.0; n]))
+        .unwrap();
+    renderer
+        .add_column("close", &col_f64(vec![60.0; n]))
+        .unwrap();
+    let config = typed_pick_config((-1.0, n as f64), (0.0, 100.0));
+    let series = SeriesConfig {
+        series_id: "candles".into(),
+        source_id: None,
+        label: None,
+        x_column: "pos".into(),
+        y_column: "close".into(),
+        z_column: None,
+        render_type: DataRenderType::RangeBars(RangeBarSeries {
+            color: Color::from_rgb8(40, 90, 200),
+            style: Default::default(),
+            start: "open".into(),
+            whiskers: None,
+            color_by: Default::default(),
+            progress: None,
+            connector: None,
+            slot_width: Some(0.8),
+            labels: crate::data_config::CategoryBarSeriesLabels {
+                placement: crate::data_config::CategoryBarLabels::Outside,
+                text: (0..n).map(|i| (i % 1000).to_string()).collect(),
+                ..Default::default()
+            },
+        }),
+    };
+    (config, series)
+}
+
+fn labelled_candles_labels_mut(series: &mut SeriesConfig) -> &mut Vec<String> {
+    let DataRenderType::RangeBars(RangeBarSeries { labels, .. }) = &mut series.render_type else {
+        unreachable!()
+    };
+    &mut labels.text
+}
+
+fn prepare_registered_once(renderer: &mut Renderer, id: ChartId, view: &mut ChartView) {
+    renderer
+        .prepare_registered(&mut [RegisteredChartDrawItem { chart_id: id, view }])
+        .unwrap();
+}
+
+fn pick_value_labels_at(renderer: &mut Renderer, id: ChartId, config: &Config, scale: f32) {
+    let rect = config.chart_area.0;
+    let request = GpuPickRequest {
+        canvas_position_px: [
+            rect.width as f32 * scale * 0.5,
+            rect.height as f32 * scale * 0.5,
+        ],
+        display_panel_px: Rect {
+            x: 0,
+            y: 0,
+            width: (rect.width as f32 * scale) as u32,
+            height: (rect.height as f32 * scale) as u32,
+        },
+        display_scale: scale,
+        max_distance_px: 4.0,
+    };
+    let _ = renderer
+        .pick_chart_data(id, request)
+        .unwrap()
+        .resolve()
+        .block_on();
+}
+
+/// The value label atlas of a registered chart is keyed by its labels
+/// revision (#443): at 50k labels a pan, a zoom and a resize at a fixed
+/// display scale bake nothing; a pick at the draw's scale shares the
+/// draw's atlas; a pick at display scale 1.5 bakes once and then never
+/// again, without evicting the draw's; a label drag bakes nothing; a label
+/// text edit bakes once.
+#[test]
+fn registered_value_labels_bake_once_across_pans_resizes_and_picks() {
+    let Some(mut r) = state_test_renderer_with_capacity(16 * 1024 * 1024) else {
+        return;
+    };
+    const N: usize = 50_000;
+    let (config, series) = labelled_candles(&mut r, N);
+    let id = r
+        .register_chart(config.clone(), vec![series.clone()])
+        .unwrap();
+    r.enable_gpu_picking().unwrap();
+    let chart = Chart::new(config.clone());
+    let mut view = r.create_chart_view(&chart, config.chart_area.0).unwrap();
+    let bakes = crate::renderer::prepare::value_label_bakes;
+
+    let start = bakes();
+    prepare_registered_once(&mut r, id, &mut view);
+    assert_eq!(bakes() - start, 1, "the first frame bakes");
+    prepare_registered_once(&mut r, id, &mut view);
+    assert_eq!(bakes() - start, 1, "an idle frame");
+
+    // Pan and zoom: a view edit.
+    for (min, max) in [(100.0, 2_000.0), (-1.0, 500.0), (1_000.0, 40_000.0)] {
+        let mut state = r.chart_view_state(id).unwrap();
+        state.bottom_x.min = min;
+        state.bottom_x.max = max;
+        r.set_chart_view_state(id, state).unwrap();
+        prepare_registered_once(&mut r, id, &mut view);
+    }
+    assert_eq!(bakes() - start, 1, "a pan or a zoom");
+
+    // Resize at a fixed display scale: a new chart area.
+    let mut state = r.chart_view_state(id).unwrap();
+    state.chart_area.width += 120;
+    state.chart_area.height += 40;
+    let area = state.chart_area;
+    r.set_chart_view_state(id, state).unwrap();
+    let mut resized = r
+        .create_chart_view(&Chart::new(r.chart_config(id).unwrap().clone()), area)
+        .unwrap();
+    prepare_registered_once(&mut r, id, &mut resized);
+    assert_eq!(bakes() - start, 1, "a resize at a fixed scale");
+
+    // A pick at the draw's scale shares the draw's atlas; one at 1.5 bakes
+    // its own once, and the draw keeps its atlas.
+    let current = r.chart_config(id).unwrap().clone();
+    pick_value_labels_at(&mut r, id, &current, 1.0);
+    assert_eq!(bakes() - start, 1, "a pick at the draw's scale");
+    pick_value_labels_at(&mut r, id, &current, 1.5);
+    assert_eq!(bakes() - start, 2, "a pick at 1.5 bakes once");
+    for _ in 0..3 {
+        pick_value_labels_at(&mut r, id, &current, 1.5);
+        prepare_registered_once(&mut r, id, &mut resized);
+    }
+    assert_eq!(bakes() - start, 2, "draws and picks keep their entries");
+
+    // A label drag moves offsets only.
+    let mut dragged = r.chart_series(id).unwrap().to_vec();
+    let _ = dragged[0].drag_value_label(3, N, 4.0, -2.0);
+    r.set_chart_series(id, dragged.clone()).unwrap();
+    prepare_registered_once(&mut r, id, &mut resized);
+    assert_eq!(bakes() - start, 2, "a label drag");
+
+    // A text edit is a new labels revision: one bake per role in use.
+    labelled_candles_labels_mut(&mut dragged[0])[7] = "seven".into();
+    r.set_chart_series(id, dragged).unwrap();
+    prepare_registered_once(&mut r, id, &mut resized);
+    assert_eq!(bakes() - start, 3, "a text edit");
+    prepare_registered_once(&mut r, id, &mut resized);
+    assert_eq!(bakes() - start, 3, "after a text edit");
+}
+
+/// Two registered charts with equal series ids keep their own atlases
+/// (#443): drawing them in turn bakes each once.
+#[test]
+fn registered_charts_with_equal_series_ids_keep_their_atlases() {
+    let Some(mut r) = state_test_renderer_with_capacity(4 * 1024 * 1024) else {
+        return;
+    };
+    let (config, series) = labelled_candles(&mut r, 64);
+    let mut other = series.clone();
+    labelled_candles_labels_mut(&mut other)[0] = "first".into();
+    let a = r.register_chart(config.clone(), vec![series]).unwrap();
+    let b = r.register_chart(config.clone(), vec![other]).unwrap();
+    let chart = Chart::new(config.clone());
+    let mut view_a = r.create_chart_view(&chart, config.chart_area.0).unwrap();
+    let mut view_b = r.create_chart_view(&chart, config.chart_area.0).unwrap();
+    let bakes = crate::renderer::prepare::value_label_bakes;
+    let start = bakes();
+    for _ in 0..3 {
+        prepare_registered_once(&mut r, a, &mut view_a);
+        prepare_registered_once(&mut r, b, &mut view_b);
+    }
+    assert_eq!(bakes() - start, 2);
+}
+
+/// A registered chart's labels draw the same pixels as the host-held
+/// chart's string-keyed path (#443), at 1x and 2x, and the same again
+/// after a pan away and back and a pick at another scale.
+#[test]
+fn registered_value_label_frames_match_the_held_path_at_1x_and_2x() {
+    let Some(mut r) = state_test_renderer_with_capacity(4 * 1024 * 1024) else {
+        return;
+    };
+    let (base, series) = labelled_candles(&mut r, 24);
+    for scale in [1.0f32, 2.0] {
+        let config = base.scaled(scale);
+        let rect = config.chart_area.0;
+        let (w, h) = (rect.width, rect.height);
+        let chart = Chart::new(config.clone());
+        // The host-held path: strings in the key, as before.
+        let style = r.create_style_for_series_scaled(&series, scale).unwrap();
+        let mut held_view = r.create_chart_view_at(&chart, rect, scale).unwrap();
+        let held = {
+            let items = [Series {
+                config: &series,
+                style: &style,
+            }];
+            let frame = r
+                .prepare(&mut [ChartDrawItem {
+                    view: &mut held_view,
+                    chart: &chart,
+                    series: &items,
+                }])
+                .unwrap();
+            paint_prepared_rgba(&r, &frame, w, h)
+        };
+        let id = r
+            .register_chart(config.clone(), vec![series.clone()])
+            .unwrap();
+        r.enable_gpu_picking().unwrap();
+        let mut view = r.create_chart_view_at(&chart, rect, scale).unwrap();
+        let draw = |r: &mut Renderer, view: &mut ChartView| {
+            let frame = r
+                .prepare_registered(&mut [RegisteredChartDrawItem { chart_id: id, view }])
+                .unwrap();
+            paint_prepared_rgba(r, &frame, w, h)
+        };
+        let first = draw(&mut r, &mut view);
+        let idle = draw(&mut r, &mut view);
+        assert!(
+            first == idle,
+            "{scale}x: an idle frame draws the same frame"
+        );
+        // A pan away and back, as config edits: the document returns to
+        // what it was, so the frame must too.
+        let mut panned = config.clone();
+        panned.bottom_x.min += 3.0;
+        panned.bottom_x.max += 3.0;
+        r.set_chart_config(id, panned).unwrap();
+        let _ = draw(&mut r, &mut view);
+        r.set_chart_config(id, config.clone()).unwrap();
+        let back = draw(&mut r, &mut view);
+        assert!(
+            first == back,
+            "{scale}x: a pan away and back draws the same frame"
+        );
+        pick_value_labels_at(&mut r, id, &config, 1.5);
+        let again = draw(&mut r, &mut view);
+        assert!(
+            first == again,
+            "{scale}x: the kept cells draw the same frame"
+        );
+        if scale == 1.0 {
+            assert!(
+                first == held,
+                "{scale}x: registered and held draw the same frame"
+            );
+        }
+        r.remove_chart(id).unwrap();
+    }
+}

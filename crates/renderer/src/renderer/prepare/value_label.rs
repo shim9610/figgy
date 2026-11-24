@@ -4,18 +4,259 @@
 
 use super::*;
 
-/// One series' value label atlas in the scratch cache
-/// ([`ScratchEntry::ValueLabels`]), keyed as a contour's label atlas is: by
-/// the [`data_render::ContourLabelAtlasInput`] it was baked from (the SSOT
-/// strings, the face, the font size at the render scale, the colour, the
-/// font policy and the absent background: everything the bake reads, so
-/// the compare covers the bake by construction) and the font generation,
-/// which invalidates an atlas when a host registers a font.
+/// One series' value label atlases in the scratch cache
+/// ([`ScratchEntry::ValueLabels`]).
+///
+/// A host-held chart or an export draws from `held`, keyed as a contour's
+/// label atlas is: by the [`data_render::ContourLabelAtlasInput`] it was
+/// baked from (the SSOT strings, the face, the font size at the render
+/// scale, the colour, the font policy and the absent background:
+/// everything the bake reads) and the font generation, which invalidates
+/// an atlas when a host registers a font. Its series configs are the
+/// host's, so nothing could tell a changed string from a revision (#443,
+/// option A1).
+///
+/// A registered chart draws from `registered`, by chart: each entry is
+/// keyed by the chart's labels revision ([`ChartRevisions::labels`]), the
+/// face and the font generation, with no copy of the strings (#443). Its
+/// draw and its pick keep an entry each, so a pick at another font size
+/// does not evict the draw's atlas, and a pick at the same size shares
+/// it. The entries are bounded by the charts and the two roles that draw
+/// the series, never by a count of labels (rule 10).
 pub(in crate::renderer) struct ValueLabelScratch {
-    pub(in crate::renderer) atlas_input: data_render::ContourLabelAtlasInput,
-    pub(in crate::renderer) font_generation: u64,
+    held: Option<HeldValueLabelAtlas>,
+    registered: HashMap<ChartId, RegisteredValueLabels>,
+}
+
+impl ValueLabelScratch {
+    /// Drop the entries of registered chart `id`, once it is removed.
+    pub(in crate::renderer) fn forget_chart(&mut self, id: ChartId) {
+        self.registered.remove(&id);
+    }
+}
+
+/// The atlas of a host-held chart's or an export's series.
+struct HeldValueLabelAtlas {
+    atlas_input: data_render::ContourLabelAtlasInput,
+    font_generation: u64,
     /// `None` when the strings measure to nothing.
-    pub(in crate::renderer) atlas: Option<Arc<data_render::ValueLabelAtlas>>,
+    atlas: Option<Arc<data_render::ValueLabelAtlas>>,
+}
+
+/// A registered chart's entries for one series: the draw's and the pick's.
+#[derive(Default)]
+struct RegisteredValueLabels {
+    draw: Option<RegisteredValueLabelAtlas>,
+    pick: Option<RegisteredValueLabelAtlas>,
+}
+
+impl RegisteredValueLabels {
+    fn slot(&self, role: ValueLabelRole) -> Option<&RegisteredValueLabelAtlas> {
+        match role {
+            ValueLabelRole::Draw => self.draw.as_ref(),
+            ValueLabelRole::Pick => self.pick.as_ref(),
+        }
+    }
+
+    fn slot_mut(&mut self, role: ValueLabelRole) -> &mut Option<RegisteredValueLabelAtlas> {
+        match role {
+            ValueLabelRole::Draw => &mut self.draw,
+            ValueLabelRole::Pick => &mut self.pick,
+        }
+    }
+}
+
+/// One registered atlas and the label cells last built over it.
+struct RegisteredValueLabelAtlas {
+    labels: RenderRevision,
+    face: ValueLabelFace,
+    font_generation: u64,
+    /// `None` when the strings measure to nothing.
+    atlas: Option<Arc<data_render::ValueLabelAtlas>>,
+    /// The label uniform, the 16 B cell per label and their group 1, kept
+    /// across frames and picks while [`ValueLabelCellsKey`] holds (#443).
+    cells: Option<(ValueLabelCellsKey, data_render::ValueLabelData)>,
+}
+
+impl RegisteredValueLabelAtlas {
+    fn matches(&self, labels: RenderRevision, face: ValueLabelFaceRef<'_>, font: u64) -> bool {
+        self.labels == labels && self.font_generation == font && self.face.as_ref() == face
+    }
+}
+
+/// What a registered series' label cells and uniform were built from,
+/// besides the atlas they sit in (whose entry is keyed by the labels
+/// revision, which also follows the categories): the series and selection
+/// revisions (texts, offsets, placements and a radar group's members), the
+/// scale, and the uniform itself.
+#[derive(Clone, Copy, PartialEq)]
+struct ValueLabelCellsKey {
+    series: RenderRevision,
+    selection: RenderRevision,
+    scale_bits: u32,
+    params: data_render::ValueLabelParamsGpu,
+}
+
+/// The registered chart a series' value labels are drawn or picked for
+/// and the revisions its atlas and cells are keyed by (#443): an issued
+/// chart id and generations ("Identity and staleness checks").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::renderer) struct ValueLabelSource {
+    pub(in crate::renderer) chart: ChartId,
+    pub(in crate::renderer) labels: RenderRevision,
+    pub(in crate::renderer) series: RenderRevision,
+    pub(in crate::renderer) selection: RenderRevision,
+}
+
+impl ValueLabelSource {
+    pub(in crate::renderer) fn of(chart: ChartId, revisions: &ChartRevisions) -> Self {
+        Self {
+            chart,
+            labels: revisions.labels,
+            series: revisions.series,
+            selection: revisions.selection,
+        }
+    }
+}
+
+/// Who asks for a registered series' labels: its draw or its pick. Each
+/// keeps its own entry ([`ValueLabelScratch`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::renderer) enum ValueLabelRole {
+    Draw,
+    Pick,
+}
+
+impl ValueLabelRole {
+    fn other(self) -> Self {
+        match self {
+            Self::Draw => Self::Pick,
+            Self::Pick => Self::Draw,
+        }
+    }
+}
+
+/// A registered series' labels and who asks for them; `None` on a
+/// host-held chart or an export.
+pub(in crate::renderer) type ValueLabelSlot = Option<(ValueLabelSource, ValueLabelRole)>;
+
+/// The registered value label source of each panel of a preparation: the
+/// sources of its items, in item order (one per item, or none at all), and
+/// how many panels each item drew as (`group_sizes`, empty when none is
+/// layered).
+#[derive(Clone, Copy)]
+pub(in crate::renderer) struct ValueLabelSources<'s> {
+    pub(in crate::renderer) items: &'s [ValueLabelSource],
+    pub(in crate::renderer) group_sizes: &'s [usize],
+}
+
+impl ValueLabelSources<'_> {
+    pub(in crate::renderer) const NONE: ValueLabelSources<'static> = ValueLabelSources {
+        items: &[],
+        group_sizes: &[],
+    };
+
+    /// The source of expanded panel `panel` among `panels`.
+    pub(in crate::renderer) fn of(&self, panel: usize, panels: usize) -> Option<ValueLabelSource> {
+        if self.group_sizes.is_empty() {
+            return (self.items.len() == panels)
+                .then(|| self.items.get(panel).copied())
+                .flatten();
+        }
+        if self.group_sizes.len() != self.items.len() {
+            return None;
+        }
+        let mut first = 0usize;
+        for (item, &count) in self.items.iter().zip(self.group_sizes) {
+            if panel < first + count {
+                return Some(*item);
+            }
+            first += count;
+        }
+        None
+    }
+}
+
+/// The face a series' value labels bake in, as the stored entry holds it.
+#[derive(Clone, Debug, PartialEq)]
+struct ValueLabelFace {
+    font_size_bits: u32,
+    color_bits: [u32; 4],
+    policy: crate::text_render::FontPolicy,
+    family: String,
+}
+
+impl ValueLabelFace {
+    fn as_ref(&self) -> ValueLabelFaceRef<'_> {
+        ValueLabelFaceRef {
+            font_size_bits: self.font_size_bits,
+            color_bits: self.color_bits,
+            policy: self.policy,
+            family: &self.family,
+        }
+    }
+}
+
+/// The face a series' value labels bake in, borrowed from the config: the
+/// value axis' tick label face and size (in render pixels in a scaled
+/// config), the label colour and the font policy. What
+/// [`data_render::ContourLabelAtlasInput::for_value_labels`] reads besides
+/// the strings.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::renderer) struct ValueLabelFaceRef<'c> {
+    font_size_bits: u32,
+    color_bits: [u32; 4],
+    policy: crate::text_render::FontPolicy,
+    family: &'c str,
+}
+
+impl ValueLabelFaceRef<'_> {
+    fn to_owned(self) -> ValueLabelFace {
+        ValueLabelFace {
+            font_size_bits: self.font_size_bits,
+            color_bits: self.color_bits,
+            policy: self.policy,
+            family: self.family.to_owned(),
+        }
+    }
+}
+
+/// Series `cfg`'s label strings and face under the panel `config`,
+/// borrowed: `None` when the series draws no value labels or their font
+/// size is not positive. Copies nothing (#443).
+pub(in crate::renderer) fn value_label_face<'c>(
+    config: &'c Config,
+    cfg: &'c SeriesConfig,
+) -> Option<(&'c [String], ValueLabelFaceRef<'c>)> {
+    let selected = series_selected(config, cfg);
+    let (_, text) = data_render::value_label_kind(&cfg.render_type, selected)?;
+    let axis = value_label_axis(config, &cfg.render_type);
+    let size = axis.label_style.font_size;
+    if !(size > 0.0) {
+        return None;
+    }
+    let c = value_label_color(config, &cfg.render_type, axis);
+    Some((
+        text,
+        ValueLabelFaceRef {
+            font_size_bits: size.to_bits(),
+            color_bits: [c.r.to_bits(), c.g.to_bits(), c.b.to_bits(), c.a.to_bits()],
+            policy: crate::text_render::FontPolicy::for_style(&config.draw_style),
+            family: &axis.label_style.label_font,
+        },
+    ))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Value label atlas bakes on this thread (#443 tests).
+    static VALUE_LABEL_BAKES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The value label atlas bakes this thread has run (#443 tests).
+#[cfg(test)]
+pub(in crate::renderer) fn value_label_bakes() -> u64 {
+    VALUE_LABEL_BAKES.with(std::cell::Cell::get)
 }
 
 /// The axis whose tick label face a series' value labels take: the value
@@ -273,7 +514,87 @@ pub(in crate::renderer) fn value_label_atlas_input(
 impl PrepareContext<'_> {
     /// The atlas series `cfg`'s value labels draw from under `config`,
     /// baked or reused; `None` when the series draws no value labels.
+    /// `slot` names the registered chart and role ([`ValueLabelScratch`]);
+    /// `None` keys the atlas by its strings.
     pub(in crate::renderer) fn ensure_value_label_scratch(
+        &mut self,
+        config: &Config,
+        cfg: &SeriesConfig,
+        slot: ValueLabelSlot,
+    ) -> Result<Option<Arc<data_render::ValueLabelAtlas>>> {
+        let Some((source, role)) = slot else {
+            return self.ensure_held_value_label_atlas(config, cfg);
+        };
+        let Some((text, face)) = value_label_face(config, cfg) else {
+            return Ok(None);
+        };
+        let font_generation = crate::text_render::font_generation();
+        if let Some(ScratchEntry::ValueLabels(scratch)) =
+            self.contour_cache.get_mut(cfg.series_id.as_str())
+            && let Some(entries) = scratch.registered.get_mut(&source.chart)
+        {
+            if let Some(own) = entries
+                .slot(role)
+                .filter(|entry| entry.matches(source.labels, face, font_generation))
+            {
+                return Ok(own.atlas.clone());
+            }
+            // The other role's atlas at the same font size: shared, so a
+            // pick at the draw's scale bakes nothing.
+            if let Some(other) = entries
+                .slot(role.other())
+                .filter(|entry| entry.matches(source.labels, face, font_generation))
+            {
+                let shared = RegisteredValueLabelAtlas {
+                    labels: other.labels,
+                    face: other.face.clone(),
+                    font_generation,
+                    atlas: other.atlas.clone(),
+                    cells: None,
+                };
+                let atlas = shared.atlas.clone();
+                *entries.slot_mut(role) = Some(shared);
+                return Ok(atlas);
+            }
+        }
+        // The strings are copied into the bake's input for the bake only;
+        // the entry keeps none of them.
+        let input = data_render::ContourLabelAtlasInput {
+            texts: text.to_vec(),
+            font_size_bits: face.font_size_bits,
+            color_bits: face.color_bits,
+            policy: face.policy,
+            family: face.family.to_owned(),
+            bg_color_bits: None,
+            bg_padding_bits: 0.0f32.to_bits(),
+        };
+        let atlas = self.bake_value_label_atlas(cfg, &input)?;
+        drop(input);
+        let entry = RegisteredValueLabelAtlas {
+            labels: source.labels,
+            face: face.to_owned(),
+            font_generation,
+            atlas: atlas.clone(),
+            cells: None,
+        };
+        let scratch = self.value_label_scratch_mut(cfg)?;
+        scratch
+            .registered
+            .try_reserve(1)
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "value label atlas entries",
+                reason: error.to_string(),
+            })?;
+        *scratch
+            .registered
+            .entry(source.chart)
+            .or_default()
+            .slot_mut(role) = Some(entry);
+        Ok(atlas)
+    }
+
+    /// A host-held chart's or an export's atlas, keyed by its strings.
+    fn ensure_held_value_label_atlas(
         &mut self,
         config: &Config,
         cfg: &SeriesConfig,
@@ -284,20 +605,38 @@ impl PrepareContext<'_> {
         let font_generation = crate::text_render::font_generation();
         if let Some(ScratchEntry::ValueLabels(scratch)) =
             self.contour_cache.get(cfg.series_id.as_str())
-            && scratch.atlas_input == atlas_input
-            && scratch.font_generation == font_generation
+            && let Some(held) = &scratch.held
+            && held.atlas_input == atlas_input
+            && held.font_generation == font_generation
         {
-            return Ok(scratch.atlas.clone());
+            return Ok(held.atlas.clone());
         }
+        let atlas = self.bake_value_label_atlas(cfg, &atlas_input)?;
+        self.value_label_scratch_mut(cfg)?.held = Some(HeldValueLabelAtlas {
+            atlas_input,
+            font_generation,
+            atlas: atlas.clone(),
+        });
+        Ok(atlas)
+    }
+
+    /// Bake and upload `input`; `None` when the strings measure to nothing.
+    fn bake_value_label_atlas(
+        &mut self,
+        cfg: &SeriesConfig,
+        input: &data_render::ContourLabelAtlasInput,
+    ) -> Result<Option<Arc<data_render::ValueLabelAtlas>>> {
+        #[cfg(test)]
+        VALUE_LABEL_BAKES.with(|bakes| bakes.set(bakes.get() + 1));
         let baked =
-            axis_render::bake_contour_label_atlas(&atlas_input, self.caps.max_texture_dimension_2d)
+            axis_render::bake_contour_label_atlas(input, self.caps.max_texture_dimension_2d)
                 .map_err(|error| FiggyError::InvalidSeriesConfig {
                     series_id: cfg.series_id.clone(),
                     kind: crate::RuleKind::ValueLabels {
                         detail: error.to_string(),
                     },
                 })?;
-        let atlas = match baked {
+        Ok(match baked {
             Some(baked) => Some(Arc::new(data_render::ValueLabelAtlas::upload(
                 self.device,
                 self.queue,
@@ -306,50 +645,177 @@ impl PrepareContext<'_> {
                 baked,
             )?)),
             None => None,
-        };
-        // The contour scratch cache: one map, one eviction rule, one limit.
-        if !self.in_frame {
-            evict_if_full(
-                &mut self.contour_cache,
-                cfg.series_id.as_str(),
-                CONTOUR_SCRATCH_CACHE_LIMIT,
+        })
+    }
+
+    /// Series `cfg`'s entry in the scratch cache, made when it holds none
+    /// (or another kind's): the contour scratch cache, one map, one
+    /// eviction rule, one limit.
+    fn value_label_scratch_mut(&mut self, cfg: &SeriesConfig) -> Result<&mut ValueLabelScratch> {
+        let id = cfg.series_id.as_str();
+        if !matches!(
+            self.contour_cache.get(id),
+            Some(ScratchEntry::ValueLabels(_))
+        ) {
+            if !self.in_frame {
+                evict_if_full(self.contour_cache, id, CONTOUR_SCRATCH_CACHE_LIMIT);
+            }
+            self.contour_cache.try_reserve(1).map_err(|error| {
+                FiggyError::StateAllocationFailed {
+                    resource: "contour scratch cache",
+                    reason: error.to_string(),
+                }
+            })?;
+            self.contour_cache.insert(
+                cfg.series_id.clone(),
+                ScratchEntry::ValueLabels(ValueLabelScratch {
+                    held: None,
+                    registered: HashMap::new(),
+                }),
             );
         }
-        self.contour_cache
-            .try_reserve(1)
-            .map_err(|error| FiggyError::StateAllocationFailed {
-                resource: "contour scratch cache",
-                reason: error.to_string(),
-            })?;
-        self.contour_cache.insert(
-            cfg.series_id.clone(),
-            ScratchEntry::ValueLabels(ValueLabelScratch {
-                atlas_input,
-                font_generation,
-                atlas: atlas.clone(),
-            }),
-        );
-        Ok(atlas)
+        match self.contour_cache.get_mut(id) {
+            Some(ScratchEntry::ValueLabels(scratch)) => Ok(scratch),
+            _ => Err(FiggyError::internal("value label scratch was just made")),
+        }
     }
 
     /// The atlas series `cfg`'s value labels draw from under `config` when
     /// the scratch cache holds it as baked for them now (what
-    /// [`Self::ensure_value_label_scratch`] resolved), else `None`.
+    /// [`Self::ensure_value_label_scratch`] resolved for `slot`), else
+    /// `None`.
     pub(in crate::renderer) fn resident_value_label_atlas(
         &self,
         config: &Config,
         cfg: &SeriesConfig,
+        slot: ValueLabelSlot,
     ) -> Option<Arc<data_render::ValueLabelAtlas>> {
-        let atlas_input = value_label_atlas_input(config, cfg)?;
-        match self.contour_cache.get(cfg.series_id.as_str()) {
-            Some(ScratchEntry::ValueLabels(scratch))
-                if scratch.atlas_input == atlas_input
-                    && scratch.font_generation == crate::text_render::font_generation() =>
-            {
-                scratch.atlas.clone()
+        let Some(ScratchEntry::ValueLabels(scratch)) =
+            self.contour_cache.get(cfg.series_id.as_str())
+        else {
+            return None;
+        };
+        let font_generation = crate::text_render::font_generation();
+        match slot {
+            Some((source, role)) => {
+                let (_, face) = value_label_face(config, cfg)?;
+                let entries = scratch.registered.get(&source.chart)?;
+                [role, role.other()]
+                    .into_iter()
+                    .filter_map(|role| entries.slot(role))
+                    .find(|entry| entry.matches(source.labels, face, font_generation))
+                    .and_then(|entry| entry.atlas.clone())
             }
-            _ => None,
+            None => {
+                let atlas_input = value_label_atlas_input(config, cfg)?;
+                scratch
+                    .held
+                    .as_ref()
+                    .filter(|held| {
+                        held.atlas_input == atlas_input && held.font_generation == font_generation
+                    })
+                    .and_then(|held| held.atlas.clone())
+            }
         }
+    }
+
+    /// Series `cfg`'s value label layer data as [`Self::value_label_data`]
+    /// builds it, kept in its registered entry (`slot`) and reused while
+    /// the series and selection revisions, the scale, the uniform and the
+    /// atlas are the same (#443): an idle frame, a pan and a repeated pick
+    /// build no label buffer. Without a registered slot it is built anew.
+    /// `member_atlas` resolves a radar group member's atlas, as
+    /// [`Self::value_label_data`]'s does, with this context lent.
+    pub(in crate::renderer) fn ensure_value_label_data<'s>(
+        &mut self,
+        config: &Config,
+        series: impl IntoIterator<Item = &'s SeriesConfig> + Clone,
+        cfg: &SeriesConfig,
+        atlas: &Arc<data_render::ValueLabelAtlas>,
+        scale: f32,
+        slot: ValueLabelSlot,
+        mut member_atlas: impl FnMut(
+            &Self,
+            usize,
+            &SeriesConfig,
+        ) -> Result<Option<Arc<data_render::ValueLabelAtlas>>>,
+    ) -> Result<Option<data_render::ValueLabelData>> {
+        let Some((source, role)) = slot else {
+            let this = &*self;
+            return this.value_label_data(config, series, cfg, atlas, scale, |index, member| {
+                member_atlas(this, index, member)
+            });
+        };
+        let Some(params) = self.value_label_uniform(config, series.clone(), cfg, atlas, scale)
+        else {
+            return Ok(None);
+        };
+        let key = ValueLabelCellsKey {
+            series: source.series,
+            selection: source.selection,
+            scale_bits: scale.to_bits(),
+            params,
+        };
+        // The entry whose atlas this is: the role's own, else the other's
+        // (shared storage, `Arc::ptr_eq`).
+        let holds = |entry: &RegisteredValueLabelAtlas| {
+            entry
+                .atlas
+                .as_ref()
+                .is_some_and(|held| Arc::ptr_eq(held, atlas))
+        };
+        if let Some(ScratchEntry::ValueLabels(scratch)) =
+            self.contour_cache.get(cfg.series_id.as_str())
+            && let Some(entries) = scratch.registered.get(&source.chart)
+            && let Some(data) = [role, role.other()]
+                .into_iter()
+                .filter_map(|role| entries.slot(role))
+                .filter(|entry| holds(entry))
+                .find_map(|entry| entry.cells.as_ref().filter(|(k, _)| *k == key))
+                .map(|(_, data)| data.clone())
+        {
+            return Ok(Some(data));
+        }
+        let this = &*self;
+        let data = this.value_label_data(config, series, cfg, atlas, scale, |index, member| {
+            member_atlas(this, index, member)
+        })?;
+        if let Some(data) = &data
+            && let Some(ScratchEntry::ValueLabels(scratch)) =
+                self.contour_cache.get_mut(cfg.series_id.as_str())
+            && let Some(entries) = scratch.registered.get_mut(&source.chart)
+            && let Some(entry) = entries.slot_mut(role).as_mut().filter(|entry| holds(entry))
+        {
+            entry.cells = Some((key, data.clone()));
+        }
+        Ok(data)
+    }
+
+    /// Series `cfg`'s label uniform in the panel `config` over `atlas` at
+    /// `scale`, as [`Self::value_label_data`] writes it.
+    fn value_label_uniform<'s>(
+        &self,
+        config: &Config,
+        series: impl IntoIterator<Item = &'s SeriesConfig>,
+        cfg: &SeriesConfig,
+        atlas: &data_render::ValueLabelAtlas,
+        scale: f32,
+    ) -> Option<data_render::ValueLabelParamsGpu> {
+        let selected = series_selected(config, cfg);
+        let (kind, text) = data_render::value_label_kind(&cfg.render_type, selected)?;
+        let axis = value_label_axis(config, &cfg.render_type);
+        let categories = value_label_categories(config, &cfg.render_type);
+        let count = data_render::value_label_count(kind, text, categories);
+        let group = radar_label_group(config, series, cfg);
+        Some(data_render::value_label_params(
+            kind,
+            count,
+            atlas,
+            axis.label_style.font_size,
+            scale,
+            &group,
+            value_label_ink(config, &cfg.render_type),
+        ))
     }
 
     /// Series `cfg`'s value label layer data in the panel `config` at

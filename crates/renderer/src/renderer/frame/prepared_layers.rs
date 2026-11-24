@@ -44,6 +44,10 @@ pub(in crate::renderer) struct PreparedContourSeries {
     /// The series' value label atlas, baked by the contour label module's
     /// atlas builder; `None` for a series that draws no value labels.
     pub(in crate::renderer) value_labels: Option<Arc<data_render::ValueLabelAtlas>>,
+    /// A registered series' value label uniform, cells and group 1 over
+    /// `value_labels`, kept across frames by its atlas entry (#443);
+    /// `None` builds them with the layer.
+    pub(in crate::renderer) value_label_data: Option<data_render::ValueLabelData>,
     /// An energy-level series' CPU raster (#203); `None` for every other
     /// series.
     pub(in crate::renderer) energy_levels: Option<Arc<super::prepare::EnergyLevelRaster>>,
