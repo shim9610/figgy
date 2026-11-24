@@ -6,6 +6,7 @@ mod nudge;
 mod rect;
 
 pub use fit::FitStrategy;
+pub(crate) use fit::PanelAreas;
 pub use geometry::{
     BreakKnot, BreakMap, LABEL_GAP, LEGEND_BORDER_WIDTH, LEGEND_INSET, LOG_RANGE_FALLBACK_MIN,
     MeasuredTitle, PROBABILITY_RANGE_FALLBACK, TICK_ROW_REFERENCE, TitleBand, TitlePlacement,
@@ -44,11 +45,23 @@ pub enum Side {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LayoutError {
-    OverflowHorizontal { required: f32, available: u32 },
-    OverflowVertical { required: f32, available: u32 },
+    OverflowHorizontal {
+        required: f32,
+        available: u32,
+    },
+    OverflowVertical {
+        required: f32,
+        available: u32,
+    },
     EmptyDataArea,
     TargetOutOfChartArea,
     Infeasible,
+    /// Subplot `subplot` has no data area at its size and subplot `inset`
+    /// is placed in it (#419): the inset has no plot to sit in.
+    InsetHostWithoutDataArea {
+        subplot: usize,
+        inset: usize,
+    },
 }
 
 /// How much of the data area, in pixels along each axis, must stay inside the

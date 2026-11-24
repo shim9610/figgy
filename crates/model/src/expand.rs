@@ -55,7 +55,14 @@
 //! the parent's panels and in subplot order, so its panels share its own
 //! chart area and data area, not the parent's. The document's picked
 //! references of a subplot's series go to that subplot's panels, which split
-//! them by the same rule.
+//! them by the same rule. A subplot with no data area at its size (an inset
+//! squeezed below its margins) expands to the same panels, one per entry of
+//! `panel_layers`, each unaligned: its frame and decorations without data,
+//! as a single-layer chart that small draws, while the rest of the document
+//! expands as usual. A subplot like that which holds an inset of its own
+//! (#392) is refused with
+//! [`LayoutError::InsetHostWithoutDataArea`](crate::layout::LayoutError::InsetHostWithoutDataArea): the
+//! inset has no plot to sit in (#419).
 
 use crate::config::{
     AxisBreaks, AxisOptions, AxisScale, Category, ChartTitleOptions, ColorBarOptions, Config,
@@ -63,6 +70,11 @@ use crate::config::{
 };
 use crate::layer::{AnnotationLayer, CellRef, LayerRef, OverlayLayer, SubplotTextScale};
 use crate::layout::{DataArea, LayoutError, Margins, Rect, Side};
+
+/// The group margins and data area a panel's margins are lifted to, or
+/// `None` for a chart with no data area at its size, whose panels are
+/// drawn as written (#419).
+type Alignment<'a> = Option<(&'a Margins, &'a DataArea)>;
 
 /// One internal panel of an expanded document.
 #[derive(Clone, Debug, PartialEq)]
@@ -73,7 +85,8 @@ pub struct ExpandedPanel {
     /// `SubplotOverlay(i, j)` and its own members' panels.
     pub layer: LayerRef,
     /// A single-layer config (no overlays, `active_layer == Base`) whose
-    /// `data_area()` is the group data area.
+    /// `data_area()` is the group data area, except the panels of a subplot
+    /// with no data area at its size, which have none.
     pub config: Config,
 }
 
@@ -529,8 +542,10 @@ impl Config {
     }
 
     /// Expand the document into its internal panels. See the module
-    /// documentation for the rules. Fails when the layout has no data area,
-    /// when overlays share a series id or when the line offsets break
+    /// documentation for the rules. Fails when the parent's layout has no
+    /// data area, when a subplot with no data area holds an inset
+    /// ([`LayoutError::InsetHostWithoutDataArea`]), when overlays share a
+    /// series id or when the line offsets break
     /// [`Self::validate_line_offset_layout`].
     pub fn expand(&self) -> Result<Expansion, LayoutError> {
         self.validate_overlays()
@@ -541,42 +556,78 @@ impl Config {
             .map_err(|_| LayoutError::Infeasible)?;
         let data_area = self.data_area()?;
         let group = self.margins();
-        let members = self.offset_members();
-        let mut panels = Vec::with_capacity(1 + self.overlays.len() + members.len());
+        let mut panels = Vec::with_capacity(self.own_panel_count());
+        self.push_own_panels(Some((&group, &data_area)), &mut panels)?;
+        for index in 0..self.subplots.len() {
+            let mut subplot = self.subplot_config(index).ok_or(LayoutError::Infeasible)?;
+            self.lend_subplot_picks(&mut subplot, index);
+            let start = panels.len();
+            match subplot.expand() {
+                Ok(expansion) => panels.extend(expansion.panels),
+                // A subplot with no data area at this size (an inset
+                // squeezed below its margins) draws each of its panels as a
+                // single-layer chart that small does: unaligned, its frame
+                // and decorations, no data. An inset placed in it would
+                // have no plot to sit in, so that is refused by name. The
+                // document's other panels draw as usual (#419).
+                Err(
+                    LayoutError::OverflowHorizontal { .. }
+                    | LayoutError::OverflowVertical { .. }
+                    | LayoutError::EmptyDataArea,
+                ) => {
+                    if let Some(inset) = (0..self.subplots.len())
+                        .find(|&inset| self.parent_panel(inset) == Some(index + 1))
+                    {
+                        return Err(LayoutError::InsetHostWithoutDataArea {
+                            subplot: index,
+                            inset,
+                        });
+                    }
+                    subplot.push_own_panels(None, &mut panels)?;
+                }
+                Err(error) => return Err(error),
+            }
+            for panel in &mut panels[start..] {
+                panel.layer = match panel.layer {
+                    LayerRef::Overlay(overlay) => LayerRef::SubplotOverlay(index, overlay),
+                    _ => LayerRef::Subplot(index),
+                };
+            }
+        }
+        Ok(Expansion { panels, data_area })
+    }
+
+    /// Push this chart's own panels (base, overlays, line offset members;
+    /// not its subplots) to `panels`, in [`Self::panel_layers`] order and
+    /// with this chart's layers. With `align`, each panel's margins are
+    /// lifted to the group's so all share its data area; with `None` (a
+    /// chart with no data area at its size) each is drawn as written.
+    fn push_own_panels(
+        &self,
+        align: Alignment<'_>,
+        panels: &mut Vec<ExpandedPanel>,
+    ) -> Result<(), LayoutError> {
+        let start = panels.len();
         panels.push(ExpandedPanel {
             layer: LayerRef::Base,
-            config: self.base_panel(&group, &data_area)?,
+            config: self.base_panel(align)?,
         });
         for index in 0..self.overlays.len() {
             panels.push(ExpandedPanel {
                 layer: LayerRef::Overlay(index),
-                config: self.overlay_panel_with(index, &group, &data_area)?,
+                config: self.overlay_panel_with(index, align)?,
             });
         }
-        for (k, id) in members.iter().enumerate() {
+        for (k, id) in self.offset_members().iter().enumerate() {
             let layer = self.member_owner(id);
             let owner = match layer {
                 LayerRef::Overlay(index) => 1 + index,
                 _ => 0,
             };
-            let config =
-                self.member_panel_with(&panels[owner].config, id, k, &group, &data_area)?;
+            let config = self.member_panel_with(&panels[start + owner].config, id, k, align)?;
             panels.push(ExpandedPanel { layer, config });
         }
-        for index in 0..self.subplots.len() {
-            let mut subplot = self.subplot_config(index).ok_or(LayoutError::Infeasible)?;
-            self.lend_subplot_picks(&mut subplot, index);
-            for panel in subplot.expand()?.panels {
-                panels.push(ExpandedPanel {
-                    layer: match panel.layer {
-                        LayerRef::Overlay(overlay) => LayerRef::SubplotOverlay(index, overlay),
-                        _ => LayerRef::Subplot(index),
-                    },
-                    config: panel.config,
-                });
-            }
-        }
-        Ok(Expansion { panels, data_area })
+        Ok(())
     }
 
     /// The layer of every panel [`Self::expand`] returns, in the same order,
@@ -693,11 +744,20 @@ impl Config {
             return None;
         }
         let data_area = self.data_area().ok()?;
-        self.overlay_panel_with(index, &self.margins(), &data_area)
+        self.overlay_panel_with(index, Some((&self.margins(), &data_area)))
             .ok()
     }
 
-    fn base_panel(&self, group: &Margins, data_area: &DataArea) -> Result<Config, LayoutError> {
+    fn base_panel(&self, align: Alignment<'_>) -> Result<Config, LayoutError> {
+        let mut panel = self.unaligned_base_panel();
+        align_margins(&mut panel, align)?;
+        Ok(panel)
+    }
+
+    /// The base panel before its margins are lifted to the group's: what a
+    /// chart with no data area at its size draws (its frame and
+    /// decorations, no data).
+    fn unaligned_base_panel(&self) -> Config {
         let mut panel = self.clone();
         panel.overlays.clear();
         panel.subplots.clear();
@@ -706,15 +766,13 @@ impl Config {
         panel.active_layer = LayerRef::Base;
         // The document's one annotation layer is drawn with the base panel.
         retain_layer_picks(&mut panel, self, LayerRef::Base);
-        align_margins(&mut panel, group, data_area)?;
-        Ok(panel)
+        panel
     }
 
     fn overlay_panel_with(
         &self,
         index: usize,
-        group: &Margins,
-        data_area: &DataArea,
+        align: Alignment<'_>,
     ) -> Result<Config, LayoutError> {
         // Every field of the parent is named: a new one is a decision here,
         // carried into the overlay panel or left at its hidden default.
@@ -862,7 +920,7 @@ impl Config {
             layout_state: LayoutState::Fixed,
         };
         retain_layer_picks(&mut panel, self, LayerRef::Overlay(index));
-        align_margins(&mut panel, group, data_area)?;
+        align_margins(&mut panel, align)?;
         Ok(panel)
     }
 
@@ -874,8 +932,7 @@ impl Config {
         owner: &Config,
         series_id: &str,
         k: usize,
-        group: &Margins,
-        data_area: &DataArea,
+        align: Alignment<'_>,
     ) -> Result<Config, LayoutError> {
         // Every field of the owner panel is named: a new one is a decision
         // here, carried into the member panel or left at its hidden default.
@@ -942,7 +999,7 @@ impl Config {
             layout_state: LayoutState::Fixed,
         };
         retain_picks(&mut panel, |id| id == series_id);
-        align_margins(&mut panel, group, data_area)?;
+        align_margins(&mut panel, align)?;
         Ok(panel)
     }
 }
@@ -1456,11 +1513,11 @@ fn retain_picks(panel: &mut Config, keep: impl Fn(&str) -> bool) {
 /// Lift `panel`'s margins to the group's so its `data_area()` is exactly
 /// `data_area`. A side whose total already equals the group's is left alone,
 /// so a document without overlays expands to a byte-identical base panel.
-fn align_margins(
-    panel: &mut Config,
-    group: &Margins,
-    data_area: &DataArea,
-) -> Result<(), LayoutError> {
+fn align_margins(panel: &mut Config, align: Alignment<'_>) -> Result<(), LayoutError> {
+    // A chart with no data area at its size draws its panels as written.
+    let Some((group, data_area)) = align else {
+        return Ok(());
+    };
     let sides = [Side::Top, Side::Bottom, Side::Left, Side::Right];
     let total = |m: &Margins, side: &Side| match side {
         Side::Top => m.top,
@@ -3109,6 +3166,104 @@ mod tests {
             twice.layer_of_series("s0o1"),
             LayerRef::SubplotOverlay(0, 1)
         );
+    }
+
+    /// #419: a subplot too small for a data area expands to its panels
+    /// unaligned and as written, one per entry of `panel_layers`, and every
+    /// other panel of the document expands as before; one that holds an
+    /// inset is refused by name, and a parent that small still fails.
+    #[test]
+    fn a_subplot_without_a_data_area_is_drawn_as_written() {
+        use crate::layout::LayoutError;
+        let tiny = || {
+            ChartArea(Rect {
+                x: 10,
+                y: 10,
+                width: 12,
+                height: 10,
+            })
+        };
+        let mut cfg = layered(1, &[1, 0]);
+        let full = cfg.expand().unwrap();
+        cfg.subplots[1].config.chart_area = tiny();
+        assert!(cfg.subplot_config(1).unwrap().data_area().is_err());
+        let expansion = cfg.expand().unwrap();
+        let layers = cfg.panel_layers();
+        assert_eq!(expansion.panels.len(), layers.len());
+        for (panel, layer) in expansion.panels.iter().zip(&layers) {
+            assert_eq!(panel.layer, *layer);
+        }
+        let last = expansion.panels.last().unwrap();
+        assert_eq!(last.layer, LayerRef::Subplot(1));
+        assert_eq!(
+            last.config,
+            cfg.subplot_config(1).unwrap().unaligned_base_panel()
+        );
+        assert_eq!(last.config.chart_area, tiny());
+        let count = full.panels.len() - 1;
+        assert_eq!(expansion.panels[..count], full.panels[..count]);
+        assert_eq!(expansion.data_area, full.data_area);
+        // A tiny subplot with an overlay and two line offset members draws
+        // all four of its panels unaligned, in `panel_layers` order.
+        let mut layered_tiny = layered(0, &[1]);
+        layered_tiny.subplots[0].series.push("sm0".into());
+        layered_tiny.subplots[0].config.line_offsets = Some(offsets(&["s0", "sm0"], 1.0, 0.0));
+        let grown = layered_tiny.expand().unwrap();
+        layered_tiny.subplots[0].config.chart_area = tiny();
+        let subplot = layered_tiny.subplot_config(0).unwrap();
+        assert!(subplot.data_area().is_err());
+        let expansion = layered_tiny.expand().unwrap();
+        let layers = layered_tiny.panel_layers();
+        assert_eq!(
+            layers,
+            [
+                LayerRef::Base,
+                LayerRef::Subplot(0),
+                LayerRef::SubplotOverlay(0, 0),
+                LayerRef::Subplot(0),
+                LayerRef::Subplot(0),
+            ]
+        );
+        assert_eq!(expansion.panels.len(), layers.len());
+        for (panel, layer) in expansion.panels.iter().zip(&layers) {
+            assert_eq!(panel.layer, *layer);
+        }
+        assert_eq!(expansion.panels[0], grown.panels[0]);
+        assert_eq!(expansion.panels[1].config, subplot.unaligned_base_panel());
+        assert_eq!(
+            expansion.panels[2].config,
+            subplot.overlay_panel_with(0, None).unwrap()
+        );
+        for panel in &expansion.panels[1..] {
+            assert_eq!(panel.config.chart_area, tiny());
+        }
+        for (k, id) in ["s0", "sm0"].into_iter().enumerate() {
+            assert_eq!(
+                expansion.panels[3 + k].config,
+                subplot
+                    .member_panel_with(&expansion.panels[1].config, id, k, None)
+                    .unwrap()
+            );
+        }
+        // A tiny subplot holding an inset is refused by name; the same
+        // inset in a subplot with a data area expands.
+        let mut host = layered(0, &[0, 0]);
+        host.subplots[1].anchor = Some(crate::layer::InsetAnchor {
+            parent: CellRef::Subplot(0),
+            frame: [[0.5, 0.9], [0.1, 0.5]],
+        });
+        assert!(host.expand().is_ok());
+        host.subplots[0].config.chart_area = tiny();
+        assert_eq!(
+            host.expand().map(|_| ()),
+            Err(LayoutError::InsetHostWithoutDataArea {
+                subplot: 0,
+                inset: 1
+            })
+        );
+        let mut root = layered(0, &[0]);
+        root.chart_area = tiny();
+        assert!(root.expand().is_err());
     }
 
     /// PANELS_MATCH_LAYERS (#152): `expand` gives one panel per entry of

@@ -77,8 +77,8 @@ impl PrepareContext<'_> {
             surface_bg,
             vertices: mesh::SURFACE_QUAD_VERTICES,
             instances: quads,
-            charge: Arc::clone(&flat.charge),
-            surface_charge,
+            charge: std::borrow::Cow::Owned(Arc::clone(&flat.charge)),
+            surface_charge: std::borrow::Cow::Owned(surface_charge),
         };
         // The picked sample: the chart's matrix cell of this series, in
         // canonical x / y order, as the shader's constituent column and row.
@@ -129,8 +129,8 @@ impl PrepareContext<'_> {
                     surface_bg,
                     vertices: mesh::SURFACE_QUAD_VERTICES,
                     instances: mesh::SURFACE_SELECTED_INSTANCES,
-                    charge: Arc::clone(&flat.charge),
-                    surface_charge,
+                    charge: std::borrow::Cow::Owned(Arc::clone(&flat.charge)),
+                    surface_charge: std::borrow::Cow::Owned(surface_charge),
                 })
             }
             _ => None,
@@ -196,8 +196,8 @@ impl PrepareContext<'_> {
             surface_bg,
             vertices: TRI_MESH_VERTICES,
             instances: triangles,
-            charge: Arc::clone(&scratch.charge),
-            surface_charge,
+            charge: std::borrow::Cow::Owned(Arc::clone(&scratch.charge)),
+            surface_charge: std::borrow::Cow::Owned(surface_charge),
         };
         // The picked triangle of this series.
         let picked = chart_config
@@ -247,8 +247,8 @@ impl PrepareContext<'_> {
                     surface_bg,
                     vertices: TRI_MESH_VERTICES,
                     instances: 1,
-                    charge: Arc::clone(&scratch.charge),
-                    surface_charge,
+                    charge: std::borrow::Cow::Owned(Arc::clone(&scratch.charge)),
+                    surface_charge: std::borrow::Cow::Owned(surface_charge),
                 })
             }
             _ => None,
@@ -301,8 +301,8 @@ impl PrepareContext<'_> {
             surface_bg,
             vertices: data_render::tri_mesh::TRI_MESH_VERTICES,
             instances: scratch.signature.params.rows,
-            charge: Arc::clone(&scratch.charge),
-            surface_charge,
+            charge: std::borrow::Cow::Owned(Arc::clone(&scratch.charge)),
+            surface_charge: std::borrow::Cow::Owned(surface_charge),
         }))
     }
 
@@ -351,8 +351,8 @@ impl PrepareContext<'_> {
             surface_bg,
             vertices: mesh::SURFACE_QUAD_VERTICES,
             instances: 1,
-            charge: Arc::clone(&scratch.charge),
-            surface_charge,
+            charge: std::borrow::Cow::Owned(Arc::clone(&scratch.charge)),
+            surface_charge: std::borrow::Cow::Owned(surface_charge),
         }))
     }
 }

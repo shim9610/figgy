@@ -1303,9 +1303,14 @@ impl CartesianHost {
                 let mut zero = polar.zero_angle_degrees as f32;
                 slider(ui, "zero angle°", &mut zero, -180.0..=180.0);
                 polar.zero_angle_degrees = f64::from(zero);
-                let mut ray = polar.radial_label_angle_degrees as f32;
+                // The drawn ray; moving the slider stores it, so a later
+                // fit keeps it (#417).
+                let shown = polar.ray_degrees() as f32;
+                let mut ray = shown;
                 slider(ui, "ray angle°", &mut ray, 0.0..=360.0);
-                polar.radial_label_angle_degrees = f64::from(ray);
+                if ray != shown {
+                    polar.radial_label_angle_degrees = Some(f64::from(ray));
+                }
                 slider(
                     ui,
                     "inner radius",

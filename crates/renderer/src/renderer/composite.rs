@@ -15,7 +15,8 @@
 //!               (`data_render::composite`), scissored to the data area
 //! Slot::Above   the decoration texture (axis lines and ticks, tick labels,
 //!               titles, legend, colourbar, selection boxes)
-//!               → the annotation overlay (lines, arrows, text)
+//!               → the annotation overlay (lines, arrows, text) of a
+//!                 single-panel host draw (`draw_chart_panel_columnar`)
 //! ```
 //!
 //! A frame of several panels (the base, overlay and subplot panels of a
@@ -24,10 +25,12 @@
 //! slot of every panel, in panel order. So on every layer the decoration is
 //! above the data, as on a single-layer chart: an overlay's data never covers
 //! the base panel's axes and labels. The selection boxes are inside the
-//! decoration texture of the topmost panel, and the document's annotation
-//! overlay is on the topmost panel of the parent's area
-//! (`frame::lift_annotation_overlays`), so both stay above every layer's
-//! decoration.
+//! decoration texture of the topmost panel. Insets follow, each drawn as one
+//! unit in their tree order. The document's annotation overlay is drawn last
+//! ([`draw_annotation_overlay`], #414): one texture the size of the
+//! document, over every panel, subplots and insets included, so its items
+//! and the inset markers stay above every layer. Its underlay keeps its
+//! place under the base panel's data, clipped to the base panel.
 //!
 //! The textures stay per layer so SSOT invalidation keeps refreshing one
 //! layer at a time: the raster of the two chrome slots is one placement pass
@@ -249,6 +252,10 @@ pub(crate) struct PanelChrome<'a> {
     pub below: Option<AxisLayer<'a>>,
     /// The annotation spans, when the layer draws any.
     pub annotation_underlay: Option<AxisLayer<'a>>,
+    /// Where the annotation textures are drawn, in target pixels: the
+    /// document's area (#414), which the underlay is blitted over, clipped
+    /// to the panel. The panel rect for a panel without subplots.
+    pub annotation_rect: Rect,
     /// The decoration texture: what the chart emits into
     /// [`crate::sink::Slot::Above`]; `None` when the chrome is not drawn.
     pub above: Option<AxisLayer<'a>>,
@@ -326,7 +333,11 @@ pub(crate) fn draw_chart_panel(
                 blit(pass, layer);
             }
             if let Some(layer) = &chrome.annotation_underlay {
+                // The underlay texture covers the document (#414): placed
+                // over it, clipped to this panel as before.
+                set_viewport_rect(pass, chrome.annotation_rect);
                 blit(pass, layer);
+                set_viewport_rect(pass, panel_clamped);
             }
 
             // The data slot, scissored to the data area (to each of its
@@ -390,6 +401,40 @@ pub(crate) fn draw_chart_panel(
     }
 }
 
+/// Set `pass`'s viewport to `rect`, which may reach past the target: a
+/// texture blitted into it keeps its pixel grid where the target clips it.
+fn set_viewport_rect(pass: &mut wgpu::RenderPass<'_>, rect: Rect) {
+    pass.set_viewport(
+        rect.x as f32,
+        rect.y as f32,
+        rect.width as f32,
+        rect.height as f32,
+        0.0,
+        1.0,
+    );
+}
+
+/// Draw the document's annotation overlay (#414): its lines, arrows, text,
+/// selection box and inset markers, over every panel of the document,
+/// subplots and insets included. `rect` is where its texture lies in target
+/// pixels (`PanelChrome::annotation_rect`); the draw is clipped to the
+/// target.
+pub(crate) fn draw_annotation_overlay(
+    pass: &mut wgpu::RenderPass<'_>,
+    target_size: (u32, u32),
+    rect: Rect,
+    layer: &AxisLayer<'_>,
+) {
+    let Some(clip) = clamp_rect_to_target(rect, target_size) else {
+        return;
+    };
+    set_viewport_rect(pass, rect);
+    pass.set_scissor_rect(clip.x, clip.y, clip.width, clip.height);
+    pass.set_pipeline(layer.pipeline);
+    pass.set_bind_group(0, layer.bind_group, &[]);
+    pass.draw(0..3, 0..1);
+}
+
 /// The panel draw in slot order without a cached data slot: the panel draw of a
 /// host that issues every series itself.
 #[allow(clippy::too_many_arguments)]
@@ -407,6 +452,7 @@ pub fn draw_chart_panel_columnar(
     let chrome = PanelChrome {
         below: Some(grid),
         annotation_underlay,
+        annotation_rect: panel_rect,
         above: Some(decoration),
         annotation_overlay,
     };

@@ -649,7 +649,7 @@ pub struct ColumnFieldLayer<'a> {
     pub field_bg: wgpu::BindGroup,
     /// Keeps the group-2 buffers' lump charge alive for as long as anything can
     /// still draw with them.
-    pub charge: crate::gpu_memory::SharedCharge,
+    pub charge: std::borrow::Cow<'a, crate::gpu_memory::SharedCharge>,
     /// False when the declaration resolved to no cells; the draw is skipped
     /// rather than issued for an empty grid.
     pub drawable: bool,

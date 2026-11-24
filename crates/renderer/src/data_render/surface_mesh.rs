@@ -569,8 +569,8 @@ pub struct ColumnSurfaceLayer<'a> {
     /// grid, one for a mesh). 0 skips the draw.
     pub instances: u32,
     /// Keeps the group 2 and group 3 buffers' charges alive.
-    pub charge: crate::gpu_memory::SharedCharge,
-    pub surface_charge: crate::gpu_memory::SharedCharge,
+    pub charge: std::borrow::Cow<'a, crate::gpu_memory::SharedCharge>,
+    pub surface_charge: std::borrow::Cow<'a, crate::gpu_memory::SharedCharge>,
 }
 
 /// Draw `layer` into a pass with the depth-stencil attachment (the live

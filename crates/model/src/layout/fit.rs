@@ -126,7 +126,7 @@ impl Config {
         target: DataArea,
         strategy: FitStrategy,
     ) -> Result<(), LayoutError> {
-        let before = self.has_insets().then(|| self.clone());
+        let before = self.has_insets().then(|| PanelAreas::of(self));
         let ca = &self.chart_area;
 
         if target.x < ca.x
@@ -171,7 +171,7 @@ impl Config {
         self.layout_state = crate::config::LayoutState::Fixed;
         // Its insets keep their place in it (#392).
         if let Some(before) = before {
-            self.follow_parent_areas(&before, None);
+            self.follow_parent_areas_from(&before, None);
         }
         Ok(())
     }
@@ -190,10 +190,10 @@ impl Config {
         let mut probe = self.subplot_config(index).ok_or(LayoutError::Infeasible)?;
         probe.chart_area = area.clone();
         probe.data_area()?;
-        let before = self.has_insets().then(|| self.clone());
+        let before = self.has_insets().then(|| PanelAreas::of(self));
         self.subplots[index].config.chart_area = area;
         if let Some(before) = before {
-            self.follow_parent_areas(&before, Some(index));
+            self.follow_parent_areas_from(&before, Some(index));
         }
         self.anchor_placed(index);
         Ok(())
@@ -233,7 +233,14 @@ impl Config {
     ///
     /// [`Subplot::anchor`]: crate::layer::Subplot::anchor
     pub fn follow_parent_areas(&mut self, before: &Config, placed: Option<usize>) {
-        if self.subplots.len() != before.subplots.len() {
+        self.follow_parent_areas_from(&PanelAreas::of(before), placed);
+    }
+
+    /// [`Self::follow_parent_areas`] from the parts of the document before
+    /// the edit that it reads, so an edit snapshots those instead of the
+    /// whole document.
+    pub(crate) fn follow_parent_areas_from(&mut self, before: &PanelAreas, placed: Option<usize>) {
+        if self.subplots.len() != before.subplot_count() {
             return;
         }
         self.follow_children(before, placed, 0);
@@ -241,8 +248,8 @@ impl Config {
 
     /// [`Self::follow_parent_areas`] for the insets whose parent is panel
     /// `panel` (0 the document, `k + 1` subplot `k`), then theirs.
-    fn follow_children(&mut self, before: &Config, placed: Option<usize>, panel: usize) {
-        for index in 0..before.subplots.len() {
+    fn follow_children(&mut self, before: &PanelAreas, placed: Option<usize>, panel: usize) {
+        for index in 0..before.subplot_count() {
             if before.parent_panel(index) != Some(panel) {
                 continue;
             }
@@ -254,22 +261,21 @@ impl Config {
     }
 
     /// Derive inset `index`'s frame from its anchor in parent panel `panel`.
-    fn follow_one(&mut self, before: &Config, index: usize, panel: usize) {
-        let area = |config: &Config, panel: usize| {
-            let chart = match panel {
-                0 => Some(config),
-                _ => config.subplots.get(panel - 1).map(|s| &s.config),
-            };
-            chart
-                .and_then(|chart| chart.data_area().ok())
-                .map(|d| d.0)
-                .filter(|d| d.width > 0 && d.height > 0)
-        };
-        let (Some(old), Some(new)) = (area(before, panel), area(self, panel)) else {
+    fn follow_one(&mut self, before: &PanelAreas, index: usize, panel: usize) {
+        let usable = |d: &crate::layout::Rect| d.width > 0 && d.height > 0;
+        let new = match panel {
+            0 => Some(&*self),
+            _ => self.subplots.get(panel - 1).map(|s| &s.config),
+        }
+        .and_then(|chart| chart.data_area().ok())
+        .map(|d| d.0)
+        .filter(usable);
+        let old = before.panels.get(panel).map(|p| p.data).filter(usable);
+        let (Some(old), Some(new)) = (old, new) else {
             return;
         };
-        let stored = &before.subplots[index];
-        let frame = stored.config.chart_area.0;
+        let stored = &before.panels[index + 1];
+        let frame = stored.frame;
         let anchor = match stored.anchor {
             Some(anchor) => anchor,
             // A frame that owns its placement keeps it while its parent
@@ -292,7 +298,7 @@ impl Config {
     /// The panel subplot `index` is placed in: its anchor's parent, else
     /// the panel whose data area holds its frame
     /// ([`crate::layout::inset_parent`]). `None` for a panel of its own.
-    fn parent_panel(&self, index: usize) -> Option<usize> {
+    pub(crate) fn parent_panel(&self, index: usize) -> Option<usize> {
         let subplot = self.subplots.get(index)?;
         if let Some(anchor) = subplot.anchor {
             return match anchor.parent {
@@ -475,6 +481,61 @@ fn rect_at(fractions: [[f64; 2]; 2], area: crate::layout::Rect) -> Option<crate:
 }
 
 // fit tests.
+
+/// What [`Config::follow_parent_areas`] reads of a document as it was
+/// before an edit (#392): each panel's frame and data area (0 the document,
+/// `k + 1` subplot `k`; an empty data area when it has none) and each
+/// subplot's anchor. One entry per panel, sized by the subplot list.
+pub(crate) struct PanelAreas {
+    panels: Vec<PanelArea>,
+}
+
+#[derive(Clone, Copy)]
+struct PanelArea {
+    frame: crate::layout::Rect,
+    data: crate::layout::Rect,
+    anchor: Option<InsetAnchor>,
+}
+
+impl PanelAreas {
+    pub(crate) fn of(config: &Config) -> Self {
+        let panels = (0..=config.subplots.len())
+            .map(|panel| {
+                let (frame, data) = config.panel_rects(panel);
+                let anchor = panel
+                    .checked_sub(1)
+                    .and_then(|index| config.subplots[index].anchor);
+                PanelArea {
+                    frame,
+                    data,
+                    anchor,
+                }
+            })
+            .collect();
+        Self { panels }
+    }
+
+    fn subplot_count(&self) -> usize {
+        self.panels.len() - 1
+    }
+
+    /// [`Config::parent_panel`] of the document this was taken from.
+    fn parent_panel(&self, index: usize) -> Option<usize> {
+        let subplot = self.panels.get(index + 1)?;
+        if let Some(anchor) = subplot.anchor {
+            return match anchor.parent {
+                CellRef::Parent => Some(0),
+                CellRef::Subplot(p) if p < self.subplot_count() && p != index => Some(p + 1),
+                CellRef::Subplot(_) => None,
+            };
+        }
+        crate::layout::inset_parent(
+            self.panels.len(),
+            |i| (self.panels[i].frame, self.panels[i].data),
+            index + 1,
+        )
+    }
+}
 
 #[cfg(test)]
 mod tests {

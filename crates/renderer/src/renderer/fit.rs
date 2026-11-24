@@ -1396,7 +1396,9 @@ impl Renderer {
             .ok_or(FiggyError::UnknownChart { id })?;
         state.fit_extents = fit_extents;
         // The links' exits in the fitted layout (#357).
-        self.fit_chart_link_exits_unreported(id)
+        self.fit_chart_link_exits_unreported(id)?;
+        // The radius labels' ray over polar bars (#417).
+        self.fit_chart_radial_labels_unreported(id)
     }
 }
 
@@ -1434,7 +1436,10 @@ impl Renderer {
     ///
     /// A layer without series, and an axis whose columns have no finite
     /// span, keep their ranges; a chart nothing moves is not marked
-    /// changed. On an error the chart and the series are left as they
+    /// changed. A fitted linear axis on `Decimal` or `Power` gets the
+    /// automatic label format; any other format (`Percent`, for one) is
+    /// kept with its significant digits while the range and the spacing
+    /// move (#417). On an error the chart and the series are left as they
     /// were: a column that is not registered is `UnknownColumn`, a streamed
     /// source is refused with `ColumnNotResident` (rule 8), and a monotonic
     /// series with `MonotonicMappingEdit`, since its x range is set by
@@ -1468,6 +1473,16 @@ impl Renderer {
         // `fit_chart_link_exits`.
         #[cfg(not(target_arch = "wasm32"))]
         self.fit_link_exits_unreported(chart.config(), series)?;
+        // The radius labels' ray over polar bars (#417), the same way:
+        // a browser's registered charts fit it with
+        // `fit_chart_radial_labels`.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut config = chart.config().clone();
+            if self.fit_radial_labels_unreported(&mut config, series)? {
+                *chart.config_mut() = config;
+            }
+        }
         Ok(())
     }
 
@@ -2338,6 +2353,33 @@ impl LinkExitSpace {
     }
 }
 
+/// The series a link exit fit writes into: read throughout, edited only
+/// where an exit is written.
+pub(in crate::renderer) trait LinkExitSeries {
+    fn read(&self) -> &[SeriesConfig];
+    fn edit(&mut self, index: usize) -> &mut SeriesConfig;
+}
+
+impl LinkExitSeries for [SeriesConfig] {
+    fn read(&self) -> &[SeriesConfig] {
+        self
+    }
+
+    fn edit(&mut self, index: usize) -> &mut SeriesConfig {
+        &mut self[index]
+    }
+}
+
+impl LinkExitSeries for std::borrow::Cow<'_, [SeriesConfig]> {
+    fn read(&self) -> &[SeriesConfig] {
+        self
+    }
+
+    fn edit(&mut self, index: usize) -> &mut SeriesConfig {
+        &mut self.to_mut()[index]
+    }
+}
+
 impl ResolvedLinkExitFit {
     /// Write the exit the layout chooses
     /// ([`crate::data_config::RangeLinkSeries::chosen_exit_offset`]) into
@@ -2346,6 +2388,16 @@ impl ResolvedLinkExitFit {
     /// gather was begun with, or the same document laid out again: a link
     /// whose rows changed since, or that has an exit now, is left as it is.
     pub fn write(self, config: &Config, series: &mut [SeriesConfig]) -> Result<LinkExitWrite> {
+        self.write_into(config, series)
+    }
+
+    /// [`Self::write`] into `series`, which is edited only where an exit is
+    /// written: a borrowed list is copied on its first write.
+    pub(in crate::renderer) fn write_into<S: LinkExitSeries + ?Sized>(
+        self,
+        config: &Config,
+        series: &mut S,
+    ) -> Result<LinkExitWrite> {
         let panels = super::expand_for_render(config)?;
         let mut out = LinkExitWrite::default();
         // The links the gather holds, in its record order: the unset links
@@ -2370,7 +2422,7 @@ impl ResolvedLinkExitFit {
         };
         let mut read = |pred: u32, succ: u32, ends: Option<crate::gpu_extent::LinkEnds>| {
             let found = loop {
-                let Some(found) = next_unset(series, position) else {
+                let Some(found) = next_unset(series.read(), position) else {
                     break None;
                 };
                 position = (found.0, found.1 + 1);
@@ -2383,7 +2435,7 @@ impl ResolvedLinkExitFit {
                 out.unset += 1;
                 return;
             };
-            let Some(links) = series[k].render_type.range_links() else {
+            let Some(links) = series.read()[k].render_type.range_links() else {
                 return;
             };
             let link = links.links[j];
@@ -2401,9 +2453,12 @@ impl ResolvedLinkExitFit {
                 .flatten()
                 .and_then(|ends| Some((px(ends.pred)?, px(ends.succ)?)))
                 .and_then(|(a, b)| links.chosen_exit_offset(a, b));
-            match (offset, series[k].render_type.range_links_mut()) {
-                (Some(offset), Some(links)) => {
-                    links.links[j].exit_fraction = Some(offset);
+            let writes = offset.is_some() && series.read()[k].render_type.range_links().is_some();
+            match (offset, writes) {
+                (Some(offset), true) => {
+                    if let Some(links) = series.edit(k).render_type.range_links_mut() {
+                        links.links[j].exit_fraction = Some(offset);
+                    }
                     out.written += 1;
                 }
                 _ => out.unset += 1,
@@ -2686,15 +2741,447 @@ impl Renderer {
                     continue;
                 }
             };
-            let config = state.config.clone();
-            let mut series = state.series.clone();
-            let write = resolved.write(&config, &mut series)?;
+            // The series are copied only when an exit is written.
+            let mut series = std::borrow::Cow::Borrowed(state.series.as_slice());
+            let write = resolved.write_into(&state.config, &mut series)?;
             if write.written > 0 {
+                let series = series.into_owned();
                 self.set_chart_series_unreported(id, series)?;
                 changed = true;
             }
             // The next gather, when the links outnumber one.
             self.schedule_link_exit_fit(id, skip + write.unset)?;
+        }
+        Ok(changed)
+    }
+}
+
+// ───── The radius labels' ray over polar bars (#417) ─────
+//
+// The layout chooses the ray of every polar cell (the chart, each subplot)
+// whose `radial_label_angle_degrees` or `radius_labels_skipped` is `None`
+// and that draws category bars, and writes the two into the document: a
+// display parameter chosen once from the bars as they are drawn (rule 1).
+// Each row's drawn stack is gathered on the GPU from the column pool by the
+// extent engine (`gpu_extent::begin_polar_bar_rows`) and read back once by
+// `chrome::choose_radial_label_ray`; the CPU keeps no row values (rule 2).
+// A stored angle or count is never rewritten.
+
+/// The polar cells of `config` (0 the chart, `1 + i` subplot `i`).
+fn radial_label_cells(config: &Config) -> usize {
+    1 + config.subplots.len()
+}
+
+/// The config cell `cell` of `config` draws with, as its chrome measures
+/// it: the chart itself, or a subplot with its links and text scale.
+fn radial_label_cell_config(config: &Config, cell: usize) -> Option<std::borrow::Cow<'_, Config>> {
+    match cell {
+        0 => Some(std::borrow::Cow::Borrowed(config)),
+        _ => config.subplot_config(cell - 1).map(std::borrow::Cow::Owned),
+    }
+}
+
+/// The base layer of cell `cell`: the layer its category bars belong to.
+fn radial_label_cell_layer(cell: usize) -> crate::LayerRef {
+    match cell {
+        0 => crate::LayerRef::Base,
+        _ => crate::LayerRef::Subplot(cell - 1),
+    }
+}
+
+/// The polar options of cell `cell`, to write.
+fn radial_label_cell_polar(
+    config: &mut Config,
+    cell: usize,
+) -> Option<&mut crate::polar::PolarOptions> {
+    match cell {
+        0 => config.polar_mut(),
+        _ => config.subplots.get_mut(cell - 1)?.config.polar_mut(),
+    }
+}
+
+/// Whether cell `cell` of `config` is a polar chart whose ray or skip
+/// count the layout still chooses, with category bars in `series`.
+fn radial_label_unset(config: &Config, series: &[SeriesConfig], cell: usize) -> bool {
+    let polar = match cell {
+        0 => config.polar(),
+        _ => config.subplots.get(cell - 1).and_then(|s| s.config.polar()),
+    };
+    let Some(polar) = polar else {
+        return false;
+    };
+    if polar.radial_label_angle_degrees.is_some() && polar.radius_labels_skipped.is_some() {
+        return false;
+    }
+    let layer = radial_label_cell_layer(cell);
+    series.iter().any(|item| {
+        item.render_type.category_bars().is_some()
+            && config.layer_of_series(&item.series_id) == layer
+    })
+}
+
+/// A radius label fit's GPU failure as the renderer's error.
+fn radial_label_error(error: crate::gpu_extent::GpuExtentError) -> FiggyError {
+    use crate::gpu_extent::GpuExtentError as E;
+    match error {
+        E::ColumnNotResident { id } => FiggyError::ColumnNotResident { id },
+        E::UnknownColumn { id, .. } => FiggyError::UnknownColumn { id },
+        E::Internal { invariant } => FiggyError::Internal { invariant },
+        other => FiggyError::GpuValidation {
+            resource: "radius label fit",
+            reason: other.to_string(),
+        },
+    }
+}
+
+/// One polar cell's radius label fit in flight (#417):
+/// [`Renderer::begin_radial_label_fit`] submits the gather of its bars'
+/// drawn rows; [`Self::resolve`] waits for it without borrowing the
+/// renderer, and [`ResolvedRadialLabelFit::write`] writes the ray.
+pub struct RadialLabelFitTicket {
+    rows: crate::gpu_extent::GpuPolarBarRowsTicket,
+    cell: usize,
+    width_ratio: f32,
+}
+
+/// A radius label fit whose gather has completed (#417).
+pub struct ResolvedRadialLabelFit {
+    rows: crate::gpu_extent::GpuPolarBarRowsTicket,
+    cell: usize,
+    width_ratio: f32,
+}
+
+impl RadialLabelFitTicket {
+    /// The cell it fits: 0 the chart, `1 + i` subplot `i`.
+    pub fn cell(&self) -> usize {
+        self.cell
+    }
+
+    fn resolved(self) -> ResolvedRadialLabelFit {
+        ResolvedRadialLabelFit {
+            rows: self.rows,
+            cell: self.cell,
+            width_ratio: self.width_ratio,
+        }
+    }
+
+    /// Wait for the gather: the bundle's poll thread completes the wait on
+    /// native (see [`crate::RendererDevice::new`]).
+    pub async fn resolve(
+        mut self,
+    ) -> std::result::Result<ResolvedRadialLabelFit, crate::gpu_extent::GpuExtentError> {
+        self.rows.wait().await?;
+        Ok(self.resolved())
+    }
+
+    /// [`Self::resolve`], polling the device on this thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn resolve_blocking(
+        mut self,
+    ) -> std::result::Result<ResolvedRadialLabelFit, crate::gpu_extent::GpuExtentError> {
+        self.rows.wait_blocking()?;
+        Ok(self.resolved())
+    }
+
+    /// The fit once the gather has completed, or the ticket back, without
+    /// blocking.
+    pub fn try_resolve(
+        mut self,
+    ) -> std::result::Result<
+        crate::TryResolve<ResolvedRadialLabelFit, Self>,
+        crate::gpu_extent::GpuExtentError,
+    > {
+        if !self.rows.poll_ready()? {
+            return Ok(crate::TryResolve::Pending(self));
+        }
+        Ok(crate::TryResolve::Ready(self.resolved()))
+    }
+}
+
+impl ResolvedRadialLabelFit {
+    /// Write the ray and the skipped count
+    /// ([`crate::chrome::choose_radial_label_ray`]) into the fitted cell of
+    /// `config` where they are still `None`, from its bars' rows as the
+    /// gather read them and its labels as its draw style measures them.
+    /// Returns whether `config` changed. A cell that has both now, or no
+    /// row that draws a wedge, is left as it is.
+    pub fn write(self, config: &mut Config) -> Result<bool> {
+        let cell = self.cell;
+        let width_ratio = self.width_ratio;
+        let choice = {
+            let Some(drawn) = radial_label_cell_config(config, cell) else {
+                return Ok(false);
+            };
+            let measure = crate::CpuTextMeasure::for_style(&drawn.draw_style);
+            self.rows
+                .read(|rows| {
+                    crate::chrome::choose_radial_label_ray(&drawn, &measure, width_ratio, rows)
+                })
+                .map_err(radial_label_error)?
+        };
+        let Some(choice) = choice else {
+            return Ok(false);
+        };
+        let Some(polar) = radial_label_cell_polar(config, cell) else {
+            return Ok(false);
+        };
+        let mut changed = false;
+        if polar.radial_label_angle_degrees.is_none() {
+            polar.radial_label_angle_degrees = Some(choice.angle_degrees);
+            changed = true;
+        }
+        if polar.radius_labels_skipped.is_none() {
+            polar.radius_labels_skipped = Some(choice.skipped);
+            changed = true;
+        }
+        Ok(changed)
+    }
+}
+
+impl Renderer {
+    /// Begin the radius label fit of the first polar cell of `config` at
+    /// or after `cell` that still needs one (#417): the gather of the drawn
+    /// rows of its category bars in `series`. `None` when no cell is left.
+    /// The extent engine is created here when it is missing.
+    ///
+    /// Refused, changing nothing: a bars column that is not registered
+    /// (`UnknownColumn`) or is streamed (`ColumnNotResident`, rule 8).
+    pub fn begin_radial_label_fit(
+        &self,
+        config: &Config,
+        series: &[SeriesConfig],
+        cell: usize,
+    ) -> Result<Option<RadialLabelFitTicket>> {
+        let result = self.begin_radial_label_fit_unreported(config, series, cell);
+        self.reported(result)
+    }
+
+    pub(in crate::renderer) fn begin_radial_label_fit_unreported(
+        &self,
+        config: &Config,
+        series: &[SeriesConfig],
+        cell: usize,
+    ) -> Result<Option<RadialLabelFitTicket>> {
+        let Some(cell) =
+            (cell..radial_label_cells(config)).find(|&k| radial_label_unset(config, series, k))
+        else {
+            return Ok(None);
+        };
+        let layer = radial_label_cell_layer(cell);
+        let groups = config.bar_groups_of(layer);
+        let members = || {
+            series.iter().filter(move |item| {
+                item.render_type.category_bars().is_some()
+                    && config.layer_of_series(&item.series_id) == layer
+            })
+        };
+        // Every member's columns, resolved and checked before anything is
+        // submitted; a streamed source is refused (rule 8).
+        let member = |item: &SeriesConfig| -> Result<crate::gpu_extent::PolarBarMember> {
+            let (positions, values) = item.category_bar_columns(groups.direction);
+            for id in [positions, values] {
+                if self.streaming_sources.contains_key(id) {
+                    return Err(FiggyError::ColumnNotResident { id: id.to_owned() });
+                }
+            }
+            let positions = current_extent_handle(&self.pool, "bar positions", positions)
+                .map_err(radial_label_error)?;
+            let values = current_extent_handle(&self.pool, "bar values", values)
+                .map_err(radial_label_error)?;
+            crate::gpu_extent::PolarBarMember::new(self.pool.buffer(), &positions, &values)
+                .map_err(radial_label_error)
+        };
+        let mut rows = 0u32;
+        for item in members() {
+            rows = rows.max(member(item)?.rows());
+        }
+        if rows == 0 {
+            // Nothing is drawn yet: the next fit tries again.
+            return self.begin_radial_label_fit_unreported(config, series, cell + 1);
+        }
+        let fold = match groups.mode {
+            crate::data_config::CategoryBarMode::Grouped => {
+                crate::gpu_extent::PolarBarFold::Grouped
+            }
+            crate::data_config::CategoryBarMode::Stacked => {
+                crate::gpu_extent::PolarBarFold::Stacked
+            }
+            crate::data_config::CategoryBarMode::PercentStacked => {
+                crate::gpu_extent::PolarBarFold::Percent
+            }
+        };
+        let made;
+        let engine = match self.errorbar_extent_engine.as_ref() {
+            Some(engine) => engine,
+            None => {
+                made = crate::gpu_extent::GpuErrorbarExtentEngine::new_tracked(
+                    &self.device,
+                    Arc::clone(&self.gpu_ledger),
+                )
+                .with_health(self.health.clone());
+                &made
+            }
+        };
+        // Checked above: every member resolves.
+        let checked = members().filter_map(|item| member(item).ok());
+        let gathered = engine
+            .begin_polar_bar_rows(
+                &self.device,
+                &self.queue,
+                self.pool.buffer(),
+                checked,
+                fold,
+                rows,
+            )
+            .map_err(radial_label_error)?;
+        self.health.check()?;
+        Ok(Some(RadialLabelFitTicket {
+            rows: gathered,
+            cell,
+            width_ratio: groups.group_width.clamp(0.0, 1.0),
+        }))
+    }
+
+    /// The radius label fit of `config` over `series`, waiting for each
+    /// gather on this thread (#417): every polar cell that draws category
+    /// bars and whose `radial_label_angle_degrees` or
+    /// `radius_labels_skipped` is `None` gets the ray and the skip count
+    /// the layout chooses ([`crate::chrome::choose_radial_label_ray`]); a
+    /// stored value is kept, whoever wrote it. Returns whether `config`
+    /// changed. [`Self::register_chart`] (a `Fitted` chart's first fit),
+    /// [`Self::fit_ranges`] and [`Self::commit_auto_fit_all`] run it; a
+    /// host that lays a chart out with [`crate::chart::Chart::fit_layout`]
+    /// calls it afterwards. The cost is one gather of 16 bytes per row and
+    /// the choice's walk, which grows with the square of the categories.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn fit_radial_labels(&self, config: &mut Config, series: &[SeriesConfig]) -> Result<bool> {
+        let result = self.fit_radial_labels_unreported(config, series);
+        self.reported(result)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::renderer) fn fit_radial_labels_unreported(
+        &self,
+        config: &mut Config,
+        series: &[SeriesConfig],
+    ) -> Result<bool> {
+        let mut cell = 0;
+        let mut changed = false;
+        while let Some(ticket) = self.begin_radial_label_fit_unreported(config, series, cell)? {
+            cell = ticket.cell() + 1;
+            let resolved = ticket.resolve_blocking().map_err(radial_label_error)?;
+            changed |= resolved.write(config)?;
+        }
+        Ok(changed)
+    }
+
+    /// The radius label fit of registered chart `id` (#417), over its
+    /// stored config and series: on native it runs to the end here
+    /// (`Self::fit_radial_labels`) and the written config is committed as a
+    /// config edit; in the browser, which cannot wait, the gather is
+    /// submitted here and the ray is written by the frame that finds it
+    /// complete ([`Self::service_radial_label_fits`]), which commits it the
+    /// same way. A chart with nothing to choose is left as it is.
+    pub fn fit_chart_radial_labels(&mut self, id: ChartId) -> Result<()> {
+        let result = self.fit_chart_radial_labels_unreported(id);
+        self.reported(result)
+    }
+
+    pub(in crate::renderer) fn fit_chart_radial_labels_unreported(
+        &mut self,
+        id: ChartId,
+    ) -> Result<()> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        if !(0..radial_label_cells(&state.config))
+            .any(|cell| radial_label_unset(&state.config, &state.series, cell))
+        {
+            return Ok(());
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut config = state.config.clone();
+            let series = state.series.clone();
+            if self.fit_radial_labels_unreported(&mut config, &series)? {
+                self.set_chart_config_unreported(id, config)?;
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.schedule_radial_label_fit(id, 0)?;
+        }
+        Ok(())
+    }
+
+    /// Submit the gather of chart `id`'s next radius label fit, from cell
+    /// `cell` on, and keep it with the chart.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    fn schedule_radial_label_fit(&mut self, id: ChartId, cell: usize) -> Result<()> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let revision = (state.revisions.config, state.revisions.series);
+        let ticket = self.begin_radial_label_fit_unreported(&state.config, &state.series, cell)?;
+        let state = self
+            .chart_states
+            .get_mut(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        state.radial_label_fit =
+            ticket.map(|ticket| super::registry::PendingRadialLabelFit { ticket, revision });
+        Ok(())
+    }
+
+    /// Write the ray of every registered chart's radius label fit whose
+    /// gather has completed (#417), without blocking: the frame calls it
+    /// before it prepares. A chart whose config or series changed since the
+    /// gather was submitted fits again from its new document. Returns
+    /// whether a chart's config changed.
+    pub fn service_radial_label_fits(&mut self) -> Result<bool> {
+        let result = self.service_radial_label_fits_unreported();
+        self.reported(result)
+    }
+
+    pub(in crate::renderer) fn service_radial_label_fits_unreported(&mut self) -> Result<bool> {
+        let mut changed = false;
+        for index in 0..self.chart_order.len() {
+            let Some(&id) = self.chart_order.get(index) else {
+                break;
+            };
+            let state = self
+                .chart_states
+                .get_mut(&id)
+                .ok_or(FiggyError::UnknownChart { id })?;
+            let Some(pending) = state.radial_label_fit.take() else {
+                continue;
+            };
+            if pending.revision != (state.revisions.config, state.revisions.series) {
+                // The document changed under the gather: fit it again.
+                self.schedule_radial_label_fit(id, 0)?;
+                continue;
+            }
+            let cell = pending.ticket.cell();
+            let resolved = match pending.ticket.try_resolve().map_err(radial_label_error)? {
+                crate::TryResolve::Ready(resolved) => resolved,
+                crate::TryResolve::Pending(ticket) => {
+                    if let Some(state) = self.chart_states.get_mut(&id) {
+                        state.radial_label_fit = Some(super::registry::PendingRadialLabelFit {
+                            ticket,
+                            revision: pending.revision,
+                        });
+                    }
+                    continue;
+                }
+            };
+            let mut config = state.config.clone();
+            if resolved.write(&mut config)? {
+                self.set_chart_config_unreported(id, config)?;
+                changed = true;
+            }
+            // The next polar cell, when the document has subplots.
+            self.schedule_radial_label_fit(id, cell + 1)?;
         }
         Ok(changed)
     }

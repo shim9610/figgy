@@ -239,6 +239,18 @@ pub(in crate::renderer) struct ChartRenderState {
     /// writes the exits ([`Renderer::service_link_exit_fits`]). Always
     /// `None` on native, where the fit runs to the end when it is asked.
     pub(in crate::renderer) link_exit_fit: Option<PendingLinkExitFit>,
+    /// The radius label fit in flight for this chart (#417), written by the
+    /// frame that finds its gather complete
+    /// ([`Renderer::service_radial_label_fits`]). Always `None` on native.
+    pub(in crate::renderer) radial_label_fit: Option<PendingRadialLabelFit>,
+}
+
+/// A registered chart's radius label fit in flight (#417): the gather and
+/// the config and series revisions it was begun from, a generation stamp,
+/// so an edit before it completes fits the new document instead.
+pub(in crate::renderer) struct PendingRadialLabelFit {
+    pub(in crate::renderer) ticket: crate::renderer::RadialLabelFitTicket,
+    pub(in crate::renderer) revision: (RenderRevision, RenderRevision),
 }
 
 /// A registered chart's range link exit fit in flight (#357): the gather

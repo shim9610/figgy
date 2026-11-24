@@ -221,11 +221,13 @@ impl Renderer {
             request.display_panel_px,
         );
         let routed = subplot_route(&state.config, &displayed, request.canvas_position_px);
-        if let Some(config) = &routed {
-            displayed.active_layer = config.active_layer;
+        if let Some(layer) = routed {
+            displayed.active_layer = layer;
         }
-        let inputs =
-            active_layer_pick_inputs(routed.as_ref().unwrap_or(&state.config), &state.series)?;
+        let inputs = match routed {
+            Some(layer) => layer_pick_inputs(&state.config, layer, &state.series)?,
+            None => active_layer_pick_inputs(&state.config, &state.series)?,
+        };
         let display_config = active_layer_pick_inputs(&displayed, &state.series)?.panel;
         if display_config.view_3d().is_some() {
             return Ok(DataPickKernelSet::EMPTY);
@@ -255,8 +257,7 @@ impl Renderer {
             .get(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
         let mut needed = DataPickKernelSet::EMPTY;
-        let mut layer = |config: &Config| -> Result<()> {
-            let inputs = active_layer_pick_inputs(config, &state.series)?;
+        let mut layer = |inputs: LayerPickInputs<'_>| -> Result<()> {
             if inputs.panel.view_3d().is_some() {
                 return Ok(());
             }
@@ -269,12 +270,14 @@ impl Renderer {
             }
             Ok(())
         };
-        layer(&state.config)?;
+        layer(active_layer_pick_inputs(&state.config, &state.series)?)?;
         if state.config.active_layer() == crate::LayerRef::Base {
             for index in 0..state.config.subplots.len() {
-                let mut routed = state.config.clone();
-                routed.active_layer = crate::LayerRef::Subplot(index);
-                layer(&routed)?;
+                layer(layer_pick_inputs(
+                    &state.config,
+                    crate::LayerRef::Subplot(index),
+                    &state.series,
+                )?)?;
             }
         }
         Ok(needed)
@@ -438,23 +441,35 @@ impl Renderer {
         // on top there: on the base layer it is routed there.
         // A layer named by the caller is picked as it is drawn, on its
         // own panel (#381: the ink owner's layer).
-        let routed = match layer {
-            Some(layer) => {
-                let mut config = state.config.clone();
-                config.active_layer = layer;
-                Some(config)
-            }
+        // A layer named by the caller may be out of range and falls back as
+        // `Config::active_layer` does, so it is set on a copy; a subplot
+        // route always names a subplot the document has.
+        let named = layer.map(|layer| {
+            let mut config = state.config.clone();
+            config.active_layer = layer;
+            config
+        });
+        let routed = match &named {
+            Some(_) => None,
             None => subplot_route(&state.config, &displayed, request.canvas_position_px),
         };
-        if let Some(config) = &routed {
-            displayed.active_layer = config.active_layer;
+        if let Some(layer) = named.as_ref().map(|config| config.active_layer).or(routed) {
+            displayed.active_layer = layer;
         }
-        let picked_layer = match routed.as_ref().unwrap_or(&state.config).active_layer() {
+        let active = match (&named, routed) {
+            (Some(config), _) => config.active_layer(),
+            (None, Some(layer)) => layer,
+            (None, None) => state.config.active_layer(),
+        };
+        let picked_layer = match active {
             crate::LayerRef::Annotations => crate::LayerRef::Base,
             layer => layer,
         };
-        let inputs =
-            active_layer_pick_inputs(routed.as_ref().unwrap_or(&state.config), &state.series)?;
+        let inputs = match (&named, routed) {
+            (Some(config), _) => active_layer_pick_inputs(config, &state.series)?,
+            (None, Some(layer)) => layer_pick_inputs(&state.config, layer, &state.series)?,
+            (None, None) => active_layer_pick_inputs(&state.config, &state.series)?,
+        };
         let display_config = active_layer_pick_inputs(&displayed, &state.series)?.panel;
         // The prepared styles of the layer's series, for a 3D chart's
         // point picks (#132): a series not prepared yet has none.
@@ -483,9 +498,9 @@ impl Renderer {
             })
             .collect();
         Ok((
-            inputs.panel,
-            inputs.series,
-            display_config,
+            inputs.panel.into_owned(),
+            inputs.series.into_owned(),
+            display_config.into_owned(),
             styles,
             picked_layer,
         ))

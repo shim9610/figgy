@@ -946,3 +946,107 @@ fn fit_config_scoped_refuses_what_it_cannot_fit() {
         .unwrap();
     assert_eq!(renderer.chart_config(id).unwrap(), &registered);
 }
+
+/// The speed-band shares of #417's wind rose: sixteen directions from N
+/// clockwise, four bands each, as fractions of all hours.
+const WIND_ROSE: [[f64; 4]; 16] = [
+    [0.009636, 0.015251, 0.007903, 0.002426],
+    [0.010121, 0.014627, 0.006932, 0.003674],
+    [0.009983, 0.013241, 0.008666, 0.005338],
+    [0.009775, 0.015598, 0.011092, 0.009497],
+    [0.011023, 0.016846, 0.011924, 0.010260],
+    [0.010121, 0.018718, 0.012478, 0.008042],
+    [0.011924, 0.017192, 0.009636, 0.004367],
+    [0.011231, 0.015737, 0.007140, 0.003536],
+    [0.010884, 0.018094, 0.009151, 0.006447],
+    [0.012894, 0.022114, 0.013934, 0.013033],
+    [0.011854, 0.024749, 0.018302, 0.015945],
+    [0.013449, 0.031612, 0.023847, 0.015598],
+    [0.011646, 0.035563, 0.030364, 0.024957],
+    [0.014627, 0.033899, 0.030225, 0.037712],
+    [0.012548, 0.031612, 0.032721, 0.046863],
+    [0.011854, 0.020867, 0.015945, 0.012756],
+];
+
+/// #417's stacked wind rose on a headless renderer: a polar chart of
+/// sixteen categories, four stacked bands, the radius labels in
+/// `LabelFormat::Percent`.
+fn wind_rose() -> (Renderer, Config, Vec<SeriesConfig>) {
+    use renderer::data_config::{BarGroups, CategoryBarDirection, CategoryBarMode};
+    let mut renderer = Renderer::headless_blocking().expect("headless renderer");
+    let directions: Vec<f64> = (0..WIND_ROSE.len()).map(|i| i as f64).collect();
+    renderer.add_column("directions", &directions).unwrap();
+    let series: Vec<SeriesConfig> = (0..4)
+        .map(|band| {
+            let id = format!("band{band}");
+            let values: Vec<f64> = WIND_ROSE.iter().map(|row| row[band]).collect();
+            renderer.add_column(&id, &values).unwrap();
+            SeriesConfig::category_bars(id.as_str(), "directions", id.as_str())
+        })
+        .collect();
+    let mut config = renderer::default::default_config();
+    config.bottom_x.categories = Some(
+        (0..WIND_ROSE.len())
+            .map(|i| renderer::config::Category::new(format!("row-{i}"), format!("D{i}")))
+            .collect(),
+    );
+    config.set_polar(Some(renderer::polar::PolarOptions {
+        clockwise: true,
+        zero_angle_degrees: 90.0,
+        ..renderer::polar::PolarOptions::default()
+    }));
+    config.bar_groups = Some(BarGroups {
+        direction: CategoryBarDirection::Vertical,
+        mode: CategoryBarMode::Stacked,
+        group_width: 0.75,
+        bar_gap: 0.0,
+    });
+    config.left_y.label_style.format = renderer::format::LabelFormat::Percent;
+    (renderer, config, series)
+}
+
+// #417: an explicit `Percent` on the linear radius axis survives the
+// candidate fit and `fit_ranges`, while the range and the spacing move; an
+// axis on `Auto` stays `Auto`.
+#[test]
+fn a_range_fit_keeps_the_radius_axis_percent_format() {
+    use renderer::format::{AutoNumberFormat, LabelFormat};
+    let (renderer, config, mut series) = wind_rose();
+    let before = config.left_y.clone();
+    let fitted = renderer
+        .fit_config(&config, &series, FIT_RANGES_PADDING)
+        .unwrap();
+    assert_eq!(fitted.left_y.label_style.format, LabelFormat::Percent);
+    assert_eq!(
+        fitted.left_y.label_style.significant_digits,
+        before.label_style.significant_digits
+    );
+    // The stack bound of the four bands, padded.
+    let top: f64 = (0..4)
+        .map(|band| WIND_ROSE.iter().map(|row| row[band]).fold(0.0, f64::max))
+        .sum();
+    assert!(fitted.left_y.max > top && fitted.left_y.max < top * 1.2);
+    assert_ne!(fitted.left_y.major_spacing, before.major_spacing);
+    assert!(fitted.left_y.major_spacing > 0.0 && fitted.left_y.major_spacing < top);
+
+    let mut chart = Chart::new(config.clone());
+    renderer.fit_ranges(&mut chart, &mut series).unwrap();
+    // One fit path for the axes; `fit_ranges` also chooses the radius
+    // labels' ray (#417), which a candidate fit leaves to its installer.
+    assert_eq!(fitted.left_y, chart.config().left_y, "one fit path");
+    assert_eq!(
+        chart.config().left_y.label_style.format,
+        LabelFormat::Percent
+    );
+
+    // The same chart on `Auto` keeps `Auto`.
+    let mut auto = config;
+    auto.left_y.label_style.format = LabelFormat::Auto(AutoNumberFormat::DEFAULT);
+    let fitted = renderer
+        .fit_config(&auto, &series, FIT_RANGES_PADDING)
+        .unwrap();
+    assert_eq!(
+        fitted.left_y.label_style.format,
+        LabelFormat::Auto(AutoNumberFormat::DEFAULT)
+    );
+}

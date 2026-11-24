@@ -360,8 +360,9 @@ impl Renderer {
         }
         // Whether each series of each item is drawn: resident sources only,
         // and in a browser only once its pipelines have compiled (#299).
-        let mut drawn = Vec::new();
-        drawn.try_reserve_exact(items.len()).map_err(allocation)?;
+        // Flattened in item and series order into the reused scratch.
+        let mut drawn = std::mem::take(&mut self.frame_residency);
+        drawn.clear();
         let mut complete = true;
         // What this frame needs becomes the screen of the compile queue.
         #[cfg(target_arch = "wasm32")]
@@ -373,16 +374,12 @@ impl Renderer {
                 .chart_states
                 .get(&item.chart_id)
                 .ok_or(FiggyError::UnknownChart { id: item.chart_id })?;
-            let mut resident = Vec::new();
-            resident
-                .try_reserve_exact(state.series.len())
-                .map_err(allocation)?;
+            drawn.try_reserve(state.series.len()).map_err(allocation)?;
             for (index, series) in state.series.iter().enumerate() {
                 let ready = self.registered_series_compiled(item, state, index);
                 complete &= ready;
-                resident.push(self.require_resident_series(series).is_ok() && ready);
+                drawn.push(self.require_resident_series(series).is_ok() && ready);
             }
-            drawn.push(resident);
         }
         self.frame_complete = complete;
         #[cfg(target_arch = "wasm32")]
@@ -396,10 +393,15 @@ impl Renderer {
             .try_reserve_exact(items.len())
             .map_err(allocation)?;
         stamps.try_reserve_exact(items.len()).map_err(allocation)?;
-        for (item, resident) in items.iter().zip(&drawn) {
+        let mut residency = drawn.as_slice();
+        for item in items {
             let state = states
                 .get(&item.chart_id)
                 .ok_or(FiggyError::UnknownChart { id: item.chart_id })?;
+            let (resident, rest) = residency
+                .split_at_checked(state.series.len())
+                .ok_or(FiggyError::internal("residency covers every series"))?;
+            residency = rest;
             let styles = &match &state.display {
                 Some(display) => display.styles.as_ref().map(|(_, styles)| styles),
                 None => state.prepared_styles.as_ref(),
@@ -449,6 +451,7 @@ impl Renderer {
         preparation.ink_charts = &charts;
         let mut frame = preparation.prepare(&draws)?;
         frame.registered_charts = stamps;
+        self.frame_residency = drawn;
         Ok(frame)
     }
 
@@ -487,6 +490,8 @@ impl Renderer {
         self.sync_external_invalidations()?;
         // A browser's range link exit fits whose gathers completed (#357).
         self.service_link_exit_fits()?;
+        // A browser's radius label fits whose gathers completed (#417).
+        self.service_radial_label_fits()?;
         self.service_stream_requests();
         for item in items {
             let config = self.chart_config(item.chart_id)?;

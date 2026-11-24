@@ -213,7 +213,7 @@ impl DrawnPart {
         match self {
             DrawnPart::Text(r) | DrawnPart::Rect(r) => *r,
             DrawnPart::Polygon { points, width } | DrawnPart::Path { points, width } => {
-                points_extent(points).expanded(width * 0.5)
+                stroked_extent(points.iter().copied(), *width)
             }
             &DrawnPart::Segment { a, b, width } => {
                 let half = width * 0.5;
@@ -224,20 +224,29 @@ impl DrawnPart {
                     height: (a[1] - b[1]).abs() + half * 2.0,
                 }
             }
-            DrawnPart::Triangle(t) => points_extent(t),
+            DrawnPart::Triangle(t) => points_extent(t.iter().copied()),
         }
     }
 }
 
+/// The extent of a polygon or path through `points` stroked `width` across
+/// ([`DrawnPart::extent`]), from the points as they are drawn: nothing is
+/// copied to measure it.
+pub(crate) fn stroked_extent(points: impl IntoIterator<Item = [f32; 2]>, width: f32) -> RectF {
+    points_extent(points).expanded(width * 0.5)
+}
+
 /// The bounding box of `points`; empty at the origin for no points.
-fn points_extent(points: &[[f32; 2]]) -> RectF {
+fn points_extent(points: impl IntoIterator<Item = [f32; 2]>) -> RectF {
     let mut lo = [f32::INFINITY; 2];
     let mut hi = [f32::NEG_INFINITY; 2];
+    let mut any = false;
     for p in points {
+        any = true;
         lo = [lo[0].min(p[0]), lo[1].min(p[1])];
         hi = [hi[0].max(p[0]), hi[1].max(p[1])];
     }
-    if points.is_empty() {
+    if !any {
         return RectF {
             x: 0.0,
             y: 0.0,

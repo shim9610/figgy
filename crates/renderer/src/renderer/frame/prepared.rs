@@ -53,6 +53,8 @@ pub(in crate::renderer) struct PreparedView {
     pub(in crate::renderer) annotation_underlay_bind_group: Option<wgpu::BindGroup>,
     pub(in crate::renderer) annotation_overlay_bind_group: Option<wgpu::BindGroup>,
     pub(in crate::renderer) annotations_visible: bool,
+    /// Where the annotation textures are drawn (`ChartView::annotation_rect`).
+    pub(in crate::renderer) annotation_rect: Rect,
     pub(in crate::renderer) _grid_charge: crate::gpu_memory::SharedCharge,
     pub(in crate::renderer) _decoration_charge: crate::gpu_memory::SharedCharge,
     pub(in crate::renderer) _annotation_charges: Vec<crate::gpu_memory::SharedCharge>,
@@ -82,6 +84,7 @@ impl PreparedView {
                 .as_ref()
                 .map(|l| l.bind_group.clone()),
             annotations_visible,
+            annotation_rect: view.annotation_rect,
             _grid_charge: view.grid_texture.shared_charge(),
             _decoration_charge: view.decoration_texture.shared_charge(),
             _annotation_charges: view
@@ -266,7 +269,7 @@ impl PreparedSeries {
                 transform_bg: layer.transform_bg.clone(),
                 style_bg: layer.style_bg,
                 field_bg: layer.field_bg,
-                charge: layer.charge,
+                charge: layer.charge.into_owned(),
                 drawable: layer.drawable,
             }),
             bar: layers.bar.map(|layer| PreparedBarLayer {
@@ -288,7 +291,7 @@ impl PreparedSeries {
                 transform_bg: layer.transform_bg.clone(),
                 style_bg: layer.style_bg,
                 field_bg: layer.field_bg,
-                charge: layer.charge,
+                charge: layer.charge.into_owned(),
                 drawable: layer.drawable,
                 label: layer.label.map(|label| PreparedContourLabel {
                     pipeline: label.pipeline.clone(),
@@ -426,7 +429,7 @@ impl PreparedSeries {
                     transform_bg: transform.unwrap_or(&layer.transform_bg),
                     style_bg: layer.style_bg.clone(),
                     field_bg: layer.field_bg.clone(),
-                    charge: Arc::clone(&layer.charge),
+                    charge: std::borrow::Cow::Borrowed(&layer.charge),
                     drawable: layer.drawable,
                 }),
             bar: self.bar.as_ref().map(|layer| data_render::ColumnBarLayer {
@@ -463,7 +466,7 @@ impl PreparedSeries {
                     transform_bg: transform.unwrap_or(&layer.transform_bg),
                     style_bg: layer.style_bg.clone(),
                     field_bg: layer.field_bg.clone(),
-                    charge: Arc::clone(&layer.charge),
+                    charge: std::borrow::Cow::Borrowed(&layer.charge),
                     drawable: layer.drawable,
                     label: layer
                         .label

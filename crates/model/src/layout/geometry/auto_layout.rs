@@ -154,8 +154,17 @@ impl Sink for Probe {
         self.add(DrawnPart::Triangle(points).extent());
     }
 
-    fn path(&mut self, slot: Slot, segments: &[crate::sink::PathSegment], style: &StrokeStyle<'_>) {
-        Parts(&mut |part| self.add(part.extent())).path(slot, segments, style);
+    fn path(
+        &mut self,
+        _slot: Slot,
+        segments: &[crate::sink::PathSegment],
+        style: &StrokeStyle<'_>,
+    ) {
+        // The extent `Parts` would give the path, from the borrowed segments.
+        self.add(crate::sink::stroked_extent(
+            segments.iter().flat_map(crate::sink::PathSegment::points),
+            style.width,
+        ));
     }
 
     fn polygon(
@@ -165,13 +174,10 @@ impl Sink for Probe {
         _fill: Option<Color>,
         border: Option<&StrokeStyle<'_>>,
     ) {
-        self.add(
-            DrawnPart::Polygon {
-                points: points.to_vec(),
-                width: border.map_or(0.0, |b| b.width),
-            }
-            .extent(),
-        );
+        self.add(crate::sink::stroked_extent(
+            points.iter().copied(),
+            border.map_or(0.0, |b| b.width),
+        ));
     }
 
     fn ramp(&mut self, _slot: Slot, rect: RectF, _bar: &ColorBarOptions) {

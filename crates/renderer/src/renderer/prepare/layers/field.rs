@@ -35,7 +35,7 @@ impl PrepareContext<'_> {
                 transform_bg: &view.transform_bg,
                 style_bg: scratch.style_bg.clone(),
                 field_bg: scratch.field_bg.clone(),
-                charge: Arc::clone(&scratch.charge),
+                charge: std::borrow::Cow::Owned(Arc::clone(&scratch.charge)),
                 drawable: scratch.drawable,
             })
         } else {
@@ -103,7 +103,7 @@ impl PrepareContext<'_> {
                     transform_bg: &view.transform_bg,
                     style_bg: scratch.style_bg.clone(),
                     field_bg: scratch.field_bg.clone(),
-                    charge: Arc::clone(&scratch.charge),
+                    charge: std::borrow::Cow::Owned(Arc::clone(&scratch.charge)),
                     triangles,
                 });
             }
@@ -186,7 +186,7 @@ impl PrepareContext<'_> {
                 transform_bg: &view.transform_bg,
                 style_bg: scratch.style_bg.clone(),
                 field_bg: scratch.field_bg.clone(),
-                charge: Arc::clone(&scratch.charge),
+                charge: std::borrow::Cow::Owned(Arc::clone(&scratch.charge)),
                 drawable: scratch.drawable,
                 // The label pipeline is compiled only when some series wants
                 // labels, so a `None` here means this series' labels are not

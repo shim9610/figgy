@@ -520,6 +520,7 @@ async fn warm_extent_pipelines_js(device: &wgpu::Device) -> Result<(), GpuExtent
             ("reduce_values", "reduce_values"),
             ("reduce_states", "reduce_states"),
             ("gather_link_ends", "gather_link_ends"),
+            ("gather_polar_bar_rows", "gather_polar_bar_rows"),
         ],
         &mut observer,
     )
@@ -535,6 +536,8 @@ pub struct GpuErrorbarExtentEngine {
     reduce_states: wgpu::ComputePipeline,
     /// The range link ends gather (#357), on the values layout.
     gather_link_ends: wgpu::ComputePipeline,
+    /// The polar bar rows gather (#417), on the values layout.
+    gather_polar_bar_rows: wgpu::ComputePipeline,
     /// Where per-ticket scratch is charged. Held by the engine rather than
     /// passed per call so the whole `begin_*` chain keeps its signatures — the
     /// engine outlives every ticket it issues.
@@ -639,11 +642,14 @@ impl GpuErrorbarExtentEngine {
                     layout: Some(layout),
                     module: &shader,
                     entry_point: Some(entry),
-                    // `gather_link_ends` reads no workgroup memory, so it
-                    // takes wgpu's default options; the explicit DX12
+                    // The gathers (`gather_link_ends`,
+                    // `gather_polar_bar_rows`) read no workgroup memory, so
+                    // they take wgpu's default options; the explicit DX12
                     // zeroing is only for the reduce entries, which call
                     // `figgy_zero_workgroup`.
-                    compilation_options: if entry == "gather_link_ends" {
+                    compilation_options: if entry == "gather_link_ends"
+                        || entry == "gather_polar_bar_rows"
+                    {
                         wgpu::PipelineCompilationOptions::default()
                     } else {
                         crate::gpu_compile::workgroup_options(device)
@@ -673,6 +679,14 @@ impl GpuErrorbarExtentEngine {
                 "gather_link_ends",
             )
         });
+        let gather_polar_bar_rows =
+            observe_value(observer, INIT_SCOPE, "gather_polar_bar_rows", || {
+                make_pipeline(
+                    "figgy polar bar rows pipeline",
+                    &values_pipeline_layout,
+                    "gather_polar_bar_rows",
+                )
+            });
 
         Self {
             values_layout,
@@ -680,6 +694,7 @@ impl GpuErrorbarExtentEngine {
             reduce_values,
             reduce_states,
             gather_link_ends,
+            gather_polar_bar_rows,
             ledger,
             health: crate::renderer::DeviceHealth::default(),
         }
@@ -755,11 +770,14 @@ impl GpuErrorbarExtentEngine {
                     layout: Some(layout),
                     module: &shader,
                     entry_point: Some(entry),
-                    // `gather_link_ends` reads no workgroup memory, so it
-                    // takes wgpu's default options; the explicit DX12
+                    // The gathers (`gather_link_ends`,
+                    // `gather_polar_bar_rows`) read no workgroup memory, so
+                    // they take wgpu's default options; the explicit DX12
                     // zeroing is only for the reduce entries, which call
                     // `figgy_zero_workgroup`.
-                    compilation_options: if entry == "gather_link_ends" {
+                    compilation_options: if entry == "gather_link_ends"
+                        || entry == "gather_polar_bar_rows"
+                    {
                         wgpu::PipelineCompilationOptions::default()
                     } else {
                         crate::gpu_compile::workgroup_options(device)
@@ -793,6 +811,15 @@ impl GpuErrorbarExtentEngine {
                 )
             })
             .await;
+        let gather_polar_bar_rows =
+            observe_value_async(observer, INIT_SCOPE, "gather_polar_bar_rows", || {
+                make_pipeline(
+                    "figgy polar bar rows pipeline",
+                    &values_pipeline_layout,
+                    "gather_polar_bar_rows",
+                )
+            })
+            .await;
 
         Self {
             values_layout,
@@ -800,6 +827,7 @@ impl GpuErrorbarExtentEngine {
             reduce_values,
             reduce_states,
             gather_link_ends,
+            gather_polar_bar_rows,
             ledger,
             health: crate::renderer::DeviceHealth::default(),
         }
@@ -1431,6 +1459,245 @@ impl GpuLinkEndsTicket {
                     })();
                     each(pred, succ, ends);
                 }
+            })
+            .map_err(GpuExtentError::from)
+    }
+}
+
+/// The bytes of one polar bar row record (#417): four f32 words.
+const POLAR_BAR_ROW_BYTES: u64 = 16;
+
+/// One member of a polar bar group for
+/// [`GpuErrorbarExtentEngine::begin_polar_bar_rows`] (#417): its positions
+/// and values columns, checked as every extent column is.
+#[derive(Clone, Copy)]
+pub(crate) struct PolarBarMember {
+    positions: ColumnRangeGpu,
+    values: ColumnRangeGpu,
+}
+
+impl PolarBarMember {
+    /// The member's columns, checked against the pool buffer.
+    pub(crate) fn new(
+        pool_buffer: &wgpu::Buffer,
+        positions: &ColumnHandle,
+        values: &ColumnHandle,
+    ) -> Result<Self, GpuExtentError> {
+        Ok(Self {
+            positions: checked_range(
+                pool_buffer,
+                positions,
+                positions.len_values,
+                "bar positions",
+            )?,
+            values: checked_range(pool_buffer, values, values.len_values, "bar values")?,
+        })
+    }
+
+    /// The rows it draws: those both of its columns hold.
+    pub(crate) fn rows(&self) -> u32 {
+        self.positions.len.min(self.values.len)
+    }
+}
+
+/// How a polar bar group's members fold into a row (#417):
+/// `gpu_errorbar.wgsl`'s `POLAR_BAR_*` modes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PolarBarFold {
+    Grouped = 0,
+    Stacked = 1,
+    Percent = 2,
+}
+
+impl GpuErrorbarExtentEngine {
+    /// Gather the drawn stack of each of `rows` rows of a polar chart's
+    /// category bars (#417): one record per row, written straight into the
+    /// mapped scratch buffer as an empty row, then one dispatch per member
+    /// of `members` (in group order) folds its row in, and the records are
+    /// read back once, by the layout. Nothing per row is kept on the CPU.
+    /// There is no cap on rows or members (rule 10): the record is 16
+    /// bytes, no more than the pool holds per row for a member's two
+    /// columns, so a device that holds the columns holds the records.
+    pub(crate) fn begin_polar_bar_rows(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pool_buffer: &wgpu::Buffer,
+        members: impl Iterator<Item = PolarBarMember>,
+        fold: PolarBarFold,
+        rows: u32,
+    ) -> Result<GpuPolarBarRowsTicket, GpuExtentError> {
+        if rows == 0 {
+            return Err(GpuExtentError::EmptyColumn { role: "polar bars" });
+        }
+        let limits = device.limits();
+        let bytes = u64::from(rows) * POLAR_BAR_ROW_BYTES;
+        if bytes > limits.max_buffer_size || bytes > limits.max_storage_buffer_binding_size {
+            return Err(GpuExtentError::Internal {
+                invariant: "a polar bar rows gather fits its device",
+            });
+        }
+        let pool_binding = checked_pool_binding(pool_buffer, &limits)?;
+        let groups = div_ceil(rows, WORKGROUP_SIZE)
+            .min(limits.max_compute_workgroups_per_dimension)
+            .max(1);
+        let scratch_tally = ChargeTally::new();
+        let readback_tally = ChargeTally::new();
+        // gpu-alloc: ErrorbarScratch
+        let scratch = charged_buffer(
+            &scratch_tally,
+            device,
+            &wgpu::BufferDescriptor {
+                label: Some("figgy polar bar rows scratch"),
+                size: bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: true,
+            },
+        )
+        .map_err(GpuExtentError::from_figgy)?;
+        {
+            // The empty rows go straight into mapped GPU memory (rule 3).
+            let mut mapped = scratch
+                .get_mapped_range_mut(..)
+                .map_err(|error| GpuExtentError::ReadbackMapFailed(format!("{error:?}")))?;
+            let empty: [f32; 4] = [f32::MAX, -f32::MAX, 0.0, 0.0];
+            let record = POLAR_BAR_ROW_BYTES as usize;
+            for index in 0..rows as usize {
+                mapped
+                    .slice(index * record..(index + 1) * record)
+                    .copy_from_slice(bytemuck::bytes_of(&empty));
+            }
+        }
+        scratch.unmap();
+        // gpu-alloc: Readback
+        let readback = charged_buffer(
+            &readback_tally,
+            device,
+            &wgpu::BufferDescriptor {
+                label: Some("figgy polar bar rows readback"),
+                size: bytes,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            },
+        )
+        .map_err(GpuExtentError::from_figgy)?;
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("figgy polar bar rows encoder"),
+        });
+        let mut any = false;
+        for member in members {
+            any = true;
+            let params = params_buffer(
+                &scratch_tally,
+                device,
+                "figgy polar bar rows params",
+                ParamsGpu {
+                    offsets_0: [member.positions.offset, member.values.offset, 0, 0],
+                    offsets_1: [0, 0, fold as u32, 0],
+                    lengths_0: [member.positions.len, member.values.len, 0, 0],
+                    lengths_1: [0, 0, rows, groups],
+                },
+            )?;
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("figgy polar bar rows bindings"),
+                layout: &self.values_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(pool_binding.clone()),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: scratch.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: params.as_entire_binding(),
+                    },
+                ],
+            });
+            // One pass per member: each folds into the rows the earlier
+            // ones left.
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("figgy polar bar rows pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.gather_polar_bar_rows);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(groups, 1, 1);
+        }
+        if !any {
+            return Err(GpuExtentError::EmptyColumn { role: "polar bars" });
+        }
+        encoder.copy_buffer_to_buffer(&scratch, 0, &readback, 0, bytes);
+        let (callback, map) = crate::gpu_readback::completion(&self.health);
+        encoder.map_buffer_on_submit(&readback, wgpu::MapMode::Read, 0..bytes, callback);
+        let submission = queue.submit(std::iter::once(encoder.finish()));
+        Ok(GpuPolarBarRowsTicket {
+            core: GpuExtentTicketCore {
+                readback: GpuReadback::from_completion(
+                    device,
+                    &self.health,
+                    &readback,
+                    Some(bytes),
+                    map,
+                    Some(submission),
+                ),
+                _scratch_charge: scratch_tally
+                    .into_charge(&self.ledger, GpuResourceKind::ErrorbarScratch),
+                _readback_charge: readback_tally
+                    .into_charge(&self.ledger, GpuResourceKind::Readback),
+            },
+        })
+    }
+}
+
+/// A polar bar rows gather in flight (#417):
+/// [`GpuErrorbarExtentEngine::begin_polar_bar_rows`] submits it; it
+/// resolves like every extent ticket.
+pub(crate) struct GpuPolarBarRowsTicket {
+    core: GpuExtentTicketCore,
+}
+
+impl GpuPolarBarRowsTicket {
+    pub(crate) async fn wait(&mut self) -> Result<(), GpuExtentError> {
+        self.core.wait().await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn wait_blocking(&mut self) -> Result<(), GpuExtentError> {
+        self.core.wait_blocking()
+    }
+
+    pub(crate) fn poll_ready(&mut self) -> Result<bool, GpuExtentError> {
+        self.core.poll_ready()
+    }
+
+    /// After a wait: hand `read` a walk over the drawn rows, straight from
+    /// the mapped readback (the walk may run any number of times), then
+    /// unmap. Nothing is copied out (rule 2).
+    pub(crate) fn read<T>(
+        mut self,
+        read: impl FnOnce(&dyn Fn(&mut dyn FnMut(crate::chrome::PolarBarRow))) -> T,
+    ) -> Result<T, GpuExtentError> {
+        self.core
+            .readback
+            .finish_checked(|bytes: &[u8]| {
+                let rows = |each: &mut dyn FnMut(crate::chrome::PolarBarRow)| {
+                    for chunk in bytes.chunks_exact(POLAR_BAR_ROW_BYTES as usize) {
+                        let [first, last, low, high]: [f32; 4] =
+                            bytemuck::pod_read_unaligned(chunk);
+                        if first > last {
+                            // No member drew this row.
+                            continue;
+                        }
+                        each(crate::chrome::PolarBarRow {
+                            positions: [f64::from(first), f64::from(last)],
+                            values: [f64::from(low), f64::from(high)],
+                        });
+                    }
+                };
+                read(&rows)
             })
             .map_err(GpuExtentError::from)
     }

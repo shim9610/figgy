@@ -48,7 +48,8 @@ pub enum AnnotationAxis {
 /// `Ratio` is a fraction of the plot area, `(0, 0)` at its top-left corner
 /// and `(1, 1)` at its bottom-right corner, and stays fixed on screen. Values
 /// outside `0..1` are allowed and place the item outside the plot area but
-/// inside the panel.
+/// inside the panel ([`AnnotationSpace::panel_rect`]: on a Cartesian chart
+/// the document area, so over sibling subplots too, #418).
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Anchor {
@@ -712,7 +713,9 @@ pub trait AnnotationSpace {
     /// The data area; reference lines and spans are clipped to it and ratio
     /// anchors are fractions of it.
     fn plot_rect(&self) -> RectF;
-    /// The whole chart panel; text boxes and arrows may sit anywhere in it.
+    /// The area the layer draws in; text boxes and arrows may sit anywhere
+    /// in it. On a Cartesian chart it is the document area, the union of the
+    /// chart area and every subplot's (#418); elsewhere the chart panel.
     fn panel_rect(&self) -> RectF;
     /// Whether the `X` and `Y` axes carry values (data anchors are placeable).
     fn value_axes(&self) -> [bool; 2];
@@ -729,6 +732,7 @@ pub trait AnnotationSpace {
 /// convert deltas without the renderer.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PixelSpace {
+    /// Where text boxes and arrows may sit ([`AnnotationSpace::panel_rect`]).
     pub panel: RectF,
     pub plot: RectF,
     pub x: AxisSpace,
@@ -1445,8 +1449,8 @@ pub fn polygon_area(points: &[[f32; 2]]) -> f32 {
     twice * 0.5
 }
 
-/// Whether `rect` lies inside the panel, with a 1 px tolerance for the
-/// rounding of a drag delta.
+/// Whether `rect` lies inside the panel (the document area of a Cartesian
+/// chart, #418), with a 1 px tolerance for the rounding of a drag delta.
 fn inside_panel(space: &PixelSpace, rect: &RectF) -> bool {
     let p = space.panel.expanded(1.0);
     rect.x >= p.x

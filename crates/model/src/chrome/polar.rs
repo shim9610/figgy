@@ -672,15 +672,37 @@ pub fn emit_polar_radius_labels(
     measure: &dyn MeasureText,
     sink: &mut dyn Sink,
 ) {
-    let (Some(polar), Some(geometry)) = (config.polar(), config.polar_geometry()) else {
+    let Some(polar) = config.polar() else {
+        return;
+    };
+    let ls = &config.left_y.label_style;
+    radius_label_walk(config, polar, da, measure, true, |text, center, m, _| {
+        place_centered(sink, text.as_tick_text(), center, m, ls);
+    });
+}
+
+/// The radius labels as [`emit_polar_radius_labels`] places them for the
+/// ray and skip count of `polar` (the chart's own, or one the layout
+/// tries, #417): `place` gets each drawn label's text, centre, extents and
+/// its ring's radius. With `clear_angle_labels` off a label does not make
+/// way for the angle labels (#272), which the layout's first pass over
+/// every candidate ray skips.
+fn radius_label_walk(
+    config: &Config,
+    polar: &PolarOptions,
+    da: &DataArea,
+    measure: &dyn MeasureText,
+    clear_angle_labels: bool,
+    place: impl FnMut(&NumericTickText, (f32, f32), TextExtents, f32),
+) {
+    let Some(geometry) = config.polar_geometry() else {
         return;
     };
     let axis = &config.left_y;
     let majors = major_tick_values_for_axis(axis, Side::Left, &data_area_rect(da), measure);
-    let ls = &axis.label_style;
     // The angle labels the radius labels keep their distance from (#272):
     // the ones `emit_polar_angle_labels` draws, from the same walk.
-    let map = config.polar_angle_map();
+    let map = config.polar_angle_map().filter(|_| clear_angle_labels);
     let angle_majors = map
         .map(|_| {
             major_tick_values_for_axis(&config.bottom_x, Side::Bottom, &data_area_rect(da), measure)
@@ -705,10 +727,235 @@ pub fn emit_polar_radius_labels(
         &majors,
         measure,
         &angle_boxes,
-        |text, center, m| {
-            place_centered(sink, text.as_tick_text(), center, m, ls);
-        },
+        place,
     );
+}
+
+// ───── The radius labels' ray over polar bars (#417) ─────
+//
+// A chart whose ray is not stored gets one from the layout: the ray between
+// two category slots where the fewest radius labels sit over the drawn
+// wedges, and the count of innermost labels that still would. The renderer
+// gathers each row's drawn stack on the GPU and hands the rows here once,
+// from the mapped readback; nothing per row is kept (rules 1 and 2).
+
+/// One row of a polar chart's category bars as the layout reads it from
+/// the GPU (#417): the lowest and highest category position its group's
+/// members draw at, and the lowest and highest value its stack (or group)
+/// reaches, zero included. Only drawn bars count: a missing, non-finite or
+/// zero value draws nothing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PolarBarRow {
+    pub positions: [f64; 2],
+    pub values: [f64; 2],
+}
+
+/// The ray the layout chooses for the radius labels and how many of the
+/// innermost drawn labels it skips (#417): what it writes into
+/// [`PolarOptions::radial_label_angle_degrees`] and
+/// [`PolarOptions::radius_labels_skipped`] when they are `None`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RadialLabelRay {
+    pub angle_degrees: f64,
+    pub skipped: u32,
+}
+
+/// The pixels a label box keeps from a wedge.
+const RAY_LABEL_CLEARANCE: f32 = 2.0;
+
+/// The polar footprint of `rect` around `center`: its nearest and farthest
+/// distance and, unless it holds the centre, the screen angles (radians,
+/// counter-clockwise with y up) it spans as `(start, span)`.
+fn polar_footprint(rect: RectF, center: [f32; 2]) -> (f32, f32, Option<(f64, f64)>) {
+    let (x0, y0) = (rect.x - center[0], rect.y - center[1]);
+    let (x1, y1) = (x0 + rect.width, y0 + rect.height);
+    let near_x = 0.0f32.clamp(x0, x1);
+    let near_y = 0.0f32.clamp(y0, y1);
+    let near = near_x.hypot(near_y);
+    let corners = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)];
+    let far = corners
+        .iter()
+        .map(|(x, y)| x.hypot(*y))
+        .fold(0.0f32, f32::max);
+    if near <= 0.0 {
+        return (0.0, far, None);
+    }
+    // A convex box clear of the centre spans its corners' angles, all
+    // within half a turn of its own centre's.
+    let mid = f64::from(-(y0 + y1) * 0.5).atan2(f64::from((x0 + x1) * 0.5));
+    let (mut lo, mut hi) = (0.0f64, 0.0f64);
+    for (x, y) in corners {
+        let a = f64::from(-y).atan2(f64::from(x));
+        let d = (a - mid + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
+            - std::f64::consts::PI;
+        lo = lo.min(d);
+        hi = hi.max(d);
+    }
+    (near, far, Some((mid + lo, hi - lo)))
+}
+
+/// Whether the angle intervals `(start, span)` meet on the circle.
+fn arcs_meet(a: (f64, f64), b: (f64, f64)) -> bool {
+    use std::f64::consts::TAU;
+    if a.1 >= TAU || b.1 >= TAU {
+        return true;
+    }
+    let d = (b.0 - a.0).rem_euclid(TAU);
+    d <= a.1 || d + b.1 >= TAU
+}
+
+/// The wedge `row` draws on `config`'s polar chart, `(start, span)` in
+/// screen radians and its inner and outer radius in pixels, or `None` when
+/// it draws nothing: the slot of its positions, the centred `width_ratio`
+/// share of it, between the radii of its values.
+fn row_wedge(
+    polar: &PolarOptions,
+    geometry: &PolarGeometry,
+    map: &AngleMap,
+    axis: &AxisOptions,
+    width_ratio: f32,
+    row: PolarBarRow,
+) -> Option<((f64, f64), f32, f32)> {
+    let [p0, p1] = row.positions;
+    let [v0, v1] = row.values;
+    if !(p0.is_finite() && p1.is_finite() && v0.is_finite() && v1.is_finite()) || v0 == v1 {
+        return None;
+    }
+    let a0 = map.screen_angle(p0 - 0.5);
+    let a1 = map.screen_angle(p0 + 0.5);
+    let slot = (a1 - a0).abs();
+    let share = slot * f64::from(width_ratio.clamp(0.0, 1.0));
+    let lo = a0.min(a1) + (slot - share) * 0.5;
+    // A row whose members sit at different positions spans all of them.
+    let extra = (map.screen_angle(p1) - map.screen_angle(p0)).abs();
+    let start = if map.direction() < 0.0 {
+        lo - extra
+    } else {
+        lo
+    };
+    let inner = geometry.inner_radius;
+    let r0 = ring_radius(polar, geometry, axis, v0).max(inner);
+    let r1 = ring_radius(polar, geometry, axis, v1).max(inner);
+    let (r_in, r_out) = (r0.min(r1), r0.max(r1));
+    (share > 0.0 && r_out > r_in).then_some(((start, share + extra), r_in, r_out))
+}
+
+/// Choose the radius labels' ray over polar category bars (#417): among
+/// the rays between two adjacent category slots, the one where the fewest
+/// drawn radius labels would sit over a drawn wedge, the nearest to the
+/// default ray on a tie, with the count of innermost labels to skip there
+/// (every label up to the outermost one over a wedge). A stored ray is
+/// kept, and only its skip count is chosen there. `rows` hands over
+/// every drawn row (it is walked once per candidate ray and label, from
+/// the renderer's readback); `width_ratio` is the share of a slot the bars
+/// cover. `None` when the chart is not a polar chart with a categorical
+/// angle axis, or no row draws a wedge.
+///
+/// The cost is one label walk per category plus, per category and label,
+/// one pass over the rows: it grows with the square of the categories and
+/// is measured in the renderer's tests (rule 10).
+pub fn choose_radial_label_ray(
+    config: &Config,
+    measure: &dyn MeasureText,
+    width_ratio: f32,
+    rows: &dyn Fn(&mut dyn FnMut(PolarBarRow)),
+) -> Option<RadialLabelRay> {
+    let polar = config.polar()?;
+    let geometry = config.polar_geometry()?;
+    let map = config.polar_angle_map()?;
+    let n = config.bottom_x.category_count().filter(|n| *n > 0)?;
+    let da = config.data_area().ok()?;
+    let axis = &config.left_y;
+    let wedge = |row| row_wedge(polar, &geometry, &map, axis, width_ratio, row);
+    let mut any = false;
+    rows(&mut |row| any |= wedge(row).is_some());
+    if !any {
+        return None;
+    }
+    // Every label drawn, at the candidate ray.
+    let probe = |angle: f64| {
+        let mut at = polar.clone();
+        at.radial_label_angle_degrees = Some(angle);
+        at.radius_labels_skipped = Some(0);
+        at.hide_first_radius_label = false;
+        at
+    };
+    // (labels drawn, labels to skip) at `angle`.
+    let evaluate = |angle: f64, clear: bool| -> (u32, u32) {
+        let at = probe(angle);
+        let mut drawn = 0u32;
+        let mut blocked = f32::NEG_INFINITY;
+        radius_label_walk(config, &at, &da, measure, clear, |_, center, m, radius| {
+            drawn += 1;
+            let rect = centered_rect(center, m);
+            let grown = RectF {
+                x: rect.x - RAY_LABEL_CLEARANCE,
+                y: rect.y - RAY_LABEL_CLEARANCE,
+                width: rect.width + 2.0 * RAY_LABEL_CLEARANCE,
+                height: rect.height + 2.0 * RAY_LABEL_CLEARANCE,
+            };
+            let (near, far, arc) = polar_footprint(grown, geometry.center);
+            let mut over = false;
+            rows(&mut |row| {
+                if over {
+                    return;
+                }
+                if let Some((span, r_in, r_out)) = wedge(row) {
+                    over = near < r_out && far > r_in && arc.is_none_or(|arc| arcs_meet(arc, span));
+                }
+            });
+            if over {
+                blocked = blocked.max(radius);
+            }
+        });
+        let mut skipped = 0u32;
+        if blocked.is_finite() {
+            radius_label_walk(config, &at, &da, measure, clear, |_, _, _, radius| {
+                skipped += u32::from(radius <= blocked);
+            });
+        }
+        (drawn, skipped)
+    };
+    let default = crate::polar::DEFAULT_RADIAL_LABEL_ANGLE_DEGREES;
+    let distance = |angle: f64| {
+        let d = (angle - default).rem_euclid(360.0);
+        d.min(360.0 - d)
+    };
+    // A stored ray is kept: only its skip count is chosen.
+    if let Some(angle) = polar.radial_label_angle_degrees {
+        let (_, skipped) = evaluate(angle, true);
+        return Some(RadialLabelRay {
+            angle_degrees: angle,
+            skipped,
+        });
+    }
+    let mut best: Option<(u32, f64, f64)> = None;
+    for k in 0..n {
+        let position = k as f64 + 0.5;
+        if !map.contains(position) {
+            continue;
+        }
+        let angle = map.screen_angle(position).to_degrees().rem_euclid(360.0);
+        let (drawn, skipped) = evaluate(angle, false);
+        let kept = drawn.saturating_sub(skipped);
+        let better = match best {
+            None => true,
+            Some((best_kept, _, best_distance)) => {
+                kept > best_kept || (kept == best_kept && distance(angle) < best_distance)
+            }
+        };
+        if better {
+            best = Some((kept, angle, distance(angle)));
+        }
+    }
+    let (_, angle, _) = best?;
+    // The chosen ray's labels as they are drawn, making way for the angle
+    // labels.
+    let (_, skipped) = evaluate(angle, true);
+    Some(RadialLabelRay {
+        angle_degrees: angle,
+        skipped,
+    })
 }
 
 /// How far `rect` moves along the unit vector `toward` so that it keeps
@@ -912,10 +1159,10 @@ fn each_radius_label(
     majors: &[f64],
     measure: &dyn MeasureText,
     angle_boxes: &dyn Fn(&mut dyn FnMut(RectF)),
-    mut place: impl FnMut(&NumericTickText, (f32, f32), TextExtents),
+    mut place: impl FnMut(&NumericTickText, (f32, f32), TextExtents, f32),
 ) {
     let inner = geometry.inner_radius;
-    let ray = polar.radial_label_angle_degrees.to_radians();
+    let ray = polar.ray_degrees().to_radians();
     let [dx, dy] = polar.ray_direction();
     let dir = (dx, dy);
     let [sx, sy] = polar.ray_side();
@@ -958,24 +1205,28 @@ fn each_radius_label(
         (position.0 - geometry.center[0]).hypot(position.1 - geometry.center[1])
     };
     let drawn = |radius: f32| radius >= inner - 0.5 && radius <= geometry.radius + 0.5;
-    // The innermost drawn label, skipped when the chart hides it (#259).
-    let first = polar
-        .hide_first_radius_label
-        .then(|| {
-            labels
-                .iter()
-                .map(|label| radius_of(label.position))
-                .filter(|radius| drawn(*radius))
-                .fold(f32::INFINITY, f32::min)
-        })
-        .filter(|radius| radius.is_finite());
+    // The innermost drawn labels the chart skips: the first when it hides
+    // it (#259), or as many as the layout found over the bars (#417). A
+    // label is skipped when fewer than that many drawn labels lie strictly
+    // inside it.
+    let hidden = polar.hidden_inner_radius_labels() as usize;
     for label in &labels {
         let radius = radius_of(label.position);
-        if !drawn(radius) || first == Some(radius) {
+        if !drawn(radius) {
             continue;
         }
+        if hidden > 0 {
+            let inside = labels
+                .iter()
+                .map(|other| radius_of(other.position))
+                .filter(|other| drawn(*other) && *other < radius)
+                .count();
+            if inside < hidden {
+                continue;
+            }
+        }
         let m = extents(&label.text, ls, measure);
-        place(&label.text, center(label.position, m), m);
+        place(&label.text, center(label.position, m), m, radius);
     }
 }
 
@@ -992,7 +1243,7 @@ fn each_radius_axis_stroke(
     mut each: impl FnMut(Option<usize>, (f32, f32), (f32, f32)),
 ) {
     let inner = geometry.inner_radius;
-    let ray = polar.radial_label_angle_degrees.to_radians();
+    let ray = polar.ray_degrees().to_radians();
     // Labels sit on the left of the ray seen from the centre
     // (`PolarOptions::ray_side`).
     let [sx, sy] = polar.ray_side();
@@ -1167,7 +1418,7 @@ mod tests {
                     PolarOptions {
                         zero_angle_degrees: 90.0,
                         clockwise: true,
-                        radial_label_angle_degrees: 45.0,
+                        radial_label_angle_degrees: Some(45.0),
                         ..crate::defaults::polar_options()
                     },
                     (0.0, 360.0, 45.0),
@@ -1182,7 +1433,7 @@ mod tests {
                         angle_unit: AngleUnit::Radians,
                         sector: Some([-PI / 2.0, PI / 2.0]),
                         inner_radius_fraction: 0.2,
-                        radial_label_angle_degrees: 90.0,
+                        radial_label_angle_degrees: Some(90.0),
                         ..crate::defaults::polar_options()
                     },
                     (-PI / 2.0, PI / 2.0, PI / 4.0),
@@ -1197,7 +1448,7 @@ mod tests {
                         zero_angle_degrees: 90.0,
                         clockwise: true,
                         inner_radius_fraction: 0.08,
-                        radial_label_angle_degrees: 90.0,
+                        radial_label_angle_degrees: Some(90.0),
                         ..crate::defaults::polar_options()
                     },
                     (0.0, 360.0, 30.0),

@@ -38,7 +38,7 @@ mod box3d;
 pub(crate) use box3d::box_label_reach as box3d_label_reach;
 mod parallel;
 mod polar;
-pub use polar::polar_angle_label_ring;
+pub use polar::{PolarBarRow, RadialLabelRay, choose_radial_label_ray, polar_angle_label_ring};
 pub(crate) use polar::{label_title_gap, polar_title_shift};
 mod ternary;
 pub(crate) use ternary::ternary_label_reach;

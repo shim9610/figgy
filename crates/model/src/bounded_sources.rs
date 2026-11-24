@@ -516,6 +516,7 @@ fn legacy_data_area(
                     "the explicit data area is empty once its edges are rounded to whole pixels"
                 }
                 LayoutError::Infeasible
+                | LayoutError::InsetHostWithoutDataArea { .. }
                 | LayoutError::OverflowHorizontal { .. }
                 | LayoutError::OverflowVertical { .. } => {
                     "the explicit data area leaves less room than the converted chart's titles, ticks and axis bands take"
@@ -1569,7 +1570,7 @@ impl Config {
         config.set_polar(Some(PolarOptions {
             zero_angle_degrees: zero,
             clockwise: style.clockwise,
-            radial_label_angle_degrees: zero.rem_euclid(360.0),
+            radial_label_angle_degrees: Some(zero.rem_euclid(360.0)),
             grid_shape: Some(match style.grid_shape {
                 RadarGridShape::Polygon => GridShape::Polygon,
                 RadarGridShape::Circle => GridShape::Circle,
@@ -1581,6 +1582,7 @@ impl Config {
             inner_radius_fraction: 0.0,
             interpolation: PolarInterpolation::Chord,
             hide_first_radius_label: false,
+            radius_labels_skipped: None,
         }));
 
         let GridOptions {
@@ -2828,7 +2830,7 @@ mod radar_tests {
         assert_eq!(polar.zero_angle_degrees, 90.0);
         assert!(polar.clockwise);
         assert_eq!(polar.grid_shape, Some(GridShape::Polygon));
-        assert_eq!(polar.radial_label_angle_degrees, 90.0);
+        assert_eq!(polar.radial_label_angle_degrees, Some(90.0));
         assert!(polar.interpolation.is_chord());
         assert_eq!(polar.sector, None);
         // The first category points up and the second follows clockwise.
@@ -2841,7 +2843,7 @@ mod radar_tests {
         let (config, _, _) = Config::from_radar(&c);
         let polar = config.polar().unwrap();
         assert_eq!(polar.zero_angle_degrees, -30.0);
-        assert_eq!(polar.radial_label_angle_degrees, 330.0);
+        assert_eq!(polar.radial_label_angle_degrees, Some(330.0));
         assert!(!polar.clockwise);
         assert_eq!(polar.grid_shape, Some(GridShape::Circle));
     }

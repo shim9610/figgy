@@ -427,3 +427,58 @@ async fn selection_details_report_the_mapped_radius() {
     assert_eq!(map.radius_px(400.0), Some(12.0));
     assert_eq!(map.radius_px(100.0), Some(2.0));
 }
+
+// #417: a wind rose's explicit `Percent` radius format survives the
+// candidate fit and `fit_ranges`, while the range moves.
+#[wasm_bindgen_test(async)]
+async fn range_fits_keep_an_explicit_percent_radius_format() {
+    use renderer::data_config::{BarGroups, CategoryBarDirection, CategoryBarMode};
+    use renderer::format::LabelFormat;
+    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    chart
+        .register_column_f64("directions", &(0..16).map(f64::from).collect::<Vec<_>>())
+        .unwrap();
+    let series: Vec<SeriesConfig> = (0..4)
+        .map(|band| {
+            let id = format!("band{band}");
+            let values: Vec<f64> = (0..16)
+                .map(|i| 0.01 + 0.002 * f64::from(i) * f64::from(band + 1))
+                .collect();
+            chart.register_column_f64(&id, &values).unwrap();
+            SeriesConfig::category_bars(id.as_str(), "directions", id.as_str())
+        })
+        .collect();
+    chart
+        .set_series(&serde_json::to_string(&series).unwrap())
+        .unwrap();
+    let mut config = config_of(&chart);
+    config.bottom_x.categories = Some(
+        (0..16)
+            .map(|i| renderer::config::Category::new(format!("row-{i}"), format!("D{i}")))
+            .collect(),
+    );
+    config.set_polar(Some(renderer::polar::PolarOptions {
+        clockwise: true,
+        zero_angle_degrees: 90.0,
+        ..renderer::polar::PolarOptions::default()
+    }));
+    config.bar_groups = Some(BarGroups {
+        direction: CategoryBarDirection::Vertical,
+        mode: CategoryBarMode::Stacked,
+        group_width: 0.75,
+        bar_gap: 0.0,
+    });
+    config.left_y.label_style.format = LabelFormat::Percent;
+    let installed = serde_json::to_string(&config).unwrap();
+    chart.set_config(&installed).unwrap();
+    let installed = chart.get_config().unwrap();
+
+    let candidate: Config =
+        serde_json::from_str(&chart.fit_config(&installed, 0.05).unwrap()).unwrap();
+    assert_eq!(candidate.left_y.label_style.format, LabelFormat::Percent);
+    chart.fit_ranges().unwrap();
+    let fitted = config_of(&chart);
+    assert_eq!(fitted.left_y.label_style.format, LabelFormat::Percent);
+    assert!(fitted.left_y.max > 0.1 && fitted.left_y.max < 0.5);
+    assert_eq!(fitted.left_y, candidate.left_y, "one fit path");
+}

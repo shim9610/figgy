@@ -287,12 +287,14 @@ impl Config {
             Element::SubplotFrame(index) | Element::SubplotFrameEdge(index, _) => Some(*index),
             _ => None,
         };
-        let before = self.has_insets().then(|| self.clone());
+        let before = self
+            .has_insets()
+            .then(|| crate::layout::PanelAreas::of(self));
         let result = self.nudge_unfixed(element, measure, at, dx, dy);
         if result == NudgeResult::Moved {
             self.layout_state = crate::config::LayoutState::Fixed;
             if let Some(before) = before {
-                self.follow_parent_areas(&before, placed);
+                self.follow_parent_areas_from(&before, placed);
             }
             // A dragged or resized frame is the subplot's new placement.
             if let Some(index) = placed {

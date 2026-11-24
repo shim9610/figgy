@@ -33,7 +33,9 @@ pub(in crate::renderer) fn annotation_raster_for_chart(
 ) -> Result<crate::annotation::AnnotationRaster> {
     let config = chart.config();
     let Config {
-        chart_area,
+        // The layer's raster covers the document area, which reads the
+        // chart area and the subplots' areas (#414).
+        chart_area: _,
         // The data area, the value axes and the polar switch reach the
         // raster through `pixel_space_for_config`, which reads the whole
         // config; the rest is not part of the annotation raster.
@@ -49,7 +51,8 @@ pub(in crate::renderer) fn annotation_raster_for_chart(
         draw_style,
         coordinates: _,
         overlays: _,
-        // Their markers are drawn on the layer (#205), through `config`.
+        // Their markers are drawn on the layer (#205), through `config`;
+        // their areas size the layer's raster (#414).
         subplots: _,
         active_layer: _,
         annotations,
@@ -63,7 +66,9 @@ pub(in crate::renderer) fn annotation_raster_for_chart(
         // Who owns the layout: the annotations follow the data area it set.
         layout_state: _,
     } = config;
-    let area = chart_area.0;
+    // The layer covers the whole document (#414): its overlay is the
+    // document's top layer, over every panel, subplots and insets included.
+    let area = config.document_area();
     crate::annotation::rasterize(&crate::annotation::RasterRequest {
         layer: annotations,
         space: crate::annotation::pixel_space_for_config(config),
@@ -197,10 +202,12 @@ pub(crate) fn expand_for_render(config: &Config) -> Result<Vec<Config>> {
             .into_iter()
             .map(|panel| panel.config)
             .collect()),
-        // No data area at this size (a preview squeezed below its margins):
-        // a single-layer chart draws its chrome and no data there, so a
-        // layered one draws its base panel the same way instead of failing
-        // the frame. The next larger size expands normally again.
+        // No data area for the parent at this size (a preview squeezed
+        // below its margins): a single-layer chart draws its chrome and no
+        // data there, so a layered one draws its base panel the same way
+        // instead of failing the frame. The next larger size expands
+        // normally again. A squeezed subplot never lands here: `expand`
+        // draws its panels unaligned, or refuses it by name below (#419).
         Err(
             crate::layout::LayoutError::OverflowHorizontal { .. }
             | crate::layout::LayoutError::OverflowVertical { .. }
@@ -212,6 +219,14 @@ pub(crate) fn expand_for_render(config: &Config) -> Result<Vec<Config>> {
             panel.line_offsets = None;
             panel.active_layer = crate::LayerRef::Base;
             Ok(vec![panel])
+        }
+        // A squeezed subplot holding an inset is refused by name (#419),
+        // never drawn as the base panel alone.
+        Err(crate::layout::LayoutError::InsetHostWithoutDataArea { subplot, inset }) => {
+            Err(FiggyError::InvalidConfig {
+                field: "subplots",
+                kind: crate::RuleKind::InsetHostWithoutDataArea { subplot, inset },
+            })
         }
         Err(crate::layout::LayoutError::TargetOutOfChartArea) => Err(FiggyError::InvalidConfig {
             field: "subplots",
@@ -464,33 +479,38 @@ pub(in crate::renderer) fn nested_panel(prepared: &[PreparedItem], index: usize)
     crate::layout::inset_parent(prepared.len(), |i| panel_rects(prepared, i), index).is_some()
 }
 
-/// The document's annotation layer is rasterized once, on the base view; its
-/// underlay stays under the base panel's data and its overlay moves to the
-/// topmost panel drawn in the parent's area, so it sits above every layer's
-/// decoration there. Panels in areas of their own are not its place: the
-/// annotation textures cover the parent's area only.
-pub(in crate::renderer) fn lift_annotation_overlays(
-    items: &mut [PreparedItem],
-    group_sizes: &[usize],
-) {
-    let mut start = 0;
-    for &size in group_sizes {
-        if size > 1 && start + size <= items.len() {
-            let base_rect = items[start].view.panel_rect;
-            let top = (start..start + size)
-                .rev()
-                .find(|&index| items[index].view.panel_rect == base_rect)
-                .unwrap_or(start);
-            if top != start {
-                let overlay = items[start].view.annotation_overlay_bind_group.take();
-                let visible = items[start].view.annotations_visible;
-                let top = &mut items[top].view;
-                top.annotation_overlay_bind_group = overlay;
-                top.annotations_visible = visible;
-            }
-        }
-        start += size;
+/// Where the document's annotation layer is drawn on the surface (#414):
+/// [`Config::document_area`] of `config`, placed as its `chart_area` is at
+/// `panel_rect`. The layer's textures are this rect's size; the underlay is
+/// drawn under the base panel's data, clipped to the base panel, and the
+/// overlay over every panel of the document.
+pub(in crate::renderer) fn annotation_rect(config: &Config, panel_rect: Rect) -> Rect {
+    let area = config.chart_area.0;
+    let document = config.document_area();
+    Rect {
+        x: panel_rect.x.saturating_sub(area.x - document.x),
+        y: panel_rect.y.saturating_sub(area.y - document.y),
+        width: document.width,
+        height: document.height,
     }
+}
+
+/// The size of the annotation textures of a view of `config` at
+/// `panel_rect`: [`annotation_rect`]'s, checked against the device.
+pub(in crate::renderer) fn checked_annotation_raster_size(
+    caps: RendererDeviceCaps,
+    config: &Config,
+    panel_rect: Rect,
+) -> Result<(u32, u32)> {
+    checked_panel_raster_size(caps, config, panel_rect)?;
+    let rect = annotation_rect(config, panel_rect);
+    validate_texture_extent(
+        caps,
+        "figgy annotation texture dimension",
+        rect.width,
+        rect.height,
+    )?;
+    Ok((rect.width, rect.height))
 }
 
 /// How many panels `config` draws as; see [`expand_for_render`].
