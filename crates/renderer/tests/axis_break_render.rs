@@ -1160,11 +1160,14 @@ fn category_bars_cross_a_value_axis_cut() {
         for style in [AxisBreakStyle::Continuous, AxisBreakStyle::Panels] {
             let mut config = config(0.0, 100.0, &[]);
             config.left_y.breaks = None;
-            let categories = Some(vec![
-                Category::new("a", "A"),
-                Category::new("b", "B"),
-                Category::new("c", "C"),
-            ]);
+            let categories = Some(
+                vec![
+                    Category::new("a", "A"),
+                    Category::new("b", "B"),
+                    Category::new("c", "C"),
+                ]
+                .into(),
+            );
             let cut = Some(AxisBreaks {
                 ranges: vec![AxisBreak::new(30.0, 85.0)],
                 style,

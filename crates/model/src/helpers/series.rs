@@ -867,7 +867,8 @@ mod tests {
         config.bottom_x.categories = Some(
             ["a", "b", "c"]
                 .map(|id| Category::new(id, id.to_uppercase()))
-                .to_vec(),
+                .to_vec()
+                .into(),
         );
         config.parallel_mut().unwrap().axes =
             vec![crate::parallel::ParallelAxis::new(0.0, 10.0); 3];

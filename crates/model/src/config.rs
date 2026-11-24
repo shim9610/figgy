@@ -969,9 +969,17 @@ fn scale_category_text(axis: &mut AxisOptions, s: f32) {
     // Whole rich texts, segment size overrides included, as every other
     // rich text scales (`scale_rich_text`): a label whose segments state
     // their size is drawn at 2x as its 1x scaled.
-    for category in axis.categories.iter_mut().flatten() {
-        if let Some(rich) = &mut category.rich_label {
-            scale_rich_text(rich, s);
+    // The shared list is copied only when a category has rich text to
+    // scale (#442): a plain categorical axis scales without touching it.
+    if let Some(categories) = axis
+        .categories
+        .as_mut()
+        .filter(|categories| categories.iter().any(|c| c.rich_label.is_some()))
+    {
+        for category in std::sync::Arc::make_mut(categories) {
+            if let Some(rich) = &mut category.rich_label {
+                scale_rich_text(rich, s);
+            }
         }
     }
     if let Some(groups) = &mut axis.category_groups {
@@ -1183,7 +1191,12 @@ fn axis_text_sizes(to: &mut AxisOptions, from: Option<&AxisOptions>, s: f32) {
         from.map(|a| &a.title_option.text),
         s,
     );
-    for (index, category) in to.categories.iter_mut().flatten().enumerate() {
+    let rich_categories = to
+        .categories
+        .as_mut()
+        .filter(|categories| categories.iter().any(|c| c.rich_label.is_some()))
+        .map(std::sync::Arc::make_mut);
+    for (index, category) in rich_categories.into_iter().flatten().enumerate() {
         if let Some(rich) = category.rich_label.as_mut() {
             let from = from
                 .and_then(|a| a.categories.as_ref()?.get(index))
@@ -1422,7 +1435,7 @@ mod category_text_scale_tests {
         }
         let mut category = Category::new("a", "4p");
         category.rich_label = Some(label.clone());
-        cfg.bottom_x.categories = Some(vec![category, Category::new("b", "b")]);
+        cfg.bottom_x.categories = Some(vec![category, Category::new("b", "b")].into());
         cfg.bottom_x.category_groups = Some(CategoryGroups {
             groups: vec![CategoryGroup {
                 label,

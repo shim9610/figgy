@@ -137,11 +137,14 @@ fn chart() -> Chart {
     ] {
         axis.line_visible = false;
     }
-    config.bottom_x.categories = Some(vec![
-        Category::new("a", "A"),
-        Category::new("b", "B"),
-        Category::new("c", "C"),
-    ]);
+    config.bottom_x.categories = Some(
+        vec![
+            Category::new("a", "A"),
+            Category::new("b", "B"),
+            Category::new("c", "C"),
+        ]
+        .into(),
+    );
     let mut chart = Chart::new(config);
     chart.set_y_range(0.0, 100.0);
     chart
@@ -707,7 +710,7 @@ fn chart_with_inset() -> Chart {
     }
     inset.bottom_x.out_margin = 22.0;
     inset.left_y.out_margin = 34.0;
-    inset.bottom_x.categories = Some(vec![Category::new("b", "B")]);
+    inset.bottom_x.categories = Some(vec![Category::new("b", "B")].into());
     inset.left_y.min = 43.0;
     inset.left_y.max = 47.0;
     inset.plot_background = Some(Color::from_rgb8(250, 250, 250));
@@ -2139,11 +2142,14 @@ fn issue_413_chart(levels: &EnergyLevelSeries) -> Chart {
         width: 1000,
         height: 800,
     });
-    config.bottom_x.categories = Some(vec![
-        Category::new("A", "A"),
-        Category::new("B", "B"),
-        Category::new("C", "C"),
-    ]);
+    config.bottom_x.categories = Some(
+        vec![
+            Category::new("A", "A"),
+            Category::new("B", "B"),
+            Category::new("C", "C"),
+        ]
+        .into(),
+    );
     for x in [&mut config.bottom_x, &mut config.top_x] {
         (x.min, x.max, x.major_spacing) = (-0.5, 2.5, 1.0);
     }

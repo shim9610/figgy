@@ -146,7 +146,7 @@ let mut config = renderer::default::default_timeline_config();
 config.left_y.categories = Some(vec![
     Category::new("scope", "Scope"),
     Category::new("build", "Build"),
-]);
+].into());
 let chart = Chart::new(config).with_area(0, 0, 800, 600);
 let tasks = SeriesConfig::timeline_bars("tasks", "row", "start", "end").with_progress("done");
 ```

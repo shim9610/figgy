@@ -647,7 +647,7 @@ mod axis_tests {
             assert!(got.contains(want), "{got}");
         }
         let mut categorical = axis(ProbabilityScale::Normal, 0.1, 0.9);
-        categorical.categories = Some(vec![Category::new("a", "A")]);
+        categorical.categories = Some(vec![Category::new("a", "A")].into());
         assert!(
             categorical
                 .validate_categories()

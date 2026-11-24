@@ -2739,7 +2739,7 @@ mod category_group_tests {
     #[test]
     fn a_rich_category_label_is_validated_and_drawn_in_place_of_the_plain_one() {
         let mut config = chart();
-        config.bottom_x.categories.as_mut().unwrap()[0].rich_label =
+        std::sync::Arc::make_mut(config.bottom_x.categories.as_mut().unwrap())[0].rich_label =
             Some(RichText::from_tex("$^3P^o$", crate::color::Color::BLACK, 12.0, "").unwrap());
         assert_eq!(config.validate_chart(), Ok(()));
         let mut texts = Vec::new();
@@ -2838,11 +2838,14 @@ mod inset_marker_tests {
             width: 600,
             height: 400,
         });
-        config.bottom_x.categories = Some(vec![
-            Category::new("a", "A"),
-            Category::new("b", "B"),
-            Category::new("c", "C"),
-        ]);
+        config.bottom_x.categories = Some(
+            vec![
+                Category::new("a", "A"),
+                Category::new("b", "B"),
+                Category::new("c", "C"),
+            ]
+            .into(),
+        );
         config.left_y.min = 0.0;
         config.left_y.max = 100.0;
         let plot = config.data_area().unwrap().0;
@@ -2853,7 +2856,7 @@ mod inset_marker_tests {
             width: 190,
             height: 150,
         });
-        inset.bottom_x.categories = Some(vec![Category::new("b", "B")]);
+        inset.bottom_x.categories = Some(vec![Category::new("b", "B")].into());
         inset.left_y.min = 40.0;
         inset.left_y.max = 50.0;
         config.subplots.push(Subplot {
@@ -2918,7 +2921,7 @@ mod inset_marker_tests {
         // No marker, no parts; an inset naming no parent category derives
         // no window.
         config.subplots[0].marker.as_mut().unwrap().window = None;
-        config.subplots[0].config.bottom_x.categories = Some(vec![Category::new("z", "Z")]);
+        config.subplots[0].config.bottom_x.categories = Some(vec![Category::new("z", "Z")].into());
         assert_eq!(config.inset_window(0), None);
         config.subplots[0].marker = None;
         assert_eq!(config.inset_marker_parts(0), None);
@@ -3023,16 +3026,19 @@ mod inset_marker_tests {
     #[test]
     fn the_derived_window_uses_the_parent_subplot() {
         let mut config = inset_in_a_subplot();
-        config.bottom_x.categories = Some(vec![Category::new("a", "A")]);
-        config.subplots[0].config.bottom_x.categories = Some(vec![
-            Category::new("x", "X"),
-            Category::new("y", "Y"),
-            Category::new("z", "Z"),
-        ]);
+        config.bottom_x.categories = Some(vec![Category::new("a", "A")].into());
+        config.subplots[0].config.bottom_x.categories = Some(
+            vec![
+                Category::new("x", "X"),
+                Category::new("y", "Y"),
+                Category::new("z", "Z"),
+            ]
+            .into(),
+        );
         config.subplots[0].config.left_y.min = 0.0;
         config.subplots[0].config.left_y.max = 100.0;
         let inset = &mut config.subplots[1].config;
-        inset.bottom_x.categories = Some(vec![Category::new("z", "Z")]);
+        inset.bottom_x.categories = Some(vec![Category::new("z", "Z")].into());
         inset.left_y.min = 40.0;
         inset.left_y.max = 50.0;
         config.subplots[1].marker.as_mut().unwrap().window = None;
@@ -3048,7 +3054,7 @@ mod inset_marker_tests {
         assert!((w.y - (plot.y + plot.height * 0.5)).abs() < 0.5, "{w:?}");
         // The root's slots are not consulted: dropping the inset's id from
         // the right panel derives no window although the root names "a".
-        config.subplots[1].config.bottom_x.categories = Some(vec![Category::new("a", "A")]);
+        config.subplots[1].config.bottom_x.categories = Some(vec![Category::new("a", "A")].into());
         assert_eq!(config.inset_window(1), None);
         assert_eq!(config.inset_marker_parts(1), None);
     }

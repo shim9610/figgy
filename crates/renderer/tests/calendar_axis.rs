@@ -68,11 +68,14 @@ fn timeline() -> Chart {
     });
     config.chart_title.visible = false;
     config.legend.visible = false;
-    config.left_y.categories = Some(vec![
-        Category::new("a", "Design"),
-        Category::new("b", "Build"),
-        Category::new("c", "Launch"),
-    ]);
+    config.left_y.categories = Some(
+        vec![
+            Category::new("a", "Design"),
+            Category::new("b", "Build"),
+            Category::new("c", "Launch"),
+        ]
+        .into(),
+    );
     let mut chart = Chart::new(config);
     chart.set_x_range(T0, T0 + 76.0 * DAY);
     chart.fit_layout();

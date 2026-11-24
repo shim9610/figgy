@@ -118,7 +118,8 @@ fn the_spoke_frame_round_trips_a_screen_offset() {
 fn a_label_offset_moves_only_that_label() {
     let base = config();
     let mut moved = base.clone();
-    moved.bottom_x.categories.as_mut().unwrap()[2].label_offset = [12.0, -8.0];
+    std::sync::Arc::make_mut(moved.bottom_x.categories.as_mut().unwrap())[2].label_offset =
+        [12.0, -8.0];
     let expected = spoke_offset_to_screen(spoke(&base, 2), [12.0, -8.0]);
     for i in 0..N {
         let (a, b) = (centre(label_box(&base, i)), centre(label_box(&moved, i)));
@@ -225,7 +226,8 @@ fn a_label_is_hit_and_dragged_by_itself() {
 #[test]
 fn the_ring_is_drawn_with_the_selection_and_moves_every_label() {
     let mut cfg = config();
-    cfg.bottom_x.categories.as_mut().unwrap()[3].label_offset = [5.0, 0.0];
+    std::sync::Arc::make_mut(cfg.bottom_x.categories.as_mut().unwrap())[3].label_offset =
+        [5.0, 0.0];
     let map = HitMap::for_active_layer(&cfg);
     let (x, y) = centre(label_box(&cfg, 0));
     let id = map.hit_test(&cfg, &measure(&cfg), x, y).unwrap();
@@ -435,7 +437,8 @@ fn a_label_offset_round_trips_and_zero_is_omitted() {
         !plain.contains("label_offset\":["),
         "a zero offset is omitted"
     );
-    cfg.bottom_x.categories.as_mut().unwrap()[4].label_offset = [1.5, -2.25];
+    std::sync::Arc::make_mut(cfg.bottom_x.categories.as_mut().unwrap())[4].label_offset =
+        [1.5, -2.25];
     let json = serde_json::to_string(&cfg).unwrap();
     let back: Config = serde_json::from_str(&json).unwrap();
     assert_eq!(back, cfg);
@@ -489,7 +492,8 @@ fn the_exports_draw_the_moved_label() {
     let mut r = renderer();
     let base = Chart::new(config());
     let mut moved = Chart::new(config());
-    moved.config_mut().bottom_x.categories.as_mut().unwrap()[0].label_offset = [0.0, 20.0];
+    std::sync::Arc::make_mut(moved.config_mut().bottom_x.categories.as_mut().unwrap())[0]
+        .label_offset = [0.0, 20.0];
     for scale in [1.0f32, 2.0] {
         let export = |r: &mut Renderer, chart: &Chart| {
             r.export_rgba(

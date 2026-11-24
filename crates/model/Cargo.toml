@@ -23,7 +23,7 @@ targets = []
 # adds Serialize/Deserialize across the SSoT tree so hosts (e.g. the wasm
 # wrapper) can round-trip the whole Config as JSON.
 [dependencies]
-serde = { version = "1", features = ["derive"], optional = true }
+serde = { version = "1", features = ["derive", "rc"], optional = true }
 
 [dev-dependencies]
 # For serde round-trip tests (runs with `--features serde`).

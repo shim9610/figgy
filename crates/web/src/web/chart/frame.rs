@@ -239,14 +239,16 @@ impl FiggyChart {
         // Browser resize is preview zoom, not a document mutation. The
         // stored chart remains the export SSoT; the live canvas renders a
         // scaled/letterboxed display chart derived from it.
-        let (display_config, panel_rect, _) = self.display_config()?;
-        let display_chart = Chart::new(display_config.into_owned());
         // `draw_registered` redraws the text and axis raster itself when the
         // chart, its selection or its display placement changed (#265).
         if (annotation_dirty && !refresh_raster)
             || self.view.annotation_selected() != self.selected_annotation
             || self.view.annotation_snap_guides() != self.annotation_guides
         {
+            // The display chart is built only for the annotation layer it
+            // redraws, not on every drawn frame (#442).
+            let (display_config, panel_rect, _) = self.display_config()?;
+            let display_chart = Chart::new(display_config.into_owned());
             self.renderer
                 .refresh_annotations_with_guides(
                     &mut self.view,

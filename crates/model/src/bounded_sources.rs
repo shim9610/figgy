@@ -1016,7 +1016,7 @@ fn legacy_config(chrome: &LegacyChrome<'_>) -> Config {
     let mut config = crate::defaults::config();
     let mut category_axis = config.bottom_x.clone();
     style_axis(&mut category_axis, chrome.category_title);
-    category_axis.categories = Some(chrome.categories.to_vec());
+    category_axis.categories = Some(chrome.categories.into());
     let mut value_axis = config.left_y.clone();
     style_axis(&mut value_axis, chrome.value_title);
     value_axis.label_style.format = LabelFormat::Plain(PlainNumberFormat::AUTO);
@@ -1539,7 +1539,7 @@ impl Config {
         let style = &chart.style;
         // The angle axis: the categories, the outer ring as its line.
         style_axis(&mut config.bottom_x);
-        config.bottom_x.categories = Some(chart.categories.to_vec());
+        config.bottom_x.categories = Some(chart.categories.as_slice().into());
         config.bottom_x.line_visible = chart.grid;
         config.bottom_x.line_color = style.ring_color;
         // The radius axis: the ring labels along the first spoke, without a
@@ -1733,11 +1733,10 @@ impl Config {
                         Some((index, [angle.cos() as f32, -(angle.sin() as f32)]))
                     });
                     if let Some((index, spoke)) = spoke
-                        && let Some(category) = config
-                            .bottom_x
-                            .categories
-                            .as_mut()
-                            .and_then(|categories| categories.get_mut(index))
+                        && let Some(category) =
+                            config.bottom_x.categories.as_mut().and_then(|categories| {
+                                std::sync::Arc::make_mut(categories).get_mut(index)
+                            })
                     {
                         category.label_offset =
                             crate::polar::screen_to_spoke_offset(spoke, [dx, dy]);

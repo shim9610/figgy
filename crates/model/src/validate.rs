@@ -498,7 +498,8 @@ mod tests {
         }
         let mut config = base();
         config.overlays[0].link_x = false;
-        config.overlays[0].x_axis.categories = Some(vec![crate::config::Category::new("a", "A")]);
+        config.overlays[0].x_axis.categories =
+            Some(vec![crate::config::Category::new("a", "A")].into());
         config.overlays[0].x_axis.category_groups = Some(crate::config::CategoryGroups {
             groups: Vec::new(),
             offset: [0.0, 0.0],

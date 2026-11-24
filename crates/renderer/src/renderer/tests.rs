@@ -7198,11 +7198,14 @@ fn streamed_series_are_rejected_per_family() {
     polar.set_polar(Some(crate::polar::PolarOptions::default()));
     // A radar is refused on its polar chart, before the polar rejection.
     let mut radar_chart = polar.clone();
-    radar_chart.bottom_x.categories = Some(vec![
-        crate::config::Category::new("a", "A"),
-        crate::config::Category::new("b", "B"),
-        crate::config::Category::new("c", "C"),
-    ]);
+    radar_chart.bottom_x.categories = Some(
+        vec![
+            crate::config::Category::new("a", "A"),
+            crate::config::Category::new("b", "B"),
+            crate::config::Category::new("c", "C"),
+        ]
+        .into(),
+    );
     let dataless = |render_type| SeriesConfig {
         series_id: "dataless".into(),
         source_id: None,
@@ -7294,11 +7297,11 @@ fn streamed_series_are_rejected_per_family() {
         "y",
     );
     // A categorical axis anywhere, the overlays' included.
-    let categorical = |edit: fn(&mut Config, Option<Vec<crate::config::Category>>)| {
+    let categorical = |edit: fn(&mut Config, Option<std::sync::Arc<[crate::config::Category]>>)| {
         let mut config = base.clone();
         edit(
             &mut config,
-            Some(vec![crate::config::Category::new("a", "A")]),
+            Some(vec![crate::config::Category::new("a", "A")].into()),
         );
         config
     };

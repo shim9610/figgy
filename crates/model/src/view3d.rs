@@ -909,9 +909,10 @@ mod tests {
             .contains("Precise")
         );
         assert!(
-            reject(&|c| c.bottom_x.categories = Some(vec![crate::config::Category::new("a", "A")]))
-                .to_string()
-                .contains("categorical")
+            reject(&|c| c.bottom_x.categories =
+                Some(vec![crate::config::Category::new("a", "A")].into()))
+            .to_string()
+            .contains("categorical")
         );
         let mut log = chart();
         log.right_y.scale = AxisScale::Logarithmic;

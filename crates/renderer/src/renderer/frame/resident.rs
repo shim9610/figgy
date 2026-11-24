@@ -66,7 +66,11 @@ pub(in crate::renderer) struct ResidentDisplayKey {
     /// The panel's category axes (`bottom_x`, `left_y`) when it draws a
     /// category bar or box plot series, `None` otherwise: a bar or box
     /// override names its category by id, resolved to a row against these.
-    pub(in crate::renderer) categories: Option<[Option<Vec<crate::config::Category>>; 2]>,
+    /// The key shares each list with the document (#442): it holds a clone
+    /// of the `Arc`, never a copy of the categories, and compares by shared
+    /// storage first ([`same_categories`]).
+    pub(in crate::renderer) categories:
+        Option<[Option<std::sync::Arc<[crate::config::Category]>>; 2]>,
     /// The tick-label face: contour labels baked into the bodies take it
     /// (`ContourLabelAtlasInput::from_config`).
     pub(in crate::renderer) label_font: String,
@@ -134,8 +138,8 @@ impl ResidentDisplayKey {
             && match &self.categories {
                 Some([bottom, left]) => {
                     has_category_bars(probe.series)
-                        && *bottom == probe.chart_config.bottom_x.categories
-                        && *left == probe.chart_config.left_y.categories
+                        && same_categories(bottom, &probe.chart_config.bottom_x.categories)
+                        && same_categories(left, &probe.chart_config.left_y.categories)
                 }
                 None => !has_category_bars(probe.series),
             }
@@ -150,10 +154,13 @@ impl ResidentDisplayKey {
                 })
     }
 
-    /// The key of `probe`. Its series configurations and categories are
-    /// taken from `previous` (the key it replaces, left empty) where they
-    /// are equal, compared in place, and cloned only where they changed: a
-    /// pan or a resize copies no label string or category (#443).
+    /// The key of `probe`. Its series configurations are taken from
+    /// `previous` (the key it replaces, left empty) where they are equal,
+    /// compared in place, and cloned only where they changed: a pan or a
+    /// resize copies no label string (#443). Its category lists are the
+    /// probe's own `Arc`s (#442): a clone shares the storage, never copies
+    /// a category, and keeping the current allocation lets the next
+    /// [`Self::matches`] answer by `Arc::ptr_eq`.
     pub(in crate::renderer) fn from_probe(
         probe: &ResidentDisplayProbe<'_>,
         previous: Option<&mut ResidentDisplayKey>,
@@ -162,7 +169,7 @@ impl ResidentDisplayKey {
             &probe.chart_config.bottom_x.categories,
             &probe.chart_config.left_y.categories,
         ]);
-        let (mut series, mut categories) = (None, None);
+        let mut series = None;
         if let Some(previous) = previous {
             let same_series = previous.series.len() == probe.series.len()
                 && previous
@@ -172,15 +179,6 @@ impl ResidentDisplayKey {
                     .all(|((config, _), now)| config == now.config);
             if same_series {
                 series = Some(std::mem::take(&mut previous.series));
-            }
-            let same_categories = match (&previous.categories, categories_now) {
-                (Some([bottom, left]), Some([now_bottom, now_left])) => {
-                    bottom == now_bottom && left == now_left
-                }
-                _ => false,
-            };
-            if same_categories {
-                categories = previous.categories.take();
             }
         }
         let series = match series {
@@ -206,8 +204,7 @@ impl ResidentDisplayKey {
             parallel: probe.chart_config.parallel().cloned(),
             colorbar: probe.chart_config.colorbar.clone(),
             bar_groups: probe.chart_config.bar_groups.clone(),
-            categories: categories
-                .or_else(|| categories_now.map(|[bottom, left]| [bottom.clone(), left.clone()])),
+            categories: categories_now.map(|[bottom, left]| [bottom.clone(), left.clone()]),
             label_font: probe.chart_config.bottom_x.label_style.label_font.clone(),
             series,
             font_generation: probe.font_generation,
@@ -217,6 +214,22 @@ impl ResidentDisplayKey {
             camera: probe.camera,
             stencil: probe.stencil,
         }
+    }
+}
+
+/// Whether two category lists are the same: the same shared storage
+/// (`Arc::ptr_eq`, "Identity and staleness checks" in `ARCHITECTURE.md`),
+/// which every clone, scaling and placement of an unedited document keeps,
+/// or else equal category by category. Only an edit that replaced a list
+/// compares its categories (#442).
+fn same_categories(
+    key: &Option<std::sync::Arc<[crate::config::Category]>>,
+    now: &Option<std::sync::Arc<[crate::config::Category]>>,
+) -> bool {
+    match (key, now) {
+        (Some(key), Some(now)) => std::sync::Arc::ptr_eq(key, now) || key == now,
+        (None, None) => true,
+        _ => false,
     }
 }
 

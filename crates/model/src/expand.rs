@@ -2031,7 +2031,7 @@ mod tests {
         fn axis(axis: &AxisOptions, out: &mut Vec<f32>) {
             out.push(axis.label_style.font_size);
             rich(&axis.title_option.text, out);
-            for category in axis.categories.iter().flatten() {
+            for category in axis.categories.as_deref().into_iter().flatten() {
                 if let Some(label) = &category.rich_label {
                     rich(label, out);
                 }
@@ -2696,7 +2696,7 @@ mod tests {
         assert_eq!(plain.document_area(), plain.chart_area.0);
     }
 
-    fn categories(n: usize) -> Option<Vec<Category>> {
+    fn categories(n: usize) -> Option<std::sync::Arc<[Category]>> {
         Some(
             (0..n)
                 .map(|i| Category::new(format!("k{i}"), format!("Kind {i}")))
@@ -2966,7 +2966,7 @@ mod tests {
             Some(
                 ["a", "b", "c"]
                     .map(|id| crate::config::Category::new(id, id))
-                    .to_vec(),
+                    .into(),
             )
         };
         let overlay = |id: String| {

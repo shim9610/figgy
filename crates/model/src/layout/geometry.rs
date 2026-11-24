@@ -237,10 +237,13 @@ mod tests {
         assert_eq!(axis_cross(&config, &Side::Left), Some(0.75));
         // A categorical perpendicular axis maps its category range.
         config.bottom_x.inverted = false;
-        config.bottom_x.categories = Some(vec![
-            crate::config::Category::new("a", "A"),
-            crate::config::Category::new("b", "B"),
-        ]);
+        config.bottom_x.categories = Some(
+            vec![
+                crate::config::Category::new("a", "A"),
+                crate::config::Category::new("b", "B"),
+            ]
+            .into(),
+        );
         config.left_y.cross_at = Some(0.5);
         assert_eq!(axis_cross(&config, &Side::Left), Some(0.5));
         // Polar charts draw no Cartesian axis lines.

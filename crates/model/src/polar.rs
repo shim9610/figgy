@@ -533,7 +533,7 @@ mod tests {
         let mut c = config.clone();
         c.bottom_x.inverted = true;
         assert!(c.validate_polar().is_err());
-        let category = || Some(vec![crate::config::Category::new("a", "A")]);
+        let category = || Some(vec![crate::config::Category::new("a", "A")].into());
         let mut c = config.clone();
         c.bottom_x.categories = category();
         assert_eq!(
@@ -602,7 +602,8 @@ mod tests {
         config.bottom_x.categories = Some(
             ["a", "b", "c", "d"]
                 .map(|id| crate::config::Category::new(id, id))
-                .to_vec(),
+                .to_vec()
+                .into(),
         );
         let mut polar = PolarOptions {
             zero_angle_degrees: 90.0,

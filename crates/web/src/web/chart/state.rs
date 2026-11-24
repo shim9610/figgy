@@ -88,6 +88,26 @@ impl FiggyChart {
         Ok(())
     }
 
+    /// The series as the shown chart stores them, its document kept as
+    /// stored: an edit of the series alone (a drag of a link exit or a
+    /// value label, #442) neither copies nor re-validates the document.
+    pub(in crate::web) fn replace_chart_series(
+        &mut self,
+        mut series: Vec<SeriesConfig>,
+    ) -> Result<(), JsValue> {
+        place_feynman_vertices(&mut series)?;
+        match self.monotonic {
+            Some(id) => self
+                .renderer
+                .monotonic_chart(id)
+                .and_then(|mut chart| chart.set_series(series)),
+            None => self.renderer.set_chart_series(self.chart_id, series),
+        }
+        .map_err(js_err)?;
+        self.sync_hitmap()?;
+        Ok(())
+    }
+
     pub(in crate::web) fn replace_chart_state(
         &mut self,
         config: renderer::Config,

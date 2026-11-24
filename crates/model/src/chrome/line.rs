@@ -1895,7 +1895,7 @@ mod label_clearance_tests {
             &config.left_y
         ));
         let mut both = config.left_y.clone();
-        both.categories = Some(Vec::new());
+        both.categories = Some(Vec::new().into());
         assert!(!yields_corner(
             &config.left_y,
             &Side::Left,

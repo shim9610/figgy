@@ -110,7 +110,7 @@ fn chart(mode: CategoryBarMode, n: usize, value: (f64, f64)) -> Chart {
         axis.tick = TickVisibility::None;
         axis.title_option.visible = false;
     }
-    config.bottom_x.categories = Some(categories(n));
+    config.bottom_x.categories = Some(categories(n).into());
     config.set_polar(Some(PolarOptions {
         zero_angle_degrees: 90.0,
         clockwise: true,

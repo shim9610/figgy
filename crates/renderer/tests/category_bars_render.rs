@@ -95,11 +95,14 @@ fn chart(mode: CategoryBarMode, direction: CategoryBarDirection, value: (f64, f6
     config.grid.show_minor_x = false;
     config.grid.show_minor_y = false;
     config.chart_title.visible = false;
-    let categories = Some(vec![
-        Category::new("a", "A"),
-        Category::new("b", "B"),
-        Category::new("c", "C"),
-    ]);
+    let categories = Some(
+        vec![
+            Category::new("a", "A"),
+            Category::new("b", "B"),
+            Category::new("c", "C"),
+        ]
+        .into(),
+    );
     match direction {
         CategoryBarDirection::Vertical => config.bottom_x.categories = categories,
         CategoryBarDirection::Horizontal => config.left_y.categories = categories,
@@ -1593,5 +1596,132 @@ fn a_forty_series_group_over_fifty_categories_draws_and_picks() {
         eprintln!(
             "stacked group of {members} series over {N} categories: export {draw:?}, pick {pick:?}"
         );
+    }
+}
+
+/// #442: category bars and range bars on a categorical axis export the
+/// same bytes at 1x and 2x after the interactions that used to copy the
+/// categories — a hover and a typed pick, a selection stepped forward and
+/// back, a title moved and put back, a resize and back — and when the
+/// document brings an equal copy of its category list instead of the
+/// shared one.
+#[test]
+fn categorical_frames_are_unchanged_by_interactions_and_shared_categories() {
+    const N: usize = 40;
+    let one: Vec<f64> = (0..N).map(|k| 1.0 + (k % 7) as f64).collect();
+    let two: Vec<f64> = (0..N).map(|k| 0.5 * (k % 3) as f64).collect();
+    let mut r = renderer(&one, &two);
+    r.enable_gpu_picking().unwrap();
+    let direction = CategoryBarDirection::Vertical;
+    let mut ranges = bars("one", BLUE, direction);
+    ranges.render_type = DataRenderType::RangeBars(renderer::RangeBarSeries {
+        color: BLUE,
+        style: flat_style(),
+        start: "two".into(),
+        whiskers: None,
+        color_by: renderer::data_config::RangeColor::Single,
+        progress: None,
+        connector: None,
+        slot_width: None,
+        labels: Default::default(),
+    });
+    for series in [vec![bars("one", RED, direction)], vec![ranges]] {
+        let mut chart = chart(CategoryBarMode::Grouped, direction, (0.0, 8.0));
+        {
+            let config = chart.config_mut();
+            config.chart_title.visible = true;
+            config.bottom_x.categories = Some(
+                (0..N)
+                    .map(|k| Category::new(format!("c{k}"), format!("C{k}")))
+                    .collect(),
+            );
+            config.picked_data = Some(DataSelectionsConfig {
+                visible: true,
+                refs: vec![PickedDataRef::HistogramBin {
+                    source_id: None,
+                    series_id: "one".into(),
+                    bin_index: 5,
+                    half: None,
+                }],
+                highlight_color: MAGENTA,
+                outline_width_px: 2.0,
+                point_radius_extra_px: 0.0,
+                contour_width_extra_px: 0.0,
+            });
+        }
+        let export = |r: &mut Renderer, config: &renderer::Config| {
+            [1.0f32, 2.0].map(|scale| {
+                r.export_rgba(
+                    renderer::ExportSource::chart(&Chart::new(config.clone()), &series),
+                    renderer::ExportOptions::panel(scale),
+                )
+                .block_on()
+                .unwrap()
+                .rgba
+            })
+        };
+        let before = export(&mut r, chart.config());
+        let id = r
+            .register_chart(chart.config().clone(), series.clone())
+            .unwrap();
+        r.set_chart_display(id, Some((WIDTH, HEIGHT))).unwrap();
+        let (display, panel, scale) = r.chart_display_config(id).unwrap();
+        let area = display.data_area().unwrap().0;
+        let request = renderer::GpuPickRequest {
+            // The middle of category 20's bar, at value 4 of 0..8: inside
+            // the bar (0 to 7) and the range (1 to 7).
+            canvas_position_px: [
+                area.x as f32 + area.width as f32 * (20.5 / N as f32),
+                area.y as f32 + area.height as f32 * 0.5,
+            ],
+            display_panel_px: panel,
+            display_scale: scale,
+            max_distance_px: 2.0,
+        };
+        r.pick_chart(id, request)
+            .unwrap()
+            .resolve_full_blocking()
+            .unwrap();
+        let picked = r
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve_full_blocking()
+            .unwrap();
+        assert!(picked.picked.is_some(), "the pick lands on a bar");
+        for dx in [1, -1] {
+            let mut config = r.chart_config(id).unwrap().clone();
+            assert!(
+                config
+                    .step_selection(r.chart_series(id).unwrap(), dx, 0, |_| Some(N))
+                    .unwrap()
+            );
+            r.set_chart_config(id, config).unwrap();
+        }
+        for offset in [12.0, -12.0] {
+            let mut config = r.chart_config(id).unwrap().clone();
+            config.chart_title.offset_x += offset;
+            r.set_chart_config(id, config).unwrap();
+        }
+        r.set_chart_display(id, Some((WIDTH / 2, HEIGHT / 2)))
+            .unwrap();
+        r.set_chart_display(id, Some((WIDTH, HEIGHT))).unwrap();
+        let stored = r.chart_config(id).unwrap().clone();
+        assert_eq!(&stored, chart.config());
+        assert!(std::sync::Arc::ptr_eq(
+            stored.bottom_x.categories.as_ref().unwrap(),
+            chart.config().bottom_x.categories.as_ref().unwrap()
+        ));
+        assert!(export(&mut r, &stored) == before, "after the interactions");
+        let mut copied = stored.clone();
+        copied.bottom_x.categories = Some(
+            stored
+                .bottom_x
+                .categories
+                .as_deref()
+                .unwrap()
+                .to_vec()
+                .into(),
+        );
+        assert!(export(&mut r, &copied) == before, "with a copied list");
     }
 }

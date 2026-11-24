@@ -235,11 +235,14 @@ fn subplot_config() -> (Config, (u32, u32)) {
 fn category_config() -> Config {
     let mut c = chart_config();
     c.colorbar = None;
-    c.bottom_x.categories = Some(vec![
-        crate::config::Category::new("a", "A"),
-        crate::config::Category::new("b", "B"),
-        crate::config::Category::new("c", "C"),
-    ]);
+    c.bottom_x.categories = Some(
+        vec![
+            crate::config::Category::new("a", "A"),
+            crate::config::Category::new("b", "B"),
+            crate::config::Category::new("c", "C"),
+        ]
+        .into(),
+    );
     c.bottom_x.cross_at = Some(0.0);
     c.left_y.min = -1.0;
     c.left_y.max = 2.0;
@@ -398,12 +401,15 @@ fn box_series() -> Vec<SeriesConfig> {
 fn radar_config() -> Config {
     let mut c = chart_config();
     c.colorbar = None;
-    c.bottom_x.categories = Some(vec![
-        crate::config::Category::new("a", "A"),
-        crate::config::Category::new("b", "B"),
-        crate::config::Category::new("c", "C"),
-        crate::config::Category::new("d", "D"),
-    ]);
+    c.bottom_x.categories = Some(
+        vec![
+            crate::config::Category::new("a", "A"),
+            crate::config::Category::new("b", "B"),
+            crate::config::Category::new("c", "C"),
+            crate::config::Category::new("d", "D"),
+        ]
+        .into(),
+    );
     c.left_y.min = 0.0;
     c.left_y.max = 1.0;
     c.set_polar(Some(crate::polar::PolarOptions {
@@ -942,6 +948,67 @@ fn every_leaf_that_changes_the_resident_bodies_changes_the_key() {
         tally.gaps.len(),
         tally.gaps.join("\n")
     );
+}
+
+/// #442: the key holds the category lists as shared storage. A document
+/// edit that keeps the list (the same `Arc`) and one that brings an equal
+/// copy keep the cached bodies and paint the same frame byte for byte, at
+/// display scale 1 and 2; a list whose ids change draws the bodies again.
+#[test]
+fn a_shared_or_copied_category_list_keeps_the_bodies_and_the_frame() {
+    let _fonts = font_lock();
+    for scale in [1u32, 2] {
+        let surface = (SIZE.0 * scale, SIZE.1 * scale);
+        let mut r = renderer(wgpu::TextureFormat::Rgba8Unorm, 1);
+        add_columns(&mut r);
+        let id = r
+            .register_chart(category_config(), category_series())
+            .unwrap();
+        r.set_chart_display(id, Some(surface)).unwrap();
+        let (placed, rect, display_scale) = r.chart_display_config(id).unwrap();
+        let placed = placed.into_owned();
+        let mut view = r
+            .create_chart_view_at(&Chart::new(placed), rect, display_scale)
+            .unwrap();
+        let frame = prepare(&mut r, id, &mut view);
+        let first = try_paint(&r, &frame, 1, surface).unwrap();
+        drop(frame);
+        let drawn = r.resident_display_serial(&view);
+        assert!(drawn.is_some(), "{scale}x: the bodies are cached");
+        let stored = r.chart_config(id).unwrap().clone();
+        let shared = stored.bottom_x.categories.clone().unwrap();
+        let copied: std::sync::Arc<[crate::config::Category]> = shared.to_vec().into();
+        assert!(!std::sync::Arc::ptr_eq(&shared, &copied));
+        for (name, categories) in [("shared", shared.clone()), ("copied", copied)] {
+            let mut config = stored.clone();
+            config.bottom_x.categories = Some(categories);
+            r.set_chart_config(id, config).unwrap();
+            let frame = prepare(&mut r, id, &mut view);
+            assert_eq!(
+                r.resident_display_serial(&view),
+                drawn,
+                "{scale}x {name}: the bodies were drawn again"
+            );
+            assert!(
+                try_paint(&r, &frame, 1, surface).unwrap() == first,
+                "{scale}x {name}: the frame changed"
+            );
+        }
+        // The override names category "c" by id: moving it to the first
+        // slot moves the restyled bar there.
+        let mut config = stored.clone();
+        let mut moved = shared.to_vec();
+        moved.swap(0, 2);
+        config.bottom_x.categories = Some(moved.into());
+        r.set_chart_config(id, config).unwrap();
+        let frame = prepare(&mut r, id, &mut view);
+        assert_ne!(
+            r.resident_display_serial(&view),
+            drawn,
+            "{scale}x: a changed list draws the bodies again"
+        );
+        assert!(try_paint(&r, &frame, 1, surface).unwrap() != first);
+    }
 }
 
 // The fit-token mutations reuse this panel's columns and series.
