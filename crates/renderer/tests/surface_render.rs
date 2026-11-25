@@ -2771,3 +2771,234 @@ fn a_3d_subplot_draws_a_mesh_surface_beside_a_flat_panel() {
         assert!(is_top_color(q), "{scale}x: flat peak at ({x}, {y}): {q:?}");
     }
 }
+
+// A shorter camera distance never pushes the box axes off the chart (#456).
+// The document is a 1000 x 800 temperature surface with a wide colourbar on
+// the right, as a host draws it: before the fix a distance below the
+// reference one magnified the box past the band its axes' labels and
+// titles were fitted in, and at azimuth -25, elevation 10 the z title fell
+// off the left edge.
+
+const FIT_TEXT: Color = Color {
+    r: 0.1412,
+    g: 0.2039,
+    b: 0.2863,
+    a: 1.0,
+};
+
+fn fit_axis(axis: &mut renderer::config::AxisOptions, range: (f64, f64, f64), title: &str) {
+    axis.min = range.0;
+    axis.max = range.1;
+    axis.major_spacing = range.2;
+    axis.minor_count = 4;
+    axis.label_style.font_size = 19.0;
+    axis.label_style.color = FIT_TEXT;
+    axis.label_style.label_visible = true;
+    axis.tick = renderer::config::TickVisibility::Outside;
+    axis.line_visible = true;
+    axis.line_color = Color {
+        a: 0.65,
+        ..FIT_TEXT
+    };
+    axis.line_offset = 0.0;
+    axis.line_width = 1.1;
+    axis.major_tick_length = 5.0;
+    axis.minor_tick_length = 3.0;
+    axis.out_margin = 8.0;
+    let font = axis.title_option.text.font.clone();
+    axis.title_option.text = renderer::text::RichText::plain(title, FIT_TEXT, 25.0, font);
+    axis.title_option.visible = true;
+}
+
+/// The temperature surface document at camera `az`, `el` and `distance`.
+fn temperature_chart(az: f64, el: f64, distance: f64, perspective: bool) -> Config {
+    let mut config = renderer::default::default_config();
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 1000,
+        height: 800,
+    });
+    config.legend.visible = false;
+    config.top_x.label_style.label_visible = false;
+    config.top_x.line_visible = false;
+    config.top_x.tick = renderer::config::TickVisibility::None;
+    config.top_x.title_option.visible = false;
+    config.top_x.out_margin = 8.0;
+    fit_axis(
+        &mut config.bottom_x,
+        (-68.125, -38.125, 5.0),
+        "Longitude (\u{b0})",
+    );
+    fit_axis(
+        &mut config.left_y,
+        (28.125, 43.125, 2.0),
+        "Latitude (\u{b0})",
+    );
+    fit_axis(
+        &mut config.right_y,
+        (18.3, 20.6, 0.5),
+        "Temperature (\u{b0}C)",
+    );
+    let font = config.chart_title.text.font.clone();
+    config.chart_title.text = renderer::text::RichText::plain(
+        "Gulf Stream \u{b7} triangulated temperature surface",
+        FIT_TEXT,
+        33.0,
+        font,
+    );
+    config.chart_title.top_margin = 57.0;
+    let mut bar = renderer::default::default_colorbar_options();
+    bar.side = renderer::layout::Side::Right;
+    bar.thickness_px = 18.0;
+    bar.gap_px = 24.0;
+    bar.length_frac = 0.82;
+    bar.colormap = ColorMap::Viridis;
+    bar.border_width = 0.0;
+    fit_axis(&mut bar.axis, (18.3, 20.6, 0.5), "Temperature (\u{b0}C)");
+    bar.axis.label_style.font_size = 18.0;
+    bar.axis.label_style.label_offset_x = 6.0;
+    bar.axis.major_tick_length = 4.0;
+    bar.axis.title_option.text.font_size = 23.0;
+    bar.axis.title_option.offset_x = 64.0;
+    bar.axis.out_margin = 72.0;
+    bar.axis.line_visible = false;
+    config.colorbar = Some(bar);
+    config.set_view_3d(Some(View3d {
+        azimuth_degrees: az,
+        elevation_degrees: el,
+        distance,
+        projection: if perspective {
+            renderer::view3d::Projection3d::Perspective
+        } else {
+            renderer::view3d::Projection3d::Orthographic
+        },
+        ..View3d::default()
+    }));
+    config
+}
+
+/// The drawn rects of the box axes' tick labels and titles of `config`.
+fn box_axis_text(config: &Config) -> Vec<(renderer::layout::Element, renderer::layout::RectF)> {
+    use renderer::layout::{Element, Side};
+    let mut out = Vec::new();
+    renderer::select::on_drawn_panel(config, |panel| {
+        for side in [Side::Bottom, Side::Left, Side::Right] {
+            for element in [Element::AxisLabel(side.clone()), Element::AxisTitle(side)] {
+                renderer::select::emit_element(
+                    panel,
+                    &element,
+                    &harness::measure(panel),
+                    &mut renderer::sink::Parts(&mut |part| {
+                        out.push((element.clone(), part.extent()));
+                    }),
+                );
+            }
+        }
+    });
+    out
+}
+
+// Every box-axis tick label and title lies inside the chart area at every
+// camera turn, height and distance, in both projections.
+#[test]
+fn box_axis_text_stays_inside_the_chart_at_every_camera() {
+    let mut outside = Vec::new();
+    for perspective in [false, true] {
+        for distance in [1.2, 2.0, 2.7, 3.0, 5.0] {
+            for az in (-180..=180).step_by(5) {
+                for el in (5..=60).step_by(5) {
+                    let config =
+                        temperature_chart(f64::from(az), f64::from(el), distance, perspective);
+                    let text = box_axis_text(&config);
+                    assert!(
+                        text.iter()
+                            .any(|(e, _)| matches!(e, renderer::layout::Element::AxisTitle(_))),
+                        "titles are placed"
+                    );
+                    for (element, r) in text {
+                        let past = (-r.x)
+                            .max(r.x + r.width - 1000.0)
+                            .max(-r.y)
+                            .max(r.y + r.height - 800.0);
+                        if past > 0.5 {
+                            outside.push((perspective, distance, az, el, element, past));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        outside.is_empty(),
+        "{} placements leave the chart, first: {:?}",
+        outside.len(),
+        outside.first()
+    );
+}
+
+/// Dark pixels of `image` inside `rect` (logical px at `scale`).
+fn ink_in(image: &RasterImage, rect: renderer::layout::RectF, scale: f32) -> usize {
+    let x0 = (rect.x * scale).floor().max(0.0) as u32;
+    let y0 = (rect.y * scale).floor().max(0.0) as u32;
+    let x1 = (((rect.x + rect.width) * scale).ceil() as u32).min(image.width);
+    let y1 = (((rect.y + rect.height) * scale).ceil() as u32).min(image.height);
+    let mut n = 0;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let at = ((y * image.width + x) * 4) as usize;
+            let p = &image.rgba[at..at + 3];
+            n += usize::from(p.iter().map(|c| u32::from(*c)).sum::<u32>() < 3 * 128);
+        }
+    }
+    n
+}
+
+// At the cameras that cut it before (azimuth -25, elevation 10,
+// orthographic; azimuth -170, elevation 5, perspective) and distance 2.7,
+// the z title is inked inside the chart at 1x and 2x.
+#[test]
+fn the_z_title_is_drawn_at_a_short_camera_distance() {
+    let mut r = renderer();
+    // The ridge over the document's longitudes and latitudes, its heights
+    // in the z range.
+    upload_grid(&mut r, 24, 24, |x, y| 18.3 + 2.3 * ridge(x, y));
+    for (id, lo, hi) in [("gx", -68.125, -38.125), ("gy", 28.125, 43.125)] {
+        let _ = r.remove_column(id);
+        r.add_column(
+            id,
+            &col((0..24).map(|i| lo + (hi - lo) * i as f64 / 23.0).collect()),
+        )
+        .unwrap();
+    }
+    let series = vec![surface_series(24, Shading::Interpolated, None)];
+    for (az, el, perspective) in [(-25.0, 10.0, false), (-170.0, 5.0, true)] {
+        let config = temperature_chart(az, el, 2.7, perspective);
+        let title = box_axis_text(&config)
+            .into_iter()
+            .find(|(e, _)| {
+                *e == renderer::layout::Element::AxisTitle(renderer::layout::Side::Right)
+            })
+            .expect("the z title is placed")
+            .1;
+        assert!(
+            title.x >= 0.0 && title.x + title.width <= 1000.0,
+            "az {az}: z title {title:?} inside the chart"
+        );
+        for scale in [1.0f32, 2.0] {
+            let image = r
+                .export_rgba(
+                    renderer::ExportSource::chart(&Chart::new(config.clone()), &series),
+                    renderer::ExportOptions::document(scale),
+                )
+                .block_on()
+                .unwrap();
+            save(&format!("surface_z_title_az{az}_{scale}x"), &image);
+            let ink = ink_in(&image, title, scale);
+            assert!(
+                ink as f32 > 200.0 * scale * scale,
+                "az {az} {scale}x: z title ink {ink}"
+            );
+        }
+    }
+}
