@@ -10,3 +10,43 @@ fn field_polar_lookup(t: vec2<f32>, lattice: u32, cartesian: FieldLookup) -> Fie
     out.hit = false;
     return out;
 }
+
+/// The basic twin of the polar foot-point walk (#453): the same walk
+/// state, and a walk that ends at once. Unreached: `contour_foot_begin`
+/// starts a walk only on a polar chart, which the basic set never draws.
+struct ContourFootWalk {
+    q: vec2<f32>,
+    /// Foot-point steps taken.
+    steps: u32,
+    /// Whether the current step has looked `q` up and is searching its cell.
+    searching: bool,
+    /// `field_lookup`'s point and its per-pixel derivatives.
+    lookup_t: vec2<f32>,
+    jac_x: vec2<f32>,
+    jac_y: vec2<f32>,
+    /// The axis being searched, 0 or 1; 2 once both cells are found.
+    axis: u32,
+    /// Whether `axis`'s search has begun.
+    begun: bool,
+    x: CellSearch,
+    y: CellSearch,
+    done: bool,
+};
+
+fn contour_foot_walk(q: vec2<f32>) -> ContourFootWalk {
+    var out: ContourFootWalk;
+    out.q = q;
+    out.done = false;
+    return out;
+}
+
+fn contour_foot_advance(
+    chart_t: vec2<f32>,
+    walk: ContourFootWalk,
+    level: f32,
+    reach: f32,
+) -> ContourFootWalk {
+    var out = walk;
+    out.done = true;
+    return out;
+}

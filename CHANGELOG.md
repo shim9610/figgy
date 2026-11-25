@@ -53,6 +53,40 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 `color` and the transition arrows' `color_by_wavelength` and
 `label_knockout`) are additive.
 
+- **Faster first frames on software GPUs: contours, 3D surfaces and
+  path arrows compile less shader code**
+  ([#453](https://github.com/shim9610/figgy/issues/453)). lavapipe and
+  SwiftShader generate code at a pipeline's first draw or dispatch, so every
+  byte an entry can reach costs first-frame time even when it never runs.
+  Frames, exports at 1x and 2x and picks are byte-identical; later frames are
+  unchanged. No API or wire change.
+  - The polar contour distance's foot-point walk (#208) moves from
+    `field_columnar.wgsl` into `common/field_polar.wgsl`, and
+    `field_polar_basic.wgsl` gets a twin that ends at once. The basic set's
+    contour entries (`fs_contour`, `fs_contour_labelled`, `fs_floor_contour`,
+    `pick_field_contour`), which a polar chart never uses, no longer compile
+    it. The streaming field module assembles the full set and is unchanged.
+  - The contour label selector (`anchor_select`) reads each kept label's
+    position and radius back from `anchors` instead of 1024-entry private
+    arrays: the same functions of the same record, so the same labels.
+  - A 3D chart no longer creates the planar field, contour, line and scatter
+    pipelines: its heatmaps draw as surfaces, its contours on the floor and
+    its height-column series through the 3D entries. The legend is part of
+    the CPU decoration raster and uses none of them.
+  - The arc scan's `seg_init_3d` entry is created only for a 3D chart's line
+    and has its own label (`figgy arc scan 3D pipeline`), so a browser frame
+    with a planar dashed line or path arrows no longer waits for it. The
+    prewarms, the preparations and the streaming runtime still create every
+    entry.
+  - First complete frame, median of three, before → after (4-core container;
+    headed Chromium 158 on SwiftShader under Xvfb; native lavapipe, Mesa
+    25.2.8): 2D field with labelled contours 12.8 s → 5.9 s and 8.5 s →
+    1.5 s; 3D surface 9.4 s → 5.1 s and 1.7 s → 1.3 s; polar heatmap with
+    contours 35.6 s → 36.3 s and 14.0 s → 7.0 s. TriSurface, the 3D quiver,
+    the 2D vector field and the path-arrow lines change by less than run-to-run
+    noise (at most 0.3 s). The polar contour fragment of the full set stays
+    heavy in the browser; it is the next issue.
+
 - **A large categorical axis validates and places its labels in linear
   time** ([#450](https://github.com/shim9610/figgy/issues/450)). Same
   results, same errors, same pixels.

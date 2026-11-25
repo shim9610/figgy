@@ -562,7 +562,7 @@ mod tests {
             }
         }
         // The count the docs give (SHADER_COMMON.md §4).
-        assert_eq!(shared_total, 5 + 4 + 2 + 4 + 1);
+        assert_eq!(shared_total, 5 + 4 + 2 + 4 + 3);
         // No other fragment reads a member of `AxisCuts` or builds one.
         let cut_fragments = super::SET_FRAGMENTS[0];
         for file in &files {
@@ -719,6 +719,96 @@ mod tests {
             .len(),
             2
         );
+    }
+
+    /// The names of the functions `name` calls, directly or not.
+    fn reached(module: &wgpu::naga::Module, name: &str) -> Vec<String> {
+        use wgpu::naga::{Block, Statement};
+        fn calls(block: &Block, out: &mut Vec<wgpu::naga::Handle<wgpu::naga::Function>>) {
+            for statement in block.iter() {
+                match statement {
+                    Statement::Call { function, .. } => out.push(*function),
+                    Statement::Block(inner) => calls(inner, out),
+                    Statement::If { accept, reject, .. } => {
+                        calls(accept, out);
+                        calls(reject, out);
+                    }
+                    Statement::Loop {
+                        body, continuing, ..
+                    } => {
+                        calls(body, out);
+                        calls(continuing, out);
+                    }
+                    Statement::Switch { cases, .. } => {
+                        for case in cases {
+                            calls(&case.body, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let body = module
+            .functions
+            .iter()
+            .find(|(_, f)| f.name.as_deref() == Some(name))
+            .map(|(_, f)| &f.body)
+            .or_else(|| {
+                module
+                    .entry_points
+                    .iter()
+                    .find(|entry| entry.name == name)
+                    .map(|entry| &entry.function.body)
+            })
+            .unwrap_or_else(|| panic!("{name}"));
+        let mut pending = Vec::new();
+        calls(body, &mut pending);
+        let mut seen = Vec::new();
+        while let Some(handle) = pending.pop() {
+            if seen.contains(&handle) {
+                continue;
+            }
+            seen.push(handle);
+            calls(&module.functions[handle].body, &mut pending);
+        }
+        seen.into_iter()
+            .filter_map(|handle| module.functions[handle].name.clone())
+            .collect()
+    }
+
+    /// The basic set's contour entries compile none of the polar contour
+    /// distance's foot-point walk (#453): their `contour_foot_advance` calls
+    /// nothing, where the full set's searches the cell
+    /// (`field_polar.wgsl`). Both reach it from every contour entry.
+    #[test]
+    fn the_basic_contour_entries_compile_no_polar_walk() {
+        let field = crate::data_render::FIELD_SHADER_BY_SET;
+        let basic = parse("field (basic)", field.basic.source);
+        let full = parse("field (full)", field.full.source);
+        for entry in [
+            "fs_contour",
+            "fs_contour_labelled",
+            "fs_floor_contour",
+            "pick_field_contour",
+        ] {
+            for module in [&basic, &full] {
+                assert!(
+                    reached(module, entry)
+                        .iter()
+                        .any(|f| f == "contour_foot_advance"),
+                    "{entry}"
+                );
+            }
+        }
+        assert_eq!(
+            reached(&basic, "contour_foot_advance"),
+            Vec::<String>::new()
+        );
+        let walk = reached(&full, "contour_foot_advance");
+        for searched in ["field_lookup", "locate_step", "contour_sample_cells"] {
+            assert!(walk.iter().any(|f| f == searched), "{searched}");
+        }
+        assert!(!field.basic.source.contains("CONTOUR_POLAR_FOOT_STEPS"));
     }
 
     fn parse(name: &str, source: &str) -> wgpu::naga::Module {

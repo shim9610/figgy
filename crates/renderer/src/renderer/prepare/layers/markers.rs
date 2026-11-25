@@ -65,8 +65,6 @@ impl PrepareContext<'_> {
                 x_h.len_values.min(y_h.len_values),
                 &mut lookup,
             )?;
-            let scatter_pick =
-                scatter_pick.ok_or(FiggyError::internal("prepare ensured scatter pipeline"))?;
             // A ternary series' markers: the ternary entries with its
             // third component.
             let ternary_c = rt.ternary_c_column().map(&mut lookup).transpose()?;
@@ -101,7 +99,11 @@ impl PrepareContext<'_> {
                             FiggyError::internal("prepare ensured mapped scatter pipeline"),
                         )?
                     }
-                    (None, None, false) => scatter_pick.pipeline,
+                    (None, None, false) => {
+                        scatter_pick
+                            .ok_or(FiggyError::internal("prepare ensured scatter pipeline"))?
+                            .pipeline
+                    }
                 },
                 third: scatter_3d.as_ref().map(|(z, _)| *z).or(ternary_c),
                 view3d: scatter_3d.map(|(_, binding)| binding),
@@ -116,7 +118,9 @@ impl PrepareContext<'_> {
                 style_index,
                 color_value,
                 size_value,
-                texture_bg: scatter_pick.texture_bg,
+                // A 3D marker draws through its 3D entry only, so a 3D chart
+                // compiles no planar scatter pipeline (#453).
+                texture_bg: scatter_pick.and_then(|pick| pick.texture_bg),
             })
         } else {
             None
