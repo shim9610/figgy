@@ -29,7 +29,10 @@ use crate::{Color, ColumnId};
 pub const ORBIT_DEGREES_PER_PX: f64 = 0.5;
 
 /// The eye distance the box is fitted at, in half-diagonals of the box:
-/// [`View3d::distance`] below it magnifies, above it shrinks.
+/// [`View3d::distance`] above it shrinks the box. A distance below it
+/// never enlarges the box past the fit, so the box axes' ticks, labels
+/// and titles stay inside the chart area; in perspective it still
+/// foreshortens more.
 pub const REFERENCE_DISTANCE: f64 = 3.0;
 
 /// The allowed eye distances, in half-diagonals of the box.
@@ -50,8 +53,8 @@ pub enum Projection3d {
     Orthographic,
     /// A pinhole at [`View3d::distance`]: nearer parts are larger, and a
     /// shorter distance foreshortens more. The box is fitted to the data
-    /// area at [`REFERENCE_DISTANCE`], so the distance alone sets the
-    /// perspective.
+    /// area at [`REFERENCE_DISTANCE`], or at the distance itself when it is
+    /// shorter, so the distance alone sets the perspective.
     Perspective,
 }
 
@@ -68,7 +71,10 @@ pub struct View3d {
     pub elevation_degrees: f64,
     /// The eye distance in half-diagonals of the box,
     /// [`DISTANCE_RANGE`]; [`REFERENCE_DISTANCE`] (the default) fits the
-    /// box in the data area.
+    /// box in the data area. A larger distance shrinks the box; a smaller
+    /// one keeps the fitted size (an orthographic view looks as at the
+    /// reference distance, a perspective one foreshortens more), so the
+    /// box axes never leave the chart area.
     pub distance: f64,
     pub projection: Projection3d,
     /// The relative x : y : z box lengths, each in [`BOX_ASPECT_RANGE`].
@@ -345,8 +351,10 @@ impl Config {
     /// The camera matrix of this 3D chart, when it is one and has a data
     /// area: box coordinates to chart pixels and depth. The box is fitted
     /// at [`REFERENCE_DISTANCE`] so its eight corners sit inside the data
-    /// area less a band for the axes' ticks, labels and titles, centred; the
-    /// camera's distance then zooms.
+    /// area less a band for the axes' ticks, labels and titles, centred; a
+    /// longer camera distance then zooms out. A shorter one is fitted at
+    /// that distance itself: it never enlarges the box into the band,
+    /// which would push the axes' labels and titles off the chart.
     pub fn view_matrix(&self) -> Option<ViewMatrix> {
         let view = self.view_3d()?;
         let area = self.data_area().ok()?.0;
@@ -355,7 +363,7 @@ impl Config {
                 .map(|k| axis_band(box_axis(self, k)))
                 .fold(0.0f32, f32::max),
         );
-        let fit = view.camera(REFERENCE_DISTANCE);
+        let fit = view.camera(view.distance.min(REFERENCE_DISTANCE));
         let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
         for t in View3d::corners() {
             let row = |r: &[f64; 4]| r[0] * t[0] + r[1] * t[1] + r[2] * t[2] + r[3];
@@ -509,7 +517,9 @@ impl Config {
 
     /// Zoom the camera of a 3D chart: the eye distance is divided by
     /// `factor` and clamped to [`DISTANCE_RANGE`]. Returns whether it
-    /// changed.
+    /// changed. Zooming out shrinks the box; zooming in below
+    /// [`REFERENCE_DISTANCE`] keeps it at its fitted size (a perspective
+    /// view foreshortens more), so the box axes stay on the chart.
     pub fn zoom_view(&mut self, factor: f64) -> bool {
         let Some(view) = self.view_3d_mut() else {
             return false;
@@ -844,11 +854,23 @@ mod tests {
     fn zoom_and_orbit_move_the_camera_and_clamp() {
         let mut config = chart();
         let before = config.project_3d([1.0, 1.0, 1.0]).unwrap();
-        assert!(config.zoom_view(2.0));
-        let after = config.project_3d([1.0, 1.0, 1.0]).unwrap();
         let centre = config.project_3d([0.5, 0.5, 0.5]).unwrap();
         let reach = |p: [f64; 3]| (p[0] - centre[0]).hypot(p[1] - centre[1]);
-        assert!(reach(after) > reach(before) * 1.5, "zooming in magnifies");
+        // Zooming out shrinks the box.
+        let mut out = config.clone();
+        assert!(out.zoom_view(0.5));
+        let shrunk = out.project_3d([1.0, 1.0, 1.0]).unwrap();
+        assert!(reach(shrunk) < reach(before) * 0.75, "zooming out shrinks");
+        // Zooming in below the reference distance keeps the fitted size,
+        // so the box axes stay on the chart.
+        assert!(config.zoom_view(2.0));
+        let after = config.project_3d([1.0, 1.0, 1.0]).unwrap();
+        assert!(
+            (reach(after) - reach(before)).abs() < 1e-6,
+            "zooming in keeps the fit: {} vs {}",
+            reach(after),
+            reach(before)
+        );
         assert!(config.zoom_view(1000.0));
         assert_eq!(config.view_3d().unwrap().distance, 1.2);
         assert!(!config.zoom_view(1000.0), "clamped: nothing changes");
