@@ -1,0 +1,19 @@
+[package]
+name = "figgy-egui-examples"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+description = "figgy charts embedded in egui/eframe hosts (examples only)."
+
+# Standalone example crate (#459): not a workspace member and not a renderer
+# feature, so figgy-renderer carries no egui dependency. It only consumes the
+# renderer's public API. egui-wgpu must use the same wgpu major as figgy.
+[workspace]
+
+[dependencies]
+renderer = { package = "figgy-renderer", path = "../../crates/renderer" }
+eframe = { version = "0.36", default-features = false, features = ["wgpu", "x11", "wayland"] }
+egui = "0.36"
+egui-wgpu = "0.36"
+wgpu = "30"

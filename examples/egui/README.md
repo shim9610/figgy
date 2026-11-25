@@ -1,0 +1,33 @@
+# figgy egui examples
+
+figgy charts embedded in egui and eframe hosts. This is a standalone Cargo
+workspace with its own `Cargo.lock`, like `tools/playground`. It is not a
+workspace member, not a renderer feature, and not part of any published
+package, so figgy-renderer itself carries no egui dependency. The examples
+use only the renderer's public API.
+
+egui-wgpu is built on one wgpu major version. It must match the one figgy
+uses (wgpu 30 for figgy 0.19), so these examples use egui 0.36.
+
+## Run
+
+From the repository root:
+
+```sh
+cargo run --locked --manifest-path examples/egui/Cargo.toml --example egui_embed
+cargo run --locked --manifest-path examples/egui/Cargo.toml --example radial_editor
+cargo run --locked --release --manifest-path examples/egui/Cargo.toml --example ssot_lab
+cargo run --locked --release --manifest-path examples/egui/Cargo.toml --example streaming_capacity_demo
+cargo run --locked --manifest-path examples/egui/Cargo.toml --example constellation_lab
+```
+
+| Example | What it shows |
+| --- | --- |
+| `egui_embed` | Three panels drawn in egui paint callbacks, with pointer input and PNG export |
+| `radial_editor` | Selecting, editing and dragging the parts of a radial chart |
+| `ssot_lab` | Four charts edited live, one per draw style, sharing one X column |
+| `streaming_capacity_demo` | Lazily generated data through `ColumnSource`; add `-- --benchmark` for timings |
+| `constellation_lab` | Every `ConstellationOptions` field bound to a slider |
+
+The [example index](../../crates/renderer/examples/README.md#interactive-examples)
+describes each one in more detail.

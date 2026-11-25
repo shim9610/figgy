@@ -619,8 +619,10 @@ new materials to the match when upgrading.
 
 ## Native editor example
 
+Run it from the repository root; it is in the [egui example crate](https://github.com/shim9610/figgy/blob/master/examples/egui).
+
 ```bash
-cargo run -p figgy-renderer --example radial_editor --features egui_demo
+cargo run --locked --manifest-path examples/egui/Cargo.toml --example radial_editor
 ```
 
 Click a slice or select it in the list on the left, then change its color,
@@ -1191,8 +1193,10 @@ JSON의 누락 필드 호환과 Rust 소스 호환은 다르다. 이전 `RadialS
 
 ### 네이티브 편집 예제
 
+저장소 루트에서 실행한다. 예제는 [egui 예제 크레이트](https://github.com/shim9610/figgy/blob/master/examples/egui)에 있다.
+
 ```bash
-cargo run -p figgy-renderer --example radial_editor --features egui_demo
+cargo run --locked --manifest-path examples/egui/Cargo.toml --example radial_editor
 ```
 
 조각을 클릭하거나 왼쪽 목록에서 선택한 뒤 색, 개별 스타일, 표기 내용을 바꿀 수 있다.

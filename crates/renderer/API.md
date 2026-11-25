@@ -18,7 +18,8 @@ local checkout, replace `version` with a `path` to `crates/renderer` or
 
 The renderer re-exports model types. Enable its `serde` feature to serialize
 those types; consumers do not need to name `figgy-model` merely to enable serde.
-`egui_demo` enables optional GUI example dependencies. Default features do not
+The crate has no GUI dependency, optional or not: the egui examples live in the
+separate [egui example crate](https://github.com/shim9610/figgy/blob/master/examples/egui) of the source repository. Default features do not
 require a windowing or GUI framework. The `figgy` WASM wrapper, figgy's browser
 product, is a separate consumer and has `publish = false` for the Rust registry.
 
@@ -520,8 +521,8 @@ subplots. See the
 
 This radial example accepts the host GPU pair, selects from a displayed frame,
 changes a slice color and exports the resulting model. It is compiled as a doctest;
-the `radial_editor`
-example (`--features egui_demo`) demonstrates render-pass submission and pointer
+the [`radial_editor`](https://github.com/shim9610/figgy/blob/master/examples/egui/examples/radial_editor.rs)
+example in the egui example crate demonstrates render-pass submission and pointer
 events.
 
 ```rust,no_run

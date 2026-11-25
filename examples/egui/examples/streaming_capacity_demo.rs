@@ -4,7 +4,7 @@
 //! the demo never allocates a dataset-sized CPU buffer. Every point is drawn.
 //!
 //! Run:
-//! `cargo run --release -p figgy-renderer --example streaming_capacity_demo --features egui_demo`
+//! `cargo run --locked --release --manifest-path examples/egui/Cargo.toml --example streaming_capacity_demo`
 //! Add `-- --benchmark` to run the default 1 GiB virtual source once and print measured timings.
 
 use std::sync::atomic::{AtomicU64, Ordering};
