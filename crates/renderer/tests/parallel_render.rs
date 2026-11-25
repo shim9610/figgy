@@ -652,7 +652,12 @@ fn the_fit_takes_each_axis_range_from_its_column_statistics() {
         .unwrap();
     assert_eq!(layered.config().parallel().unwrap().axes[3].max, 4.0);
     assert_eq!(
-        layered.config().bottom_x.categories.as_ref().map(Vec::len),
+        layered
+            .config()
+            .bottom_x
+            .categories
+            .as_deref()
+            .map(<[_]>::len),
         Some(AXES)
     );
 }

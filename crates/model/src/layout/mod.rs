@@ -4,6 +4,7 @@ mod fit;
 mod geometry;
 mod nudge;
 mod rect;
+mod snap;
 
 pub use fit::FitStrategy;
 pub(crate) use fit::PanelAreas;
@@ -18,6 +19,9 @@ pub use geometry::{
 };
 pub use nudge::{Element, NudgeReject, NudgeResult};
 pub use rect::{ChartArea, DataArea, Rect, RectF, inset_paint_order, inset_parent};
+pub use snap::{
+    DragSnap, SNAP_THRESHOLD_PX, SnapAreas, SnapGuide, SnapGuides, SnapProposal, SnapTarget,
+};
 
 pub use crate::sink::DrawnPart;
 

@@ -1607,7 +1607,7 @@ fn the_grotrian_theme_writes_the_diagram_s_texts_and_continuum() {
     let column = levels.levels[0].column.clone();
     let mut category = Category::new(column.clone(), "");
     category.rich_label = Some(text("column"));
-    config.bottom_x.categories = Some(vec![category, Category::new("plain", "Plain")]);
+    config.bottom_x.categories = Some(vec![category, Category::new("plain", "Plain")].into());
     config.bottom_x.category_groups = Some(CategoryGroups {
         groups: vec![CategoryGroup {
             label: text("group"),

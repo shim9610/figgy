@@ -15,7 +15,9 @@ use super::*;
 /// (1 for a config drawn as stored): a broken axis snaps its piece frames
 /// to whole logical pixels through it (#205).
 /// `corners` are the axes whose tick labels share this axis' corners
-/// ([`LabelClearance::corners`]).
+/// ([`LabelClearance::corners`]). `plan` is the axis' timestamp plan in
+/// this pass ([`timestamp_tick_plan`] of `axis`, `side`, `plot` and
+/// `measure`), read by the ticks and the labels alike (#444).
 #[allow(clippy::too_many_arguments)]
 pub fn emit_axis(
     axis: &AxisOptions,
@@ -24,33 +26,26 @@ pub fn emit_axis(
     cross: Option<f32>,
     across: Option<&AxisOptions>,
     corners: [Option<CornerAxis<'_>>; 2],
+    plan: Option<&TimestampTickPlan>,
     measure: &dyn MeasureText,
     sink: &mut dyn Sink,
     scale: f32,
 ) {
-    emit_axis_strokes(
-        axis,
-        side.clone(),
-        plot,
-        cross,
-        across,
-        measure,
-        sink,
-        scale,
-    );
+    emit_axis_strokes(axis, side.clone(), plot, cross, across, plan, sink, scale);
     let clearance = LabelClearance {
         cross,
         scale,
         corners,
     };
-    emit_axis_tick_labels_clear_of(axis, side, plot, &clearance, measure, sink);
+    emit_axis_tick_labels_clear_of(axis, side, plot, &clearance, plan, measure, sink);
 }
 
 /// The line and the major and minor ticks of `axis` on `side`
 /// (`Element::Axis`), from the walk [`each_axis_stroke`] reports, offset by
 /// the detached-axis translation. Tick stroker tags share one running index
 /// per side (majors first, minors after) so every tick gets its own wobble
-/// shape. `scale` is the scale the pixel values carry ([`emit_axis`]).
+/// shape. `plan` is the axis' timestamp plan in this pass and `scale` the
+/// scale the pixel values carry ([`emit_axis`]).
 #[allow(clippy::too_many_arguments)]
 pub fn emit_axis_strokes(
     axis: &AxisOptions,
@@ -58,12 +53,12 @@ pub fn emit_axis_strokes(
     plot: &RectF,
     cross: Option<f32>,
     across: Option<&AxisOptions>,
-    measure: &dyn MeasureText,
+    plan: Option<&TimestampTickPlan>,
     sink: &mut dyn Sink,
     scale: f32,
 ) {
     let (off_x, off_y) = axis_offset(side.clone(), axis.line_offset);
-    let majors = major_tick_values_for_axis(axis, side.clone(), plot, measure);
+    let majors = major_tick_values_of(axis, plan);
     let dash = axis.line_style.pattern();
     each_axis_stroke(
         axis,
@@ -71,7 +66,7 @@ pub fn emit_axis_strokes(
         plot,
         cross,
         across,
-        measure,
+        plan,
         &majors,
         scale,
         |stroke, a, b| {
@@ -123,7 +118,16 @@ pub fn emit_axis_tick_labels(
     measure: &dyn MeasureText,
     sink: &mut dyn Sink,
 ) {
-    emit_axis_tick_labels_clear_of(axis, side, plot, &LabelClearance::LONE, measure, sink);
+    let plan = timestamp_tick_plan(axis, side.clone(), plot, measure);
+    emit_axis_tick_labels_clear_of(
+        axis,
+        side,
+        plot,
+        &LabelClearance::LONE,
+        plan.as_ref(),
+        measure,
+        sink,
+    );
 }
 
 /// An axis across a rectangular chart's axis whose tick labels share one
@@ -134,6 +138,9 @@ pub struct CornerAxis<'a> {
     pub axis: &'a AxisOptions,
     pub side: &'a Side,
     pub cross: Option<f32>,
+    /// The axis' timestamp plan in this pass ([`timestamp_tick_plan`],
+    /// #444).
+    pub plan: Option<&'a TimestampTickPlan>,
 }
 
 /// What the tick labels of an axis keep clear of (#272): the slashes of its
@@ -185,12 +192,14 @@ impl LabelClearance<'static> {
 /// that look separate are kept.
 ///
 /// Drawing, hit testing, selection and auto layout's measurement all come
-/// through here, so they see the same labels.
+/// through here, so they see the same labels. `plan` is the axis' timestamp
+/// plan in this pass ([`emit_axis`]).
 pub fn emit_axis_tick_labels_clear_of(
     axis: &AxisOptions,
     side: Side,
     plot: &RectF,
     clearance: &LabelClearance<'_>,
+    plan: Option<&TimestampTickPlan>,
     measure: &dyn MeasureText,
     sink: &mut dyn Sink,
 ) {
@@ -198,7 +207,7 @@ pub fn emit_axis_tick_labels_clear_of(
         emit_category_tick_labels(axis, categories, side, plot, measure, sink);
         return;
     }
-    let majors = major_tick_values_for_axis(axis, side.clone(), plot, measure);
+    let majors = major_tick_values_of(axis, plan);
     let offset = axis_offset(side.clone(), axis.line_offset);
     // Each corner box with its axis' font, which its half of the visual
     // gap is read from.
@@ -229,6 +238,7 @@ pub fn emit_axis_tick_labels_clear_of(
             clearance.scale,
             measure,
             &majors,
+            plan,
             |_, _, rest| {
                 count += 1;
                 yielding += usize::from(touching(&rest));
@@ -244,6 +254,7 @@ pub fn emit_axis_tick_labels_clear_of(
         clearance.scale,
         measure,
         &majors,
+        plan,
         |text, pos, rest| {
             if yields && touching(&rest) {
                 return;
@@ -279,51 +290,60 @@ pub fn each_kept_axis_tick_label(
     scale: f32,
     measure: &dyn MeasureText,
     majors: &[f64],
+    plan: Option<&TimestampTickPlan>,
     mut each: impl FnMut(TickText<'_>, (f32, f32), RectF),
 ) {
     let ls = &axis.label_style;
     let keep = ls.clearance == LabelClearanceMode::Keep;
-    each_axis_tick_label(axis, side.clone(), plot, measure, majors, |text, pos| {
-        let (origin, extents) = tick_label_placement(&text, pos, side.clone(), axis, measure);
-        let gap_in = crate::layout::LABEL_GAP * (1.0 - ls.font_size / LABEL_GAP_FONT);
-        let unscaled = match side {
-            Side::Bottom => (0.0, -gap_in),
-            Side::Top => (0.0, gap_in),
-            Side::Left => (gap_in, 0.0),
-            Side::Right => (-gap_in, 0.0),
-        };
-        let drawn = crate::layout::label_rect(
-            (
-                origin.0 - ls.label_offset_x + unscaled.0,
-                origin.1 - ls.label_offset_y + unscaled.1,
-            ),
-            extents,
-        );
-        // Its height read from the font, from the edge or the middle that
-        // is placed by the tick: glyph extents round to whole pixels at
-        // each scale, the font size does not.
-        let height = label_decision_height(ls.font_size);
-        let y = match side {
-            Side::Bottom => drawn.y,
-            Side::Top => drawn.y + drawn.height - height,
-            Side::Left | Side::Right => drawn.y + (drawn.height - height) * 0.5,
-        };
-        let rest = RectF {
-            x: drawn.x,
-            y,
-            width: drawn.width,
-            height,
-        };
-        let mut clear = true;
-        if !keep {
-            each_break_mark_box(axis, &side, plot, cross, scale, |mark| {
-                clear &= !boxes_touch((&rest, ls.font_size), (&mark, ls.font_size));
-            });
-        }
-        if clear {
-            each(text, pos, rest);
-        }
-    });
+    each_axis_tick_label(
+        axis,
+        side.clone(),
+        plot,
+        measure,
+        majors,
+        plan,
+        |text, pos| {
+            let (origin, extents) = tick_label_placement(&text, pos, side.clone(), axis, measure);
+            let gap_in = crate::layout::LABEL_GAP * (1.0 - ls.font_size / LABEL_GAP_FONT);
+            let unscaled = match side {
+                Side::Bottom => (0.0, -gap_in),
+                Side::Top => (0.0, gap_in),
+                Side::Left => (gap_in, 0.0),
+                Side::Right => (-gap_in, 0.0),
+            };
+            let drawn = crate::layout::label_rect(
+                (
+                    origin.0 - ls.label_offset_x + unscaled.0,
+                    origin.1 - ls.label_offset_y + unscaled.1,
+                ),
+                extents,
+            );
+            // Its height read from the font, from the edge or the middle that
+            // is placed by the tick: glyph extents round to whole pixels at
+            // each scale, the font size does not.
+            let height = label_decision_height(ls.font_size);
+            let y = match side {
+                Side::Bottom => drawn.y,
+                Side::Top => drawn.y + drawn.height - height,
+                Side::Left | Side::Right => drawn.y + (drawn.height - height) * 0.5,
+            };
+            let rest = RectF {
+                x: drawn.x,
+                y,
+                width: drawn.width,
+                height,
+            };
+            let mut clear = true;
+            if !keep {
+                each_break_mark_box(axis, &side, plot, cross, scale, |mark| {
+                    clear &= !boxes_touch((&rest, ls.font_size), (&mark, ls.font_size));
+                });
+            }
+            if clear {
+                each(text, pos, rest);
+            }
+        },
+    );
 }
 
 /// The tick label font size [`crate::layout::LABEL_GAP`] is set for: the
@@ -373,7 +393,7 @@ fn corner_label_box(
         return None;
     }
     let across = corner.axis;
-    let majors = major_tick_values_for_axis(across, corner.side.clone(), plot, measure);
+    let majors = major_tick_values_of(across, corner.plan);
     // How far a box reaches toward `side`: the larger, the nearer.
     let reach = |b: &RectF| match side {
         Side::Left => -b.x,
@@ -390,6 +410,7 @@ fn corner_label_box(
         scale,
         measure,
         &majors,
+        corner.plan,
         |_, _, rest| {
             if nearest.is_none_or(|b| reach(&rest) > reach(&b)) {
                 nearest = Some(rest);
@@ -518,7 +539,8 @@ pub enum AxisStroke {
 /// a broken axis' piece frames stop at its gaps (#249). `scale` is the
 /// scale the pixel values carry: a broken axis' piece frames are snapped to
 /// whole logical pixels, then scaled (#205), so a 2x frame is the 1x frame
-/// doubled; nothing else reads it.
+/// doubled; nothing else reads it. `plan` is the axis' timestamp plan in
+/// this pass ([`emit_axis`]), whose minors are drawn.
 #[allow(clippy::too_many_arguments)]
 pub fn each_axis_stroke(
     axis: &AxisOptions,
@@ -526,7 +548,7 @@ pub fn each_axis_stroke(
     plot: &RectF,
     cross: Option<f32>,
     across: Option<&AxisOptions>,
-    measure: &dyn MeasureText,
+    plan: Option<&TimestampTickPlan>,
     majors: &[f64],
     scale: f32,
     mut each: impl FnMut(AxisStroke, (f32, f32), (f32, f32)),
@@ -552,7 +574,7 @@ pub fn each_axis_stroke(
     if axis.tick == TickVisibility::None {
         return;
     }
-    let minors = minor_tick_values_for_axis(axis, side.clone(), plot, measure);
+    let minors = minor_tick_values_of(axis, plan);
     let ticks = majors
         .iter()
         .map(|v| (*v, axis.major_tick_length))
@@ -1042,7 +1064,7 @@ mod break_tests {
                 &PLOT,
                 None,
                 None,
-                &NoMeasure,
+                None,
                 &majors,
                 1.0,
                 |stroke, a, b| match stroke {
@@ -1138,7 +1160,7 @@ mod break_tests {
         crate::chrome::grid::emit_grid(
             &config,
             &PLOT,
-            &NoMeasure,
+            [None, None],
             &mut crate::sink::Parts(&mut |part| {
                 if let crate::sink::DrawnPart::Segment { a, b, .. } = part {
                     segments.push((a, b));
@@ -1251,7 +1273,7 @@ mod break_tests {
                     &PLOT,
                     None,
                     None,
-                    &NoMeasure,
+                    None,
                     &[],
                     1.0,
                     |stroke, a, b| {
@@ -1321,7 +1343,7 @@ mod break_tests {
                 &PLOT,
                 None,
                 Some(across),
-                &NoMeasure,
+                None,
                 &[],
                 1.0,
                 |stroke, a, b| {
@@ -1475,11 +1497,20 @@ mod label_clearance_tests {
     fn rest(config: &Config, side: Side) -> Vec<RectF> {
         let axis = axis_on(config, &side);
         let plot = data_area_rect(&config.data_area().unwrap());
-        let majors = major_tick_values_for_axis(axis, side.clone(), &plot, &Wide);
+        let plan = timestamp_tick_plan(axis, side.clone(), &plot, &Wide);
+        let majors = major_tick_values_of(axis, plan.as_ref());
         let mut out = Vec::new();
-        each_kept_axis_tick_label(axis, side, &plot, None, 1.0, &Wide, &majors, |_, _, r| {
-            out.push(r)
-        });
+        each_kept_axis_tick_label(
+            axis,
+            side,
+            &plot,
+            None,
+            1.0,
+            &Wide,
+            &majors,
+            plan.as_ref(),
+            |_, _, r| out.push(r),
+        );
         out
     }
 
@@ -1864,7 +1895,7 @@ mod label_clearance_tests {
             &config.left_y
         ));
         let mut both = config.left_y.clone();
-        both.categories = Some(Vec::new());
+        both.categories = Some(Vec::new().into());
         assert!(!yields_corner(
             &config.left_y,
             &Side::Left,

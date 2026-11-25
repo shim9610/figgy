@@ -591,6 +591,16 @@ pub struct Config {
         serde(default, skip_serializing_if = "LayoutState::is_fixed")
     )]
     pub layout_state: LayoutState,
+    /// Whether a decoration drag snaps to the chart and plot centres, its
+    /// axis' centre line and the other movable elements, with guides shown
+    /// while it drags (#440). `None` (key absent in JSON) is on; read it
+    /// with [`Config::snaps_while_dragging`]. An interaction option: drawn
+    /// and exported pixels do not depend on it.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub snap_to_guides: Option<bool>,
 }
 
 /// Who owns a chart's layout: the margins, axis bands, title band and
@@ -635,6 +645,24 @@ impl LayoutState {
 }
 
 impl Config {
+    /// Whether decoration drags snap to guides ([`Self::snap_to_guides`],
+    /// #440): on unless the option is `Some(false)`.
+    pub fn snaps_while_dragging(&self) -> bool {
+        self.snap_to_guides.unwrap_or(true)
+    }
+
+    /// The areas a decoration drag snaps to the centres of (#440): the
+    /// chart area and, where the chart has one, its data area.
+    pub fn snap_areas(&self) -> crate::layout::SnapAreas {
+        crate::layout::SnapAreas {
+            chart: Some(crate::layout::RectF::from_rect(&self.chart_area.0)),
+            plot: self
+                .data_area()
+                .ok()
+                .map(|area| crate::layout::RectF::from_rect(&area.0)),
+        }
+    }
+
     /// Multiply every **pixel-based visual dim** by `scale`. Data ranges, colors,
     /// and scale enums are untouched. For resolution-invariant high-DPI export.
     pub fn scaled(&self, scale: f32) -> Self {
@@ -679,6 +707,8 @@ impl Config {
             background: _,
             // Who owns the layout: set below.
             layout_state,
+            // An interaction option: not a dimension.
+            snap_to_guides: _,
         } = self;
         // A scaled config is a drawing of the layout at another scale (an
         // export, a display): it is drawn as it is, never fitted again at
@@ -939,9 +969,17 @@ fn scale_category_text(axis: &mut AxisOptions, s: f32) {
     // Whole rich texts, segment size overrides included, as every other
     // rich text scales (`scale_rich_text`): a label whose segments state
     // their size is drawn at 2x as its 1x scaled.
-    for category in axis.categories.iter_mut().flatten() {
-        if let Some(rich) = &mut category.rich_label {
-            scale_rich_text(rich, s);
+    // The shared list is copied only when a category has rich text to
+    // scale (#442): a plain categorical axis scales without touching it.
+    if let Some(categories) = axis
+        .categories
+        .as_mut()
+        .filter(|categories| categories.iter().any(|c| c.rich_label.is_some()))
+    {
+        for category in std::sync::Arc::make_mut(categories) {
+            if let Some(rich) = &mut category.rich_label {
+                scale_rich_text(rich, s);
+            }
         }
     }
     if let Some(groups) = &mut axis.category_groups {
@@ -1153,7 +1191,12 @@ fn axis_text_sizes(to: &mut AxisOptions, from: Option<&AxisOptions>, s: f32) {
         from.map(|a| &a.title_option.text),
         s,
     );
-    for (index, category) in to.categories.iter_mut().flatten().enumerate() {
+    let rich_categories = to
+        .categories
+        .as_mut()
+        .filter(|categories| categories.iter().any(|c| c.rich_label.is_some()))
+        .map(std::sync::Arc::make_mut);
+    for (index, category) in rich_categories.into_iter().flatten().enumerate() {
         if let Some(rich) = category.rich_label.as_mut() {
             let from = from
                 .and_then(|a| a.categories.as_ref()?.get(index))
@@ -1392,7 +1435,7 @@ mod category_text_scale_tests {
         }
         let mut category = Category::new("a", "4p");
         category.rich_label = Some(label.clone());
-        cfg.bottom_x.categories = Some(vec![category, Category::new("b", "b")]);
+        cfg.bottom_x.categories = Some(vec![category, Category::new("b", "b")].into());
         cfg.bottom_x.category_groups = Some(CategoryGroups {
             groups: vec![CategoryGroup {
                 label,

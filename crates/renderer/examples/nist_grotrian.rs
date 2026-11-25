@@ -421,7 +421,7 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
         ],
         offset: [0.0; 2],
     });
-    c.config_mut().bottom_x.categories = Some(categories);
+    c.config_mut().bottom_x.categories = Some(categories.into());
     // Text read beside the levels: energy ticks at 20 px, the title at 22.
     let config = c.config_mut();
     config.left_y.label_style.font_size = 20.0;

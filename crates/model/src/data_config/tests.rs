@@ -1298,7 +1298,7 @@ mod category_bar_tests {
 
     pub(crate) fn chart(n: usize) -> Config {
         let mut config = crate::defaults::config();
-        config.bottom_x.categories = Some(categories(n));
+        config.bottom_x.categories = Some(categories(n).into());
         config
     }
 
@@ -1352,7 +1352,7 @@ mod category_bar_tests {
             ..crate::defaults::bar_groups()
         });
         assert!(config.validate_category_bars(&[bars("a")]).is_err());
-        config.left_y.categories = Some(categories(3));
+        config.left_y.categories = Some(categories(3).into());
         config.bottom_x.categories = None;
         assert_eq!(config.validate_category_bars(&[bars("a")]), Ok(()));
     }
@@ -1386,7 +1386,7 @@ mod category_bar_tests {
         config.left_y.max = 10.0;
         assert!(config.validate_category_bars(&[bars("a")]).is_err());
         let mut config = chart(3);
-        config.left_y.categories = Some(categories(2));
+        config.left_y.categories = Some(categories(2).into());
         assert!(config.validate_category_bars(&[bars("a")]).is_err());
     }
 
@@ -1444,7 +1444,7 @@ mod category_bar_tests {
             direction: CategoryBarDirection::Horizontal,
             ..crate::defaults::bar_groups()
         });
-        config.left_y.categories = Some(categories(3));
+        config.left_y.categories = Some(categories(3).into());
         config.bottom_x.categories = None;
         assert_eq!(config.validate_category_bars(&[bars("a")]), Ok(()));
         assert!(
@@ -1486,7 +1486,7 @@ mod category_bar_tests {
         // Neither the parent nor the linked overlay has categories.
         assert!(config.validate_category_bars(&[bars("b")]).is_err());
         config.overlays[0].link_x = false;
-        config.overlays[0].x_axis.categories = Some(categories(4));
+        config.overlays[0].x_axis.categories = Some(categories(4).into());
         assert_eq!(config.validate_category_bars(&[bars("b")]), Ok(()));
         // A parent series still needs the parent's categories.
         assert!(
@@ -1497,7 +1497,7 @@ mod category_bar_tests {
         // With Y linked, the value axis is the parent's left axis: a
         // categorical one cannot hold values.
         config.overlays[0].link_y = true;
-        config.left_y.categories = Some(categories(2));
+        config.left_y.categories = Some(categories(2).into());
         assert!(config.validate_category_bars(&[bars("b")]).is_err());
         config.left_y.categories = None;
         assert_eq!(config.validate_category_bars(&[bars("b")]), Ok(()));
@@ -1902,7 +1902,7 @@ mod box_plot_tests {
 
     fn chart(n: usize) -> Config {
         let mut config = crate::defaults::config();
-        config.bottom_x.categories = Some(categories(n));
+        config.bottom_x.categories = Some(categories(n).into());
         config
     }
 
@@ -1979,7 +1979,7 @@ mod box_plot_tests {
             ..crate::defaults::bar_groups()
         });
         assert!(config.validate_box_plots(&[boxes("a")]).is_err());
-        config.left_y.categories = Some(categories(3));
+        config.left_y.categories = Some(categories(3).into());
         config.bottom_x.categories = None;
         assert_eq!(config.validate_box_plots(&[boxes("a")]), Ok(()));
         config.bottom_x.scale = AxisScale::Logarithmic;
@@ -2043,7 +2043,7 @@ mod box_plot_tests {
             direction: CategoryBarDirection::Horizontal,
             ..crate::defaults::bar_groups()
         });
-        config.left_y.categories = Some(categories(3));
+        config.left_y.categories = Some(categories(3).into());
         assert!(
             config
                 .validate_box_plots(&[boxes("over")])
@@ -2514,7 +2514,7 @@ mod radar_tests {
     fn polar_config(n: usize) -> Config {
         let mut config = crate::defaults::config();
         config.set_polar(Some(crate::defaults::polar_options()));
-        config.bottom_x.categories = Some(categories(n));
+        config.bottom_x.categories = Some(categories(n).into());
         config
     }
 
@@ -3503,11 +3503,14 @@ mod range_bar_tests {
 
     fn chart() -> Config {
         let mut config = crate::defaults::config();
-        config.bottom_x.categories = Some(vec![
-            Category::new("a", "A"),
-            Category::new("b", "B"),
-            Category::new("c", "C"),
-        ]);
+        config.bottom_x.categories = Some(
+            vec![
+                Category::new("a", "A"),
+                Category::new("b", "B"),
+                Category::new("c", "C"),
+            ]
+            .into(),
+        );
         config
     }
 
@@ -3591,7 +3594,7 @@ mod range_bar_tests {
         assert!(numeric.validate_range_bars(&[timed]).is_err());
         // A categorical value axis is refused.
         let mut values = config.clone();
-        values.left_y.categories = Some(vec![Category::new("x", "X")]);
+        values.left_y.categories = Some(vec![Category::new("x", "X")].into());
         assert!(values.validate_range_bars(&[ranges("one")]).is_err());
     }
 

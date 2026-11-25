@@ -245,7 +245,7 @@ fn validation_refuses_broken_diagrams() {
     columns.x_column = "x".into();
     assert!(config.validate_feynman(&[columns]).is_err());
     let mut categorical = config.clone();
-    categorical.bottom_x.categories = Some(vec![crate::config::Category::new("a", "A")]);
+    categorical.bottom_x.categories = Some(vec![crate::config::Category::new("a", "A")].into());
     assert!(categorical.validate_feynman(&[series]).is_err());
 }
 

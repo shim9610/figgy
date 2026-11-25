@@ -255,6 +255,7 @@ pub(crate) fn config() -> Config {
         background: None,
         // Drawn as stored: a chart made by `Chart::sized` asks for its fit.
         layout_state: LayoutState::Fixed,
+        snap_to_guides: None,
     }
 }
 

@@ -307,6 +307,11 @@ mod shading_tolerance_tests {
     /// compiles with the entry `fs_per_sample` appended, which shades every
     /// sample at its own position with the same functions.
     fn per_sample_pipeline(r: &RadialRenderer) -> wgpu::RenderPipeline {
+        reference_pipeline(r, "fs_per_sample")
+    }
+    /// The renderer's module with the test-support entries of
+    /// `tests/support/radial_per_sample.wgsl` appended, drawn by `entry`.
+    fn reference_pipeline(r: &RadialRenderer, entry: &str) -> wgpu::RenderPipeline {
         let device = r.gpu.device();
         let source = format!(
             "{}\n{}",
@@ -336,7 +341,7 @@ mod shading_tolerance_tests {
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &module,
-                entry_point: Some("fs_per_sample"),
+                entry_point: Some(entry),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: r.format,
@@ -718,5 +723,464 @@ mod shading_tolerance_tests {
         }
         r.pipeline = shipped;
         println!("{report}");
+    }
+
+    /// The look of the gallery sunburst (`examples/support/looks.rs`
+    /// `sunburst`): Flat, level, with a 0.6 degree gap and small corners.
+    fn flat_look() -> crate::theme::RadialTheme {
+        let mut theme = crate::theme::RadialTheme::default();
+        theme.palette = vec![
+            crate::Color::from_rgb8(38, 140, 112),
+            crate::Color::from_rgb8(196, 112, 64),
+            crate::Color::from_rgb8(128, 110, 196),
+        ];
+        theme.child_tint = Some(0.22);
+        theme.label_color = crate::Color::from_rgb8(40, 44, 52);
+        theme.material = Material::Flat;
+        theme.gloss = 0.15;
+        theme.gap_degrees = 0.6;
+        theme.inner_corner = 0.012;
+        theme.outer_corner = 0.012;
+        // A sunburst stays level whatever the theme (`RuleKind::SunburstTilt`);
+        // named so the chart takes the Flat path.
+        theme.tilt_degrees = 0.0;
+        theme.depth = 0.0;
+        theme.bevel = 0.0;
+        theme.shadow = false;
+        theme
+    }
+    /// The gallery sunburst (`examples/radial_gallery.rs` `sunburst`), a
+    /// donut and a pie of six slices in the host default style, and the
+    /// Flat fast path's own cases.
+    fn flat_charts() -> Vec<(&'static str, RadialChart)> {
+        let leaf = |label: &str, value: f64| RadialSlice::new(label, value, crate::Color::BLACK);
+        let node = |label: &str, value: f64, children: Vec<RadialSlice>| RadialSlice {
+            children,
+            ..leaf(label, value)
+        };
+        let theme = flat_look();
+        let mut sunburst = RadialChart {
+            kind: RadialKind::Donut { inner_radius: 0.14 },
+            labels: RadialLabels::Outside,
+            label_format: RadialLabelFormat::NamePercent,
+            label_decimals: 0,
+            slices: vec![
+                node(
+                    "Renewables",
+                    46.0,
+                    vec![
+                        node(
+                            "Wind",
+                            20.0,
+                            vec![leaf("Onshore", 13.0), leaf("Offshore", 7.0)],
+                        ),
+                        node(
+                            "Solar",
+                            12.0,
+                            vec![leaf("Utility", 8.0), leaf("Rooftop", 4.0)],
+                        ),
+                        leaf("Hydro", 10.0),
+                        leaf("Bio", 4.0),
+                    ],
+                ),
+                node(
+                    "Fossil",
+                    38.0,
+                    vec![
+                        node(
+                            "Gas",
+                            26.0,
+                            vec![leaf("Combined cycle", 21.0), leaf("Peakers", 5.0)],
+                        ),
+                        leaf("Coal", 9.0),
+                        leaf("Oil", 3.0),
+                    ],
+                ),
+                leaf("Nuclear", 16.0),
+            ],
+            ..Default::default()
+        }
+        .with_title("Electricity generation / group, source, technology");
+        theme.apply(&mut sunburst);
+        sunburst.format_labels();
+        // The host default style: Flat, level, every slice outlined in a
+        // 1 px white rim and white separators, no gap.
+        let six = |kind| {
+            let mut c = RadialChart {
+                kind,
+                labels: RadialLabels::Outside,
+                label_format: RadialLabelFormat::NamePercent,
+                slices: [31.0, 23.0, 20.0, 12.0, 8.0, 6.0]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        let [r, g, b] = PALETTE[i % PALETTE.len()];
+                        RadialSlice::new(format!("{}", i + 1), *v, crate::Color::from_rgb8(r, g, b))
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            c.format_labels();
+            c
+        };
+        let mut v = vec![
+            ("gallery sunburst", sunburst),
+            ("donut", six(RadialKind::Donut { inner_radius: 0.5 })),
+            ("pie", six(RadialKind::Pie)),
+        ];
+        // The Flat fast path's cases (#41, `tests/radial_render.rs`): no
+        // outline, many slices, a gap with rounded corners, explode with a
+        // hover lift, moving inside labels on a translucent background and a
+        // detail chart.
+        let plain = |n: usize, kind: RadialKind| {
+            let mut c = six(kind);
+            c.labels = RadialLabels::None;
+            c.style.outline.rim = false;
+            c.style.outline.separators = false;
+            c.slices = (0..n)
+                .map(|i| {
+                    let [r, g, b] = PALETTE[i % 4];
+                    RadialSlice::new(
+                        format!("S{i}"),
+                        1.0 + (i * 7 % 5) as f64,
+                        crate::Color::from_rgb8(r, g, b),
+                    )
+                })
+                .collect();
+            c.format_labels();
+            c
+        };
+        let donut = RadialKind::Donut { inner_radius: 0.55 };
+        v.push(("one slice", plain(1, RadialKind::Pie)));
+        v.push(("three slices", plain(3, RadialKind::Pie)));
+        v.push(("12 slices", plain(12, donut)));
+        v.push(("40 slices", plain(40, donut)));
+        let mut c = plain(5, donut);
+        c.style.gap_degrees = 3.0;
+        c.style.inner_corner = 0.05;
+        c.style.outer_corner = 0.08;
+        v.push(("gap and corners", c));
+        let mut c = plain(6, RadialKind::Pie);
+        c.slices[1].explode = 0.2;
+        c.slices[4].explode = 0.35;
+        c.interaction.hovered = Some(RadialTarget::main(2));
+        c.interaction.hover_progress = 0.6;
+        v.push(("explode and hover", c));
+        let mut c = plain(6, donut);
+        c.labels = RadialLabels::Inside;
+        c.font_size = 12.0;
+        c.style.hover_lift = 0.06;
+        c.interaction.hovered = Some(RadialTarget::main(1));
+        c.interaction.hover_progress = 1.0;
+        c.background = crate::Color::new(0.1, 0.2, 0.3, 0.5);
+        c.format_labels();
+        v.push(("inside labels, translucent", c));
+        // The detail chart splits a slice of 75 into 25 and 50.
+        let mut c = plain(2, donut);
+        c.slices[0].value = 25.0;
+        c.slices[1].value = 75.0;
+        c.split = Some(RadialSplit {
+            slice_index: 1,
+            kind: RadialKind::Pie,
+            children: vec![
+                RadialSlice::new("D", 25.0, crate::Color::from_rgb8(0, 200, 150)),
+                RadialSlice::new("E", 50.0, crate::Color::from_rgb8(220, 180, 80)),
+            ],
+        });
+        c.format_labels();
+        v.push(("detail", c));
+        v
+    }
+
+    fn export_with(
+        r: &mut RadialRenderer,
+        pipeline: &wgpu::RenderPipeline,
+        chart: &RadialChart,
+        size: (u32, u32),
+        scale: f32,
+    ) -> crate::RasterImage {
+        r.pipeline = pipeline.clone();
+        r.cached = None;
+        let image = r
+            .export_rgba(chart, size, crate::ExportOptions::document(scale))
+            .block_on()
+            .unwrap();
+        r.end_frame();
+        image
+    }
+
+    /// Analytic Flat edges change appearance only: against the 2 x 2
+    /// supersampled draw they replace, the difference stays within a pinned
+    /// mean and high percentile, it lies within a pixel of an edge, and
+    /// every pixel farther from one, inside a sector or on the background,
+    /// is byte-identical, as is the pick there.
+    #[test]
+    fn analytic_flat_edges_stay_within_the_pinned_difference() {
+        let mut r = renderer();
+        let reference = reference_pipeline(&r, "fs_supersampled");
+        let shipped = r.pipeline.clone();
+        let mut report = String::new();
+        for (index, (name, chart)) in flat_charts().into_iter().enumerate() {
+            // And an odd size at 2x, as the fast path's own test.
+            for (size, scale) in [((600, 400), 1.0f32), ((600, 400), 2.0), ((333, 257), 2.0)] {
+                let new = export_with(&mut r, &shipped, &chart, size, scale);
+                let old = export_with(&mut r, &reference, &chart, size, scale);
+                // Which pixels the old draw covers partly: its own coverage
+                // mask, so the band is the edge it drew.
+                let mask = export_with(&mut r, &reference, &coverage_chart(&chart), size, scale);
+                let (w, h) = (new.width as usize, new.height as usize);
+                let cover: Vec<Cover> = mask
+                    .rgba
+                    .chunks_exact(4)
+                    .map(|p| match p {
+                        [255, 0, 255, 255] => Cover::Interior,
+                        [r, g, b, 255] if r == g && g == b => Cover::Background,
+                        _ => Cover::Edge,
+                    })
+                    .collect();
+                // Within `r` pixels of an edge: its (2r + 1)-square
+                // neighbourhood holds a partly covered pixel of the mask, or
+                // two colours of the old draw (a seam between two sectors,
+                // or an ink line).
+                let pixel = |image: &crate::RasterImage, i: usize| {
+                    <[u8; 4]>::try_from(&image.rgba[i * 4..i * 4 + 4]).unwrap()
+                };
+                let within = |i: usize, r: usize| {
+                    let (x, y) = (i % w, i / w);
+                    (y.saturating_sub(r)..=(y + r).min(h - 1)).any(|v| {
+                        (x.saturating_sub(r)..=(x + r).min(w - 1)).any(|u| {
+                            cover[v * w + u] == Cover::Edge
+                                || pixel(&old, v * w + u) != pixel(&old, i)
+                        })
+                    })
+                };
+                let near_edge = |i: usize| within(i, 1);
+                let mut differences: Vec<u8> = new
+                    .rgba
+                    .chunks_exact(4)
+                    .zip(old.rgba.chunks_exact(4))
+                    .map(|(a, b)| (0..4).map(|i| a[i].abs_diff(b[i])).max().unwrap())
+                    .collect();
+                // A pie's apex, where every separator's ink meets, is a
+                // feature narrower than a pixel that no old sample reached:
+                // the smoothed edge may tint a pixel next to it.
+                let beyond_one = (0..w * h)
+                    .filter(|&i| !near_edge(i))
+                    .map(|i| differences[i])
+                    .max()
+                    .unwrap_or(0);
+                let far_max = (0..w * h)
+                    .filter(|&i| !within(i, 2))
+                    .map(|i| differences[i])
+                    .max()
+                    .unwrap_or(0);
+                let changed = differences.iter().filter(|&&d| d > 0).count();
+                let mean = differences.iter().map(|&d| d as f64).sum::<f64>() / (w * h) as f64;
+                differences.sort_unstable();
+                let p99 = differences[(w * h * 99) / 100];
+                let p999 = differences[(w * h * 999) / 1000];
+                let max = differences[w * h - 1];
+                report.push_str(&format!(
+                    "{name} @{scale}x: mean {mean:.3}, p99 {p99}, p99.9 {p999}, max {max}, \
+                     changed {changed} px, beyond a pixel of an edge {beyond_one}, \
+                     beyond two {far_max}\n"
+                ));
+                // Measured on lavapipe for the gallery sunburst, the donut and
+                // the pie: a mean of at most 0.18, a p99 of at most 3 and a
+                // p99.9 of at most 31.
+                assert!(
+                    changed > 0,
+                    "{name} @{scale}x: the Flat edges changed\n{report}"
+                );
+                assert_eq!(
+                    far_max, 0,
+                    "{name} @{scale}x: beyond two pixels of an edge\n{report}"
+                );
+                assert!(
+                    beyond_one <= 12,
+                    "{name} @{scale}x: beyond a pixel of an edge {beyond_one}\n{report}"
+                );
+                // The fast path's own cases hold more edge per area (40
+                // slices on a small donut), so more of the image moves.
+                let (mean_max, p99_max, p999_max) = if index < 3 {
+                    (0.3, 5, 45)
+                } else {
+                    (0.5, 16, 60)
+                };
+                assert!(mean <= mean_max, "{name} @{scale}x: mean {mean}\n{report}");
+                assert!(p99 <= p99_max, "{name} @{scale}x: p99 {p99}\n{report}");
+                assert!(p999 <= p999_max, "{name} @{scale}x: p99.9 {p999}\n{report}");
+                if scale != 1.0 {
+                    continue;
+                }
+                // The pick, at points a pixel or more from any edge, is the
+                // same from frames of both draws and finds a sector exactly
+                // where the old draw covered one.
+                let frames = [&shipped, &reference].map(|pipeline| {
+                    r.pipeline = pipeline.clone();
+                    r.cached = None;
+                    r.prepare(&chart, size, scale).unwrap()
+                });
+                let mut points = 0;
+                for y in (2..h - 2).step_by(11) {
+                    for x in (2..w - 2).step_by(11) {
+                        let i = y * w + x;
+                        if near_edge(i) {
+                            continue;
+                        }
+                        points += 1;
+                        let at = [x as f32 + 0.5, y as f32 + 0.5];
+                        let picked = frames
+                            .each_ref()
+                            .map(|f| f.pick(at).unwrap().resolve().block_on().unwrap());
+                        assert_eq!(picked[0], picked[1], "{name} at {at:?}");
+                        assert_eq!(
+                            picked[0].is_some(),
+                            cover[i] == Cover::Interior,
+                            "{name} at {at:?}"
+                        );
+                    }
+                }
+                assert!(points > 500, "{name}: {points} points");
+                r.end_frame();
+            }
+        }
+        r.pipeline = shipped;
+        println!("{report}");
+    }
+
+    /// Across a slanted separator the analytic edge ramps smoothly: on
+    /// every row the profile rises monotonically from one slice into the
+    /// separator and falls monotonically into the next, the edge pixels take
+    /// many intermediate values where the 2 x 2 grid took at most its three
+    /// quarter steps, and each row's edge stays where the old draw put it,
+    /// within a pixel. Both separators: an angular gap on the background,
+    /// and the host default's white ink line between touching slices.
+    #[test]
+    fn a_slanted_flat_separator_has_a_smooth_monotonic_edge_profile() {
+        // Two black halves of a pie on white, 2 degrees off vertical: a
+        // slightly slanted separator.
+        let half = |gap: f32, outline: bool| {
+            let mut chart = RadialChart {
+                kind: RadialKind::Pie,
+                labels: RadialLabels::None,
+                start_angle_degrees: -88.0,
+                background: crate::Color::WHITE,
+                slices: vec![
+                    RadialSlice::new("a", 1.0, crate::Color::BLACK),
+                    RadialSlice::new("b", 1.0, crate::Color::BLACK),
+                ],
+                ..Default::default()
+            };
+            chart.style.material = Material::Flat;
+            chart.style.gloss = 0.0;
+            chart.style.gap_degrees = gap;
+            chart.style.tilt_degrees = 0.0;
+            chart.style.depth = 0.0;
+            chart.style.shadow = false;
+            chart.style.inner_corner = 0.0;
+            chart.style.outer_corner = 0.0;
+            chart.style.outline.rim = outline;
+            chart.style.outline.separators = outline;
+            chart.style.outline.emphasis = false;
+            chart.style.outline.width = 1.0;
+            chart.style.outline.color = crate::Color::WHITE;
+            chart.format_labels();
+            chart
+        };
+        let mut report = String::new();
+        for (name, chart) in [
+            ("3 degree gap", half(3.0, false)),
+            ("1 px white separator", half(0.0, true)),
+        ] {
+            slanted_separator_profile(name, &chart, &mut report);
+        }
+        println!("{report}");
+    }
+    fn slanted_separator_profile(name: &str, chart: &RadialChart, report: &mut String) {
+        let mut r = renderer();
+        let reference = reference_pipeline(&r, "fs_supersampled");
+        let shipped = r.pipeline.clone();
+        for scale in [1.0f32, 2.0] {
+            let images = [&shipped, &reference]
+                .map(|pipeline| export_with(&mut r, pipeline, chart, (400, 400), scale));
+            let (w, h) = (images[0].width as usize, images[0].height as usize);
+            let red = |image: &crate::RasterImage, x: usize, y: usize| image.rgba[(y * w + x) * 4];
+            // The column the gap is brightest at on a row, near the middle.
+            let brightest = |image: &crate::RasterImage, y: usize| {
+                (w / 2 - w / 8..w / 2 + w / 8)
+                    .max_by_key(|&x| (red(image, x, y), usize::MAX - x.abs_diff(w / 2)))
+                    .unwrap()
+            };
+            let mut levels = [
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ];
+            let mut rows = 0;
+            // The upper separator, from a quarter of the radius to near the
+            // rim; the radius is a little under half the height.
+            for y in h * 3 / 20..h * 7 / 20 {
+                rows += 1;
+                let mut edges = [0.0f64; 2];
+                for (k, image) in images.iter().enumerate() {
+                    let top = brightest(image, y);
+                    let span = w / 10;
+                    // Rising from the left slice to the brightest column.
+                    for x in top - span..top {
+                        assert!(
+                            red(image, x, y) <= red(image, x + 1, y),
+                            "{name} @{scale}x row {y}: not monotonic left of the gap at {x} ({k})"
+                        );
+                    }
+                    for x in top..top + span {
+                        assert!(
+                            red(image, x, y) >= red(image, x + 1, y),
+                            "{name} @{scale}x row {y}: not monotonic right of the gap at {x} ({k})"
+                        );
+                    }
+                    assert_eq!(
+                        red(image, top - span, y),
+                        0,
+                        "{name} @{scale}x row {y}: left slice"
+                    );
+                    assert_eq!(
+                        red(image, top + span, y),
+                        0,
+                        "{name} @{scale}x row {y}: right slice"
+                    );
+                    for x in top - span..=top {
+                        let v = red(image, x, y);
+                        if v > 0 && v < 255 {
+                            levels[k].insert(v);
+                        }
+                    }
+                    // The left edge: the slice ends where its coverage
+                    // ends, the summed brightness from the slice's interior.
+                    edges[k] = (top - span..=top)
+                        .map(|x| 1.0 - red(image, x, y) as f64 / 255.0)
+                        .sum::<f64>();
+                }
+                assert!(
+                    (edges[0] - edges[1]).abs() <= 1.0,
+                    "{name} @{scale}x row {y}: the edge moved from {} to {}",
+                    edges[1],
+                    edges[0]
+                );
+            }
+            report.push_str(&format!(
+                "{name} @{scale}x: {rows} rows, intermediate levels new {}, old {}\n",
+                levels[0].len(),
+                levels[1].len()
+            ));
+            assert!(
+                levels[1].len() <= 3,
+                "{name} @{scale}x: the 2 x 2 grid steps in quarters\n{report}"
+            );
+            assert!(
+                levels[0].len() >= 12,
+                "{name} @{scale}x: the analytic edge ramps smoothly\n{report}"
+            );
+        }
+        r.pipeline = shipped;
     }
 }

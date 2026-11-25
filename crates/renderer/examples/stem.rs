@@ -142,7 +142,7 @@ fn lollipop(r: &mut Renderer, out: &Path) -> Result {
         .iter()
         .map(|(id, label, _)| Category::new(*id, *label))
         .collect();
-    chart.config_mut().left_y.categories = Some(categories);
+    chart.config_mut().left_y.categories = Some(categories.into());
     let mut specs = Vec::new();
     // Gains in the first colour, losses in the second.
     for (id, label, gains) in [("gains", "Gain", true), ("losses", "Loss", false)] {

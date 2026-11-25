@@ -1,6 +1,6 @@
 // Test support for the radial shading tolerance test (#349), never product
 // code: appended to the assembled radial module (`RADIAL_SHADER`), it adds
-// the entry the draw ran before it shaded once per surface. Every
+// the entry the draw ran before it shaded once per surface (`fs_per_sample`). Every
 // antialiasing sample is shaded at its own position, with its own lit
 // material and outline, and the floor shadow is taken at every background
 // sample, from the same functions the draw calls.
@@ -26,6 +26,25 @@ fn scene_per_sample(pixel: vec2<f32>) -> vec4<f32> {
             color+=scene_per_sample(p.xy+(vec2(f32(x),f32(y))+0.5)/f32(grid)-0.5);
         }}
     }
+    color/=f32(grid*grid);
+    let text=label_pixel(p.xy);
+    color=text+color*(1.0-text.a);
+    if globals.group_info.y>0.0 && color.a>0.0 {
+        let c=color.rgb/color.a;
+        let linear=select(pow((c+0.055)/1.055,vec3(2.4)),c/12.92,c<=vec3(0.04045));
+        color=vec4(linear*color.a,color.a);
+    }
+    return color;
+}
+// The Flat draw before its analytic edges: every pixel the fast path does not
+// settle by its margin takes the 2 x 2 samples, each the sector it hits or the
+// background, as the shipped draw did. The radial flat-edge tolerance test
+// compares the shipped draw with it.
+@fragment fn fs_supersampled(@builtin(position) p:vec4<f32>)->@location(0) vec4<f32> {
+    var color=vec4(0.0);let grid=u32(globals.size.w);
+    for(var y=0u;y<grid;y++) { for(var x=0u;x<grid;x++) {
+        color+=scene_per_sample(p.xy+(vec2(f32(x),f32(y))+0.5)/f32(grid)-0.5);
+    }}
     color/=f32(grid*grid);
     let text=label_pixel(p.xy);
     color=text+color*(1.0-text.a);

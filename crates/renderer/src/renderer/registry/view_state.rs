@@ -134,6 +134,8 @@ impl ChartViewState {
             background: _,
             // Who owns the layout: not part of the data-to-screen mapping.
             layout_state: _,
+            // An interaction option (#440): no raster, no view state.
+            snap_to_guides: _,
         } = config;
         Self {
             chart_area: chart_area.0,
@@ -204,6 +206,8 @@ impl ChartViewState {
             background: _,
             // Who owns the layout: not part of the data-to-screen mapping.
             layout_state: _,
+            // An interaction option (#440): no raster, no view state.
+            snap_to_guides: _,
         } = config;
         config_area.0 = *chart_area;
         top_x.apply_to(config_top_x);

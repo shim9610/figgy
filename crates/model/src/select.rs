@@ -25,7 +25,7 @@ use crate::decoration::DecorationId;
 use crate::drag::{DragConfig, Draggable};
 use crate::layer::LayerRef;
 use crate::layout::{
-    Element, LEGEND_BORDER_WIDTH, MeasuredTitle, NudgeReject, NudgeResult, RectF, Side,
+    Element, LEGEND_BORDER_WIDTH, MeasuredTitle, NudgeReject, NudgeResult, RectF, Side, SnapAreas,
     axis_title_placement, chart_title_placement_in, colorbar_title_placement, legend_rect,
     visible_colorbar_rect,
 };
@@ -92,6 +92,9 @@ pub struct SelectionBox {
     handles: Vec<RectF>,
     outline: SelectionOutline,
     ring: Option<([f32; 2], f32)>,
+    /// The snap guides of the drag in progress (#440), drawn with the
+    /// highlight; empty for every box a drag does not show guides with.
+    guides: crate::layout::SnapGuides,
 }
 
 impl SelectionBox {
@@ -125,6 +128,19 @@ impl SelectionBox {
     /// (#309). `None` for every other element.
     pub fn ring(&self) -> Option<([f32; 2], f32)> {
         self.ring
+    }
+
+    /// The snap guides drawn with the highlight while the element drags
+    /// (#440), in chart-surface pixels. Never part of the SSOT: the host
+    /// hands them over from its gesture's [`crate::layout::DragSnap`].
+    pub fn snap_guides(&self) -> crate::layout::SnapGuides {
+        self.guides
+    }
+
+    /// This box with the snap guides of the drag in progress.
+    pub fn with_snap_guides(mut self, guides: crate::layout::SnapGuides) -> Self {
+        self.guides = guides;
+        self
     }
 
     /// This box inside `area`: its rectangle intersected with it, for an
@@ -610,6 +626,7 @@ impl<C: DragConfig, T: Selectable<C> + ?Sized> SelectionGeometry<C> for T {
             handles,
             outline,
             ring: self.selection_ring(cfg),
+            guides: crate::layout::SnapGuides::NONE,
         })
     }
 }
@@ -1104,6 +1121,16 @@ macro_rules! overlay_axis_element {
                     dy,
                 )
             }
+
+            fn snaps(&self, cfg: &Config) -> bool {
+                cfg.overlay_panel(self.layer)
+                    .is_some_and(|panel| $inner { side: $side }.snaps(&panel))
+            }
+
+            fn snap_axis(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
+                let panel = cfg.overlay_panel(self.layer)?;
+                $inner { side: $side }.snap_axis(&panel, measure)
+            }
         }
     )*};
 }
@@ -1170,6 +1197,10 @@ impl Draggable for OverlayLegendElement {
             cfg.layout_state = crate::config::LayoutState::Fixed;
         }
         result
+    }
+
+    fn snaps(&self, _cfg: &Config) -> bool {
+        true
     }
 }
 

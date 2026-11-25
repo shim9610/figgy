@@ -321,7 +321,7 @@ fn named(id: &str, text: &str) -> Category {
 /// Grotrian frame (#205, #357).
 fn grotrian(title: &str, y_title: &str, categories: Vec<Category>) -> Chart {
     let mut c = titled(title, "", y_title, (1100, 780));
-    c.config_mut().bottom_x.categories = Some(categories);
+    c.config_mut().bottom_x.categories = Some(categories.into());
     c
 }
 

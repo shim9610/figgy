@@ -90,7 +90,7 @@ fn chart(polar: PolarOptions) -> Chart {
         axis.tick = TickVisibility::None;
         axis.title_option.visible = false;
     }
-    config.bottom_x.categories = Some(categories(5));
+    config.bottom_x.categories = Some(categories(5).into());
     config.set_polar(Some(polar));
     let mut chart = Chart::new(config);
     chart.set_y_range(0.0, 1.0);
@@ -457,7 +457,8 @@ fn the_category_labels_sit_outside_the_ring_at_their_spokes() {
         }
         // An empty label draws nothing at its spoke.
         let mut blank = Chart::new(chart.config().clone());
-        blank.config_mut().bottom_x.categories.as_mut().unwrap()[2].label = String::new();
+        std::sync::Arc::make_mut(blank.config_mut().bottom_x.categories.as_mut().unwrap())[2]
+            .label = String::new();
         let img_blank = export(&mut r, &blank, &[], scale);
         assert!(count(&img_blank, |p| p[3] > 100) < count(&img, |p| p[3] > 100));
     }
@@ -474,8 +475,8 @@ fn a_rich_category_label_replaces_the_plain_one_on_the_angle_axis() {
     plain.config_mut().bottom_x.label_style.visible = true;
     plain.config_mut().bottom_x.label_style.color = BLUE;
     let mut rich = Chart::new(plain.config().clone());
-    rich.config_mut().bottom_x.categories.as_mut().unwrap()[0].rich_label =
-        Some(RichText::plain("RICH", RED, 24.0, "sans-serif"));
+    std::sync::Arc::make_mut(rich.config_mut().bottom_x.categories.as_mut().unwrap())[0]
+        .rich_label = Some(RichText::plain("RICH", RED, 24.0, "sans-serif"));
     for scale in [1.0, 2.0] {
         let img_plain = export(&mut r, &plain, &[], scale);
         let img_rich = export(&mut r, &rich, &[], scale);
@@ -826,11 +827,12 @@ fn every_radar_edit_redraws_like_a_fresh_renderer() {
             c.polar_mut().unwrap().sector = Some([0.0, 270.0])
         }),
         ("a category more", |c| {
-            c.bottom_x
-                .categories
-                .as_mut()
-                .unwrap()
-                .push(Category::new("c5", "Cat 5"))
+            let categories = c.bottom_x.categories.as_mut().unwrap();
+            *categories = categories
+                .iter()
+                .cloned()
+                .chain([Category::new("c5", "Cat 5")])
+                .collect();
         }),
         ("inner radius", |c| {
             c.polar_mut().unwrap().inner_radius_fraction = 0.3
@@ -1232,7 +1234,7 @@ fn a_hundred_spokes_draw_pick_and_highlight() {
             width: SIDE,
             height: SIDE,
         });
-        config.bottom_x.categories = Some(categories(N));
+        config.bottom_x.categories = Some(categories(N).into());
     }
     let mut series = radar(
         "many",

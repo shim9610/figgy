@@ -137,11 +137,14 @@ fn chart(direction: CategoryBarDirection) -> Chart {
     ] {
         axis.line_visible = false;
     }
-    let categories = Some(vec![
-        Category::new("a", "A"),
-        Category::new("b", "B"),
-        Category::new("c", "C"),
-    ]);
+    let categories = Some(
+        vec![
+            Category::new("a", "A"),
+            Category::new("b", "B"),
+            Category::new("c", "C"),
+        ]
+        .into(),
+    );
     match direction {
         CategoryBarDirection::Vertical => config.bottom_x.categories = categories,
         CategoryBarDirection::Horizontal => config.left_y.categories = categories,
@@ -1597,11 +1600,14 @@ fn the_timeline_look_bands_every_other_row_under_the_bars() {
         });
         config.legend.visible = false;
         config.chart_title.visible = false;
-        config.left_y.categories = Some(vec![
-            Category::new("a", "A"),
-            Category::new("b", "B"),
-            Category::new("c", "C"),
-        ]);
+        config.left_y.categories = Some(
+            vec![
+                Category::new("a", "A"),
+                Category::new("b", "B"),
+                Category::new("c", "C"),
+            ]
+            .into(),
+        );
         let mut chart = Chart::new(config);
         chart.set_x_range(0.0, 100.0);
         chart.fit_layout();

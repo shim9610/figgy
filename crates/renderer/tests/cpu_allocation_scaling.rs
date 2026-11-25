@@ -29,6 +29,9 @@ use renderer::{
 static LIVE_BYTES: AtomicI64 = AtomicI64::new(0);
 static PEAK_LIVE_BYTES: AtomicI64 = AtomicI64::new(0);
 static CALLS: AtomicU64 = AtomicU64::new(0);
+/// Bytes ever requested, frees not subtracted: a temporary copy shows here
+/// even when it is freed before the measured window ends.
+static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
 static MEASUREMENT_LOCK: Mutex<()> = Mutex::new(());
 
 struct CountingAllocator;
@@ -46,6 +49,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
         if !ptr.is_null() {
             record_live_delta(layout.size() as i64);
             CALLS.fetch_add(1, Ordering::Relaxed);
+            ALLOCATED_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
         }
         ptr
     }
@@ -60,6 +64,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
         if !result.is_null() {
             record_live_delta(new_size as i64 - layout.size() as i64);
             CALLS.fetch_add(1, Ordering::Relaxed);
+            ALLOCATED_BYTES.fetch_add(new_size as u64, Ordering::Relaxed);
         }
         result
     }
@@ -89,6 +94,10 @@ fn peak_live_bytes() -> i64 {
 
 fn calls() -> u64 {
     CALLS.load(Ordering::Relaxed)
+}
+
+fn allocated_bytes() -> u64 {
+    ALLOCATED_BYTES.load(Ordering::Relaxed)
 }
 
 /// Set in the child process `measured` starts, so it measures instead of
@@ -759,4 +768,421 @@ fn a_batch_upload_costs_less_host_heap_per_column_than_one_at_a_time() {
         growth_per_mib <= 8.0,
         "batch allocation count grew {growth_per_mib:.2} per MiB of input (limit 8)"
     );
+}
+
+/// The categorical charts #442 measures: category bars, or range bars, on
+/// a categorical x axis of `n` categories, drawn into a 1200×700 panel.
+#[derive(Clone, Copy, Debug)]
+enum CategoricalKind {
+    Bars,
+    Ranges,
+}
+
+fn categorical_chart(
+    n: usize,
+    kind: CategoricalKind,
+) -> (renderer::Config, Vec<renderer::SeriesConfig>) {
+    use renderer::config::Category;
+    use renderer::data_config::{BarGroups, CategoryBarDirection, CategoryBarMode};
+    use renderer::layout::{ChartArea, Rect};
+    let mut config = renderer::default::default_config();
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 1200,
+        height: 700,
+    });
+    config.bottom_x.categories = Some(
+        (0..n)
+            .map(|k| Category::new(format!("category-{k}"), format!("Category {k}")))
+            .collect(),
+    );
+    config.bar_groups = Some(BarGroups {
+        mode: CategoryBarMode::Grouped,
+        direction: CategoryBarDirection::Vertical,
+        group_width: 0.8,
+        bar_gap: 0.0,
+    });
+    let render_type = match kind {
+        CategoricalKind::Bars => {
+            renderer::DataRenderType::CategoryBars(renderer::CategoryBarSeries {
+                color: renderer::Color::from_rgb8(200, 40, 40),
+                style: renderer::data_config::CategoryBarStyle::default(),
+                labels: Default::default(),
+                label_format: Default::default(),
+                overrides: None,
+            })
+        }
+        CategoricalKind::Ranges => renderer::DataRenderType::RangeBars(renderer::RangeBarSeries {
+            color: renderer::Color::from_rgb8(40, 40, 200),
+            style: renderer::data_config::CategoryBarStyle::default(),
+            start: "start".into(),
+            whiskers: None,
+            color_by: renderer::data_config::RangeColor::Single,
+            progress: None,
+            connector: None,
+            slot_width: None,
+            labels: Default::default(),
+        }),
+    };
+    let series = vec![renderer::SeriesConfig {
+        series_id: "s".into(),
+        source_id: None,
+        label: None,
+        x_column: "pos".into(),
+        y_column: "value".into(),
+        z_column: None,
+        render_type,
+    }];
+    (config, series)
+}
+
+/// A renderer holding the columns of [`categorical_chart`] over `n`
+/// categories, with GPU picking on.
+fn categorical_renderer(n: usize) -> Renderer {
+    let pool = (n as u64) * 3 * COLUMN_VALUE_BYTES + (1 << 20);
+    let mut renderer = renderer_with_pool(pool).expect("renderer");
+    let column = |f: &dyn Fn(usize) -> f32| Column {
+        data: (0..n).map(f).collect::<Vec<f32>>(),
+    };
+    renderer.add_column("pos", &column(&|k| k as f32)).unwrap();
+    renderer
+        .add_column("value", &column(&|k| 1.0 + (k % 10) as f32))
+        .unwrap();
+    renderer
+        .add_column("start", &column(&|k| 0.5 * (k % 3) as f32))
+        .unwrap();
+    renderer.enable_gpu_picking().unwrap();
+    renderer
+}
+
+/// One on-screen prepare of registered chart `id`, as a host's frame runs it.
+fn draw_registered(renderer: &mut Renderer, id: renderer::ChartId) {
+    let (config, panel, scale) = renderer.chart_display_config(id).unwrap();
+    let chart = Chart::new(config.into_owned());
+    let mut view = renderer.create_chart_view_at(&chart, panel, scale).unwrap();
+    renderer
+        .prepare_registered(&mut [renderer::RegisteredChartDrawItem {
+            chart_id: id,
+            view: &mut view,
+        }])
+        .unwrap();
+    settle_gpu(renderer);
+}
+
+/// The request of a pick at the middle of chart `id`'s data area as
+/// displayed.
+fn centre_pick(renderer: &Renderer, id: renderer::ChartId) -> renderer::GpuPickRequest {
+    let (config, panel, scale) = renderer.chart_display_config(id).unwrap();
+    let area = config.data_area().unwrap().0;
+    renderer::GpuPickRequest {
+        canvas_position_px: [
+            area.x as f32 + area.width as f32 * 0.5,
+            area.y as f32 + area.height as f32 * 0.9,
+        ],
+        display_panel_px: panel,
+        display_scale: scale,
+        max_distance_px: 4.0,
+    }
+}
+
+/// The host interactions #442 measures on a categorical chart of `n`
+/// categories: bytes the host heap handed out for each (frees not
+/// subtracted, so a temporary copy counts) and its wall time. Each
+/// interaction is measured through the renderer's calls and the resolved
+/// pick; the draw that follows it is measured on its own (`draw`), since
+/// its axis chrome measures the category tick labels (not a copy).
+fn categorical_interaction_costs(
+    n: usize,
+    kind: CategoricalKind,
+) -> Vec<(&'static str, u64, std::time::Duration)> {
+    let mut renderer = categorical_renderer(n);
+    let (config, series) = categorical_chart(n, kind);
+    let id = renderer.register_chart(config, series).unwrap();
+    renderer.set_chart_display(id, Some((1200, 700))).unwrap();
+    // Warm: every pipeline, kernel and cache the interactions reach.
+    for _ in 0..2 {
+        draw_registered(&mut renderer, id);
+        let request = centre_pick(&renderer, id);
+        let _ = renderer
+            .pick_chart(id, request)
+            .unwrap()
+            .resolve_full_blocking()
+            .unwrap();
+        let _ = renderer
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve_full_blocking()
+            .unwrap();
+    }
+    let mut costs = Vec::new();
+    let mut measure = |name: &'static str, renderer: &mut Renderer, f: &dyn Fn(&mut Renderer)| {
+        settle_gpu(renderer);
+        let before = allocated_bytes();
+        let started = std::time::Instant::now();
+        f(renderer);
+        settle_gpu(renderer);
+        let elapsed = started.elapsed();
+        costs.push((name, allocated_bytes() - before, elapsed));
+    };
+    let request = centre_pick(&renderer, id);
+    measure("hover pick", &mut renderer, &|r| {
+        let _ = r
+            .pick_chart(id, request)
+            .unwrap()
+            .resolve_full_blocking()
+            .unwrap();
+    });
+    measure("click: typed pick and select", &mut renderer, &|r| {
+        let picked = r
+            .pick_chart_data(id, request)
+            .unwrap()
+            .resolve_full_blocking()
+            .unwrap();
+        let reference = picked.picked.expect("the pick lands on a bar").to_ref();
+        let mut config = r.chart_config(id).unwrap().clone();
+        let selections = config
+            .picked_data
+            .get_or_insert_with(renderer::DataSelectionsConfig::empty);
+        selections.refs.clear();
+        selections.refs.push(reference);
+        r.set_chart_config(id, config).unwrap();
+    });
+    measure("step_selection", &mut renderer, &|r| {
+        let mut config = r.chart_config(id).unwrap().clone();
+        let moved = config
+            .step_selection(r.chart_series(id).unwrap(), 1, 0, |_| Some(n))
+            .unwrap();
+        assert!(moved, "the selection steps to the next category");
+        r.set_chart_config(id, config).unwrap();
+    });
+    measure("config edit (title)", &mut renderer, &|r| {
+        let mut config = r.chart_config(id).unwrap().clone();
+        config.chart_title.offset_x += 3.0;
+        r.set_chart_config(id, config).unwrap();
+    });
+    measure("resize", &mut renderer, &|r| {
+        r.set_chart_display(id, Some((1100, 640))).unwrap();
+        let (config, panel, scale) = r.chart_display_config(id).unwrap();
+        let chart = Chart::new(config.into_owned());
+        std::hint::black_box((chart, panel, scale));
+    });
+    measure("draw", &mut renderer, &|r| draw_registered(r, id));
+    costs
+}
+
+/// #442: on a categorical axis, a pick, `step_selection`, a config edit and
+/// a resize copy no category. The categories are shared storage of the
+/// document (SSOT), never copied by a hot path; ten times the categories
+/// may cost no more host heap per pick or resize than a fixed allowance.
+/// An interaction that edits the document also validates it, whose
+/// duplicate-id check indexes the borrowed ids in a transient hash set
+/// (#450): it may add that index, far less than a copy of the categories.
+///
+/// The draw is printed, not held to it: its axis chrome measures the tick
+/// label of every category to thin them (`each_category_tick_label`), work
+/// and scratch that grow with the categories but copy none of them.
+#[test]
+fn categorical_interactions_do_not_copy_the_categories() {
+    let Some(_measurement) = measured("categorical_interactions_do_not_copy_the_categories") else {
+        return;
+    };
+    /// Host heap an interaction may hand out beyond the small chart's,
+    /// whatever the category count: 50 000 categories' storage is several
+    /// MB, so one copy of them is far past it.
+    const ALLOWANCE: u64 = 64 * 1024;
+    /// What a document edit may add per category: the validation's index
+    /// of borrowed ids (`validate_categories`, #450), a transient hash set
+    /// of `&str` of about 22 B per category. One copy of a category (its
+    /// struct and its two strings) is about 156 B, so a copy still fails.
+    const ID_INDEX_PER_CATEGORY: u64 = 32;
+    /// The interactions that validate the edited document.
+    const EDITS: [&str; 3] = [
+        "click: typed pick and select",
+        "step_selection",
+        "config edit (title)",
+    ];
+    const SMALL: usize = 5_000;
+    const LARGE: usize = 50_000;
+    let mut growths = Vec::new();
+    for kind in [CategoricalKind::Bars, CategoricalKind::Ranges] {
+        let small = categorical_interaction_costs(SMALL, kind);
+        let large = categorical_interaction_costs(LARGE, kind);
+        for ((name, small_bytes, small_time), (_, large_bytes, large_time)) in
+            small.iter().zip(&large)
+        {
+            println!(
+                "{kind:?} {name}: {SMALL} categories {small_bytes} B {small_time:?}, \
+                 {LARGE} categories {large_bytes} B {large_time:?}"
+            );
+            if *name != "draw" {
+                growths.push((kind, *name, *small_bytes, *large_bytes));
+            }
+        }
+    }
+    for (kind, name, small_bytes, large_bytes) in growths {
+        let allowance = if EDITS.contains(&name) {
+            ALLOWANCE + ID_INDEX_PER_CATEGORY * (LARGE - SMALL) as u64
+        } else {
+            ALLOWANCE
+        };
+        assert!(
+            large_bytes.saturating_sub(small_bytes) <= allowance,
+            "{kind:?} {name}: {LARGE} categories allocated {large_bytes} B, \
+             {SMALL} allocated {small_bytes} B; the difference grows with \
+             the categories"
+        );
+    }
+}
+
+/// A registered candlestick of `n` rows with one value label per row
+/// (#443), on a renderer of its own: its chart and a view of it.
+fn labelled_candles(n: usize) -> (Renderer, renderer::ChartId, renderer::ChartView, Chart) {
+    let mut renderer = renderer_with_pool(16 << 20).expect("required GPU test: renderer");
+    let column = |data: Vec<f32>| Column { data };
+    renderer
+        .add_column("pos", &column((0..n).map(|i| i as f32).collect()))
+        .unwrap();
+    renderer.add_column("open", &column(vec![20.0; n])).unwrap();
+    renderer
+        .add_column("close", &column(vec![60.0; n]))
+        .unwrap();
+    renderer.end_gpu_frame();
+    let mut config = panel_config(480, 360);
+    config.legend.visible = false;
+    config.bottom_x.min = -1.0;
+    config.bottom_x.max = n as f64;
+    config.left_y.min = 0.0;
+    config.left_y.max = 100.0;
+    let series = renderer::SeriesConfig {
+        series_id: "candles".into(),
+        source_id: None,
+        label: None,
+        x_column: "pos".into(),
+        y_column: "close".into(),
+        z_column: None,
+        render_type: renderer::DataRenderType::RangeBars(renderer::RangeBarSeries {
+            color: renderer::Color::new(0.2, 0.3, 0.8, 1.0),
+            style: Default::default(),
+            start: "open".into(),
+            whiskers: None,
+            color_by: Default::default(),
+            progress: None,
+            connector: None,
+            slot_width: Some(0.8),
+            labels: renderer::data_config::CategoryBarSeriesLabels {
+                placement: renderer::data_config::CategoryBarLabels::Outside,
+                text: (0..n).map(|i| (i % 1000).to_string()).collect(),
+                ..Default::default()
+            },
+        }),
+    };
+    let id = renderer
+        .register_chart(config.clone(), vec![series])
+        .unwrap();
+    renderer.enable_gpu_picking().unwrap();
+    let chart = Chart::new(config);
+    let view = renderer
+        .create_chart_view(&chart, chart.config().chart_area.0)
+        .unwrap();
+    (renderer, id, view, chart)
+}
+
+/// The host bytes and allocations one step of a labelled chart costs at
+/// its peak: an idle frame, a pan (a view edit and its frame) and a pick at
+/// display scale 1.5.
+fn labelled_step_costs(n: usize) -> [(i64, u64); 3] {
+    let (mut renderer, id, mut view, chart) = labelled_candles(n);
+    let draw = |renderer: &mut Renderer, view: &mut renderer::ChartView| {
+        let frame = renderer
+            .prepare_registered(&mut [renderer::RegisteredChartDrawItem { chart_id: id, view }])
+            .unwrap();
+        drop(frame);
+        settle_gpu(renderer);
+    };
+    let rect = chart.config().chart_area.0;
+    let request = renderer::GpuPickRequest {
+        canvas_position_px: [rect.width as f32 * 0.75, rect.height as f32 * 0.75],
+        display_panel_px: renderer::layout::Rect {
+            x: 0,
+            y: 0,
+            width: rect.width * 3 / 2,
+            height: rect.height * 3 / 2,
+        },
+        display_scale: 1.5,
+        max_distance_px: 4.0,
+    };
+    let pick = |renderer: &mut Renderer| {
+        let ticket = renderer.pick_chart_data(id, request).unwrap();
+        let _ = test_gpu::block_on(ticket.resolve());
+        settle_gpu(renderer);
+    };
+    let pan = |renderer: &mut Renderer, view: &mut renderer::ChartView, by: f64| {
+        let mut state = renderer.chart_view_state(id).unwrap();
+        state.bottom_x.min += by;
+        state.bottom_x.max += by;
+        renderer.set_chart_view_state(id, state).unwrap();
+        draw(renderer, view);
+    };
+    // Warm every step: the first of each bakes, compiles and fills caches.
+    for _ in 0..2 {
+        draw(&mut renderer, &mut view);
+        pick(&mut renderer);
+        pan(&mut renderer, &mut view, 1.0);
+        pan(&mut renderer, &mut view, -1.0);
+    }
+    let mut measure = |step: &mut dyn FnMut(&mut Renderer, &mut renderer::ChartView)| {
+        let start = reset_peak_live_bytes();
+        let before = calls();
+        step(&mut renderer, &mut view);
+        (peak_live_bytes() - start, calls() - before)
+    };
+    let edit = measure(&mut |renderer, _| {
+        let mut state = renderer.chart_view_state(id).unwrap();
+        state.bottom_x.min += 0.5;
+        state.bottom_x.max += 0.5;
+        renderer.set_chart_view_state(id, state).unwrap();
+    });
+    let after_edit = measure(&mut |renderer, view| draw(renderer, view));
+    println!("DIAG {n}: edit {edit:?} frame after edit {after_edit:?}");
+    let idle = measure(&mut |renderer, view| draw(renderer, view));
+    let picked = measure(&mut |renderer, _| pick(renderer));
+    let panned = measure(&mut |renderer, view| pan(renderer, view, 2.0));
+    [idle, picked, panned]
+}
+
+/// Value labels cost a frame, a pick or a pan nothing that grows with their
+/// count (#443): the atlas, the 16 B cell per label and its bind group are
+/// kept across them, and no label string is copied. 5k and 50k labels peak
+/// at the same host bytes, within a margin far below one byte per label.
+#[test]
+fn value_label_frames_picks_and_pans_do_not_allocate_per_label() {
+    let Some(_measurement) =
+        measured("value_label_frames_picks_and_pans_do_not_allocate_per_label")
+    else {
+        return;
+    };
+    let small = labelled_step_costs(5_000);
+    let large = labelled_step_costs(50_000);
+    for (step, (small, large)) in ["idle frame", "pick", "pan"]
+        .iter()
+        .zip(small.iter().zip(large))
+    {
+        println!(
+            "{step}: 5k labels peak {} B in {} allocations, 50k labels peak {} B in {} allocations",
+            small.0, small.1, large.0, large.1
+        );
+        assert!(
+            large.0 <= small.0 + 16 * 1024,
+            "{step}: 45k more labels raised the peak host bytes from {} to {}",
+            small.0,
+            large.0
+        );
+        assert!(
+            large.1.abs_diff(small.1) <= 8,
+            "{step}: 45k more labels changed the allocation count from {} to {}",
+            small.1,
+            large.1
+        );
+    }
 }

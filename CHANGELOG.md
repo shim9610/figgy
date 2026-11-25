@@ -53,6 +53,86 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 `color` and the transition arrows' `color_by_wavelength` and
 `label_knockout`) are additive.
 
+- **A large categorical axis validates and places its labels in linear
+  time** ([#450](https://github.com/shim9610/figgy/issues/450)). Same
+  results, same errors, same pixels.
+  - `AxisOptions::validate_categories` finds a repeated id in one pass
+    over a hash set of the borrowed ids instead of comparing every pair; it
+    returns the same `Result` (the same first failing category and rule).
+    With 50 000 categories a `set_chart_config` takes 4 ms instead of
+    5.7 s (lavapipe, release).
+  - The staggered rows of category tick labels are searched on boxes
+    measured once per placement (`each_category_tick_label`) instead of
+    measuring two labels again for every candidate row count. With 50 000
+    categories an axis raster takes 2.4 s instead of 29 s; the frames of
+    category bars, range bars and the Grotrian scenes are byte-identical at
+    1x and 2x.
+
+- **A categorical axis shares its categories instead of copying them**
+  ([#442](https://github.com/shim9610/figgy/issues/442)). A pick, a
+  `step_selection`, a document edit and a resize no longer copy the
+  category list: `AxisOptions::categories` is shared storage, so a
+  document's clone, its display placement (`place_document`) and its pick
+  inputs share one list whatever its length. The resident display cache
+  compares an unchanged list by its allocation (`Arc::ptr_eq`) and keeps
+  a clone of the `Arc`, not of the categories. A typed data pick reads a
+  named layer from the stored document and moves its displayed panel
+  instead of copying it; the browser's frame builds its display chart only
+  when it redraws the annotation layer, and a drag of a range link exit or
+  a value label writes the series alone (`set_chart_series`). With 50 000
+  categories (lavapipe, 1200 × 700) a hover pick allocates 11.7 KB instead
+  of 7.8 MB, and a click, `step_selection`, a title edit and a resize
+  allocate the same as with 5 000. The wire form is unchanged.
+  - **Migration:** `AxisOptions::categories` is
+    `Option<Arc<[Category]>>` (was `Option<Vec<Category>>`). Build it
+    with `Some(vec![..].into())` or `collect()` it; read it as a slice as
+    before (`as_deref()`). To edit categories in place, take
+    `Arc::make_mut(categories)`, which copies the list only while another
+    document still shares it; to add or remove one, collect a new list.
+    The model's `serde` feature now enables serde's `rc` feature.
+
+- **Calendar ticks plan once per axis and stop measuring rejected
+  candidates** ([#444](https://github.com/shim9610/figgy/issues/444)). On a
+  date axis with automatic calendar ticks, pan and zoom spent most of each
+  frame in the tick planner: every candidate step it tried had all its
+  labels formatted and measured before the fit was decided, and the grid,
+  the ticks, the labels, the corner labels and the tick warnings each planned
+  the same axis again. The walk now rejects a candidate whose gaps alone
+  overflow the axis without formatting a label, measures the other
+  candidates' labels one at a time and stops as soon as the widest so far
+  overflows, and builds ticks only for the candidate it takes; the plan,
+  the tick values and the labels are the same (the walk before is kept as a
+  test oracle over ranges from a fraction of a second to millennia). A
+  chrome pass (`chrome::emit_chart_chrome`) and each element placement
+  (`chrome::emit_part_of`) plan each axis once and hand the plan to
+  everything that reads it, and the renderer's tick warnings read whether
+  each axis has a plan from the raster pass that drew it. Frames are byte
+  for byte unchanged.
+  **Migration** (the `chrome` module carries no compatibility promise; these
+  are its public signatures): `emit_chart_chrome` returns `[bool; 4]`,
+  whether each axis in `chrome::CHART_SIDES` order has a timestamp plan
+  (ignore it to keep the call as before). The plan of an axis is
+  `timestamp_tick_plan(axis, side, plot, measure)`; pass `plan.as_ref()`
+  where these now take it: `emit_axis(.., corners, plan, measure, sink,
+  scale)`, `emit_axis_strokes(axis, side, plot, cross, across, plan, sink,
+  scale)` (no measure), `emit_axis_tick_labels_clear_of(.., clearance, plan,
+  measure, sink)`, `each_axis_stroke(.., across, plan, majors, scale, each)`
+  (the plan in place of the measure), `each_kept_axis_tick_label(..,
+  majors, plan, each)`, `each_axis_tick_label(.., majors, plan, each)` and
+  `visible_timestamp_labels(.., majors, plan)`; `emit_grid(config, plot,
+  [bottom_x_plan, left_y_plan], sink, scale)` takes the two plans in place of
+  the measure, and a `CornerAxis { .. }` literal adds `plan`. The new
+  `major_tick_values_of(axis, plan)` and `minor_tick_values_of(axis, plan)`
+  are `major_tick_values_for_axis` and `minor_tick_values_for_axis` for a
+  plan already made; `timestamp_plan_sides(config, plot, measure)` gives
+  whether each axis has one. Tests:
+  `the_early_rejecting_walk_returns_the_measuring_walks_plan`,
+  `the_early_rejecting_walk_keeps_the_unreadable_ranges` and
+  `a_thirty_day_plan_measures_a_bounded_number_of_labels`
+  (`chrome/time.rs`), `a_chrome_pass_plans_each_axis_once` and
+  `placing_an_axis_element_plans_each_axis_it_reads_once`
+  (`chrome/tick_plan.rs`).
+
 - **The layout chooses each range link's exit, links draw under their bars,
   and a chart of links takes the timeline frame**
   ([#357](https://github.com/shim9610/figgy/issues/357), approved in
@@ -790,6 +870,9 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 
 ### Model (`figgy-model` 0.13.0)
 
+- **Decorations snap to guides while they drag** ([#440](https://github.com/shim9610/figgy/issues/440)). `HitMap::drag_snapped` moves an element through its own drag policy after snapping its drawn box, within `layout::SNAP_THRESHOLD_PX` (6 px on screen, divided by the display scale), to the chart and plot centres (`layout::SnapAreas`, `Config::snap_areas`), its own axis' centre lines (an axis title on a 2D, ternary or 3D box axis) and the edges and centres of the other snapping elements of the map that it does not carry. The snapped move is stored as the element's usual offset. The gesture state is one fixed-size `layout::DragSnap` the host keeps from press to release: it absorbs the pointer's travel while the element is held on a guide (so the element leaves the guide once the pointer moves past the reach), turns off for the gesture with `set_enabled(false)` (the Alt / Option modifier) and keeps the `layout::SnapGuides` of the last move, which `SelectionBox::with_snap_guides` hands to the selection overlay. Snapping elements (`Draggable::snaps`): the chart title, axis titles and tick label bands (not a polar chart's), the legend, the colourbar strip, labels and title, parallel axis labels, category group headers, overlay legends and titles, subplot decorations and inset frames, annotation text boxes and arrows and the radial chart's decorations. A colourbar strip and an inset frame do not snap to what they carry (`Draggable::snap_carries`). `Config::snap_to_guides: Option<bool>` turns it off (`Some(false)`); `None`, the key absent in JSON, is on (`Config::snaps_while_dragging`). Guides are never stored in the document and never exported.
+  Migration: an exhaustive `Config { .. }` pattern or literal names `snap_to_guides` (`None` for the default). JSON documents need nothing.
+  Tests: `layout::snap::tests` (centre snap and release past the reach, disabled gesture, display scale, edges, `the_snap_option_round_trips`), `drag::tests::{a_title_drag_snaps_to_a_centre_and_shows_its_guide, an_axis_title_snaps_to_its_axis_centre, a_held_modifier_disables_the_snap, carried_elements_are_not_snap_targets}`.
 - **The radius labels' ray is the layout's until a document stores one** ([#417](https://github.com/shim9610/figgy/issues/417)). `PolarOptions::radial_label_angle_degrees` is now `Option<f64>`: `None` (the default, key absent in JSON) is drawn at `polar::DEFAULT_RADIAL_LABEL_ANGLE_DEGREES` (90, up) until a renderer fit chooses it, and a stored angle (every document an earlier release wrote, a dragged ray) is never moved. The new `PolarOptions::radius_labels_skipped: Option<u32>` (key absent while `None`) is how many of the innermost drawn radius labels are skipped because they sit over the bars; `hide_first_radius_label` still hides the first one over a count of 0 (`PolarOptions::hidden_inner_radius_labels`). `PolarOptions::ray_degrees` is the drawn angle. `chrome::choose_radial_label_ray` chooses both from the rows of a polar chart's category bars (`chrome::PolarBarRow`), handed over once by the renderer: the ray between two category slots where the fewest label boxes meet a drawn wedge, the nearest to 90 on a tie, and at a stored ray only the skip count.
   Migration: a Rust literal writes `radial_label_angle_degrees: Some(90.0)` for the old fixed ray (or `None` to let the layout choose) and adds `radius_labels_skipped: None`, or uses `..PolarOptions::default()`. Reading `polar.radial_label_angle_degrees` as an angle becomes `polar.ray_degrees()`. JSON documents need nothing: a stored angle reads as `Some`, and an omitted one, which earlier releases read as 90, is now the layout's to choose.
   Tests: `polar_is_additive_in_json` (both keys round-trip and are omitted at `None`), the renderer's `polar_radial_label_fit`.
@@ -2373,6 +2456,9 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Typed data picks spread over the rows and reuse their buffers** ([#445](https://github.com/shim9610/figgy/issues/445)). The typed body picks of histograms, category bars, box plots, range bars, range links, violins, value labels, parallel coordinates and triangle meshes each ran one 64-lane workgroup that walked every row. Each is now dispatched over `ceil(N / 64)` workgroups, one row per lane (two dimensions past the per-dimension limit; no row is skipped and nothing is capped, rule 10): each workgroup reduces its rows to one candidate in a partials buffer, and a second pass per series (`pick_reduce_data` in the bar module, `pick_reduce_parallel`, `pick_reduce_tri_mesh`, which also runs the mesh's contour test once) folds them into the series' answer. Every comparator is a total order on valid candidates, so the answers are those of the single-workgroup kernels, ties included. A pick's prepared work (its series' bind groups, style maps, kernels, query templates and scratch buffers) is kept by the picker per chart layer while the chart's desired revision, the renderer's visual revision, the pool layout, the font generation, the shader set and the display scale and panel are unchanged, and a pick writes only the transform and its cursor; the readback buffers are a ring of two. The field and grid vector kernels are unchanged, and streamed sources keep their own path (rule 8). The shader prewarm contract is regenerated. Timings (debug build, a 480 × 360 range bar chart, median of ten picks): native on lavapipe 0.69 → 0.44 ms at 5k rows, 2.57 → 2.07 ms at 50k, 30.6 → 26.0 ms at 50k with value labels; in headed Chromium on SwiftShader under Xvfb the pick's CPU encode drops to about 0.2 ms, but its GPU wait is unchanged (about 9 ms at 5k, 55 ms at 50k), since SwiftShader's cost there grows with the rows whatever the split. Tests: `parallel_typed_picks_answer_as_the_single_workgroup_kernels` (range bars, category bars and value labels at 1, 63, 64, 65, 5k and 70k rows with ties and missing rows, against the replaced kernels compiled as a test oracle, the 2D dispatch forced by a lowered per-dimension limit) and `repeated_typed_picks_reuse_their_buffers` (no readback buffer after the first two picks, the prepared work kept across cursors, prepared again after an edit or while a ticket holds it, dropped by the host's memory release).
+
+- **Snap guides on the selection overlay** ([#440](https://github.com/shim9610/figgy/issues/440)). `Renderer::set_chart_snap_guides` (and `MonotonicChart::set_snap_guides`, `Chart::set_snap_guides`) shows the guides of a decoration drag in progress with the chart's selection box, drawn by `draw_selection_box` as thin magenta lines (`axis_render::SNAP_GUIDE_COLOR`) one device pixel wide; `SnapGuides::NONE` removes them, and a changed selection drops them. `Renderer::refresh_annotations_with_guides` does the same for the selected annotation, and `AnnotationMap::drag_snapped` snaps a text box or arrow. Guides are selection chrome: they redraw the selection overlay only, are not part of the document, and no PNG, SVG or PDF export draws them. Tests: `snap_guides::a_drag_shows_its_guide_until_release_and_no_export_draws_it` (PNG at 1x and 2x and SVG byte-equal with and without guides), `snap_guides_are_drawn_only_with_the_selection_box`, `annotation_snap_guides_draw_with_the_selection_box`.
 - **Polar bars choose a radius label ray they do not cover** ([#417](https://github.com/shim9610/figgy/issues/417)). On a 16-sector stacked wind rose the default ray ran through the N and NNW wedges and the innermost labels, the zero label included, sat over the bars. The renderer's fits now choose it where the document leaves it `None`: `Renderer::fit_ranges`, a `Fitted` chart's registration, `commit_auto_fit_all` and the new `Renderer::fit_radial_labels` (native) / `fit_chart_radial_labels` (a registered chart; a browser's frame writes it when its gather completes, `service_radial_label_fits`) gather each row's drawn stack of every polar cell's category bars on the GPU (the extent engine's new `gather_polar_bar_rows` entry, 16 bytes per row, read back once by the layout and kept nowhere) and store the ray and the innermost labels to skip in `PolarOptions` (model). A stored angle or count is kept; only the skip count is chosen at a stored ray. A streamed source is refused with `ColumnNotResident` (rule 8). There is no cap on rows, members or categories (rule 10): the choice's walk grows with the square of the categories (2000 categories: under a second in a debug build). `Renderer::begin_radial_label_fit` and `RadialLabelFitTicket` are the parts for a host that waits on its own.
   Tests (`polar_radial_label_fit`): `the_wind_rose_draws_no_radius_label_over_a_bar` (the issue's fixture after `fit_ranges` and `fit_layout`: no label box covers a bar pixel at 1x or 2x, at least four labels drawn; at the old ray with every label shown, labels do), `explicit_values_win`, `registration_fits_the_ray`, `the_fitted_document_round_trips`, `a_streamed_source_is_refused`, `a_two_thousand_category_rose_is_fitted`.
 - **A range fit keeps an explicit label format on a linear axis** ([#417](https://github.com/shim9610/figgy/issues/417)). `Renderer::fit_ranges`, the candidate `Renderer::fit_config` (and the scoped and Y-only fits), `Chart::auto_fit_*` and the range setters replaced every linear-axis label format other than `Timestamp` and `Auto` with `Auto`, so a wind rose whose radius axis was set to `LabelFormat::Percent` lost its `%` labels (`0.04` in place of `4%`) on its first fit. They now replace only `Decimal` (the serde default) and `Power` (the logarithmic fit's own format) with `Auto`, as before with three significant digits. `Percent`, `Scientific`, `Degrees`, `Radians` and `Plain` are kept with their `significant_digits`, while the range and the major spacing still move; `Auto` and `Timestamp` behave as before. No serialized form changes.
@@ -2436,6 +2522,7 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 
 - **Unicode superscript and subscript characters always draw as styled base characters** ([#353](https://github.com/shim9610/figgy/issues/353)). A `RichSegment` whose `text` is a Unicode superscript or subscript character (`⁰`–`⁹`, `⁺`, `⁻`, `⁽`, `⁾`, `ⁿ`, `ᵗ`, `₀`–`₉`, `₊`, `₋`, `₍`, `₎`) now draws as its base character at the superscript or subscript position, the same pixels as a base-character segment with the `superscript` or `subscript` flag, whatever fonts are installed. Before, it drew the character from the font: the bundled faces have no U+207A or U+207B, so in the browser a Feynman label written `e⁻` or `μ⁺` as literal segments showed a .notdef box on the canvas and in PNG, and a native host drew whatever face it had installed. The mapping is the table the string conversions already used, now public as `text::unicode_script_char` (with `text::UnicodeScript`), applied where segments are measured, drawn and exported (canvas, label rasters, SVG, PDF and math formula leaves), so the pen after a mapped character sits where measurement ends it and selection boxes follow. A character in a segment that is already a script combines with its flags (a `⁻` in a superscript segment is raised once; superscript wins over subscript). In a TeX formula such a character is a script of an empty base, as `{}^-`. The stored segments and the serialized document are unchanged. Tests: `unicode_script_characters_draw_as_styled_base_characters`, `drawn_char_maps_every_unicode_script_character` (`text_render.rs`), `unicode_script_characters_in_a_formula_are_scripts` (`math_layout.rs`), `literal_unicode_charges_draw_as_superscript_signs` (`tests/feynman_render.rs`, PNG at 1x and 2x, SVG and PDF), `literal_unicode_charges_draw_without_the_notdef_box` (`crates/web/tests/feynman_browser.rs`, canvas and PNG).
 
+- **Smooth Flat radial edges.** A Flat, level radial chart (pie, donut, sunburst) antialiased the pixels near a slice edge with a fixed 2 × 2 grid, so a slanted edge, an angular gap or a separator line stepped in quarters and showed 1 px stairs. Those pixels now take each slice's analytic coverage: the distance to its arcs and radial edges (after the gap, explode and rounded corners) and to its ink band (rim, separators, emphasis), in physical pixels, smoothed over its own `fwidth`. Touching slices and sunburst rings measure complementary distances, so no background shows through a shared edge. Charts with a 3D material, tilt, depth or shadow keep the supersampled path of #349. Appearance only: slice angles, radii, colours, ink, labels and picks are unchanged, and every pixel more than one pixel from an edge draws the same bytes; at edges the gallery sunburst, a donut and a pie move by a mean of at most about 0.2 and a 99th percentile of at most 3 levels of 255. No API or wire change. Tests: `analytic_flat_edges_stay_within_the_pinned_difference` and `a_slanted_flat_separator_has_a_smooth_monotonic_edge_profile` (`radial.rs`).
 - **Faster radial shading** ([#349](https://github.com/shim9610/figgy/issues/349)). A 3D radial chart shaded every sector that became the nearest so far, in each of a pixel's four antialiasing samples, and took each sector's ray-march normal inside the march loop. It now shades only the nearest sector, takes the normal once after the march, and supersamples coverage only: each sample still finds the slice it hits (or the background) and that slice's outline at its own position, while the lit material is evaluated once per surface a pixel's samples hit (one slice, one normal), and the floor shadow once per pixel. Edges, slice geometry, labels, picks and the Flat fast path are unchanged, and Flat charts without a shadow draw the same bytes; a material chart's pixels move by a mean of at most about 0.2 and at most 14 levels of 255 inside a textured face. No API or wire change. Test: `shading_once_per_surface_stays_within_the_pinned_difference` (`radial.rs`).
 
 - **`RendererDevice::request_async` and figgy-owned devices** ([#322](https://github.com/shim9610/figgy/issues/322)). New, additive: `RendererDevice::request_async(&adapter)` requests a device with figgy's descriptor (`gpu::request_device_async`) and bundles it as `RendererDevice::new` does, recording that figgy owns the device; the windowed and headless constructors build their bundles this way. In the browser, the drop of the last holder of such a bundle (a renderer, a radial renderer, a clone or a pending ticket) destroys the device after its submitted work (see the browser entry for the Chromium deadlock this avoids). Behavior change for browser hosts that keep the raw `wgpu::Device` of a windowed or headless renderer (`device()`) after dropping every figgy holder of it: keep a `renderer_device()` clone as long as the device is used. `RendererDevice::new` and `RendererDevice::blocking` bundles stay the host's and are never destroyed. Native drops are unchanged.
@@ -3919,6 +4006,7 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 
 ### Browser product (`figgy` 0.16.0)
 
+- **Drags snap to guides** ([#440](https://github.com/shim9610/figgy/issues/440)). `on_move` snaps a dragged decoration or annotation to the chart and plot centres, its axis' centre line and the other movable elements, within 6 canvas pixels, and shows the guides while the drag lasts; `on_release` and `clear_selection` remove them. `set_snap_modifier(held)` turns snapping off while the host holds Alt / Option (`chart.set_snap_modifier(event.altKey)`), and a document with `"snap_to_guides": false` never snaps.
 - **`pick_point` answers the nearest data on a miss** ([#381](https://github.com/shim9610/figgy/issues/381)). On a registered or monotonic chart, a pick with no drawn ink within `max_distance_px` used to resolve to `undefined` (`null` from `<figgy-chart>`). It now resolves to the hit's shape with the point fields `null` and `nearest` filled: `{ "source_id": null, "series_id": null, "point_index": null, "distance_px": null, "nearest": [{ "layer", "source_id", "series_id", "point_index", "distance_px" }, …] }`, `nearest` being every pickable series' datum nearest to the cursor, as a hit carries it; it is `[]` for a chart with no pickable series. A value label or DataLess hit keeps its own shape, and a streamed display's pick still resolves to `undefined` on a miss (rule 8). Test: `a_missed_pick_json_carries_the_nearest_data`.
   - **Migration:** a host that read any resolved `pick_point` value as a hit (`if (hit)`) tests `hit?.series_id != null` (or `hit.series_id !== null` after a non-null check) instead.
 

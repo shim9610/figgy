@@ -56,6 +56,16 @@ pub struct FiggyChart {
     /// the press point advanced by every move. Polar axes and tick
     /// labels move relative to it.
     pub(super) drag_pointer: [f32; 2],
+    /// The snap state of the drag in progress (#440): what a snap absorbed
+    /// of the pointer's travel and the guides the selection overlay shows.
+    /// Host gesture state, never the document.
+    pub(super) drag_snap: renderer::layout::DragSnap,
+    /// The host holds the snap modifier (Alt / Option): drags follow the
+    /// pointer without snapping (`set_snap_modifier`).
+    pub(super) snap_modifier: bool,
+    /// The snap guides the annotation overlay should draw with the
+    /// selected annotation's box (#440).
+    pub(super) annotation_guides: renderer::layout::SnapGuides,
     pub(super) resizing: Option<ModelResizeHandle>,
     pub(super) cycle: renderer::ColorCycle,
     pub(super) clear_color: Color,

@@ -114,7 +114,7 @@ fn renderer() -> Renderer {
     r
 }
 
-fn categories(n: usize) -> Vec<Category> {
+fn categories(n: usize) -> std::sync::Arc<[Category]> {
     (0..n)
         .map(|i| Category::new(format!("c{i}"), format!("C{i}")))
         .collect()
@@ -769,7 +769,7 @@ fn box_labels_sit_beside_the_median() {
 
 fn radar_chart() -> Chart {
     let mut config = bare_config();
-    config.bottom_x.categories = Some(categories(4));
+    config.bottom_x.categories = Some(categories(4).into());
     config.set_polar(Some(PolarOptions {
         zero_angle_degrees: 90.0,
         clockwise: true,
@@ -1919,7 +1919,7 @@ fn three_hundred_value_labels_draw_pick_and_drag() {
             width: WIDE,
             height: HEIGHT,
         });
-        config.bottom_x.categories = Some(categories(N));
+        config.bottom_x.categories = Some(categories(N).into());
     }
     // One digit per label, so a label fits its 13 px slot.
     let text: Vec<String> = (0..N).map(|k| format!("{}", k % 10)).collect();

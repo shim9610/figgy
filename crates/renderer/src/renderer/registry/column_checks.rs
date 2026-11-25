@@ -275,6 +275,7 @@ pub(in crate::renderer) fn prepare_chart_replacement_plan(
             selection,
             raster,
             annotation,
+            labels,
         } = state.revisions;
         let desired = desired.successor("chart desired revision")?;
         let next = if is_target {
@@ -305,6 +306,11 @@ pub(in crate::renderer) fn prepare_chart_replacement_plan(
                 },
                 raster: raster.successor("chart raster revision")?,
                 annotation: annotation_config_revision(annotation, &state.config, &config)?,
+                labels: labels_revision(
+                    labels,
+                    (&state.config, &state.series),
+                    (&config, &series),
+                )?,
             }
         } else {
             // A chart that only reads the replaced columns: its data changed.
@@ -317,6 +323,7 @@ pub(in crate::renderer) fn prepare_chart_replacement_plan(
                 view,
                 raster,
                 annotation,
+                labels,
             }
         };
         revisions.push(ChartReplacementRevision {

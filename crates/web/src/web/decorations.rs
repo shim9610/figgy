@@ -741,8 +741,12 @@ impl FiggyChart {
         let mut config = self.chart_config()?.clone();
         let result = match handle {
             Some(h) => map.resize_by(&mut config.annotations, id, h, dx, dy),
-            None => map.drag_by(&mut config.annotations, id, dx, dy),
+            // A text box or arrow snaps to guides (#440).
+            None => map.drag_snapped(&mut config.annotations, id, dx, dy, &mut self.drag_snap),
         };
+        if handle.is_none() {
+            self.show_annotation_guides(self.drag_snap.guides());
+        }
         if result != Some(NudgeResult::Moved) {
             return Ok(false);
         }

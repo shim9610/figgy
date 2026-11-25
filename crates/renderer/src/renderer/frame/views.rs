@@ -47,7 +47,8 @@ impl Renderer {
         // whole document (#414).
         let (w, h) = checked_annotation_raster_size(self.caps, chart.config(), panel_rect)?;
         view.annotation_rect = annotation_rect(chart.config(), panel_rect);
-        let annotations = annotation_raster_for_chart(chart, None)?;
+        let annotations =
+            annotation_raster_for_chart(chart, None, crate::layout::SnapGuides::NONE)?;
         view.annotation_underlay = annotations
             .underlay
             .as_deref()
@@ -62,10 +63,15 @@ impl Renderer {
         view.annotation_key = Some(AnnotationRasterKey {
             config: chart.config().clone(),
             selected: None,
+            guides: crate::layout::SnapGuides::NONE,
             font_generation,
             panel_rect,
         });
-        view.tick_warnings = merged_render_warnings(chart.config(), &panels);
+        // Each panel's own warnings, from its raster pass (#444).
+        let own = std::iter::once(&view.tick_warnings)
+            .chain(view.overlay_views.iter().map(|layer| &layer.tick_warnings))
+            .map(Vec::as_slice);
+        view.tick_warnings = merged_render_warnings(chart.config(), own);
         view.rebuild_render_warnings();
         // Drawn from the chart as it stands, without a selection: what
         // `prepare` would draw for it, so the first prepare keeps it.
@@ -98,7 +104,8 @@ impl Renderer {
         // data) and the decoration (drawn above). An overlay panel in the
         // Milkyway style gets a transparent grid: the backdrop is the base
         // panel's.
-        let (grid_rgba, dec_rgba) = raster_panel_layers(config, overlay, &[], true, scale)?;
+        let (grid_rgba, dec_rgba, tick_warnings) =
+            raster_panel_layers(config, overlay, &[], true, scale)?;
         let grid = self.create_layer_texture(&grid_rgba, w, h)?;
         let decoration = self.create_layer_texture(&dec_rgba, w, h)?;
 
@@ -125,6 +132,7 @@ impl Renderer {
                 crate::annotation::pixel_space_for_config(config),
             ),
             annotation_selected: None,
+            annotation_guides: crate::layout::SnapGuides::NONE,
             annotation_rect: panel_rect,
             layer_stamps: ChartViewLayerStamps {
                 grid: 1,
@@ -138,7 +146,7 @@ impl Renderer {
             panel_rect,
             display_scale: scale,
             grid_space_gen: None,
-            tick_warnings: axis_render::tick_warnings(config),
+            tick_warnings,
             render_warnings: Vec::new(),
             overlay_views: Vec::new(),
             raster_key: Some(PanelRasterKey::new(
@@ -204,7 +212,31 @@ impl Renderer {
         panel_rect: Rect,
         selected: Option<usize>,
     ) -> Result<()> {
-        let result = self.refresh_annotations_unreported(view, chart, panel_rect, selected);
+        let result = self.refresh_annotations_unreported(
+            view,
+            chart,
+            panel_rect,
+            selected,
+            crate::layout::SnapGuides::NONE,
+        );
+        self.reported(result)
+    }
+
+    /// [`Self::refresh_annotations`] with the snap guides of the annotation
+    /// drag in progress (#440), drawn with the selection box of `selected`
+    /// in the frame of the view's annotation map (the host's
+    /// [`crate::layout::DragSnap::guides`] for that drag).
+    /// [`crate::layout::SnapGuides::NONE`] removes them, as a host does on
+    /// release. The guides are chrome: no export draws them.
+    pub fn refresh_annotations_with_guides(
+        &mut self,
+        view: &mut ChartView,
+        chart: &Chart,
+        panel_rect: Rect,
+        selected: Option<usize>,
+        guides: crate::layout::SnapGuides,
+    ) -> Result<()> {
+        let result = self.refresh_annotations_unreported(view, chart, panel_rect, selected, guides);
         self.reported(result)
     }
 
@@ -214,9 +246,15 @@ impl Renderer {
         chart: &Chart,
         panel_rect: Rect,
         selected: Option<usize>,
+        guides: crate::layout::SnapGuides,
     ) -> Result<()> {
         self.health.check()?;
         view.annotation_selected = selected;
+        view.annotation_guides = if selected.is_some() {
+            guides
+        } else {
+            crate::layout::SnapGuides::NONE
+        };
         if view.panel_rect != panel_rect {
             return self.refresh_axis(view, chart, panel_rect);
         }
@@ -234,6 +272,7 @@ impl Renderer {
         let key = AnnotationRasterKey {
             config: chart.config().clone(),
             selected: view.annotation_selected,
+            guides: view.annotation_guides,
             font_generation: crate::text_render::font_generation(),
             panel_rect,
         };
@@ -242,7 +281,8 @@ impl Renderer {
         }
         // Unknown until the raster is uploaded: a failure leaves it stale.
         view.annotation_key = None;
-        let raster = annotation_raster_for_chart(chart, view.annotation_selected)?;
+        let raster =
+            annotation_raster_for_chart(chart, view.annotation_selected, view.annotation_guides)?;
         self.refresh_optional_layer(
             &mut view.annotation_underlay,
             raster.underlay.as_deref(),
@@ -383,8 +423,10 @@ impl Renderer {
         // Unknown until the raster is drawn: a failure leaves the view stale.
         view.raster_source = None;
         view.display_scale = scale;
+        // The drag in progress shows its snap guides with the box (#440).
         let selection: Vec<crate::select::SelectionBox> = selected
             .and_then(|id| self.selection_box(chart, id))
+            .map(|selection| selection.with_snap_guides(chart.snap_guides()))
             .into_iter()
             .collect();
         let selection = &selection[..];
@@ -427,7 +469,11 @@ impl Renderer {
             )?;
         }
         view.panel_rect = panel_rect;
-        view.tick_warnings = merged_render_warnings(chart.config(), &panels);
+        // Each panel's own warnings, from its raster pass (#444).
+        let own = std::iter::once(&view.tick_warnings)
+            .chain(view.overlay_views.iter().map(|layer| &layer.tick_warnings))
+            .map(Vec::as_slice);
+        view.tick_warnings = merged_render_warnings(chart.config(), own);
         // The anchor space follows the axes and the data area, which this
         // refresh may have moved, so the annotation layer is redone here as
         // well (its key skips an unchanged one); its own revision covers item
@@ -485,7 +531,10 @@ impl Renderer {
             // before this call is retired, exactly as for a real rewrite.
             // The Milkyway backdrop keeps its own cache and stamp: a view
             // created with a direct grid raster adopts the shared bake here.
+            // Its own tick warnings are the ones this raster had; a base
+            // view holds the merged list, so they are derived again.
             view.advance_content_revision()?;
+            view.tick_warnings = axis_render::tick_warnings(config);
             if let crate::config::DrawStyle::Milkyway(c) = &config.draw_style
                 && !overlay
             {
@@ -498,7 +547,7 @@ impl Renderer {
         // Milkyway style takes its grid texture from the cached backdrop
         // instead of a grid raster.
         let backdrop = matches!(config.draw_style, DrawStyle::Milkyway(_)) && !overlay;
-        let (grid_rgba, dec_rgba) =
+        let (grid_rgba, dec_rgba, tick_warnings) =
             raster_panel_layers(config, overlay, selection, !backdrop, scale)?;
         if view.panel_rect != panel_rect {
             view.advance_stream_revision()?;
@@ -535,7 +584,7 @@ impl Renderer {
         )?;
         view.layer_stamps.decoration += 1;
         view.panel_rect = panel_rect;
-        view.tick_warnings = axis_render::tick_warnings(config);
+        view.tick_warnings = tick_warnings;
         view.raster_key = Some(key);
         view.raster_generation = view.raster_generation.wrapping_add(1);
 

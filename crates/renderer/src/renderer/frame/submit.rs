@@ -80,6 +80,7 @@ impl Renderer {
                 ink_masks: &mut self.ink_masks,
                 ink_mask_pipeline: &mut self.ink_mask_pipeline,
                 ink_charts: &[],
+                label_sources: &[],
                 contour_label_pipelines: &mut self.contour_label_pipelines,
                 arc_pipelines: &mut self.arc_pipelines,
                 surface_format: self.surface_format,
@@ -210,7 +211,19 @@ impl Renderer {
                 .get(hit)
                 .map(|element| element.element_id())
         });
-        let chart = Chart::stored(config.into_owned());
+        // The guides are in the document's frame; the display draws the
+        // document placed at `scale` (#440).
+        let guides = {
+            let document = state.config.document_area();
+            let placed = config.document_area();
+            state.snap_guides.mapped(
+                [document.x as f32, document.y as f32],
+                scale,
+                [placed.x as f32, placed.y as f32],
+            )
+        };
+        let mut chart = Chart::stored(config.into_owned());
+        chart.set_snap_guides(guides);
         self.refresh_axis_with_selection_unreported(
             view,
             &chart,
@@ -449,6 +462,22 @@ impl Renderer {
         charts.try_reserve_exact(items.len()).map_err(allocation)?;
         charts.extend(items.iter().map(|item| item.chart_id));
         preparation.ink_charts = &charts;
+        // Each chart's value labels keep their atlas and cells across
+        // frames, keyed by the chart and its revisions (#443).
+        let mut label_sources = Vec::new();
+        label_sources
+            .try_reserve_exact(items.len())
+            .map_err(allocation)?;
+        for item in items.iter() {
+            let state = states
+                .get(&item.chart_id)
+                .ok_or(FiggyError::UnknownChart { id: item.chart_id })?;
+            label_sources.push(crate::renderer::prepare::ValueLabelSource::of(
+                item.chart_id,
+                &state.revisions,
+            ));
+        }
+        preparation.label_sources = &label_sources;
         let mut frame = preparation.prepare(&draws)?;
         frame.registered_charts = stamps;
         self.frame_residency = drawn;

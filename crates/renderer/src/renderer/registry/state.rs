@@ -50,6 +50,8 @@ pub(in crate::renderer) fn raster_config_equal(left: &Config, right: &Config) ->
         // Who owns the layout: the margins it chose are drawn through the
         // axes, the title and the legend above; the state draws nothing.
         layout_state: _,
+        // An interaction option (#440): no raster, no view state.
+        snap_to_guides: _,
     } = left;
     chart_area == &right.chart_area
         && top_x == &right.top_x
@@ -164,6 +166,46 @@ pub(in crate::renderer) fn subplot_geometry_equal(
         })
 }
 
+/// The labels revision of a config and series edit (#443): the next one
+/// when a series' value-label text differs (or the series list does) or the
+/// categories and bar groups the labels are laid out over differ in any
+/// panel, else `current`. Both sides are compared in place; nothing is
+/// copied. A label drag changes offsets only and keeps it.
+pub(in crate::renderer) fn labels_revision(
+    current: RenderRevision,
+    before: (&Config, &[SeriesConfig]),
+    after: (&Config, &[SeriesConfig]),
+) -> Result<RenderRevision> {
+    let text_equal = before.1.len() == after.1.len()
+        && before.1.iter().zip(after.1).all(|(a, b)| {
+            a.series_id == b.series_id
+                && data_render::value_label_text(&a.render_type)
+                    == data_render::value_label_text(&b.render_type)
+        });
+    if text_equal && label_layout_equal(before.0, after.0) {
+        Ok(current)
+    } else {
+        current.successor("chart labels revision")
+    }
+}
+
+/// Whether two configs lay value labels out over the same categories: the
+/// categorical axes, the bar groups, the overlays and each subplot with
+/// the series it draws.
+fn label_layout_equal(a: &Config, b: &Config) -> bool {
+    a.bottom_x.categories == b.bottom_x.categories
+        && a.left_y.categories == b.left_y.categories
+        && a.top_x.categories == b.top_x.categories
+        && a.right_y.categories == b.right_y.categories
+        && a.bar_groups == b.bar_groups
+        && a.overlays == b.overlays
+        && a.subplots.len() == b.subplots.len()
+        && a.subplots
+            .iter()
+            .zip(&b.subplots)
+            .all(|(x, y)| x.series == y.series && label_layout_equal(&x.config, &y.config))
+}
+
 /// The annotation raster revision follows the layer's items only. Its
 /// `visible` flag skips the composite without touching any texture, and the
 /// anchor space (axes, data area) is chrome, so a change there already bumps
@@ -194,6 +236,12 @@ pub(in crate::renderer) struct ChartRevisions {
     /// annotation textures and nothing else, and a `visible` toggle
     /// re-rasterizes nothing.
     pub(in crate::renderer) annotation: RenderRevision,
+    /// What the series' value labels are baked and laid out from (#443):
+    /// moves only when [`labels_revision`] finds a series' label text, or
+    /// the categories and groups the labels follow, changed. The value
+    /// label atlas of a registered chart is keyed by it, so a pan, a zoom,
+    /// a resize or a label drag never re-bakes.
+    pub(in crate::renderer) labels: RenderRevision,
 }
 
 impl ChartRevisions {
@@ -207,6 +255,7 @@ impl ChartRevisions {
             selection: revision,
             raster: revision,
             annotation: revision,
+            labels: revision,
         }
     }
 }
@@ -216,6 +265,9 @@ pub(in crate::renderer) struct ChartRenderState {
     pub(in crate::renderer) series: Vec<SeriesConfig>,
     pub(in crate::renderer) prepared_styles: Option<RegisteredChartStyles>,
     pub(in crate::renderer) selected: Option<HitId>,
+    /// The snap guides of the decoration drag in progress (#440), drawn
+    /// with the selection box only: selection chrome, never the document.
+    pub(in crate::renderer) snap_guides: crate::layout::SnapGuides,
     /// One-shot renderer-owned request consumed by the next automatic stream.
     /// `None` preserves the caller-specified axis ranges.
     pub(in crate::renderer) stream_auto_fit_padding: Option<f64>,
@@ -430,6 +482,7 @@ impl ChartReplacementPlan {
             target.series = self.series;
             if self.clear_selection {
                 target.selected = None;
+                target.snap_guides = crate::layout::SnapGuides::NONE;
             }
         }
         for update in self.revisions {
@@ -474,6 +527,7 @@ impl ColumnInvalidationPlan {
                 selection: _,
                 raster: _,
                 annotation: _,
+                labels: _,
             } = &mut state.revisions;
             *desired = update.desired;
             *data = update.data;
@@ -536,6 +590,9 @@ impl ColumnRemovalPlan {
                 selection,
                 raster,
                 annotation,
+                // A removed column drops the series that read it and the
+                // links to it: no remaining label text or category moves.
+                labels: _,
             } = &mut state.revisions;
             if let Some(referencing) = update.referencing {
                 state

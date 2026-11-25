@@ -232,8 +232,9 @@ pub fn stagger_rows(count: usize, font_size: f32, bounds: impl Fn(usize) -> Rect
 /// one label's extent (plus a quarter em) further from the axis, so the
 /// labels of one row stay clear of each other. Only the categories centred
 /// in the axis' [`AxisOptions::category_window`] are named. An empty label keeps its
-/// slot and draws nothing. Nothing is collected: the rows are measured on
-/// the categories themselves.
+/// slot and draws nothing. Each named label is measured once per call
+/// (#450): its box goes into a scratch list the row count, the row step
+/// and the walk read, dropped when the call returns.
 pub fn each_category_tick_label(
     axis: &AxisOptions,
     categories: &[crate::config::Category],
@@ -281,13 +282,17 @@ pub fn each_category_tick_label(
     if first >= end {
         return;
     }
-    let rows = stagger_rows(end - first, ls.font_size, |k| placed(first + k).2);
+    // Each named label's box, measured once (#450): the row search
+    // compares a label with the one `rows` on for every candidate row
+    // count, which measured both again each time.
+    let boxes: Vec<(bool, (f32, f32), RectF)> = (first..end).map(placed).collect();
+    let rows = stagger_rows(end - first, ls.font_size, |k| boxes[k].2);
     // One row's step away from the axis: the largest extent across it.
     let horizontal = matches!(side, Side::Top | Side::Bottom);
     let step = if rows > 1 {
-        (first..end)
-            .map(|index| {
-                let bounds = placed(index).2;
+        boxes
+            .iter()
+            .map(|&(_, _, bounds)| {
                 if horizontal {
                     bounds.height
                 } else {
@@ -300,8 +305,7 @@ pub fn each_category_tick_label(
     } else {
         0.0
     };
-    for index in first..end {
-        let (empty, position, bounds) = placed(index);
+    for (index, &(empty, position, bounds)) in (first..end).zip(&boxes) {
         let finite = [bounds.x, bounds.y, bounds.width, bounds.height]
             .into_iter()
             .all(f32::is_finite);
@@ -324,44 +328,46 @@ pub struct PlainTickLabel {
     pub text: String,
 }
 
+/// The timestamp labels of `axis` on `side` that do not overlap: its
+/// timestamp plan's labels (`plan`, the axis' [`timestamp_tick_plan`] in
+/// this pass, #444), or without one each of `majors` formatted.
 pub fn visible_timestamp_labels(
     axis: &AxisOptions,
     side: Side,
     plot: &RectF,
     measure: &dyn MeasureText,
     majors: &[f64],
+    plan: Option<&crate::chrome::time::TimestampTickPlan>,
 ) -> Vec<PlainTickLabel> {
     let Some(cfg) = crate::chrome::time::timestamp_format(axis) else {
         return Vec::new();
     };
-    let labels: Vec<PlainTickLabel> =
-        if let Some(plan) = timestamp_tick_plan(axis, side.clone(), plot, measure) {
-            // Each label at the value it is drawn at (a period's centre
-            // with `period_labels`, #357); a period with no string draws
-            // nothing.
-            plan.labels
-                .into_iter()
-                .filter(|tick| !tick.label.is_empty())
-                .map(|tick| PlainTickLabel {
-                    value: tick.value,
-                    text: tick.label,
-                })
-                .collect()
-        } else {
-            majors
-                .iter()
-                .filter_map(|v| {
-                    crate::chrome::time::format_timestamp_numeric_tick(
-                        *v,
-                        cfg,
-                        axis.min,
-                        axis.max,
-                        effective_major_spacing(axis),
-                    )
-                    .map(|text| PlainTickLabel { value: *v, text })
-                })
-                .collect()
-        };
+    let labels: Vec<PlainTickLabel> = if let Some(plan) = plan {
+        // Each label at the value it is drawn at (a period's centre with
+        // `period_labels`, #357); a period with no string draws nothing.
+        plan.labels
+            .iter()
+            .filter(|tick| !tick.label.is_empty())
+            .map(|tick| PlainTickLabel {
+                value: tick.value,
+                text: tick.label.clone(),
+            })
+            .collect()
+    } else {
+        majors
+            .iter()
+            .filter_map(|v| {
+                crate::chrome::time::format_timestamp_numeric_tick(
+                    *v,
+                    cfg,
+                    axis.min,
+                    axis.max,
+                    effective_major_spacing(axis),
+                )
+                .map(|text| PlainTickLabel { value: *v, text })
+            })
+            .collect()
+    };
 
     prune_overlapping_plain_labels(axis, side, plot, measure, labels)
 }
@@ -543,13 +549,15 @@ pub fn colorbar_labels_reach(
 }
 
 /// Every tick label the axis on `side` draws, with its tick position, in
-/// draw order, before the detached-axis translation.
+/// draw order, before the detached-axis translation. `majors` and `plan`
+/// are the axis' major ticks and timestamp plan in this pass (#444).
 pub fn each_axis_tick_label(
     axis: &AxisOptions,
     side: Side,
     plot: &RectF,
     measure: &dyn MeasureText,
     majors: &[f64],
+    plan: Option<&crate::chrome::time::TimestampTickPlan>,
     mut each: impl FnMut(TickText<'_>, (f32, f32)),
 ) {
     let ls = &axis.label_style;
@@ -568,7 +576,7 @@ pub fn each_axis_tick_label(
         return;
     }
     if let LabelFormat::Timestamp(_) = &ls.format {
-        for label in visible_timestamp_labels(axis, side.clone(), plot, measure, majors) {
+        for label in visible_timestamp_labels(axis, side.clone(), plot, measure, majors, plan) {
             let pos = value_to_screen(label.value, axis, side.clone(), plot);
             each(TickText::Plain(&label.text), pos);
         }
@@ -748,6 +756,118 @@ mod category_stagger_tests {
                 ascent: 8.0,
                 descent: 2.0,
             }
+        }
+    }
+
+    /// [`Wide`], counting the measures of category labels (`Category …`).
+    struct Counting(std::cell::Cell<usize>);
+    impl MeasureText for Counting {
+        fn measure_plain(&self, text: &str, font: &str, size: f32) -> TextExtents {
+            if text.starts_with("Category") {
+                self.0.set(self.0.get() + 1);
+            }
+            Wide.measure_plain(text, font, size)
+        }
+        fn measure_rich(&self, text: &crate::text::RichText) -> TextExtents {
+            Wide.measure_rich(text)
+        }
+    }
+
+    struct Nothing;
+    impl crate::sink::Sink for Nothing {
+        fn text(&mut self, _: crate::sink::Slot, _: &crate::sink::PlacedText<'_>) {}
+        fn stroke(
+            &mut self,
+            _: crate::sink::Slot,
+            _: [f32; 2],
+            _: [f32; 2],
+            _: &crate::sink::StrokeStyle<'_>,
+        ) {
+        }
+        fn rect(
+            &mut self,
+            _: crate::sink::Slot,
+            _: RectF,
+            _: Option<crate::color::Color>,
+            _: Option<crate::sink::Border<'_>>,
+        ) {
+        }
+        fn triangle(&mut self, _: crate::sink::Slot, _: [[f32; 2]; 3], _: crate::color::Color) {}
+        fn path(
+            &mut self,
+            _: crate::sink::Slot,
+            _: &[crate::sink::PathSegment],
+            _: &crate::sink::StrokeStyle<'_>,
+        ) {
+        }
+        fn polygon(
+            &mut self,
+            _: crate::sink::Slot,
+            _: &[[f32; 2]],
+            _: Option<crate::color::Color>,
+            _: Option<&crate::sink::StrokeStyle<'_>>,
+        ) {
+        }
+        fn ramp(&mut self, _: crate::sink::Slot, _: RectF, _: &crate::config::ColorBarOptions) {}
+    }
+
+    /// #450: placing a crowded categorical axis measures each label a
+    /// constant number of times, at 5 000 and 50 000 categories: the
+    /// staggered rows are searched on boxes measured once. Its own labels
+    /// (the bottom axis) and the corner a numeric left axis yields to
+    /// (which walks the bottom labels again) are each one placement.
+    #[test]
+    fn a_crowded_axis_measures_each_label_a_constant_number_of_times() {
+        let plot = RectF {
+            x: 60.0,
+            y: 20.0,
+            width: 1200.0,
+            height: 600.0,
+        };
+        for n in [5_000usize, 50_000] {
+            let config = crate::defaults::config();
+            let mut bottom = config.bottom_x.clone();
+            bottom.categories = Some(
+                (0..n)
+                    .map(|i| crate::config::Category::new(format!("c{i}"), format!("Category {i}")))
+                    .collect(),
+            );
+            let left = config.left_y.clone();
+            let measure = Counting(std::cell::Cell::new(0));
+            crate::chrome::line::emit_axis_tick_labels_clear_of(
+                &bottom,
+                Side::Bottom,
+                &plot,
+                &crate::chrome::line::LabelClearance::LONE,
+                None,
+                &measure,
+                &mut Nothing,
+            );
+            let own = measure.0.replace(0);
+            let corner = crate::chrome::line::CornerAxis {
+                axis: &bottom,
+                side: &Side::Bottom,
+                cross: None,
+                plan: None,
+            };
+            crate::chrome::line::emit_axis_tick_labels_clear_of(
+                &left,
+                Side::Left,
+                &plot,
+                &crate::chrome::line::LabelClearance {
+                    cross: None,
+                    scale: 1.0,
+                    corners: [Some(corner), None],
+                },
+                None,
+                &measure,
+                &mut Nothing,
+            );
+            let across = measure.0.get();
+            // One measure for the row search, one where the label is placed.
+            assert!(own <= 2 * n, "{n} categories: {own} measures of the labels");
+            // One for the row search, one for the resting box.
+            assert!(across <= 2 * n, "{n} categories: {across} measures across");
         }
     }
 

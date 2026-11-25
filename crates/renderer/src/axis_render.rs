@@ -17,7 +17,7 @@ use crate::text_render::{CpuTextMeasure, FontPolicy};
 pub(crate) use crate::data_render::{bake_contour_label_atlas, contour_label_texts};
 
 use crate::decoration_render::*;
-pub use crate::decoration_render::{draw_selection_box, draw_selection_boxes};
+pub use crate::decoration_render::{SNAP_GUIDE_COLOR, draw_selection_box, draw_selection_boxes};
 
 mod space;
 pub(crate) use space::*;
@@ -79,8 +79,12 @@ pub fn try_raster_chart_layer_to_rgba_with_selection_at(
         });
     };
     match layer {
-        AxisLayerKind::Grid => draw_layers(Some(&mut canvas), None, &raster_cfg, scale)?,
-        AxisLayerKind::Decoration => draw_layers(None, Some(&mut canvas), &raster_cfg, scale)?,
+        AxisLayerKind::Grid => {
+            draw_layers(Some(&mut canvas), None, &raster_cfg, scale)?;
+        }
+        AxisLayerKind::Decoration => {
+            draw_layers(None, Some(&mut canvas), &raster_cfg, scale)?;
+        }
         AxisLayerKind::All => {
             draw_layers(Some(&mut canvas), None, &raster_cfg, scale)?;
             draw_layers(None, Some(&mut canvas), &raster_cfg, scale)?;
@@ -98,13 +102,14 @@ pub fn try_raster_chart_layer_to_rgba_with_selection_at(
 /// `Grid` and `Decoration`, laid out once. With `grid` false the slot below
 /// the data is not rastered (its buffer comes back empty): a panel whose
 /// grid texture the caller fills otherwise, such as the cached Milkyway
-/// backdrop, skips that work.
+/// backdrop, skips that work. The panel's tick warnings ([`tick_warnings`])
+/// come with them, read from the timestamp plans of the same pass (#444).
 pub(crate) fn raster_panel_layers(
     config: &Config,
     selection: &[SelectionBox],
     grid: bool,
     scale: f32,
-) -> crate::Result<(Vec<u8>, Vec<u8>)> {
+) -> crate::Result<(Vec<u8>, Vec<u8>, Vec<RenderWarning>)> {
     let raster_cfg = raster_frame_config(config)?;
     let w = raster_cfg.chart_area.0.width;
     let h = raster_cfg.chart_area.0.height;
@@ -117,11 +122,12 @@ pub(crate) fn raster_panel_layers(
         None
     };
     let mut above = Canvas::new(w, h).ok_or_else(allocation_failed)?;
-    draw_layers(below.as_mut(), Some(&mut above), &raster_cfg, scale)?;
+    let planned = draw_layers(below.as_mut(), Some(&mut above), &raster_cfg, scale)?;
     finish_decoration_layer(&mut above, config, &raster_cfg, selection);
     Ok((
         below.map(Canvas::into_rgba).unwrap_or_default(),
         above.into_rgba(),
+        raster_tick_warnings(&raster_cfg, planned),
     ))
 }
 
@@ -176,12 +182,14 @@ fn raster_frame_config(config: &Config) -> crate::Result<Config> {
 /// [`emit_chart_chrome`]. The constellation style's deep-space backdrop is
 /// painted first into the slot below the data, in place of the grid.
 /// `scale` is the scale `config`'s pixels carry ([`emit_chart_chrome`]).
+/// Returns whether each axis has a timestamp plan, as the pass planned it
+/// ([`emit_chart_chrome`]).
 fn draw_layers(
     below: Option<&mut Canvas>,
     above: Option<&mut Canvas>,
     config: &Config,
     scale: f32,
-) -> crate::Result<()> {
+) -> crate::Result<[bool; 4]> {
     let mut below = below;
     if let crate::config::DrawStyle::Milkyway(c) = &config.draw_style
         && let Some(canvas) = below.as_deref_mut()
@@ -193,8 +201,9 @@ fn draw_layers(
     let fp = FontPolicy::for_style(&config.draw_style);
     let mut sink =
         CanvasSink::new(if backdrop { None } else { below }, above, stroker, fp).carrying(scale);
-    emit_chart_chrome(config, &CpuTextMeasure::with_policy(fp), &mut sink, scale);
-    sink.finish()
+    let planned = emit_chart_chrome(config, &CpuTextMeasure::with_policy(fp), &mut sink, scale);
+    sink.finish()?;
+    Ok(planned)
 }
 
 /// Grid layer — only the parts that should sit below the data layer.
@@ -203,13 +212,13 @@ fn draw_layers(
 /// (the compositing order already puts it under the data): grid lines are
 /// not drawn in that mode — the style declares its own background instead.
 pub fn draw_grid_layer(canvas: &mut Canvas, config: &Config) -> crate::Result<()> {
-    draw_layers(Some(canvas), None, config, 1.0)
+    draw_layers(Some(canvas), None, config, 1.0).map(|_| ())
 }
 
 /// Decoration layer — axis lines, tick labels, axis titles, chart title,
 /// legend. Drawn above the data so data never overlaps axis chrome.
 pub fn draw_decoration_layer(canvas: &mut Canvas, config: &Config) -> crate::Result<()> {
-    draw_layers(None, Some(canvas), config, 1.0)
+    draw_layers(None, Some(canvas), config, 1.0).map(|_| ())
 }
 
 #[cfg(test)]

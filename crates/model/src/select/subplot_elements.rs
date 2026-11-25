@@ -70,6 +70,7 @@ impl SubplotElement {
                 // A subplot's layout is the document's: the drag fixes the
                 // document's below.
                 layout_state: _,
+                snap_to_guides: _,
             } = chart;
             *stored = Config {
                 chart_area,
@@ -96,6 +97,8 @@ impl SubplotElement {
                 plot_background,
                 background,
                 layout_state: stored.layout_state,
+                // The document owns the drag option; the stored one stays.
+                snap_to_guides: stored.snap_to_guides,
             };
             // The user moved part of the document's layout: a later draw
             // keeps it (#357).
@@ -182,6 +185,34 @@ impl Draggable for SubplotElement {
         // A subplot's chart keeps document coordinates, so the pointer
         // passes through unchanged.
         self.edit(cfg, |chart| drag.drag_from(chart, measure, at, dx, dy))
+    }
+
+    fn snaps(&self, cfg: &Config) -> bool {
+        self.inner.as_draggable().is_some_and(|drag| {
+            cfg.subplot_config(self.subplot)
+                .is_some_and(|chart| drag.snaps(&chart))
+        })
+    }
+
+    /// The inner element's carry, among its own subplot's ids.
+    fn snap_carries(&self, other_id: &str) -> bool {
+        let prefix = format!("subplot_{}:", self.subplot);
+        other_id.strip_prefix(prefix.as_str()).is_some_and(|inner| {
+            self.inner
+                .as_draggable()
+                .is_some_and(|drag| drag.snap_carries(inner))
+        })
+    }
+
+    /// The subplot's own chart area and plot.
+    fn snap_areas(&self, cfg: &Config, areas: SnapAreas) -> SnapAreas {
+        cfg.subplot_config(self.subplot)
+            .map_or(areas, |chart| chart.snap_areas())
+    }
+
+    fn snap_axis(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
+        let chart = cfg.subplot_config(self.subplot)?;
+        self.inner.as_draggable()?.snap_axis(&chart, measure)
     }
 }
 
@@ -308,6 +339,19 @@ impl Draggable for SubplotFrameElement {
         dy: f32,
     ) -> NudgeResult {
         cfg.nudge_from(self.nudge_element(), measure, Some(at), dx, dy)
+    }
+
+    /// An inset frame snaps to the document's centres and its siblings.
+    fn snaps(&self, _cfg: &Config) -> bool {
+        true
+    }
+
+    /// The frame carries every decoration of its subplot.
+    fn snap_carries(&self, other_id: &str) -> bool {
+        other_id
+            .strip_prefix("subplot_")
+            .and_then(|rest| rest.split_once(':'))
+            .is_some_and(|(index, _)| index.parse() == Ok(self.subplot))
     }
 }
 

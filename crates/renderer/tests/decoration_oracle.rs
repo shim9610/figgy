@@ -1857,7 +1857,13 @@ impl Painter {
             axis.label_style.color = self.code(labels, panel);
             // A rich category label (#203) is tick label ink too.
             let label_code = axis.label_style.color;
-            for category in axis.categories.iter_mut().flatten() {
+            for category in axis
+                .categories
+                .as_mut()
+                .map(std::sync::Arc::make_mut)
+                .into_iter()
+                .flatten()
+            {
                 if let Some(rich) = category.rich_label.as_mut() {
                     rich.color = label_code;
                     for segment in &mut rich.segments {

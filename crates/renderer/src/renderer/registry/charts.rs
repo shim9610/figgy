@@ -239,6 +239,7 @@ impl Renderer {
                 series,
                 prepared_styles: None,
                 selected: None,
+                snap_guides: crate::layout::SnapGuides::NONE,
                 stream_auto_fit_padding: None,
                 revisions: ChartRevisions::initial(chart_revision),
                 fit_extents: HashMap::new(),
@@ -286,6 +287,12 @@ impl Renderer {
         self.chart_states.remove(&id);
         self.chart_order.retain(|candidate| *candidate != id);
         self.ink_masks.retain(|mask| mask.chart != id);
+        // Its value label atlases and cells go with it (#443).
+        for entry in self.contour_cache.values_mut() {
+            if let ScratchEntry::ValueLabels(scratch) = entry {
+                scratch.forget_chart(id);
+            }
+        }
         self.monotonic_order.retain(|candidate| *candidate != id);
         if self
             .picker
@@ -406,6 +413,7 @@ impl Renderer {
             selection: selection_before,
             raster: raster_before,
             annotation: annotation_before,
+            labels: labels_before,
         } = state.revisions;
         let desired = if changed {
             desired_before.successor("chart desired revision")?
@@ -441,6 +449,11 @@ impl Renderer {
             selection,
             raster,
             annotation: annotation_config_revision(annotation_before, &state.config, &config)?,
+            labels: labels_revision(
+                labels_before,
+                (&state.config, &state.series),
+                (&config, &state.series),
+            )?,
         };
 
         let chart_state = self.chart_states.get_mut(&id).ok_or(FiggyError::internal(
@@ -454,6 +467,7 @@ impl Renderer {
         )?;
         if clear_selection {
             chart_state.selected = None;
+            chart_state.snap_guides = crate::layout::SnapGuides::NONE;
         }
         PreparedChartMutation {
             chart_state,
@@ -739,6 +753,7 @@ impl Renderer {
             selection,
             raster: raster_before,
             annotation,
+            labels: labels_before,
         } = state.revisions;
         let desired = desired_before.successor("chart desired revision")?;
         let series_revision = series_before.successor("chart series revision")?;
@@ -758,6 +773,11 @@ impl Renderer {
             selection,
             raster,
             annotation,
+            labels: labels_revision(
+                labels_before,
+                (&state.config, &state.series),
+                (&state.config, &series),
+            )?,
         };
 
         let chart_state = self.chart_states.get_mut(&id).ok_or(FiggyError::internal(

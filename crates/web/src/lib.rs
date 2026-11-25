@@ -1951,10 +1951,13 @@ mod tests {
     #[test]
     fn timeline_documents_validate_and_normalize() {
         let mut config = renderer::default::default_timeline_config();
-        config.left_y.categories = Some(vec![
-            renderer::Category::new("a", "A"),
-            renderer::Category::new("b", "B"),
-        ]);
+        config.left_y.categories = Some(
+            vec![
+                renderer::Category::new("a", "A"),
+                renderer::Category::new("b", "B"),
+            ]
+            .into(),
+        );
         let series = [
             renderer::SeriesConfig::timeline_bars("t", "pos", "start", "end").with_progress("done"),
         ];
@@ -2021,10 +2024,13 @@ mod tests {
     #[test]
     fn range_links_validate_in_the_browser() {
         let mut config = renderer::default::default_timeline_config();
-        config.left_y.categories = Some(vec![
-            renderer::Category::new("a", "A"),
-            renderer::Category::new("b", "B"),
-        ]);
+        config.left_y.categories = Some(
+            vec![
+                renderer::Category::new("a", "A"),
+                renderer::Category::new("b", "B"),
+            ]
+            .into(),
+        );
         let config_json = serde_json::to_string(&config).unwrap();
         let report = |series: &[renderer::SeriesConfig]| -> serde_json::Value {
             let series_json = serde_json::to_string(series).unwrap();

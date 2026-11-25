@@ -958,6 +958,8 @@ fn annotation_request(document: &Config) -> RasterRequest<'_> {
         size: (area.width.max(1), area.height.max(1)),
         scale: 1.0,
         selected: None,
+        // An export draws no selection and no snap guide (#440).
+        guides: crate::layout::SnapGuides::NONE,
         policy: FontPolicy::for_style(&document.draw_style),
         markers: Some(document),
     }

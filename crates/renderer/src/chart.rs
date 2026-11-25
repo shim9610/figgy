@@ -707,6 +707,10 @@ pub struct Chart {
     /// The element the raster draws selected, by its element id
     /// (`Selectable::element_id`).
     selected: Option<String>,
+    /// The snap guides of the decoration drag in progress (#440), drawn
+    /// with the selection box only. Selection chrome, not the document: a
+    /// scaled or exported chart has none.
+    snap_guides: crate::layout::SnapGuides,
     /// Moves on every raster-affecting change: [`Renderer::prepare`] redraws
     /// a view drawn at another stamp (#265). Each value is an issued number
     /// from one process-wide counter ([`issue_raster_stamp`]), so two charts
@@ -768,6 +772,7 @@ impl Chart {
             data_dirty: true,
             raster_dirty: true,
             selected: None,
+            snap_guides: crate::layout::SnapGuides::NONE,
             raster_stamp: issue_raster_stamp(),
         }
     }
@@ -827,6 +832,25 @@ impl Chart {
     pub fn select(&mut self, element_id: Option<&str>) {
         if self.selected.as_deref() != element_id {
             self.selected = element_id.map(str::to_owned);
+            // Guides belong to the drag of the element they were shown for.
+            self.snap_guides = crate::layout::SnapGuides::NONE;
+            self.mark_raster();
+        }
+    }
+
+    /// The snap guides drawn with the selection box (#440).
+    pub fn snap_guides(&self) -> crate::layout::SnapGuides {
+        self.snap_guides
+    }
+
+    /// Show `guides`, the snap guides of the decoration drag in progress
+    /// (a host's [`crate::layout::DragSnap::guides`]), with the selection
+    /// box; [`crate::layout::SnapGuides::NONE`] removes them, as a host does
+    /// on release. They are drawn in the chart's own frame and only with a
+    /// selection, never by an export ([`Self::scaled`] has none).
+    pub fn set_snap_guides(&mut self, guides: crate::layout::SnapGuides) {
+        if self.snap_guides != guides {
+            self.snap_guides = guides;
             self.mark_raster();
         }
     }
@@ -2325,7 +2349,7 @@ mod tests {
     fn a_categorical_partner_keeps_its_scale() {
         let mut cfg = dummy_config();
         cfg.left_y.scale = AxisScale::Logarithmic;
-        cfg.right_y.categories = Some(vec![crate::config::Category::new("a", "A")]);
+        cfg.right_y.categories = Some(vec![crate::config::Category::new("a", "A")].into());
         let before = cfg.right_y.clone();
         let mut c = Chart::new(cfg);
         c.set_y_range(1.0, 1000.0);
@@ -2510,7 +2534,7 @@ mod tests {
         }
     }
 
-    fn categories(n: usize) -> Option<Vec<crate::config::Category>> {
+    fn categories(n: usize) -> Option<std::sync::Arc<[crate::config::Category]>> {
         Some(
             (0..n)
                 .map(|i| crate::config::Category::new(format!("c{i}"), format!("C{i}")))
@@ -2559,11 +2583,13 @@ mod tests {
             }),
             ("left_y", |c| {
                 c.left_y.categories = categories(2);
-                c.left_y.categories.as_mut().unwrap()[0].id = String::new();
+                std::sync::Arc::make_mut(c.left_y.categories.as_mut().unwrap())[0].id =
+                    String::new();
             }),
             ("right_y", |c| {
                 c.right_y.categories = categories(2);
-                c.right_y.categories.as_mut().unwrap()[1].id = "c0".into();
+                std::sync::Arc::make_mut(c.right_y.categories.as_mut().unwrap())[1].id =
+                    "c0".into();
             }),
         ] {
             assert!(

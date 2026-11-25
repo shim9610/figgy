@@ -213,6 +213,36 @@ impl AnnotationMap {
         )
     }
 
+    /// [`Self::drag_by`] with the move snapped to guides first (#440): a
+    /// text box or arrow snaps to the centres of the frame's panel and plot
+    /// and to the edges and centres of the other text boxes and arrows,
+    /// within `snap`'s reach ([`crate::HitMap::drag_snapped`]). `snap`
+    /// keeps the guides of the move, in this map's frame, for
+    /// [`crate::Renderer::refresh_annotations_with_guides`].
+    pub fn drag_snapped(
+        &self,
+        layer: &mut AnnotationLayer,
+        id: HitId,
+        dx: f32,
+        dy: f32,
+        snap: &mut crate::layout::DragSnap,
+    ) -> Option<NudgeResult> {
+        let areas = crate::layout::SnapAreas {
+            chart: Some(self.space.panel),
+            plot: Some(self.space.plot),
+        };
+        self.map.drag_snapped(
+            id,
+            layer,
+            &CpuTextMeasure::default(),
+            None,
+            dx,
+            dy,
+            areas,
+            snap,
+        )
+    }
+
     pub fn hit_resize_handle(
         &self,
         id: HitId,
@@ -356,6 +386,9 @@ pub(crate) struct RasterRequest<'a> {
     pub scale: f32,
     /// The item whose selection box is drawn on the overlay.
     pub selected: Option<usize>,
+    /// The snap guides of the drag in progress, drawn with that selection
+    /// box (#440); [`crate::layout::SnapGuides::NONE`] for every export.
+    pub guides: crate::layout::SnapGuides,
     pub policy: FontPolicy,
     /// The document whose subplots' markers the layer draws (#205), after
     /// its items; `None` for a chart without subplots (the radial chart).
@@ -625,6 +658,7 @@ pub(crate) fn rasterize(request: &RasterRequest<'_>) -> crate::Result<Annotation
         && let Some(id) = map.find(index)
         && let Some(selection) = map.selection_box(id)
     {
+        let selection = selection.with_snap_guides(request.guides);
         sink.ensure(Slot::Above);
         if let Some(c) = sink.overlay.as_mut() {
             crate::axis_render::draw_selection_box(c, &selection, origin, scale);
@@ -963,6 +997,7 @@ struct RasterKey {
     size: (u32, u32),
     scale: f32,
     selected: Option<usize>,
+    guides: crate::layout::SnapGuides,
     policy: FontPolicy,
     fonts: u64,
 }
@@ -976,6 +1011,7 @@ impl RasterKey {
             size,
             scale,
             selected,
+            guides,
             policy,
             fonts: _,
         } = self;
@@ -986,6 +1022,7 @@ impl RasterKey {
             size: *size,
             scale: *scale,
             selected: *selected,
+            guides: *guides,
             policy: *policy,
             // The radial chart has no subplots to mark.
             markers: None,
@@ -1046,6 +1083,7 @@ impl RadialAnnotationCache {
             size,
             scale,
             selected,
+            guides: crate::layout::SnapGuides::NONE,
             policy: FontPolicy::Standard,
             fonts: crate::text_render::font_generation(),
         }
@@ -1183,6 +1221,7 @@ mod tests {
             size: (200, 120),
             scale: 1.,
             selected: None,
+            guides: crate::layout::SnapGuides::NONE,
             policy: FontPolicy::Standard,
             markers: None,
         })
@@ -1303,6 +1342,7 @@ mod tests {
                 size: (w, h),
                 scale,
                 selected: Some(1),
+                guides: crate::layout::SnapGuides::NONE,
                 policy: FontPolicy::Standard,
                 markers: None,
             })
@@ -1402,6 +1442,7 @@ mod tests {
             size: (200, 120),
             scale: 1.,
             selected: None,
+            guides: crate::layout::SnapGuides::NONE,
             policy: FontPolicy::Standard,
             markers: None,
         })
@@ -1469,6 +1510,7 @@ mod tests {
                 size: ((200. * scale) as u32, (120. * scale) as u32),
                 scale,
                 selected: None,
+                guides: crate::layout::SnapGuides::NONE,
                 policy: FontPolicy::Standard,
                 markers: None,
             })
@@ -1565,5 +1607,52 @@ mod tests {
         assert_eq!((s.x, s.y), (alone.x, alone.y));
         let anchor = Anchor::Ratio { x: 1.5, y: 0.5 };
         assert_eq!(s.anchor_to_px(&anchor), alone.anchor_to_px(&anchor));
+    }
+
+    // #440: the snap guides of an annotation drag are drawn on the overlay
+    // with that item's selection box, and only there.
+    #[test]
+    fn annotation_snap_guides_draw_with_the_selection_box() {
+        let layer = AnnotationLayer {
+            visible: true,
+            items: vec![Annotation::new(AnnotationKind::Text {
+                anchor: Anchor::Ratio { x: 0.2, y: 0.3 },
+                text: RichText::plain("Note", Color::BLACK, 12., ""),
+                box_style: None,
+                align: Default::default(),
+            })],
+        };
+        let guides = crate::layout::SnapGuides {
+            vertical: Some(crate::layout::SnapGuide {
+                from: [100.0, 0.0],
+                to: [100.0, 120.0],
+            }),
+            horizontal: None,
+        };
+        let magenta = |rgba: &[u8]| {
+            rgba.chunks_exact(4)
+                .filter(|px| px[3] > 0 && px[0] > 170 && px[1] < 110 && px[2] > 90 && px[2] < px[0])
+                .count()
+        };
+        let draw = |selected, guides| {
+            rasterize(&RasterRequest {
+                layer: &layer,
+                space: space(),
+                origin: [0., 0.],
+                size: (200, 120),
+                scale: 1.,
+                selected,
+                guides,
+                policy: FontPolicy::Standard,
+                markers: None,
+            })
+            .unwrap()
+            .overlay
+            .unwrap()
+        };
+        assert!(magenta(&draw(Some(0), guides)) > 100);
+        assert_eq!(magenta(&draw(Some(0), crate::layout::SnapGuides::NONE)), 0);
+        // No selection, no guide.
+        assert_eq!(magenta(&draw(None, guides)), 0);
     }
 }

@@ -341,11 +341,18 @@ pub struct AxisOptions {
     /// flips the walk: the first category sits at the far end, and the ticks,
     /// labels, grid, data and picks follow the same `axis_fraction`. A polar chart's angle and radius axes and the colourbar axis
     /// cannot be categorical yet.
+    ///
+    /// The list is shared storage (#442): cloning a document, scaling it for
+    /// display or placing it for a pick shares the one list instead of
+    /// copying every category, and the renderer tells an unchanged list by
+    /// its allocation (`Arc::ptr_eq`). Build it from a `Vec` with `.into()`
+    /// or `collect()` it; edit one category through `Arc::make_mut`, which
+    /// copies the list only while another document still shares it.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub categories: Option<Vec<Category>>,
+    pub categories: Option<std::sync::Arc<[Category]>>,
 
     /// The slots a categorical axis shows (#205): `[from, to]` in category
     /// coordinates, where category `i` is centred at `i` and its slot runs
@@ -654,7 +661,7 @@ impl AxisOptions {
     /// The number of categories of a categorical axis, `None` for a numeric
     /// one.
     pub fn category_count(&self) -> Option<usize> {
-        self.categories.as_ref().map(Vec::len)
+        self.categories.as_deref().map(<[Category]>::len)
     }
 
     /// The range the axis maps: its [`Self::category_window`] on a
@@ -826,10 +833,14 @@ impl AxisOptions {
         if categories.is_empty() {
             return Err(crate::RuleKind::CategoriesEmpty);
         }
-        for (index, category) in categories.iter().enumerate() {
+        // The ids seen so far, borrowed (#450): a repeated id is found in
+        // one pass, at the same category the pairwise check finds it.
+        let mut seen: std::collections::HashSet<&str> =
+            std::collections::HashSet::with_capacity(categories.len());
+        for category in categories.iter() {
             if category.id.is_empty()
                 || !category_text_ok(&category.id)
-                || categories[..index].iter().any(|c| c.id == category.id)
+                || !seen.insert(category.id.as_str())
             {
                 return Err(crate::RuleKind::CategoryIds);
             }
@@ -911,13 +922,115 @@ pub(super) mod category_axis_tests {
         assert_eq!(ticks.last(), Some(&4999.0));
     }
 
+    /// The pairwise check `validate_categories` used before #450, kept as
+    /// the oracle of the one-pass check: the same rules in the same order.
+    fn pairwise_validate(axis: &AxisOptions) -> Result<(), crate::RuleKind> {
+        let Some(categories) = &axis.categories else {
+            return Ok(());
+        };
+        if categories.is_empty() {
+            return Err(crate::RuleKind::CategoriesEmpty);
+        }
+        for (index, category) in categories.iter().enumerate() {
+            if category.id.is_empty()
+                || !super::category_text_ok(&category.id)
+                || categories[..index].iter().any(|c| c.id == category.id)
+            {
+                return Err(crate::RuleKind::CategoryIds);
+            }
+            if !super::category_text_ok(&category.label) {
+                return Err(crate::RuleKind::CategoryLabels);
+            }
+            if let Some(rich) = &category.rich_label {
+                rich.validate_math()
+                    .map_err(|error| crate::RuleKind::InvalidMath { error })?;
+                if !rich.within_limits() {
+                    return Err(crate::RuleKind::CategoryRichLabel);
+                }
+            }
+        }
+        if let Some(groups) = &axis.category_groups {
+            groups.validate(categories)?;
+        }
+        match axis.scale {
+            AxisScale::Linear => Ok(()),
+            AxisScale::Logarithmic => Err(crate::RuleKind::CategoricalLogAxis),
+            AxisScale::Probability(_) => Err(crate::RuleKind::CategoricalProbabilityAxis),
+        }
+    }
+
+    /// #450: the one-pass duplicate check returns exactly the pairwise
+    /// check's `Result` over random lists with and without duplicates,
+    /// duplicates at either end, and an empty id or a two-line label before
+    /// or after the first duplicate.
+    #[test]
+    fn the_one_pass_id_check_matches_the_pairwise_check() {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = |bound: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % bound as u64) as usize
+        };
+        let mut failures = 0;
+        let mut checked = [0usize; 3];
+        for case in 0..4000 {
+            let n = 1 + next(40);
+            let mut categories: Vec<Category> = (0..n)
+                .map(|i| Category::new(format!("c{i}"), format!("C{i}")))
+                .collect();
+            match case % 8 {
+                // A duplicate anywhere.
+                0..=2 => {
+                    let (a, b) = (next(n), next(n));
+                    categories[b].id = categories[a].id.clone();
+                }
+                // A duplicate of the first id at the last place.
+                3 => categories[n - 1].id = "c0".into(),
+                // The last id repeated at the first place.
+                4 => categories[0].id = format!("c{}", n - 1),
+                // Several duplicates, an empty id or a bad label too.
+                5 => {
+                    for _ in 0..3 {
+                        let (a, b) = (next(n), next(n));
+                        categories[b].id = categories[a].id.clone();
+                    }
+                    let at = next(n);
+                    if next(2) == 0 {
+                        categories[at].id.clear();
+                    } else {
+                        categories[at].label = "two\nlines".into();
+                    }
+                }
+                // No duplicate.
+                _ => {}
+            }
+            let mut axis = crate::defaults::axis_options_x();
+            axis.categories = Some(categories.into());
+            let (one_pass, pairwise) = (axis.validate_categories(), pairwise_validate(&axis));
+            checked[match &pairwise {
+                Ok(()) => 0,
+                Err(crate::RuleKind::CategoryIds) => 1,
+                Err(_) => 2,
+            }] += 1;
+            if one_pass != pairwise {
+                failures += 1;
+                eprintln!("case {case}: one pass {one_pass:?}, pairwise {pairwise:?}");
+            }
+        }
+        assert_eq!(failures, 0);
+        assert!(checked.iter().all(|&count| count > 100), "{checked:?}");
+    }
+
     #[test]
     fn ids_must_be_unique_non_empty_single_line_and_short() {
         let ids = crate::RuleKind::CategoryIds;
         let labels = crate::RuleKind::CategoryLabels;
         let edit = |f: &dyn Fn(&mut Vec<Category>)| {
             let mut axis = categorical(3);
-            f(axis.categories.as_mut().unwrap());
+            let mut categories = axis.categories.take().unwrap().to_vec();
+            f(&mut categories);
+            axis.categories = Some(categories.into());
             axis.validate_categories()
         };
         assert_eq!(edit(&|c| c[1].id.clear()), Err(ids.clone()));
@@ -1115,7 +1228,7 @@ mod axis_break_config_tests {
             assert_eq!(config.validate_chart().unwrap_err().field, field);
         }
         let mut config = crate::defaults::config();
-        config.bottom_x.categories = Some(vec![super::Category::new("a", "A")]);
+        config.bottom_x.categories = Some(vec![super::Category::new("a", "A")].into());
         config.bottom_x.breaks = Some(broken());
         assert!(
             config
@@ -1502,7 +1615,7 @@ mod axis_unit_tests {
         );
         refused(
             |c| {
-                c.bottom_x.categories = Some(vec![super::Category::new("a", "A")]);
+                c.bottom_x.categories = Some(vec![super::Category::new("a", "A")].into());
                 c.bottom_x.unit = Some(AxisUnit::new(2.0, 0.0));
             },
             "bottom_x",

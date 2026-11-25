@@ -1325,7 +1325,7 @@ fn lollipop(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         .iter()
         .map(|(id, label)| Category::new(*id, *label))
         .collect();
-    config.left_y.categories = Some(categories);
+    config.left_y.categories = Some(categories.into());
     config.grid.show_major_y = true;
     let orange = Color::from_rgb8(255, 127, 14);
     let series = vec![series(
@@ -1991,8 +1991,8 @@ fn category_axis(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         .iter()
         .map(|(id, label)| Category::new(*id, *label))
         .collect();
-    config.bottom_x.categories = Some(categories.clone());
-    config.top_x.categories = Some(categories);
+    config.bottom_x.categories = Some(categories.clone().into());
+    config.top_x.categories = Some(categories.into());
     config.grid.show_major_x = true;
     let mut chart = Chart::new(config);
     chart.auto_fit_y_union(r.pool(), &["cat_budget", "cat_spent"], 0.15)?;
@@ -4287,12 +4287,15 @@ fn gantt(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     upload(r, "gt_state", column(&|t| t.5))?;
     upload(r, "gt_progress", column(&|t| t.6))?;
     let mut config = base_config("Release plan", "Date", "");
-    config.left_y.categories = Some(vec![
-        Category::new("design", "Design"),
-        Category::new("core", "Core"),
-        Category::new("web", "Web"),
-        Category::new("docs", "Docs"),
-    ]);
+    config.left_y.categories = Some(
+        vec![
+            Category::new("design", "Design"),
+            Category::new("core", "Core"),
+            Category::new("web", "Web"),
+            Category::new("docs", "Docs"),
+        ]
+        .into(),
+    );
     config.bottom_x.label_style.format =
         LabelFormat::Timestamp(renderer::format::TimestampLabelFormat::default());
     config.bar_groups = Some(BarGroups {
@@ -5280,7 +5283,7 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         }
         categories.push(category);
     }
-    config.bottom_x.categories = Some(categories);
+    config.bottom_x.categories = Some(categories.into());
     let header = |text: &str| RichText::plain(text, Color::from_rgb8(24, 39, 63), 14.0, "");
     config.bottom_x.category_groups = Some(renderer::config::CategoryGroups {
         groups: vec![
@@ -5368,14 +5371,17 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     // The inset's text is written at full-chart sizes and drawn at its
     // cell's text scale (#292, 0.55 here): its tick labels at 10 px, its
     // term label as large as them.
-    inset.bottom_x.categories = Some(vec![{
-        let mut c = Category::new("3P*", "3P*");
-        c.rich_label = tex("3", "P", true).map(|mut label| {
-            label.font_size = inset.left_y.label_style.font_size;
-            label
-        });
-        c
-    }]);
+    inset.bottom_x.categories = Some(
+        vec![{
+            let mut c = Category::new("3P*", "3P*");
+            c.rich_label = tex("3", "P", true).map(|mut label| {
+                label.font_size = inset.left_y.label_style.font_size;
+                label
+            });
+            c
+        }]
+        .into(),
+    );
     inset.top_x.out_margin = 8.0;
     inset.right_y.out_margin = 8.0;
     inset.bottom_x.out_margin = 34.0;

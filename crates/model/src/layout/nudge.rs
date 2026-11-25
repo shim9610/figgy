@@ -651,7 +651,7 @@ impl Config {
                 .bottom_x
                 .categories
                 .as_mut()
-                .and_then(|categories| categories.get_mut(index))
+                .and_then(|categories| std::sync::Arc::make_mut(categories).get_mut(index))
             {
                 category.label_offset = offset;
             }

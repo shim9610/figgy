@@ -30,6 +30,7 @@ pub fn fit_display_panel(logical_size: (u32, u32), surface_size: (u32, u32)) -> 
 pub(in crate::renderer) fn annotation_raster_for_chart(
     chart: &Chart,
     selected: Option<usize>,
+    guides: crate::layout::SnapGuides,
 ) -> Result<crate::annotation::AnnotationRaster> {
     let config = chart.config();
     let Config {
@@ -65,6 +66,8 @@ pub(in crate::renderer) fn annotation_raster_for_chart(
         background: _,
         // Who owns the layout: the annotations follow the data area it set.
         layout_state: _,
+        // An interaction option (#440): no raster, no view state.
+        snap_to_guides: _,
     } = config;
     // The layer covers the whole document (#414): its overlay is the
     // document's top layer, over every panel, subplots and insets included.
@@ -76,6 +79,7 @@ pub(in crate::renderer) fn annotation_raster_for_chart(
         size: (area.width.max(1), area.height.max(1)),
         scale: 1.0,
         selected,
+        guides,
         policy: crate::text_render::FontPolicy::for_style(draw_style),
         markers: Some(config),
     })
@@ -263,16 +267,17 @@ pub(in crate::renderer) fn layer_views(view: &ChartView, panels: usize) -> Resul
 /// The grid and decoration rasters of one panel, laid out once. An overlay
 /// panel in the Milkyway style gets a transparent grid texture: the backdrop
 /// is the base panel's. With `grid` false the grid buffer is empty: the
-/// caller fills the grid texture from the cached backdrop instead.
+/// caller fills the grid texture from the cached backdrop instead. The
+/// panel's own tick warnings come with them, from the same pass.
 pub(in crate::renderer) fn raster_panel_layers(
     config: &Config,
     overlay: bool,
     selection: &[crate::select::SelectionBox],
     grid: bool,
     scale: f32,
-) -> Result<(Vec<u8>, Vec<u8>)> {
+) -> Result<(Vec<u8>, Vec<u8>, Vec<crate::RenderWarning>)> {
     let milkyway = matches!(config.draw_style, DrawStyle::Milkyway(_));
-    let (grid_rgba, dec_rgba) =
+    let (grid_rgba, dec_rgba, warnings) =
         axis_render::raster_panel_layers(config, selection, grid && !(overlay && milkyway), scale)?;
     if grid && overlay && milkyway {
         let (w, h) = (config.chart_area.0.width, config.chart_area.0.height);
@@ -291,9 +296,9 @@ pub(in crate::renderer) fn raster_panel_layers(
                 reason: error.to_string(),
             })?;
         blank.resize(len, 0);
-        return Ok((blank, dec_rgba));
+        return Ok((blank, dec_rgba, warnings));
     }
-    Ok((grid_rgba, dec_rgba))
+    Ok((grid_rgba, dec_rgba, warnings))
 }
 
 /// The texture size of a panel raster laid out from `config` and drawn at
@@ -325,18 +330,21 @@ pub(in crate::renderer) fn checked_panel_raster_size(
 /// the axes it draws, tagged with its layer: its own Y axis on the right
 /// and, with `link_x` off, its own X axis on the top. Its other axes are
 /// hidden copies and would repeat the base warnings.
-pub(in crate::renderer) fn merged_render_warnings(
+///
+/// `own` holds each panel's own warnings in panel order, as its raster
+/// pass derived them ([`axis_render::raster_panel_layers`], #444).
+pub(in crate::renderer) fn merged_render_warnings<'w>(
     config: &Config,
-    panels: &[Config],
+    own: impl IntoIterator<Item = &'w [crate::RenderWarning]>,
 ) -> Vec<crate::RenderWarning> {
     let layers = config.panel_layers();
     let mut merged = Vec::new();
-    for (index, (panel, layer)) in panels.iter().zip(layers).enumerate() {
+    for (index, (warnings, layer)) in own.into_iter().zip(layers).enumerate() {
         // A line offset member's axes are hidden copies of its owner's.
         if config.panel_member(index).is_some() {
             continue;
         }
-        for warning in axis_render::tick_warnings(panel) {
+        for warning in warnings.iter().cloned() {
             let axis = warning.axis();
             let tagged = match (layer, axis) {
                 (crate::LayerRef::Base, _) => Some(warning),

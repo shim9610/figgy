@@ -222,6 +222,15 @@ impl Draggable<DecorationLayout> for DecorationElement {
     fn nudge_element(&self) -> DecorationElement {
         self.clone()
     }
+
+    /// Every decoration of the radial chart snaps while it drags (#440),
+    /// its value labels included; the plot region and its edges do not.
+    fn snaps(&self, _cfg: &DecorationLayout) -> bool {
+        !matches!(
+            self.id,
+            DecorationId::DataArea | DecorationId::DataAreaEdge(_)
+        )
+    }
 }
 impl crate::resize::Resizable<DecorationLayout> for DecorationElement {
     fn resize_targets(&self, handle: crate::resize::ResizeHandle) -> (Option<Self>, Option<Self>) {

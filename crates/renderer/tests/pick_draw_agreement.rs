@@ -4194,11 +4194,14 @@ fn category_bars_pick_the_bar_they_paint() {
             ] {
                 axis.line_visible = false;
             }
-            let categories = Some(vec![
-                Category::new("a", "A"),
-                Category::new("b", "B"),
-                Category::new("c", "C"),
-            ]);
+            let categories = Some(
+                vec![
+                    Category::new("a", "A"),
+                    Category::new("b", "B"),
+                    Category::new("c", "C"),
+                ]
+                .into(),
+            );
             let mut series = [bars("one", RED), bars("two", BLUE)];
             match direction {
                 CategoryBarDirection::Vertical => config.bottom_x.categories = categories,
@@ -4368,7 +4371,7 @@ fn box_plots_pick_the_box_they_paint() {
             ] {
                 axis.line_visible = false;
             }
-            let categories = Some(vec![Category::new("a", "A"), Category::new("b", "B")]);
+            let categories = Some(vec![Category::new("a", "A"), Category::new("b", "B")].into());
             match direction {
                 CategoryBarDirection::Vertical => {
                     config.bottom_x.categories = categories;
@@ -4554,7 +4557,7 @@ fn range_bars_pick_the_bar_they_paint() {
         ] {
             axis.line_visible = false;
         }
-        let categories = Some(vec![Category::new("a", "A"), Category::new("b", "B")]);
+        let categories = Some(vec![Category::new("a", "A"), Category::new("b", "B")].into());
         match direction {
             CategoryBarDirection::Vertical => {
                 config.bottom_x.categories = categories;
@@ -4751,7 +4754,7 @@ fn violins_and_raincloud_points_pick_what_they_paint() {
         ] {
             axis.line_visible = false;
         }
-        let categories = Some(vec![Category::new("a", "A"), Category::new("b", "B")]);
+        let categories = Some(vec![Category::new("a", "A"), Category::new("b", "B")].into());
         match direction {
             CategoryBarDirection::Vertical => {
                 config.bottom_x.categories = categories;
@@ -5142,11 +5145,14 @@ fn value_labels_pick_where_they_paint() {
         for axis in [&mut config.bottom_x, &mut config.left_y] {
             axis.line_visible = false;
         }
-        config.bottom_x.categories = Some(vec![
-            Category::new("a", "A"),
-            Category::new("b", "B"),
-            Category::new("c", "C"),
-        ]);
+        config.bottom_x.categories = Some(
+            vec![
+                Category::new("a", "A"),
+                Category::new("b", "B"),
+                Category::new("c", "C"),
+            ]
+            .into(),
+        );
         config.bar_groups = Some(BarGroups {
             mode,
             direction: CategoryBarDirection::Vertical,

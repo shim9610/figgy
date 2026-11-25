@@ -806,6 +806,7 @@ impl Config {
             background: _,
             // A panel is drawn as the document's layout places it.
             layout_state: _,
+            snap_to_guides: _,
         } = self;
         let OverlayLayer {
             y_axis,
@@ -918,6 +919,7 @@ impl Config {
             plot_background: None,
             background: None,
             layout_state: LayoutState::Fixed,
+            snap_to_guides: None,
         };
         retain_layer_picks(&mut panel, self, LayerRef::Overlay(index));
         align_margins(&mut panel, align)?;
@@ -961,6 +963,7 @@ impl Config {
             plot_background: _,
             background: _,
             layout_state: _,
+            snap_to_guides: _,
         } = owner;
         let [dx, dy] = self
             .line_offsets
@@ -997,6 +1000,7 @@ impl Config {
             plot_background: None,
             background: None,
             layout_state: LayoutState::Fixed,
+            snap_to_guides: None,
         };
         retain_picks(&mut panel, |id| id == series_id);
         align_margins(&mut panel, align)?;
@@ -1448,6 +1452,7 @@ impl Config {
             plot_background: _,
             background: _,
             layout_state: _,
+            snap_to_guides: _,
         } = self;
         let owned = |id: &str| {
             matches!(
@@ -1504,6 +1509,7 @@ fn retain_picks(panel: &mut Config, keep: impl Fn(&str) -> bool) {
         plot_background: _,
         background: _,
         layout_state: _,
+        snap_to_guides: _,
     } = panel;
     if let Some(picked) = picked_data.as_mut() {
         picked.refs.retain(|reference| keep(reference.series_id()));
@@ -2025,7 +2031,7 @@ mod tests {
         fn axis(axis: &AxisOptions, out: &mut Vec<f32>) {
             out.push(axis.label_style.font_size);
             rich(&axis.title_option.text, out);
-            for category in axis.categories.iter().flatten() {
+            for category in axis.categories.as_deref().into_iter().flatten() {
                 if let Some(label) = &category.rich_label {
                     rich(label, out);
                 }
@@ -2690,7 +2696,7 @@ mod tests {
         assert_eq!(plain.document_area(), plain.chart_area.0);
     }
 
-    fn categories(n: usize) -> Option<Vec<Category>> {
+    fn categories(n: usize) -> Option<std::sync::Arc<[Category]>> {
         Some(
             (0..n)
                 .map(|i| Category::new(format!("k{i}"), format!("Kind {i}")))
@@ -2960,7 +2966,7 @@ mod tests {
             Some(
                 ["a", "b", "c"]
                     .map(|id| crate::config::Category::new(id, id))
-                    .to_vec(),
+                    .into(),
             )
         };
         let overlay = |id: String| {
