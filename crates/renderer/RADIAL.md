@@ -93,7 +93,12 @@ samples, and each finds the slice it hits, or the background, and that
 slice's outline at its own position. The lit material of each surface the
 samples hit (one slice, one normal) is evaluated once per pixel and counted
 for each sample it covers, and the soft shadow is taken once per pixel
-(#349). `scale` is at least 0.5, and the target's
+(#349). A pixel whose samples would all take one colour (inside one flat top
+face, or on the background), and every edge pixel of a chart whose slices
+are flat tops (no depth, or level without a bevel), takes one ray instead:
+the colour its samples share, or analytic coverage of the slice edges and
+outline (#41, #454). Bevels, creases and tilted side walls keep the samples.
+`scale` is at least 0.5, and the target's
 actual size follows it. There is no upper limit; if the actual size exceeds
 the device's texture size limit, an error is returned. The host decides the
 clear/load policy of its render pass. Transparent backgrounds are supported.
@@ -792,7 +797,7 @@ renderer.end_frame();
 RGBA8/BGRA8 포맷, `frame.size()` 크기, sample count 1이어야 한다. 가장자리 안티에일리어싱은
 렌더러가 직접 처리한다. 실제 픽셀마다 2×2 표본을 두고, 각 표본은 자기 위치에서 맞는 조각(없으면 배경)과
 그 조각의 외곽선을 찾는다. 표본이 맞은 면(같은 조각, 같은 법선)마다 재질 조명은 픽셀당 한 번 계산하고
-그 면이 덮은 표본 수만큼 반영하며, 부드러운 그림자도 픽셀당 한 번 계산한다(#349). `scale`은 0.5 이상이며 타깃의 실제 크기도 함께 맞춘다. 상한은 없고, 실제 크기가 장치의 텍스처 크기 한도를 넘으면 오류를 돌려준다.
+그 면이 덮은 표본 수만큼 반영하며, 부드러운 그림자도 픽셀당 한 번 계산한다(#349). 모든 표본이 같은 색을 낼 픽셀(평평한 윗면 한 곳의 안쪽이나 배경)과, 조각이 평평한 윗면뿐인 차트(깊이가 없거나, 기울지 않고 베벨이 없는 차트)의 가장자리 픽셀은 광선 하나로 그린다. 표본들이 낼 색을 그대로 쓰거나, 조각 경계와 외곽선의 해석적 피복을 쓴다(#41, #454). 베벨, 꺾인 모서리, 기울어진 옆면은 표본을 그대로 쓴다. `scale`은 0.5 이상이며 타깃의 실제 크기도 함께 맞춘다. 상한은 없고, 실제 크기가 장치의 텍스처 크기 한도를 넘으면 오류를 돌려준다.
 호스트 render pass의 clear/load 정책은 호스트가 정한다. 투명 배경도 지원한다.
 논리 크기는 가로·세로 각각 최소 160픽셀이다. 실제 크기는 `round(논리 크기 × scale)`이며
 장치의 텍스처 크기 한도를 넘을 수 없다. `draw`는 viewport와 scissor를 타깃 전체로 설정한다.
