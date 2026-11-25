@@ -54,7 +54,7 @@ arc-swap = "1.7"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 eframe = { version = "0.36", optional = true, default-features = false, features = ["wgpu", "x11", "wayland"] }
-egui = { version = "0.36", optional = true }
+egui = { version = "0.37", optional = true }
 egui-wgpu = { version = "0.36", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
