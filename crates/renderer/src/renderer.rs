@@ -624,7 +624,8 @@ impl Renderer {
     // (One figgy widget per egui callback: with several callbacks sharing a
     // renderer, store one token per widget/panel — egui runs every
     // callback's prepare before any paint, so a single shared token would
-    // be overwritten before the first paint. See examples/egui_embed.rs.)
+    // be overwritten before the first paint. See the repository's
+    // examples/egui/examples/egui_embed.rs.)
 
     // Headless PNG export.
 }

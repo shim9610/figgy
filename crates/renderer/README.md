@@ -106,7 +106,8 @@ includes Cartesian refresh and radial edit/export examples, and explains frame l
 units. The [interaction contracts](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)
 cover shared selection, dragging and area handles (in Korean) and titles,
 layers, subplots and annotations (in English). Runnable editors are
-`winit_simple` and `radial_editor`; the second requires `--features egui_demo`.
+`winit_simple` and `radial_editor`; the second is in the repository's
+[egui example crate](https://github.com/shim9610/figgy/blob/master/examples/egui).
 
 Automatic Cartesian streaming fits the axes only on request: call
 `Renderer::request_stream_auto_fit(chart_id, padding)` when the initial range is
@@ -123,7 +124,6 @@ it returns the same encoded values for the same source revision; see the
 | --- | --- |
 | Default (no optional features) | Native renderer, headless output and host integration |
 | `serde` | Serialization of re-exported model types; no application file format |
-| `egui_demo` | Optional dependencies for native GUI examples |
 
 Direct GPU sharing requires **wgpu 30**. CI covers native Linux/Vulkan,
 Windows/DX12 and macOS/Metal, plus WASM compilation. Software Vulkan/WARP and

@@ -458,9 +458,8 @@ Cartesian용 `FiggyChart`와 별도로 WASM 래퍼는 원형 차트를 위한
 `decorations.reset(&id)`를 그대로 감싸며(#313), 반대 방향으로 끄는 것과 달리 오프셋을 남기지 않는다. [WASM API](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md#bounded-chart-host)를 참고한다.
 레이더 문서는 극좌표 차트이므로 `FiggyChart.set_radar_document`로 연다.
 
-네이티브 연결 예제는 `radial_editor`이며
-`egui_demo` 기능이 필요하다.
-`cargo run --locked -p figgy-renderer --features egui_demo --example radial_editor`처럼 실행한다.
+네이티브 연결 예제는 저장소의 [egui 예제 크레이트](https://github.com/shim9610/figgy/blob/master/examples/egui)에 있는 `radial_editor`다.
+저장소 루트에서 `cargo run --locked --manifest-path examples/egui/Cargo.toml --example radial_editor`처럼 실행한다.
 제목·범례·라벨을 클릭해 선택하고 드래그하며, `Reset position`으로 되돌릴 수 있다.
 
 ## 극좌표 차트의 축 드래그

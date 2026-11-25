@@ -159,6 +159,7 @@ jobs:
           workspaces: |
             . -> target
             tools/playground -> target
+            examples/egui -> target
             tools/loom-poller -> target
       - name: Install Linux build and Vulkan prerequisites
         if: steps.scope.outputs.checks == 'true'
@@ -188,6 +189,11 @@ jobs:
         if: steps.scope.outputs.checks == 'true'
         working-directory: tools/playground
         run: cargo run --locked -- --selftest
+      - name: egui examples build
+        # Standalone crate, so figgy-renderer carries no egui dependency (#459).
+        if: steps.scope.outputs.checks == 'true'
+        working-directory: examples/egui
+        run: cargo check --locked --examples
       - name: Poll thread protocol under loom
         # Every interleaving of the native poll thread's model tests, up to
         # the preemption bound in `crates/renderer/src/gpu_poller.rs` (#160).

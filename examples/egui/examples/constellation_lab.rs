@@ -7,7 +7,7 @@
 //! (star/line attributes are derived in-shader).
 //!
 //! Run with:
-//! `cargo run -p figgy-renderer --example constellation_lab --features egui_demo`
+//! `cargo run --locked --manifest-path examples/egui/Cargo.toml --example constellation_lab`
 
 use eframe::egui_wgpu::{self, CallbackTrait};
 use eframe::wgpu;

@@ -22,7 +22,7 @@
 //!    with `renderer::Renderer::paint_prepared(pass, target, token)`.
 //!
 //! Run with:
-//! `cargo run -p figgy-renderer --example egui_embed --features egui_demo`
+//! `cargo run --locked --manifest-path examples/egui/Cargo.toml --example egui_embed`
 
 use eframe::egui_wgpu::{self, CallbackTrait};
 use eframe::wgpu;

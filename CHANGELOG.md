@@ -53,6 +53,19 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 `color` and the transition arrows' `color_by_wavelength` and
 `label_knockout`) are additive.
 
+- **The egui examples moved out of figgy-renderer; the `egui_demo`
+  feature is removed** ([#459](https://github.com/shim9610/figgy/issues/459)).
+  `egui_embed`, `radial_editor`, `ssot_lab`, `streaming_capacity_demo` and
+  `constellation_lab` are now in `examples/egui/`, a standalone crate with
+  its own lockfile, like `tools/playground`. figgy-renderer no longer lists
+  `eframe`, `egui` or `egui-wgpu`, even as optional dependencies. The examples
+  themselves are unchanged and still use egui 0.36. CI checks them in the
+  repository job.
+  *Migration:* drop `egui_demo` from any `features = [...]` list for
+  figgy-renderer. To run an example, use
+  `cargo run --locked --manifest-path examples/egui/Cargo.toml --example egui_embed`
+  from the repository root instead of `--features egui_demo`.
+
 - **Faster first frames on software GPUs: contours, 3D surfaces and
   path arrows compile less shader code**
   ([#453](https://github.com/shim9610/figgy/issues/453)). lavapipe and
