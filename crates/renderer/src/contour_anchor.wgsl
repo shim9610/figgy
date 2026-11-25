@@ -333,12 +333,12 @@ fn anchor_project(@builtin(global_invocation_id) gid: vec3<u32>) {
     cand[gid.x] = out;
 }
 
-/// Kept labels' screen positions and box radii, for the overlap test.
-/// Only the single invocation in `anchor_select` uses this scratch storage.
-/// Private arrays retain WGSL initialization guarantees without shared-memory
-/// initialization, which makes WARP's first dispatch disproportionately costly.
-var<private> kept_px: array<vec2<f32>, 1024>;
-var<private> kept_r: array<f32, 1024>;
+// The overlap tests read each kept label's screen position and box radius
+// back from `anchors[j]` (`anchor_px`, `label_radius` of its level): the same
+// functions of the same record, so the same values, with no scratch array.
+// Private scratch arrays of `MAX_KEPT` entries made the first dispatch on a
+// software GPU (lavapipe) compile for about 9 s; workgroup arrays made WARP's
+// first dispatch slow (#453).
 
 /// Half the diagonal of level `i`'s label box, in pixels.
 fn label_radius(i: u32) -> f32 {
@@ -372,7 +372,7 @@ fn anchor_select() {
                 // Two boxes whose centres are farther apart than the sum of
                 // their half-diagonals cannot overlap, whatever their rotation —
                 // a sufficient condition, with `spacing_px` as the floor.
-                if (distance(px, kept_px[j]) < max(ap.spacing_px, r + kept_r[j])) {
+                if (distance(px, anchor_px(anchors[j])) < max(ap.spacing_px, r + label_radius(anchors[j].level))) {
                     ok = false;
                     break;
                 }
@@ -381,8 +381,6 @@ fn anchor_select() {
                 continue;
             }
             anchors[kept] = c;
-            kept_px[kept] = px;
-            kept_r[kept] = r;
             kept = kept + 1u;
         }
     }
@@ -419,7 +417,7 @@ fn anchor_select() {
             let px = anchor_px(c);
             var gap = 1e30;
             for (var j = 0u; j < kept; j = j + 1u) {
-                gap = min(gap, distance(px, kept_px[j]));
+                gap = min(gap, distance(px, anchor_px(anchors[j])));
             }
             if (gap > best_gap) {
                 best_gap = gap;
@@ -432,8 +430,6 @@ fn anchor_select() {
         }
         let c = cand[l * cells + best];
         anchors[kept] = c;
-        kept_px[kept] = anchor_px(c);
-        kept_r[kept] = label_radius(l);
         kept = kept + 1u;
     }
 

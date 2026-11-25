@@ -246,8 +246,14 @@ pub struct ArcScanPipelines {
     view3d_bgl: wgpu::BindGroupLayout,
     seg_init: wgpu::ComputePipeline,
     /// `seg_init` for a 3D chart's line: the segment lengths of the
-    /// projected chords, with the camera bound as group 3.
-    seg_init_3d: wgpu::ComputePipeline,
+    /// projected chords, with the camera bound as group 3. Created with the
+    /// first 3D line ([`Self::ensure_seg_init_3d`]), so a chart without one
+    /// never compiles it (#453).
+    seg_init_3d: Option<wgpu::ComputePipeline>,
+    /// The module and layout [`Self::ensure_seg_init_3d`] creates
+    /// `seg_init_3d` from.
+    shader: wgpu::ShaderModule,
+    layout_3d: wgpu::PipelineLayout,
     scan_block: wgpu::ComputePipeline,
     add_offsets: wgpu::ComputePipeline,
     apply_carry: wgpu::ComputePipeline,
@@ -262,12 +268,31 @@ pub struct ArcScanPipelines {
 /// dispatch count and the VS slot mapping must agree on the pitch.
 pub const STAR_SLOT_PITCH_FACTOR: f32 = 0.5;
 
-/// The label of every arc scan compute pipeline.
+/// The label of every arc scan compute pipeline but `seg_init_3d`.
 pub(crate) const ARC_SCAN_LABEL: &str = "figgy arc scan pipeline";
 
+/// The label of the arc scan's `seg_init_3d` pipeline, which only a 3D
+/// chart's line dispatches: a frame waits for it only then (#453).
+pub(crate) const ARC_SCAN_3D_LABEL: &str = "figgy arc scan 3D pipeline";
+
 /// The arc scan compute pipelines from the module assembled for `set`
-/// (#299): the renderer's own scan follows its shader set.
+/// (#299): the renderer's own scan follows its shader set. Every entry,
+/// `seg_init_3d` included: the prewarms, the preparations and the streaming
+/// runtime create them all.
 pub(crate) fn create_arc_scan_pipelines_by_set(
+    device: &wgpu::Device,
+    set: ShaderSet,
+    observer: &mut dyn FnMut(InitEvent),
+) -> ArcScanPipelines {
+    let mut pipelines = create_arc_scan_pipelines_2d_by_set(device, set, observer);
+    pipelines.ensure_seg_init_3d(device, observer);
+    pipelines
+}
+
+/// [`create_arc_scan_pipelines_by_set`] without `seg_init_3d`, which a
+/// frame's preparation creates only for a 3D chart's line
+/// ([`ArcScanPipelines::ensure_seg_init_3d`], #453).
+pub(crate) fn create_arc_scan_pipelines_2d_by_set(
     device: &wgpu::Device,
     set: ShaderSet,
     observer: &mut dyn FnMut(InitEvent),
@@ -405,9 +430,7 @@ pub(crate) fn create_arc_scan_pipelines_by_set(
         seg_init: observe_value(observer, INIT_SCOPE, "seg_init", || {
             pipeline(&layout, "seg_init")
         }),
-        seg_init_3d: observe_value(observer, INIT_SCOPE, "seg_init_3d", || {
-            pipeline(&layout_3d, "seg_init_3d")
-        }),
+        seg_init_3d: None,
         scan_block: observe_value(observer, INIT_SCOPE, "scan_block", || {
             pipeline(&layout, "scan_block")
         }),
@@ -434,6 +457,8 @@ pub(crate) fn create_arc_scan_pipelines_by_set(
         replay_bgl,
         star_args_bgl,
         view3d_bgl,
+        shader,
+        layout_3d,
     }
 }
 
@@ -467,6 +492,38 @@ pub(crate) async fn create_arc_scan_pipelines_by_set_async(
 }
 
 impl ArcScanPipelines {
+    /// Create `seg_init_3d`, which a 3D chart's line dispatches, unless it
+    /// exists (#453).
+    pub(crate) fn ensure_seg_init_3d(
+        &mut self,
+        device: &wgpu::Device,
+        observer: &mut dyn FnMut(InitEvent),
+    ) {
+        if self.seg_init_3d.is_some() {
+            return;
+        }
+        let pipeline = observe_value(observer, INIT_SCOPE, "seg_init_3d", || {
+            crate::gpu_compile::compute_pipeline(
+                device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some(ARC_SCAN_3D_LABEL),
+                    layout: Some(&self.layout_3d),
+                    module: &self.shader,
+                    entry_point: Some("seg_init_3d"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    cache: None,
+                },
+            )
+        });
+        self.seg_init_3d = Some(pipeline);
+    }
+
+    /// Whether `seg_init_3d` exists.
+    #[cfg(test)]
+    pub(crate) fn has_seg_init_3d(&self) -> bool {
+        self.seg_init_3d.is_some()
+    }
+
     pub(crate) fn replay_transform_bind_group(
         &self,
         device: &wgpu::Device,
@@ -923,6 +980,11 @@ impl ArcScratch {
         c_base: u32,
         view3d: Option<&super::surface_mesh::View3dGpu>,
     ) -> crate::Result<Option<Self>> {
+        if view3d.is_some() && pipelines.seg_init_3d.is_none() {
+            return Err(crate::FiggyError::internal(
+                "a 3D arc scan's caller ensured seg_init_3d",
+            ));
+        }
         let arc_flags = if view3d.is_some() { ARC_FLAG_3D } else { 0 };
         let view3d = view3d
             .map(|camera| {
@@ -1245,12 +1307,14 @@ impl ArcScratch {
             let b0 = blocks(chunk.len);
             let b1 = blocks(b0);
 
-            match &self.view3d {
-                Some(view3d) => {
-                    pass.set_pipeline(&pipelines.seg_init_3d);
+            match (&self.view3d, &pipelines.seg_init_3d) {
+                (Some(view3d), Some(seg_init_3d)) => {
+                    pass.set_pipeline(seg_init_3d);
                     pass.set_bind_group(3, &view3d.bind_group, &[]);
                 }
-                None => pass.set_pipeline(&pipelines.seg_init),
+                // `build` refuses a 3D scratch without `seg_init_3d`.
+                (Some(_), None) => return,
+                (None, _) => pass.set_pipeline(&pipelines.seg_init),
             }
             pass.set_bind_group(1, &chunk.bg_arc, &[]);
             pass.dispatch_workgroups(b0, 1, 1);

@@ -40,8 +40,6 @@ impl PrepareContext<'_> {
         let line = if primitives.line
             && phase.is_none_or(|phase| phase == streaming_runtime::StreamDrawPhase::Line)
         {
-            let line_pick =
-                line_pick.ok_or(FiggyError::internal("prepare ensured line pipeline"))?;
             let arc = products
                 .arcs
                 .get(idx)
@@ -74,6 +72,14 @@ impl PrepareContext<'_> {
             let line_3d = z_3d
                 .map(|z| camera_binding(false).map(|binding| (z, binding)))
                 .transpose()?;
+            // A 3D stroke draws through its 3D entry only, so a 3D chart
+            // compiles no planar line pipeline (#453); every other stroke
+            // takes the planar pick's vertex count and texture.
+            let (verts, texture_bg) = match (line_pick, line_3d.is_some()) {
+                (Some(pick), _) => (pick.verts, pick.texture_bg),
+                (None, true) => (PRECISE_LINE_VERTICES, None),
+                (None, false) => return Err(FiggyError::internal("prepare ensured line pipeline")),
+            };
             Some(ColumnLineLayer {
                 pipeline: if line_3d.is_some() {
                     pipelines.view3d[View3dPipeline::Line as usize]
@@ -90,7 +96,9 @@ impl PrepareContext<'_> {
                             "prepare ensured the ternary line pipeline",
                         ))?
                 } else {
-                    line_pick.pipeline
+                    line_pick
+                        .ok_or(FiggyError::internal("prepare ensured line pipeline"))?
+                        .pipeline
                 },
                 third: line_3d.as_ref().map(|(z, _)| *z).or(ternary_c),
                 view3d: line_3d.map(|(_, binding)| binding),
@@ -103,13 +111,13 @@ impl PrepareContext<'_> {
                 // One strip per step piece (or polar arc piece), joined
                 // per `strip_slot`.
                 verts_per_instance: crate::line_step::strip_vertex_count(
-                    line_pick.verts,
+                    verts,
                     crate::line_step::mode_word(
                         interpolation,
                         crate::line_step::arc_pieces(chart_config.polar()),
                     ),
                 ),
-                texture_bg: line_pick.texture_bg,
+                texture_bg,
                 closed,
                 value_map,
             })

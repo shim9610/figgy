@@ -47,6 +47,10 @@ fn ring_scan_too_large(series_id: &str) -> FiggyError {
     }
 }
 
+/// The vertices of one precise line strip instance: the planar and the 3D
+/// line entries both draw a segment as a four-vertex strip.
+const PRECISE_LINE_VERTICES: u32 = 4;
+
 /// The style set resolved into per-primitive picks once. `stars` is the
 /// constellation's arc-driven indirect star pass over the same polyline.
 #[derive(Clone, Copy)]
@@ -186,7 +190,7 @@ impl PrepareContext<'_> {
                     .precise(PrecisePipeline::Line)
                     .map(|pipeline| LinePick {
                         pipeline,
-                        verts: 4,
+                        verts: PRECISE_LINE_VERTICES,
                         texture_bg: None,
                     }),
                 None,

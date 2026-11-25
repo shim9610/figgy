@@ -5635,6 +5635,185 @@ fn line_prepare_compiles_only_the_line_pipeline() {
     assert!(!renderer.errorbar_extent_engine_ready());
 }
 
+/// A 3D chart of a heatmap with contours and a line with markers and a
+/// height column (#453), or the same chart planar with `planar`, with the
+/// line dashed so its arc prefix is scanned.
+fn surface_prepare_renderer(planar: bool) -> Option<Renderer> {
+    use crate::data_config::{
+        ContourConfig, DataScatterStyleConfig, FieldFillConfig, FieldSeries, FillMode, GridLayout,
+        MatrixOrientation, MatrixRef, Shading,
+    };
+    let mut renderer = state_test_renderer()?;
+    for (id, data) in [
+        ("sx", vec![0.0, 1.0, 2.0]),
+        ("sy", vec![0.0, 1.0, 2.0]),
+        ("sz0", vec![0.0, 0.5, 1.0]),
+        ("sz1", vec![0.5, 1.0, 0.5]),
+        ("sz2", vec![1.0, 0.5, 0.0]),
+        ("tz", vec![0.2, 0.6, 0.9]),
+    ] {
+        renderer.add_column(id, &col_f64(data)).unwrap();
+    }
+    let mut config = crate::default::default_config();
+    config.chart_area = crate::layout::ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 320,
+        height: 240,
+    });
+    let mut colorbar = crate::default::default_colorbar_options();
+    colorbar.axis.min = 0.0;
+    colorbar.axis.max = 1.0;
+    config.colorbar = Some(colorbar);
+    if !planar {
+        config.set_view_3d(Some(crate::view3d::View3d::default()));
+    }
+    let line = DataLineStyleConfig {
+        line_style: LineStylePreset::Dash,
+        line_color: Color::new(0.1, 0.2, 0.3, 1.0),
+        line_width: 1.0,
+        fill: None,
+        fill_color: None,
+        interpolation: crate::data_config::LineInterpolation::Linear,
+    };
+    let surface = SeriesConfig {
+        series_id: "surface".into(),
+        source_id: None,
+        label: None,
+        x_column: "sx".into(),
+        y_column: "sy".into(),
+        z_column: None,
+        render_type: DataRenderType::Field(FieldSeries {
+            matrix: MatrixRef {
+                columns: vec!["sz0".into(), "sz1".into(), "sz2".into()],
+                orientation: MatrixOrientation::ColumnsAreX,
+                grid_layout: GridLayout::Centers,
+            },
+            fill: Some(FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Interpolated,
+                opacity: 1.0,
+            }),
+            contour: Some(ContourConfig {
+                levels: vec![0.5],
+                line: line.clone(),
+                per_level_color: None,
+                labels: None,
+            }),
+            surface: None,
+        }),
+    };
+    let trajectory = SeriesConfig {
+        series_id: "trajectory".into(),
+        source_id: None,
+        label: None,
+        x_column: "sx".into(),
+        y_column: "sy".into(),
+        z_column: Some("tz".into()),
+        render_type: DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
+                point_color: Color::new(0.8, 0.2, 0.1, 1.0),
+                point_shape: crate::ScatterShape::CircleFilled,
+                point_size: 3.0,
+                point_style_table: None,
+                point_style_index_column: None,
+                point_style_overrides: None,
+                point_color_map: None,
+                point_size_map: None,
+            }),
+            line: Some(line),
+            errors: None,
+            stem: None,
+        }),
+    };
+    let chart = Chart::new(config);
+    let mut view = renderer
+        .create_chart_view(&chart, chart.config().chart_area.0)
+        .unwrap();
+    let surface_style = renderer.create_style_for_series(&surface).unwrap();
+    let trajectory_style = renderer.create_style_for_series(&trajectory).unwrap();
+    let series = [
+        Series {
+            config: &surface,
+            style: &surface_style,
+        },
+        Series {
+            config: &trajectory,
+            style: &trajectory_style,
+        },
+    ];
+    let mut items = [ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
+        series: &series,
+    }];
+    renderer.prepare(&mut items).unwrap();
+    Some(renderer)
+}
+
+/// A 3D chart draws its heatmap as a surface, its contours on the floor and
+/// its height-column line and markers through the 3D entries, so it compiles
+/// none of the planar field, contour, line or scatter pipelines; the same
+/// chart planar compiles them all and no 3D entry (#453).
+#[test]
+fn a_3d_chart_compiles_no_planar_pipeline_it_does_not_draw() {
+    let Some(renderer) = surface_prepare_renderer(false) else {
+        return;
+    };
+    for kind in [
+        PrecisePipeline::Field,
+        PrecisePipeline::Contour,
+        PrecisePipeline::ContourLabelled,
+        PrecisePipeline::Line,
+        PrecisePipeline::Scatter,
+    ] {
+        assert!(renderer.pipelines.precise(kind).is_none(), "{kind:?}");
+    }
+    for kind in [View3dPipeline::Line, View3dPipeline::Scatter] {
+        assert!(
+            renderer.pipelines.view3d[kind as usize].is_some(),
+            "{kind:?}"
+        );
+    }
+    use crate::data_render::surface_mesh::SurfacePass;
+    for pass in [SurfacePass::Draw, SurfacePass::FloorContour] {
+        assert!(
+            renderer.pipelines.surface[pass as usize].is_some(),
+            "{pass:?}"
+        );
+    }
+    let Some(planar) = surface_prepare_renderer(true) else {
+        return;
+    };
+    for kind in [
+        PrecisePipeline::Field,
+        PrecisePipeline::Contour,
+        PrecisePipeline::Line,
+        PrecisePipeline::Scatter,
+    ] {
+        assert!(planar.pipelines.precise(kind).is_some(), "{kind:?}");
+    }
+    for kind in View3dPipeline::ALL {
+        assert!(planar.pipelines.view3d[kind as usize].is_none(), "{kind:?}");
+    }
+}
+
+/// A planar dashed line scans its arc prefix without the 3D entry, which
+/// only a 3D chart's line creates (#453).
+#[test]
+fn a_planar_path_compiles_no_3d_arc_entry() {
+    let Some(planar) = surface_prepare_renderer(true) else {
+        return;
+    };
+    let arc = planar.arc_pipelines.as_ref().expect("a dashed line scans");
+    assert!(!arc.has_seg_init_3d());
+    let Some(three_d) = surface_prepare_renderer(false) else {
+        return;
+    };
+    let arc = three_d.arc_pipelines.as_ref().expect("a dashed line scans");
+    assert!(arc.has_seg_init_3d());
+}
+
 #[test]
 fn scatter_prepare_compiles_only_the_scatter_pipeline() {
     let Some(mut renderer) = state_test_renderer() else {

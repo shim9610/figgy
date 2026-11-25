@@ -464,14 +464,15 @@ with their twins, which declare the same functions with none of that code
 | `probability.wgsl` | `probability_basic.wgsl` | `prob_in_domain` is false, so a probability axis draws no sample; `prob_forward`, `prob_slope` and `prob_inverse` are unreached with code 0 |
 | `axis_scale.wgsl` | `axis_scale_basic.wgsl` | `axis_data_t` and `axis_pair_to_t` with the same linear and logarithmic arithmetic, no probability branch and no cut remap |
 | `polar.wgsl` | `polar_basic.wgsl` | `polar_sample_valid` and `polar_fragment_visible` are true on a rectangular chart and false on a polar one; `polar_ndc` and `polar_unproject` are unreached with the polar flag 0 |
-| `field_polar.wgsl` | `field_polar_basic.wgsl` | `field_polar_lookup` misses; `field_lookup` reaches it only with the polar flag set |
+| `field_polar.wgsl` | `field_polar_basic.wgsl` | `field_polar_lookup` misses; `field_lookup` reaches it only with the polar flag set. The contour distance's foot-point walk (`ContourFootWalk`, `contour_foot_walk`, `contour_foot_advance`, #453) ends at once; `contour_foot_begin` starts one only with the polar flag set |
 
 The two modules differ in nothing else, so every binding, layout and entry
 point is the same and one pipeline descriptor fits both
 (`shader_pipeline_contract.json` stores it once, under the basic source).
 
-- A fragment outside the table calls only the 16 functions the twins
-  declare and names the types `AxisCuts` and `PolarUnproject`. It never
+- A fragment outside the table calls only the 18 functions the twins
+  declare and names the types `AxisCuts`, `PolarUnproject` and
+  `ContourFootWalk`. It never
   reads a member of `AxisCuts`, builds one with its constructor or calls a
   function only a full fragment has (`piece_slope`, `cut_piece_slope`,
   `prob_pq`, `prob_normal`, `prob_weibull_w`, `prob_erfcc`): the basic
@@ -598,7 +599,8 @@ bilinear Hessian `Jᵀ H J`. That only starts the distance: along a pixel line
 the polar field is not a quadratic, so `contour_level_distance_at` finds the
 closest point on the level set by foot-point iteration
 (`CONTOUR_POLAR_FOOT_STEPS`, 4; `contour_foot_begin`, then the walk
-`contour_foot_walk` / `contour_foot_advance`): at the current point the
+`contour_foot_walk` / `contour_foot_advance`, which live in
+`field_polar.wgsl` so the basic set compiles none of it, #453): at the current point the
 level set is linearized from the field read through `field_lookup` and the
 located cell (`contour_sample_cells`), and the point moves to the foot of
 the perpendicular from the fragment. The distance is the Euclidean pixel
