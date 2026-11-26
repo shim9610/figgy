@@ -715,18 +715,10 @@ impl FiggyChart {
     /// registration already; a host that edits the series in place calls
     /// this to fix the new vertices.
     pub fn place_feynman_vertices(&mut self, series_id: &str) -> Result<bool, JsValue> {
-        // The chart the kernel shows: a monotonic chart holds any other
-        // series too (#271).
-        let laid_out = match self.monotonic {
-            Some(id) => self
-                .renderer
-                .monotonic_chart(id)
-                .and_then(|mut chart| chart.place_feynman_vertices(series_id)),
-            None => self
-                .renderer
-                .place_feynman_vertices(self.chart_id, series_id),
-        }
-        .map_err(js_err)?;
+        let laid_out = self
+            .renderer
+            .place_feynman_vertices(self.chart_id, series_id)
+            .map_err(js_err)?;
         if laid_out {
             self.request_host_redraw();
         }
@@ -1087,16 +1079,10 @@ impl FiggyChart {
         if let Some((series_id, drag)) = &self.feynman_pointer {
             if self.dragging && dx.is_finite() && dy.is_finite() {
                 let (dx, dy) = self.display_delta_to_document(dx, dy)?;
-                let moved = match self.monotonic {
-                    Some(id) => self
-                        .renderer
-                        .monotonic_chart(id)
-                        .and_then(|mut chart| chart.drag_feynman(series_id, *drag, dx, dy)),
-                    None => self
-                        .renderer
-                        .drag_feynman(self.chart_id, series_id, *drag, dx, dy),
-                }
-                .map_err(js_err)?;
+                let moved = self
+                    .renderer
+                    .drag_feynman(self.chart_id, series_id, *drag, dx, dy)
+                    .map_err(js_err)?;
                 if moved == NudgeResult::Moved {
                     self.request_host_redraw();
                 }

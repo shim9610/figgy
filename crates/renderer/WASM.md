@@ -1359,9 +1359,10 @@ the general chart's `chart_area`: the kernel's surface owns it, and only
 their group's first `set_monotonic` (they draw nothing until it).
 `remove_column` edits the monotonic chart's document (its legend loses the
 rows of the series that read the column) and keeps the hidden general
-chart's own document. Feynman drags and `place_feynman_vertices` edit the
-monotonic chart, which commits a diagram's layout when the document is
-shown, as `set_series` does on the general chart.
+chart's own document. A monotonic chart takes no Feynman series:
+`set_monotonic_document` and `set_series` refuse one with `code`
+`MonotonicFeynman`, so a diagram, its drags and `place_feynman_vertices`
+stay on the general chart.
 
 | `FiggyChart` / `<figgy-chart>` | Takes |
 | --- | --- |

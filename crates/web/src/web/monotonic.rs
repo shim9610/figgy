@@ -538,19 +538,17 @@ impl FiggyChart {
     /// group's first `set_monotonic`. A previous monotonic chart is
     /// replaced; `clear_monotonic_document` shows the general chart again.
     /// The document keeps the general chart's `chart_area`: the surface owns
-    /// it, and `resize_monotonic` alone changes it. A Feynman diagram's
-    /// layout is committed as on `set_series`. Streamed calls and
-    /// `load_demo` refuse the chart while it is shown (#468).
+    /// it, and `resize_monotonic` alone changes it. A Feynman series is
+    /// refused (`MonotonicFeynman`), here and by `set_series` while the
+    /// chart is shown. Streamed calls and `load_demo` refuse the chart
+    /// while it is shown (#468).
     pub fn set_monotonic_document(
         &mut self,
         config_json: &str,
         series_json: &str,
     ) -> Result<(), JsValue> {
         let mut config: renderer::Config = serde_json::from_str(config_json).map_err(js_err)?;
-        let mut series: Vec<SeriesConfig> = serde_json::from_str(series_json).map_err(js_err)?;
-        // A diagram's layout is committed as its series is registered, as
-        // on the general chart.
-        super::chart::place_feynman_vertices(&mut series)?;
+        let series: Vec<SeriesConfig> = serde_json::from_str(series_json).map_err(js_err)?;
         config.chart_area = self
             .renderer
             .chart_config(self.chart_id)

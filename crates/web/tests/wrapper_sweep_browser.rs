@@ -9,8 +9,8 @@
 //! - `set_series` takes monotonic series before their first reduction and
 //!   refuses them on the general chart with `MonotonicGeneralChart`
 //!   (item 4);
-//! - Feynman drags and `place_feynman_vertices` edit the monotonic chart,
-//!   which commits a diagram's layout on registration (item 5);
+//! - a monotonic chart refuses a Feynman series with `MonotonicFeynman`,
+//!   so a diagram and its drags stay on the general chart (item 5);
 //! - the annotation selection ends with the list it indexed (item 6);
 //! - a column upload committed on another chart is closed (item 10);
 //! - a non-finite clear colour component reads as 0 (item 11);
@@ -391,35 +391,50 @@ async fn set_series_takes_monotonic_series_before_their_first_reduction() {
 // ---- item 5 and the Feynman press (suspicion) ----
 
 #[wasm_bindgen_test(async)]
-async fn feynman_drags_edit_the_monotonic_chart() {
+async fn a_monotonic_chart_refuses_a_feynman_series() {
     let mut chart = FiggyChart::create(canvas()).await.unwrap();
-    let series = vec![SeriesConfig::monotonic_line("m", "daq", 0), s_channel()];
-    chart
-        .set_monotonic_document(&to_json!(&config()), &to_json!(&series))
-        .unwrap();
-    // The layout is committed on registration, as on the general chart.
-    let diagram = |chart: &FiggyChart| series_of(chart)[1].render_type.feynman().unwrap().clone();
-    let placed = diagram(&chart);
-    assert!(placed.vertices.iter().all(|v| v.at.is_some()));
-    assert!(!chart.place_feynman_vertices("d").unwrap());
+    let with_diagram = vec![SeriesConfig::monotonic_line("m", "daq", 0), s_channel()];
+    let error = chart
+        .set_monotonic_document(&to_json!(&config()), &to_json!(&with_diagram))
+        .unwrap_err();
+    assert_eq!(code(&error).as_deref(), Some("MonotonicFeynman"));
+    // Nothing was shown: the general chart is still the kernel's.
+    assert_eq!(chart.monotonic_groups().unwrap(), "[]");
 
+    chart
+        .set_monotonic_document(
+            &to_json!(&config()),
+            &to_json!(&vec![SeriesConfig::monotonic_line("m", "daq", 0)]),
+        )
+        .unwrap();
+    let error = chart.set_series(&to_json!(&with_diagram)).unwrap_err();
+    assert_eq!(code(&error).as_deref(), Some("MonotonicFeynman"));
+    assert_eq!(series_of(&chart).len(), 1, "the chart keeps its series");
+    chart.frame().unwrap();
+
+    // The general chart takes the diagram.
+    chart.clear_monotonic_document().unwrap();
+    chart.set_config(&to_json!(&config())).unwrap();
+    chart.set_series(&to_json!(&vec![s_channel()])).unwrap();
+    chart.frame().unwrap();
+}
+
+#[wasm_bindgen_test(async)]
+async fn a_press_ends_a_feynman_drag_whose_release_never_came() {
+    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    chart.set_config(&to_json!(&config())).unwrap();
+    chart.set_series(&to_json!(&vec![s_channel()])).unwrap();
+    chart.frame().unwrap();
+    let diagram = |chart: &FiggyChart| series_of(chart)[0].render_type.feynman().unwrap().clone();
+    // A drag moves the vertex.
+    let before = diagram(&chart).vertices[2].at;
     assert!(chart.press_feynman("d", "feynman_vertex", 2, None).unwrap());
     chart.on_move(0.0, -20.0).unwrap();
     chart.on_release().unwrap();
-    let moved = diagram(&chart).vertices[2].at.unwrap();
-    let before = placed.vertices[2].at.unwrap();
-    assert!((moved[1] - before[1]).abs() > 1e-3, "{moved:?} {before:?}");
-    assert!(
-        chart
-            .press_feynman("d", "feynman_propagator", 2, None)
-            .unwrap()
-    );
-    chart.on_move(0.0, -15.0).unwrap();
-    chart.on_release().unwrap();
-    assert!(diagram(&chart).propagators[2].bend.is_some());
+    assert_ne!(diagram(&chart).vertices[2].at, before);
 
-    // A press ends a Feynman drag whose release never came: the next move
-    // is the new gesture's.
+    // A press without a release, then a press on the plot: the next move
+    // belongs to the new gesture.
     assert!(chart.press_feynman("d", "feynman_vertex", 3, None).unwrap());
     let held = diagram(&chart).vertices[3].at;
     let plot = config().data_area().unwrap().0;
@@ -433,10 +448,6 @@ async fn feynman_drags_edit_the_monotonic_chart() {
     chart.on_release().unwrap();
     assert_eq!(diagram(&chart).vertices[3].at, held);
     chart.frame().unwrap();
-
-    // The hidden general chart was never edited.
-    chart.clear_monotonic_document().unwrap();
-    assert!(series_of(&chart).is_empty());
 }
 
 // ---- item 6 ----
