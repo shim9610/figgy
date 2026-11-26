@@ -5767,8 +5767,6 @@ example advances to 0.15.0 with the renderer dependency and is not published
   and for area fills and steps, value maps, vector fields, twin Y axes,
   subplots, annotations, polar and radar.
 
-<a id="migrating-from-0170"></a>
-
 ### Known limitations
 
 - macOS / Metal remains experimental. On the Apple Paravirtual adapter, a
@@ -5777,6 +5775,8 @@ example advances to 0.15.0 with the renderer dependency and is not published
   against resident style tests accept that on Metal only (at most one code
   value on at most 32 pixels) until it is investigated on Metal hardware; see
   `ci/STATUS.md`. Other backends compare exactly.
+
+<a id="migrating-from-0170"></a>
 
 ### Migrating from 0.17.0
 
