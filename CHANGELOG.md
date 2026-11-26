@@ -91,6 +91,13 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
     with a planar dashed line or path arrows no longer waits for it. The
     prewarms, the preparations and the streaming runtime still create every
     entry.
+  - A labelled contour no longer creates the plain contour pipeline next to
+    the labelled one ([#465](https://github.com/shim9610/figgy/issues/465)).
+    The plain pass draws a contour without labels, and a labelled series
+    only when it has no label snapshot (no level, or every label string
+    empty). The one pipeline-creation site of a frame and of an export now
+    runs after the contour scratches, so it knows which series take that
+    fallback. Streamed displays still create both.
   - First complete frame, median of three, before → after (4-core container;
     headed Chromium 158 on SwiftShader under Xvfb; native lavapipe, Mesa
     25.2.8): 2D field with labelled contours 12.8 s → 5.9 s and 8.5 s →

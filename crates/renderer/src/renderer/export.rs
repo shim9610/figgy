@@ -1018,23 +1018,6 @@ impl Renderer {
             self.pipelines.shaders.set,
         );
         self.ensure_contour_label_pipelines(items);
-        export_target_pipelines.ensure_precise_variants_for_items(
-            &self.device,
-            &self.transform_bgl,
-            &self.style_bgl,
-            &self.per_point_style_map_bgl,
-            &self.point_value_map_bgl,
-            [&self.surface_bgl, &self.view3d_value_map_bgl],
-            &self.data_selection_bgl,
-            &self.field_bgl,
-            &self.vector_bgl,
-            &self.star_data_bgl,
-            &self.category_bar_data_bgl,
-            &self.parallel_bgl,
-            self.contour_label_pipelines.as_ref(),
-            export_format,
-            items,
-        );
         export_target_pipelines.ensure_surface_pipelines(
             &self.device,
             &self.transform_bgl,
@@ -1066,6 +1049,26 @@ impl Renderer {
         self.ensure_value_map_scratches(items, scale)?;
         let _ = self.ensure_vector_scratches(items, Some(scale))?;
         let _ = self.ensure_contour_scratches(items, scale, &mut panels)?;
+        // Compiled once the contour scratches know which labelled series
+        // fall back to the plain contour pass, as in `prepare` (#465).
+        export_target_pipelines.ensure_precise_variants_for_items(
+            &self.device,
+            &self.transform_bgl,
+            &self.style_bgl,
+            &self.per_point_style_map_bgl,
+            &self.point_value_map_bgl,
+            [&self.surface_bgl, &self.view3d_value_map_bgl],
+            &self.data_selection_bgl,
+            &self.field_bgl,
+            &self.vector_bgl,
+            &self.star_data_bgl,
+            &self.category_bar_data_bgl,
+            &self.parallel_bgl,
+            self.contour_label_pipelines.as_ref(),
+            export_format,
+            items,
+            Some(&panels),
+        );
         let _ = self.ensure_mesh_scratches(items, scale)?;
         self.prepare_arc_items(items, &mut panels)?;
         let (mut prepared_items, _) =
