@@ -169,13 +169,16 @@ fn s_channel() -> SeriesConfig {
     }
 }
 
+/// A text note whose id is its text.
 fn text_note(text: &str) -> String {
-    to_json!(&renderer::Annotation::new(renderer::AnnotationKind::Text {
+    let mut item = renderer::Annotation::new(renderer::AnnotationKind::Text {
         anchor: renderer::Anchor::Ratio { x: 0.4, y: 0.4 },
         text: renderer::text::RichText::plain(text, Color::BLACK, 14.0, ""),
         box_style: None,
         align: Default::default(),
-    }))
+    });
+    item.id = text.into();
+    to_json!(&item)
 }
 
 // ---- item 1 ----
