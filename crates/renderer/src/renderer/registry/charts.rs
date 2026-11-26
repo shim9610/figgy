@@ -185,6 +185,7 @@ impl Renderer {
     ) -> Result<ChartId> {
         crate::chart::validate_renderer_config(&config)?;
         validate_renderer_series(&(&self.pool, &self.streaming_sources), &config, &series)?;
+        self.monotonic.refuse_envelope_readers(&series)?;
         self.require_resident_overlay_series(&config, &series)?;
         config.set_active_layer(config.active_layer);
         // Linked subplot axes are stored equal to their targets.
@@ -726,6 +727,7 @@ impl Renderer {
             &state.config,
             &series,
         )?;
+        self.monotonic.refuse_envelope_readers(&series)?;
         self.require_resident_overlay_series(&state.config, &series)?;
         let touched =
             self.reconcile_monotonic(id, None, Some(&series), Placement::Current, &mut lend_none)?;

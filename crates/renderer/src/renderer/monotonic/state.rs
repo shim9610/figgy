@@ -224,6 +224,32 @@ impl MonotonicState {
         self.columns.contains_key(id)
     }
 
+    /// Refuses a series list in which a series other than a monotonic one
+    /// reads an envelope column: its rows are the renderer's reduction, not
+    /// data (rule 1, M1), and only the monotonic calls write or remove them
+    /// (#469). Fails with [`FiggyError::ReservedColumnId`] for the first
+    /// such column.
+    pub(in crate::renderer) fn refuse_envelope_readers(
+        &self,
+        series: &[SeriesConfig],
+    ) -> Result<()> {
+        if self.columns.is_empty() {
+            return Ok(());
+        }
+        for item in series.iter().filter(|item| item.monotonic().is_none()) {
+            let mut reserved = None;
+            visit_series_columns(item, &mut |column| {
+                if reserved.is_none() && self.owns_column(column) {
+                    reserved = Some(column.to_owned());
+                }
+            });
+            if let Some(id) = reserved {
+                return Err(FiggyError::ReservedColumnId { id });
+            }
+        }
+        Ok(())
+    }
+
     /// The envelope and channel series `cfg` is drawn from, when it was
     /// built.
     pub(super) fn envelope_of(
