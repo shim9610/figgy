@@ -59,6 +59,10 @@ pub(in crate::renderer) struct TargetPipelines {
     /// The histogram envelope's fill and scan, created with the first
     /// precise or mapped histogram.
     pub(in crate::renderer) bar_envelope: Option<data_render::bar_envelope::Pipelines>,
+    /// The stacked category-bar fit's reduction (#466), from the bar
+    /// module: created by the first fit of a stacked group or by the full
+    /// prewarm, never by a draw.
+    pub(in crate::renderer) category_stack_fit: Option<data_render::CategoryStackFit>,
     pub(in crate::renderer) sample_count: u32,
     pub(in crate::renderer) styled: HashMap<StyleKey, StyleSet>,
 }
@@ -96,6 +100,17 @@ impl TargetPipelines {
                 layouts.per_point_style_map_bgl,
                 layouts.surface_format,
                 self.sample_count,
+            ));
+        }
+    }
+
+    /// Create the stacked category-bar fit's reduction when it is missing
+    /// (#466): the bar module's `reduce_category_stacks` entry.
+    pub(in crate::renderer) fn ensure_category_stack_fit(&mut self, device: &wgpu::Device) {
+        if self.category_stack_fit.is_none() {
+            self.category_stack_fit = Some(data_render::CategoryStackFit::new(
+                device,
+                &self.shaders.bar,
             ));
         }
     }

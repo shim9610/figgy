@@ -49,13 +49,23 @@ chart.validate()?;
   NaN and infinity are rejected in every mode.
 - The `Percent` label is relative to the total of the series in the same
   category. A category with negative values shows `—`.
-- The value axis is linear. `Chart::auto_fit_layer_union` fits it to 0 and
-  the range the bars draw. Stacked bars fit to
+- The value axis is linear. A fit covers 0 and the range the bars draw.
+  Grouped bars fit the union of their value columns' minima and maxima, and
+  100% stacking fits to `0..100`. Stacked bars fit the actual stacks
+  (#466): a GPU reduction over the resident columns stacks every category
+  as the draw does (positive values up, negative values down, missing cells
+  skipped) and reads back only the largest positive and the smallest
+  negative sum, so A = (100, 1) and B = (1, 100) fit `0..101`, before
+  padding. The renderer's fits measure them: `fit_ranges`, `fit_config` and
+  the first fit of `register_chart` wait for the readback on native, and
+  `begin_auto_fit_all` (the browser's `auto_fit_all`) resolves it
+  asynchronously everywhere. Its pipeline is created by the first such fit,
+  never by a draw. A fit without a device (`Chart::auto_fit_layer_union`)
+  and a browser's synchronous fits keep the bound
   `[Σ min(0, minimum), Σ max(0, maximum)]` from the minimum and maximum
-  stored for each value column. When a series' extremes fall in different
-  categories, the upper bound is wider than the actual stack. Uploading the
-  columns at once or separately gives the same result. 100% stacking fits to
-  `0..100`.
+  stored for each value column, which is wider than the stacks when a
+  series' extremes fall in different categories. Uploading the columns at
+  once or separately gives the same result.
 - Columns the host uploads directly follow the same rules. If a value column
   of a `PercentStacked` group has a negative value (the column minimum is
   below 0), drawing and picking reject it with an `InvalidSeriesConfig` that
@@ -251,10 +261,17 @@ chart.validate()?;
   퍼센트 표기는 `—`다. 원본 값은 바꾸지 않는다. 값이 아주 커도 합계가 넘치지 않는다.
 - 일반 누적에서 합계가 유한한 숫자 범위를 벗어나면 거절한다. NaN·무한대는 모든 모드에서 거절한다.
 - `Percent` 표기는 같은 범주의 시리즈 합계가 기준이다. 음수가 섞인 범주는 `—`로 표시한다.
-- 값 축은 선형 축이다. `Chart::auto_fit_layer_union`이 0과 막대가 그리는 범위에 맞춘다.
-  누적 막대는 값 컬럼마다 저장된 최솟값·최댓값으로 `[Σ min(0, 최솟값), Σ max(0, 최댓값)]`에
-  맞춘다. 시리즈의 극값이 서로 다른 범주에 있으면 실제 누적보다 넓은 상한이 된다. 컬럼을 한 번에
-  올리든 따로 올리든 결과는 같다. 100% 누적은 `0..100`에 맞춘다.
+- 값 축은 선형 축이다. 맞춤은 0과 막대가 그리는 범위를 담는다. 묶음 막대는 값 컬럼들의
+  최솟값·최댓값 합집합에, 100% 누적은 `0..100`에 맞춘다. 누적 막대는 실제 누적에 맞춘다(#466).
+  GPU 리덕션이 상주 컬럼에서 범주마다 그리기와 같은 방식으로 쌓고(양수는 위로, 음수는 아래로,
+  빈 칸은 건너뜀) 가장 큰 양수 합과 가장 작은 음수 합 두 값만 읽어 온다. 그래서 A = (100, 1),
+  B = (1, 100)은 여백 전 `0..101`에 맞는다. 렌더러의 맞춤이 이를 측정한다. 네이티브에서는
+  `fit_ranges`, `fit_config`, `register_chart`의 첫 맞춤이 읽기를 기다리고,
+  `begin_auto_fit_all`(브라우저의 `auto_fit_all`)은 모든 대상에서 비동기로 끝난다. 파이프라인은
+  처음 그런 맞춤을 할 때 만들고, 그리기에서는 만들지 않는다. 장치 없는 맞춤
+  (`Chart::auto_fit_layer_union`)과 브라우저의 동기 맞춤은 값 컬럼마다 저장된 최솟값·최댓값으로
+  `[Σ min(0, 최솟값), Σ max(0, 최댓값)]` 상한을 유지한다. 시리즈의 극값이 서로 다른 범주에 있으면
+  실제 누적보다 넓다. 컬럼을 한 번에 올리든 따로 올리든 결과는 같다.
 - 호스트가 직접 올린 컬럼도 같은 규칙을 따른다. `PercentStacked` 묶음의 값 컬럼에 음수가 있으면
   (값 컬럼의 최솟값이 0보다 작으면) 그리기와 선택 단계에서 해당 시리즈와 모드를 밝힌
   `InvalidSeriesConfig`로 거절한다. `Stacked`와 `Grouped`는 음수를 그린다.

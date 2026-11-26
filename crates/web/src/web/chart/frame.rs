@@ -13,9 +13,10 @@ impl FiggyChart {
         self.renderer.wait_submitted_work().await.map_err(js_err)
     }
 
-    /// Compile the drawable-series fit-bound engine without drawing. On wasm
-    /// this uses `createComputePipelineAsync`. Series registration does
-    /// not do this; `auto_fit_all` does.
+    /// Compile the drawable-series fit-bound engine without drawing, and
+    /// the stacked category-bar reduction when the chart draws a stacked
+    /// group (#466). On wasm this uses `createComputePipelineAsync`. Series
+    /// registration and drawing do not do this; `auto_fit_all` does.
     pub async fn ensure_extent_engine(&mut self) -> Result<(), JsValue> {
         self.renderer
             .ensure_errorbar_extent_engine()

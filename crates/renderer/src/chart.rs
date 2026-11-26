@@ -460,25 +460,25 @@ fn partner_mirrors(config: &Config) -> bool {
 }
 
 /// The value-axis extent of the category bars `layer` of `config` draws,
-/// from the pool's statistics, with its bar direction.
+/// from the pool's statistics, with its bar direction: the extent
+/// [`category_bar_value_extent_measured`] gives without a measured stack.
 ///
 /// The bars grow from zero, so zero is always in it. Grouped bars span the
-/// union of their value columns' ranges. Stacked bars span
+/// union of their value columns' ranges. Percent stacks span `0..=100`: the
+/// shader draws a category's shares from 0 to 100, and a percent group with
+/// a negative value is refused when it is drawn. Stacked bars span
 /// `[Σ min(0, min_i), Σ max(0, max_i)]` over the group's value columns,
 /// `min_i` and `max_i` being each column's own statistics
 /// ([`ColumnSlot::min`] and [`ColumnSlot::max`]): positive values stack up
-/// from zero and negative ones down, so no category's stack reaches past the
-/// sum of the series' extremes, and a series with both signs adds its
-/// positive part up and its negative part down. This is an upper bound,
-/// exact when every series has its extremes in one category and wider when
-/// they sit in different categories (two series peaking at 30 and 40 in
-/// different categories fit 70 however low their other bars are). The
-/// exact per-category totals are the shader's, computed from the pool on
-/// every draw; the fit reads no value back, so the group's columns may be
-/// uploaded in any batches. Percent stacks span `0..=100`: the shader draws
-/// a category's shares from 0 to 100, and a percent group with a negative
-/// value is refused when it is drawn. A layer without category bars gives
-/// the empty extent.
+/// from zero and negative ones down, so no category's stack reaches past
+/// the sum of the series' extremes. That is an upper bound, exact when
+/// every series has its extremes in one category and wider when they sit in
+/// different categories (A = (100, 1) and B = (1, 100) bound 200 where the
+/// stacks reach 101). This function has no device, so it reads no value
+/// back; the renderer's fits measure the actual stacks on the GPU instead
+/// (#466): `Renderer::fit_ranges`, `Renderer::fit_config` and its scoped
+/// and Y-only forms on native, and `Renderer::begin_auto_fit_all` on every
+/// target. A layer without category bars gives the empty extent.
 ///
 /// [`ColumnSlot::min`]: crate::data_render::ColumnSlot::min
 /// [`ColumnSlot::max`]: crate::data_render::ColumnSlot::max
@@ -487,6 +487,41 @@ pub fn category_bar_value_extent(
     config: &Config,
     layer: LayerRef,
     series: &[SeriesConfig],
+) -> Result<(FitExtent, crate::data_config::CategoryBarDirection)> {
+    category_bar_value_extent_measured(pool, config, layer, series, None)
+}
+
+/// Measures the stacks of the stacked category-bar group of a layer for a
+/// fit (#466): given the config being fitted, the layer and the fitted
+/// series, `[min, max]`, the smallest negative and the largest positive sum
+/// over the group's categories (`Renderer`'s GPU reduction), or `None` to
+/// fit the statistics bound of [`category_bar_value_extent`].
+pub(crate) type StackMeasure<'a> =
+    dyn Fn(&Config, LayerRef, &[SeriesConfig]) -> Result<Option<[f64; 2]>> + 'a;
+
+/// The [`StackMeasure`] of a fit without a device: no stack is measured.
+pub(crate) fn unmeasured_stacks(
+    _: &Config,
+    _: LayerRef,
+    _: &[SeriesConfig],
+) -> Result<Option<[f64; 2]>> {
+    Ok(None)
+}
+
+/// [`category_bar_value_extent`], with the actual stacks of a stacked
+/// group when `measured` holds them (#466): the stacked value axis then
+/// spans `[min, max]`, the smallest negative and the largest positive
+/// per-category sum (positive values stacked up from zero and negative ones
+/// down, missing cells skipped), so A = (100, 1) and B = (1, 100) fit
+/// `0..=101`, before padding as before. The log-axis floor stays the
+/// columns' smallest positive value, which no positive bar end is below.
+/// Grouped bars and percent stacks ignore `measured`.
+pub(crate) fn category_bar_value_extent_measured(
+    pool: &ColumnPool,
+    config: &Config,
+    layer: LayerRef,
+    series: &[SeriesConfig],
+    measured: Option<[f64; 2]>,
 ) -> Result<(FitExtent, crate::data_config::CategoryBarDirection)> {
     use crate::data_config::CategoryBarMode;
     let groups = config.bar_groups_of(layer);
@@ -518,20 +553,25 @@ pub fn category_bar_value_extent(
             // Each column adds its positive extreme up from zero and its
             // negative extreme down; its smallest positive value bounds the
             // lowest positive bar end from below, the log-axis floor.
+            // With measured stacks, those are the ends instead.
             let mut stack = zero;
             for item in members() {
                 let column =
                     Chart::slot_extent(pool, item.category_bar_columns(groups.direction).1)?;
-                if column.min.is_finite() {
+                if measured.is_none() && column.min.is_finite() {
                     stack.min += column.min.min(0.0);
                 }
-                if column.max.is_finite() {
+                if measured.is_none() && column.max.is_finite() {
                     stack.max += column.max.max(0.0);
                 }
                 stack.min_positive = match (stack.min_positive, column.min_positive) {
                     (Some(a), Some(b)) => Some(a.min(b)),
                     (a, b) => a.or(b),
                 };
+            }
+            if let Some([min, max]) = measured {
+                stack.min = min.min(0.0);
+                stack.max = max.max(0.0);
             }
             extent.union(&stack);
         }
@@ -1518,7 +1558,15 @@ impl Chart {
         series: &[SeriesConfig],
         padding_ratio: f64,
     ) -> Result<()> {
-        self.fit_layer_union_where(pool, layer, series, |_| true, FitAxes::ALL, padding_ratio)
+        self.fit_layer_union_where(
+            pool,
+            layer,
+            series,
+            |_| true,
+            FitAxes::ALL,
+            padding_ratio,
+            &unmeasured_stacks,
+        )
     }
 
     /// [`Self::auto_fit_layer_union`] over the series `include` accepts,
@@ -1528,6 +1576,9 @@ impl Chart {
     /// are `axes.y`. A series `include` refuses reads nothing. The scoped
     /// candidate fit (`Renderer::fit_config_scoped`, #334) and the whole
     /// layer fit (`include` accepting every series, every axis) share it.
+    /// `stacks` measures a stacked category-bar group's actual stacks
+    /// (#466); [`unmeasured_stacks`] fits their statistics bound.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn fit_layer_union_where(
         &mut self,
         pool: &ColumnPool,
@@ -1536,6 +1587,7 @@ impl Chart {
         include: impl Fn(&SeriesConfig) -> bool,
         axes: FitAxes,
         padding_ratio: f64,
+        stacks: &StackMeasure<'_>,
     ) -> Result<()> {
         // A parallel chart fits each of its axes to its columns (#141); the
         // categorical positions and the normalized band stay.
@@ -1578,10 +1630,28 @@ impl Chart {
             }
             // A category bar series fits its value axis to its group's bars;
             // its category positions sit on a categorical axis no fit moves.
+            // The group's extent is one for all its members, read at the
+            // first one, so a measured stack is dispatched once per group.
             if cfg.render_type.category_bars().is_some() {
                 let own = self.config.layer_of_series(&cfg.series_id);
+                let leader = series.iter().find(|item| {
+                    include(item)
+                        && item.render_type.category_bars().is_some()
+                        && self.config.layer_of_series(&item.series_id) == own
+                });
+                if !leader.is_some_and(|item| std::ptr::eq(item, cfg)) {
+                    continue;
+                }
+                let measured = if self.config.bar_groups_of(own).mode
+                    == crate::data_config::CategoryBarMode::Stacked
+                    && (fit_x || fit_y)
+                {
+                    stacks(&self.config, own, series)?
+                } else {
+                    None
+                };
                 let (extent, direction) =
-                    category_bar_value_extent(pool, &self.config, own, series)?;
+                    category_bar_value_extent_measured(pool, &self.config, own, series, measured)?;
                 match direction {
                     crate::data_config::CategoryBarDirection::Vertical if fit_y => y.union(&extent),
                     crate::data_config::CategoryBarDirection::Horizontal if fit_x => {
@@ -1691,8 +1761,9 @@ impl Chart {
         pool: &ColumnPool,
         series: &[SeriesConfig],
         padding_ratio: f64,
+        stacks: &StackMeasure<'_>,
     ) -> Result<()> {
-        let fitted = Self::fitted_every_layer(&self.config, pool, series, padding_ratio)?;
+        let fitted = Self::fitted_every_layer(&self.config, pool, series, padding_ratio, stacks)?;
         if fitted != self.config {
             self.with_axis_range_change(|config| *config = fitted);
         }
@@ -1705,27 +1776,35 @@ impl Chart {
     /// candidate fits `Renderer::fit_config` and
     /// `Renderer::fit_y_axes_config` (#312) share. The fit works on a copy
     /// of the configuration (SSOT configuration only, rule 2) and reads the
-    /// columns' cached statistics only.
+    /// columns' cached statistics only, and `stacks` for a stacked
+    /// category-bar group (#466).
     pub(crate) fn fitted_every_layer(
         config: &Config,
         pool: &ColumnPool,
         series: &[SeriesConfig],
         padding_ratio: f64,
+        stacks: &StackMeasure<'_>,
     ) -> Result<Config> {
         let mut fitted = Chart::stored(config.clone());
-        fitted.auto_fit_layer_union(pool, LayerRef::Base, series, padding_ratio)?;
+        let mut fit = |layer| {
+            fitted.fit_layer_union_where(
+                pool,
+                layer,
+                series,
+                |_| true,
+                FitAxes::ALL,
+                padding_ratio,
+                stacks,
+            )
+        };
+        fit(LayerRef::Base)?;
         for overlay in 0..config.overlays.len() {
-            fitted.auto_fit_layer_union(pool, LayerRef::Overlay(overlay), series, padding_ratio)?;
+            fit(LayerRef::Overlay(overlay))?;
         }
         for (index, subplot) in config.subplots.iter().enumerate() {
-            fitted.auto_fit_layer_union(pool, LayerRef::Subplot(index), series, padding_ratio)?;
+            fit(LayerRef::Subplot(index))?;
             for overlay in 0..subplot.config.overlays.len() {
-                fitted.auto_fit_layer_union(
-                    pool,
-                    LayerRef::SubplotOverlay(index, overlay),
-                    series,
-                    padding_ratio,
-                )?;
+                fit(LayerRef::SubplotOverlay(index, overlay))?;
             }
         }
         Ok(fitted.config)
@@ -1736,7 +1815,9 @@ impl Chart {
     /// accepts, returned without touching any chart: the fit path of
     /// `Renderer::fit_config_scoped` (#334). The fit works on a copy of the
     /// configuration (SSOT configuration only, rule 2) and reads the
-    /// columns' cached statistics only.
+    /// columns' cached statistics only, and `stacks` for a stacked
+    /// category-bar group (#466).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn fitted_layer_where(
         config: &Config,
         pool: &ColumnPool,
@@ -1745,9 +1826,10 @@ impl Chart {
         include: impl Fn(&SeriesConfig) -> bool,
         axes: FitAxes,
         padding_ratio: f64,
+        stacks: &StackMeasure<'_>,
     ) -> Result<Config> {
         let mut fitted = Chart::stored(config.clone());
-        fitted.fit_layer_union_where(pool, layer, series, include, axes, padding_ratio)?;
+        fitted.fit_layer_union_where(pool, layer, series, include, axes, padding_ratio, stacks)?;
         Ok(fitted.config)
     }
 
