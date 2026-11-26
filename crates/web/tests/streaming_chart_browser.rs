@@ -60,11 +60,26 @@ async fn yield_to_browser() {
         .expect("browser task yield");
 }
 
+/// The chart's plot area as the document stores it.
+fn plot_area(chart: &FiggyChart) -> renderer::layout::Rect {
+    let config: renderer::Config =
+        serde_json::from_str(&chart.get_config().expect("get config")).expect("config json");
+    config.data_area().expect("data area").0
+}
+
 #[wasm_bindgen_test(async)]
 async fn decoration_change_preserves_wasm_stream_cursor_and_mixed_typed_sources() {
     let mut chart = FiggyChart::create(canvas())
         .await
         .expect("FiggyChart.create");
+    // A new chart is created with its layout fitted (#357): with no title
+    // the title band is fitted away, and the first title grows it back,
+    // moving the plot area. That is a geometry change and restarts the
+    // stream. The chart takes its title band before streaming, so the
+    // later retitle is the decoration-only edit this test is about.
+    chart
+        .set_title("decoration before streaming")
+        .expect("initial title");
     chart
         .configure_streaming(1, 2, 2, 1024.0 * 1024.0, 16.0 * 1024.0 * 1024.0)
         .expect("configure streaming");
@@ -89,9 +104,11 @@ async fn decoration_change_preserves_wasm_stream_cursor_and_mixed_typed_sources(
     chart.frame().expect("present first partial frame");
 
     let before = first.submitted_primitives();
+    let area = plot_area(&chart);
     chart
         .set_title("decoration changed during streaming")
         .expect("decoration-only config change");
+    assert_eq!(plot_area(&chart), area, "the title is decoration only");
     chart.frame().expect("recompose decoration over prefix");
 
     let second = chart

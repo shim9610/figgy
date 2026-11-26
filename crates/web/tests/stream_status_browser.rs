@@ -20,6 +20,13 @@ fn canvas() -> web_sys::HtmlCanvasElement {
     canvas
 }
 
+/// The chart's plot area as the document stores it.
+fn plot_area(chart: &FiggyChart) -> renderer::layout::Rect {
+    let config: renderer::Config =
+        serde_json::from_str(&chart.get_config().expect("get config")).expect("config json");
+    config.data_area().expect("data area").0
+}
+
 fn status(chart: &FiggyChart) -> serde_json::Value {
     serde_json::from_str(&chart.stream_status().unwrap()).unwrap()
 }
@@ -162,6 +169,12 @@ async fn raw_cancel_drains_submitted_work_and_unsubmitted_range_reservations() {
 #[wasm_bindgen_test(async)]
 async fn raw_handoff_decoration_request_preserves_job_and_pending_range() {
     let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    // A new chart is created with its layout fitted (#357): with no title
+    // the title band is fitted away, and the first title grows it back,
+    // moving the plot area. That is a geometry change and restarts the
+    // stream. The chart takes its title band before streaming, so the
+    // later retitle is the decoration-only edit this test is about.
+    chart.set_title("Before source I/O").unwrap();
     chart.configure_streaming(1, 2, 2, 1024.0, 4096.0).unwrap();
     let values = [0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0];
     chart.register_column_f32("x", &values).unwrap();
@@ -181,9 +194,11 @@ async fn raw_handoff_decoration_request_preserves_job_and_pending_range() {
         .unwrap();
     assert_eq!(first.status(), "started");
     let pending = chart.auto_stream_chart_request_ranges().unwrap();
+    let area = plot_area(&chart);
     chart
         .set_title("Decoration changes during pending source I/O")
         .unwrap();
+    assert_eq!(plot_area(&chart), area, "the title is decoration only");
     let repeated = chart
         .request_resident_stream_handoff(ids, revisions, vec![6.0, 6.0], encodings, 2.0)
         .unwrap();
