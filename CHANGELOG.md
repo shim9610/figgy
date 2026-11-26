@@ -180,6 +180,24 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
   `placing_an_axis_element_plans_each_axis_it_reads_once`
   (`chrome/tick_plan.rs`).
 
+- **Auto layout plans each calendar axis once per input**
+  ([#465](https://github.com/shim9610/figgy/issues/465), item 4). The
+  measuring passes of one `layout::auto_layout` call (and so of
+  `Chart::fit_layout` and the browser's `fit_layout`) probed the same axes
+  again and again, and each probe planned their timestamp ticks anew. The
+  call now keeps the plans it makes, each with its full input (the scale,
+  the range, the timestamp format, the label font and size, the side's
+  orientation and the axis length, compared bit for bit), and hands a probe
+  a kept plan only when that input is identical. The plans are dropped when
+  the call returns. Layouts, plans and frames are unchanged. On a chart
+  with two calendar axes and two numeric axes a call takes 1.3 ms instead
+  of 2.5 ms natively. Not breaking: `text::MeasureText` gains
+  `tick_plans`, which has a default, and the cache is the new
+  `chrome::TickPlanCache`, which only `auto_layout` makes. Tests:
+  `the_plan_cache_hands_out_a_plan_only_for_an_identical_input`
+  (`chrome/tick_plan.rs`) and `the_plan_cache_hits_and_changes_no_layout`
+  (`layout/geometry/auto_layout.rs`).
+
 - **The layout chooses each range link's exit, links draw under their bars,
   and a chart of links takes the timeline frame**
   ([#357](https://github.com/shim9610/figgy/issues/357), approved in

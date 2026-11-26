@@ -614,6 +614,14 @@ pub trait MeasureText {
             descent: reference.descent,
         }
     }
+
+    /// The timestamp tick plans already made with this measure, when it is
+    /// the per-call cache of one [`crate::layout::auto_layout`] call
+    /// ([`crate::chrome::TickPlanCache`], #465). Every other measure has
+    /// none (the default), and each plan is made afresh.
+    fn tick_plans(&self) -> Option<&crate::chrome::TickPlanCache<'_>> {
+        None
+    }
 }
 
 /// One plain `RichSegment` per char, mapping Unicode super/subscript chars to
