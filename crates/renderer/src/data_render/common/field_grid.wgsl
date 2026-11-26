@@ -90,13 +90,19 @@ fn pool_pair(base: u32, i: u32) -> vec2<f32> {
 /// cut code is the largest part of every field entry.
 fn axis_t(pair: vec2<f32>, axis: u32) -> f32 {
     let on_x = axis == 0u;
+    // The axis picks its log flag by a branch: a log flag never passes
+    // through `select` (SHADER_COMMON §3.1).
+    var is_log = transform.scale_log.y;
+    if (on_x) {
+        is_log = transform.scale_log.x;
+    }
     return axis_pair_to_t(
         pair,
         select(transform.data_min.y, transform.data_min.x, on_x),
         select(transform.data_max.y, transform.data_max.x, on_x),
         select(transform.data_min_lo.y, transform.data_min_lo.x, on_x),
         select(transform.data_max_lo.y, transform.data_max_lo.x, on_x),
-        select(transform.scale_log.y, transform.scale_log.x, on_x),
+        is_log,
         select(transform.scale_prob.y, transform.scale_prob.x, on_x),
         select(transform.data_to_panel_scale.y, transform.data_to_panel_scale.x, on_x),
         select(transform.data_to_panel_offset.y, transform.data_to_panel_offset.x, on_x),
