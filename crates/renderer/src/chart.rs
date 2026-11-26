@@ -460,8 +460,7 @@ fn partner_mirrors(config: &Config) -> bool {
 }
 
 /// The value-axis extent of the category bars `layer` of `config` draws,
-/// from the pool's statistics, with its bar direction: the extent
-/// [`category_bar_value_extent_measured`] gives without a measured stack.
+/// from the pool's statistics, with its bar direction.
 ///
 /// The bars grow from zero, so zero is always in it. Grouped bars span the
 /// union of their value columns' ranges. Percent stacks span `0..=100`: the
