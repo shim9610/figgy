@@ -5751,6 +5751,103 @@ fn surface_prepare_renderer(planar: bool) -> Option<Renderer> {
     Some(renderer)
 }
 
+/// A labelled contour chart compiles its labelled pass only. The plain pass
+/// is the fallback for a series that wants labels but has no label snapshot,
+/// here one without levels, and it compiles on the frame that takes that
+/// fallback (#465).
+#[test]
+fn a_labelled_contour_compiles_the_plain_pass_only_for_its_fallback() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    add_state_test_contour_grid(&mut renderer);
+    let chart = state_test_contour_chart(
+        Rect {
+            x: 0,
+            y: 0,
+            width: 240,
+            height: 180,
+        },
+        (0.0, 1.0),
+    );
+    let mut view = renderer
+        .create_chart_view(&chart, chart.config().chart_area.0)
+        .unwrap();
+    let labelled = state_test_labelled_contour(60.0, Vec::new());
+    let style = renderer.create_style_for_series(&labelled).unwrap();
+    let series = [Series {
+        config: &labelled,
+        style: &style,
+    }];
+    let mut items = [ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
+        series: &series,
+    }];
+    renderer.prepare(&mut items).unwrap();
+    for kind in [
+        PrecisePipeline::ContourLabelled,
+        PrecisePipeline::ContourLabel,
+    ] {
+        assert!(renderer.pipelines.precise(kind).is_some(), "{kind:?}");
+    }
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Contour)
+            .is_none()
+    );
+    // An export of the same chart draws through its own pipeline set.
+    renderer
+        .export_rgba(
+            crate::ExportSource::chart(&chart, &[labelled.clone()]),
+            crate::ExportOptions::panel(2.0),
+        )
+        .block_on()
+        .unwrap();
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Contour)
+            .is_none()
+    );
+
+    // Labels still wanted, but no level to bake one for: no label snapshot.
+    let mut fallback = labelled.clone();
+    let DataRenderType::Field(crate::data_config::FieldSeries {
+        contour: Some(contour),
+        ..
+    }) = &mut fallback.render_type
+    else {
+        unreachable!();
+    };
+    contour.levels.clear();
+    let style = renderer.create_style_for_series(&fallback).unwrap();
+    let series = [Series {
+        config: &fallback,
+        style: &style,
+    }];
+    let mut items = [ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
+        series: &series,
+    }];
+    renderer.prepare(&mut items).unwrap();
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Contour)
+            .is_some()
+    );
+    renderer
+        .export_rgba(
+            crate::ExportSource::chart(&chart, &[fallback]),
+            crate::ExportOptions::panel(2.0),
+        )
+        .block_on()
+        .unwrap();
+}
+
 /// A 3D chart draws its heatmap as a surface, its contours on the floor and
 /// its height-column line and markers through the 3D entries, so it compiles
 /// none of the planar field, contour, line or scatter pipelines; the same

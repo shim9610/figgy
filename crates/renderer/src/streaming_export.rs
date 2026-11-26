@@ -211,6 +211,8 @@ impl Renderer {
                 chart_config: &config,
                 series: &series,
             }],
+            // Streaming keeps its plain contour pass (rule 8).
+            None,
         );
         pipelines.ensure_styles_for_items(
             &self.device,

@@ -31,6 +31,8 @@ mod create;
 mod frame;
 mod prepare;
 mod render;
+#[cfg(test)]
+mod snap_tests;
 mod vector;
 
 use frame::*;
@@ -228,10 +230,23 @@ pub struct RadialRenderer {
     pipeline: wgpu::RenderPipeline,
     pick_layout: wgpu::BindGroupLayout,
     pick_pipeline: wgpu::ComputePipeline,
-    annotations_cached: Option<(FrameKey, (u32, u32), f32, u64, Arc<TrackedTexture>)>,
+    /// The label raster with the snap guides it was drawn with (#440).
+    annotations_cached: Option<(
+        (FrameKey, crate::layout::SnapGuides),
+        (u32, u32),
+        f32,
+        u64,
+        Arc<TrackedTexture>,
+    )>,
     /// The dedicated annotation layer, drawn over the frame by its own pass.
     annotation_layer: crate::annotation::RadialAnnotationCache,
-    cached: Option<(FrameKey, (u32, u32), f32, u64, Arc<RadialFrame>)>,
+    cached: Option<(
+        (FrameKey, crate::layout::SnapGuides),
+        (u32, u32),
+        f32,
+        u64,
+        Arc<RadialFrame>,
+    )>,
 }
 /// The browser device outlives the radial renderer's submitted work, and a
 /// device figgy requested is destroyed once no one else holds it, as for

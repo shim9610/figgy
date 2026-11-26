@@ -140,6 +140,38 @@ impl RadialFrame {
             dy,
         ))
     }
+    /// [`Self::drag_decoration`] with the move snapped to guides first
+    /// (#440, #465), through the common [`crate::HitMap::drag_snapped`]:
+    /// the title and the slice labels snap their drawn box to the centres
+    /// of the canvas and the plot area and to the edges and centres of the
+    /// other decorations, within `snap`'s reach. `snap` is the gesture
+    /// state the host keeps from press to release; it keeps the guides of
+    /// the move for [`RadialRenderer::prepare_with_guides`]. A gesture
+    /// whose snapping is off ([`crate::layout::DragSnap::off`]) moves as
+    /// [`Self::drag_decoration`] does.
+    pub fn drag_decoration_snapped(
+        &self,
+        chart: &mut RadialChart,
+        hit: crate::HitId,
+        dx: f32,
+        dy: f32,
+        snap: &mut crate::layout::DragSnap,
+    ) -> Option<crate::layout::NudgeResult> {
+        let areas = crate::layout::SnapAreas {
+            chart: Some(self.space.panel),
+            plot: Some(self.space.plot),
+        };
+        self.decorations.drag_snapped(
+            hit,
+            chart,
+            &crate::CpuTextMeasure::default(),
+            None,
+            dx,
+            dy,
+            areas,
+            snap,
+        )
+    }
     /// The resize handle of decoration `hit` (the plot area) at `position`.
     pub fn decoration_resize_handle(
         &self,

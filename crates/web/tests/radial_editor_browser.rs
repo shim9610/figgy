@@ -511,6 +511,77 @@ async fn a_decoration_position_resets_to_the_layout() {
     chart.frame().unwrap();
 }
 
+/// The drawn box of decoration `id`, in document logical pixels.
+fn decoration_rect(chart: &FiggyRadialChart, id: &str) -> [f64; 4] {
+    let list = json(&chart.decorations().unwrap());
+    let entry = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == id)
+        .unwrap_or_else(|| panic!("{id} is drawn"));
+    rect(&entry["rect"])
+}
+
+/// Snap guides on the radial chart (#440, #465): inside a `begin_drag` /
+/// `end_drag` gesture a title drag snaps to the canvas centre; a drag
+/// outside a gesture, and one with the modifier held, moves by the pointer
+/// delta as before; exports at 1x and 2x are the same while the guide
+/// shows and after the release, and the document holds no guide.
+#[wasm_bindgen_test(async)]
+async fn a_radial_decoration_drag_snaps_inside_a_gesture() {
+    for dpr in [1, 2] {
+        let mut chart = radial(dpr).await;
+        chart.select_decoration(Some("chart_title".into())).unwrap();
+        assert!(chart.drag("chart_title", 60.0, 0.0, None).unwrap());
+        let centre = SIZE.0 as f64 / 2.0;
+        let start = decoration_rect(&chart, "chart_title");
+        let dx = (centre - (start[0] + start[2] / 2.0) - 3.0) as f32;
+
+        // Outside a gesture: the old result.
+        let before = chart.get_document().unwrap();
+        assert!(chart.drag("chart_title", dx, 0.0, None).unwrap());
+        let plain = chart.get_document().unwrap();
+        let r = decoration_rect(&chart, "chart_title");
+        assert!(((r[0] + r[2] / 2.0) - (centre - 3.0)).abs() < 1e-2, "{r:?}");
+
+        // With the modifier held: the old result too.
+        chart.set_document(&before, SIZE.0, SIZE.1).unwrap();
+        chart.select_decoration(Some("chart_title".into())).unwrap();
+        chart.set_snap_modifier(true);
+        chart.begin_drag();
+        assert!(chart.drag("chart_title", dx, 0.0, None).unwrap());
+        chart.end_drag();
+        chart.set_snap_modifier(false);
+        assert_eq!(chart.get_document().unwrap(), plain);
+
+        // Inside a gesture: the title snaps onto the centre.
+        chart.set_document(&before, SIZE.0, SIZE.1).unwrap();
+        chart.select_decoration(Some("chart_title".into())).unwrap();
+        chart.begin_drag();
+        assert!(chart.drag("chart_title", dx, 0.0, None).unwrap());
+        let r = decoration_rect(&chart, "chart_title");
+        assert!(((r[0] + r[2] / 2.0) - centre).abs() < 1e-2, "{r:?}");
+        chart.frame().unwrap();
+        let snapped = chart.get_document().unwrap();
+        assert!(!snapped.contains("guide"), "{snapped}");
+        let while_dragging = [
+            chart.export_png(1.0).await.unwrap().to_vec(),
+            chart.export_png(2.0).await.unwrap().to_vec(),
+        ];
+        chart.end_drag();
+        chart.frame().unwrap();
+        let released = [
+            chart.export_png(1.0).await.unwrap().to_vec(),
+            chart.export_png(2.0).await.unwrap().to_vec(),
+        ];
+        assert_eq!(while_dragging, released, "an export drew the guide");
+        // The snapped offset round-trips.
+        chart.set_document(&snapped, SIZE.0, SIZE.1).unwrap();
+        assert_eq!(chart.get_document().unwrap(), snapped);
+    }
+}
+
 // --- 5. Annotation preview (#334) ---
 
 fn close(a: [f64; 4], b: [f64; 4]) -> bool {

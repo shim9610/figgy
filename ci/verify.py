@@ -129,12 +129,31 @@ def panic_gate_findings(messages, read=lambda name: Path(name).read_text().split
     return sorted(found)
 
 
+def standalone_crates(root=ROOT):
+    """Crates with their own workspace and lockfile, outside the root
+    workspace: `tools/playground`, `tools/loom-poller`, `examples/egui`
+    (#459, #465). A root dependency bump does not refresh their lockfiles."""
+    found = []
+    for directory in ("tools", "examples"):
+        for lock in sorted((root / directory).glob("*/Cargo.lock")):
+            manifest = lock.with_name("Cargo.toml")
+            if manifest.is_file() and "\n[workspace]" in "\n" + manifest.read_text(encoding="utf-8"):
+                found.append(manifest)
+    return found
+
+
 def static():
     # CI script and package-relative documentation checks run before any compilation.
     run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "ci", "-p", "test_*.py"])
     check_checkout(ROOT)
     # Formatting is also checked before any build.
     run(["cargo", "fmt", "--all", "--check"])
+    # The standalone crates' lockfiles still resolve: a root dependency bump
+    # that leaves one stale fails here, not in the master PR's repository
+    # job (#458, #464, #465).
+    for manifest in standalone_crates():
+        run(["cargo", "metadata", "--locked", "--format-version", "1", "--manifest-path",
+             str(manifest)], capture=True)
     run(["cargo", "check", "--locked", "--workspace", "--all-targets"])
     run(["cargo", "check", "--locked", "--workspace", "--all-targets", "--all-features"])
     run(["cargo", "check", "--locked", "--workspace", "--target", "wasm32-unknown-unknown"])

@@ -565,6 +565,8 @@ impl Renderer {
                     style,
                 }],
             }],
+            // Streaming keeps its plain contour pass (rule 8).
+            None,
         );
         let packet = {
             let (_, preparation) = self.preparation_parts();
@@ -791,6 +793,8 @@ impl Renderer {
                         style,
                     }],
                 }],
+                // Streaming keeps its plain contour pass (rule 8).
+                None,
             );
         }
         let headroom = if entry.field.is_some() {

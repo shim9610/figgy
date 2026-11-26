@@ -14,8 +14,22 @@ impl RadialRenderer {
         size: (u32, u32),
         scale: f32,
     ) -> Result<Arc<crate::annotation::BoundedAnnotationFrame>, RadialError> {
+        self.prepare_annotations_with_guides(chart, size, scale, crate::layout::SnapGuides::NONE)
+    }
+    /// [`Self::prepare_annotations`] with `guides`, the snap guides of the
+    /// annotation drag in progress (a host's
+    /// [`crate::layout::DragSnap::guides`], #440), drawn with the selected
+    /// annotation's selection box; nothing without a selected annotation.
+    /// Exports never draw them: they prepare without guides.
+    pub fn prepare_annotations_with_guides(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        scale: f32,
+        guides: crate::layout::SnapGuides,
+    ) -> Result<Arc<crate::annotation::BoundedAnnotationFrame>, RadialError> {
         let frame = self.prepare(chart, size, scale)?;
-        self.prepare_annotations_for(&frame, chart, scale)
+        self.prepare_annotations_guided(&frame, chart, scale, guides)
     }
     pub(super) fn prepare_annotations_for(
         &mut self,
@@ -23,7 +37,17 @@ impl RadialRenderer {
         chart: &RadialChart,
         scale: f32,
     ) -> Result<Arc<crate::annotation::BoundedAnnotationFrame>, RadialError> {
+        self.prepare_annotations_guided(frame, chart, scale, crate::layout::SnapGuides::NONE)
+    }
+    fn prepare_annotations_guided(
+        &mut self,
+        frame: &RadialFrame,
+        chart: &RadialChart,
+        scale: f32,
+        guides: crate::layout::SnapGuides,
+    ) -> Result<Arc<crate::annotation::BoundedAnnotationFrame>, RadialError> {
         let selected = crate::annotation::selected_index(chart.decorations.selected.as_ref());
+        let guides = selected.map_or(crate::layout::SnapGuides::NONE, |_| guides);
         let space = frame.annotation_space();
         if self.annotation_layer.needs_raster(
             &chart.annotations,
@@ -31,6 +55,7 @@ impl RadialRenderer {
             frame.size,
             scale,
             selected,
+            guides,
         ) {
             self.admit(
                 self.annotation_layer
@@ -46,6 +71,7 @@ impl RadialRenderer {
                 frame.size,
                 scale,
                 selected,
+                guides,
             )
             .map_err(|error| RadialError::Gpu(error.to_string()))
     }
@@ -63,15 +89,39 @@ impl RadialRenderer {
         size: (u32, u32),
         scale: f32,
     ) -> Result<Arc<RadialFrame>, RadialError> {
+        self.prepare_with_guides(chart, size, scale, crate::layout::SnapGuides::NONE)
+    }
+    /// [`Self::prepare`] with `guides`, the snap guides of the decoration
+    /// drag in progress (a host's [`crate::layout::DragSnap::guides`], #440),
+    /// drawn with the selected decoration's selection box in the chart's
+    /// logical frame; nothing without a selected decoration.
+    /// [`crate::layout::SnapGuides::NONE`] draws as [`Self::prepare`]. The
+    /// guides are chrome: they are not part of the chart, and exports never
+    /// draw them (they prepare without guides).
+    pub fn prepare_with_guides(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        scale: f32,
+        guides: crate::layout::SnapGuides,
+    ) -> Result<Arc<RadialFrame>, RadialError> {
+        let guides = frame_selection(&chart.decorations.selected)
+            .map_or(crate::layout::SnapGuides::NONE, |_| guides);
         // A lost device refuses here, before any buffer is created: wgpu's
         // `create_buffer_init` panics on a destroyed device.
         self.gpu.health().check().map_err(radial_gpu_error)?;
         let (width, height) = self.frame_size(chart, size, scale)?;
         let fonts = crate::text_render::font_generation();
         if let Some((_, _, _, _, frame)) =
-            self.cached.as_ref().filter(|(c, s, k, generation, _)| {
-                c.matches(chart) && *s == size && *k == scale && *generation == fonts
-            })
+            self.cached
+                .as_ref()
+                .filter(|((c, g), s, k, generation, _)| {
+                    c.matches(chart)
+                        && *g == guides
+                        && *s == size
+                        && *k == scale
+                        && *generation == fonts
+                })
         {
             return Ok(Arc::clone(frame));
         }
@@ -80,7 +130,9 @@ impl RadialRenderer {
         let reused = self
             .annotations_cached
             .as_ref()
-            .filter(|(c, s, k, f, _)| c == &key && *s == size && *k == scale && *f == fonts)
+            .filter(|((c, g), s, k, f, _)| {
+                c == &key && *g == guides && *s == size && *k == scale && *f == fonts
+            })
             .map(|(_, _, _, _, t)| Arc::clone(t));
         self.admit(
             if reused.is_some() {
@@ -91,7 +143,7 @@ impl RadialRenderer {
                 + count as u64 * std::mem::size_of::<Sector>() as u64,
         )?;
         let labels = if reused.is_none() {
-            layout::Labels::Raster
+            layout::Labels::Raster(guides)
         } else {
             layout::Labels::None
         };
@@ -166,8 +218,14 @@ impl RadialRenderer {
             scale,
             space: l.space,
         });
-        self.annotations_cached = Some((key, size, scale, fonts, annotations));
-        self.cached = Some((FrameKey::of(chart), size, scale, fonts, Arc::clone(&frame)));
+        self.annotations_cached = Some(((key, guides), size, scale, fonts, annotations));
+        self.cached = Some((
+            (FrameKey::of(chart), guides),
+            size,
+            scale,
+            fonts,
+            Arc::clone(&frame),
+        ));
         Ok(frame)
     }
 }

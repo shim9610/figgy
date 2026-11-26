@@ -196,7 +196,7 @@ draw or dispatch, not when it is created, so a frame's first submit pays for
 every shader byte the entries it uses can reach, executed or not. On lavapipe
 this shows as a blocked first submit (the queue thread holds the device while
 it compiles); in the browser as `first_frame_ready` waiting for GPU completion
-after every compile has resolved. Four changes remove code no chart reaches:
+after every compile has resolved. Five changes remove code no chart reaches:
 
 - The polar contour distance's foot-point walk lives in `field_polar.wgsl`;
   the basic set's twin ends at once. The basic contour entries compiled it for
@@ -208,6 +208,11 @@ after every compile has resolved. Four changes remove code no chart reaches:
 - A 3D chart creates no planar field, contour, line or scatter pipeline.
 - The arc scan's `seg_init_3d` is created only for a 3D chart's line, under
   its own label.
+- A labelled contour creates only its labelled pass (#465). The plain
+  `fs_contour` pass is created for a contour without labels, or for a
+  labelled series that has no label snapshot. The frame's one creation site
+  (`ensure_precise_variants_for_items`) runs after the contour scratches,
+  which decide that.
 
 First complete frame, median of three runs (min–max), 4-core container,
 measured with a host that registers each playground scene and draws it until
@@ -313,7 +318,8 @@ are unchanged.
 진입점이 도달할 수 있는 셰이더 코드가 많을수록 첫 프레임이 느려진다(#453). 극좌표 등고선의 foot-point 반복을
 `field_polar.wgsl`로 옮겨 basic 세트의 등고선 진입점이 컴파일하지 않게 했고, `anchor_select`는 1024칸 private 배열
 대신 `anchors`에서 같은 값을 다시 읽는다. 3D 차트는 평면 field·contour·line·scatter 파이프라인을 만들지 않고, arc
-scan의 `seg_init_3d`는 3D 차트의 선에만 만든다. 결과 픽셀과 픽은 바이트 단위로 같다. 브라우저 첫 프레임은 2D 등고선
+scan의 `seg_init_3d`는 3D 차트의 선에만 만든다. 라벨이 있는 등고선은 라벨 패스만 만들고, 라벨 없는 패스는 라벨
+스냅샷이 없는 대체 경로가 실제로 쓰일 때만 만든다(#465). 결과 픽셀과 픽은 바이트 단위로 같다. 브라우저 첫 프레임은 2D 등고선
 필드가 12.8초에서 5.9초로, 3D 곡면이 9.4초에서 5.1초로 줄었다. lavapipe에서는 2D 등고선 필드가 8.5초에서 1.5초로,
 극좌표 히트맵이 14.0초에서 7.0초로 줄었다. 브라우저의 극좌표 히트맵(약 36초)은 full 세트의 등고선 프래그먼트가 원인이며
 다음 이슈에서 다룬다.

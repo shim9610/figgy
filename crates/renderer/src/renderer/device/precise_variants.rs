@@ -22,7 +22,12 @@ impl PreciseNeeds {
         self.precise[kind as usize] |= needed;
     }
 
-    fn scan(items: &[PanelDraw<'_>]) -> Self {
+    /// `products` are the frame's prepared panels, one per item, once the
+    /// contour scratches have run. With them, a contour series that draws
+    /// its labels needs only the labelled pass: the plain pass is its
+    /// fallback when it has no label snapshot (`build_series_layers`, #465).
+    /// Without them every contour needs the plain pass.
+    fn scan(items: &[PanelDraw<'_>], products: Option<&[PreparedPanelProducts]>) -> Self {
         use PrecisePipeline as K;
         use data_render::tri_mesh::TriMeshPass;
         let mut needs = Self {
@@ -35,7 +40,7 @@ impl PreciseNeeds {
         // selection, which compiles with its labelled twin.
         let mut field_selection = false;
         let mut contour_label = false;
-        for item in items {
+        for (item_index, item) in items.iter().enumerate() {
             let typed_picks = item
                 .chart_config
                 .picked_data
@@ -76,7 +81,7 @@ impl PreciseNeeds {
             }
             // Whether the panel has the camera its 3D entries draw with.
             let camera = item.chart_config.view_matrix().is_some();
-            for series in item.series {
+            for (series_index, series) in item.series.iter().enumerate() {
                 let primitives = effective_series_primitives(
                     &item.chart_config.draw_style,
                     &series.config.render_type,
@@ -97,7 +102,17 @@ impl PreciseNeeds {
                 );
                 // A contour is the field quad through a different fragment entry
                 // point, so it needs no line pipeline at all any more.
-                needs.add(K::Contour, primitives.contour && planar);
+                // A series with a label snapshot draws through the labelled
+                // pass; any other contour, the fallback included, through
+                // the plain one (#465).
+                let labelled = products.is_some_and(|products| {
+                    products
+                        .get(item_index)
+                        .and_then(|panel| panel.contour.series.get(series_index))
+                        .and_then(|series| series.scratch.as_ref())
+                        .is_some_and(|scratch| scratch.label.is_some())
+                });
+                needs.add(K::Contour, primitives.contour && planar && !labelled);
                 // A mesh on a 3D chart draws through the surface pipelines
                 // (`ensure_surface_pipelines`), not the flat mesh ones.
                 let mesh_flat = planar;
@@ -280,8 +295,9 @@ impl TargetPipelines {
         label_pipelines: Option<&crate::gpu_contour::ContourLabelPipelines>,
         surface_format: wgpu::TextureFormat,
         items: &[PanelDraw<'_>],
+        products: Option<&[PreparedPanelProducts]>,
     ) {
-        let needs = PreciseNeeds::scan(items);
+        let needs = PreciseNeeds::scan(items, products);
         let layouts = PreciseLayouts {
             device,
             transform_bgl,
@@ -429,7 +445,7 @@ pub(in crate::renderer) fn items_pipeline_labels(
     items: &[PanelDraw<'_>],
     mut each: impl FnMut(&'static str),
 ) {
-    PreciseNeeds::scan(items).labels(&mut each);
+    PreciseNeeds::scan(items, None).labels(&mut each);
     for item in items {
         let config = item.chart_config;
         if let Some(variant) = style_variant(&config.draw_style) {
@@ -500,7 +516,7 @@ mod label_tests {
             .filter(|p| p["kind"] == "render" || p["kind"] == "compute")
             .filter_map(|p| p["descriptor"]["label"].as_str().map(str::to_owned))
             .collect();
-        let mut needs = super::PreciseNeeds::scan(&[]);
+        let mut needs = super::PreciseNeeds::scan(&[], None);
         // Every need at once, without labels and then with them.
         needs.precise = [true; super::PRECISE_PIPELINES];
         needs.precise[super::PrecisePipeline::ContourLabelled as usize] = false;
