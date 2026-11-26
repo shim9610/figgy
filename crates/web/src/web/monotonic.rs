@@ -77,6 +77,23 @@ struct JsSource<T: JsElement> {
     layout: Layout<T::Array>,
     len: usize,
     truncated: bool,
+    /// The transfer chunk a lend copies into, allocated with the source so
+    /// that a chunk which cannot be allocated refuses the call that lends
+    /// instead of lending nothing (M2, M7). Its size is bounded by `CHUNK`
+    /// and the channels (or the frame), never by the data length.
+    chunk: std::cell::Cell<Vec<T>>,
+}
+
+/// The transfer chunk of `values` values, filled with zeros.
+fn chunk_buffer<T: JsElement>(values: usize) -> Result<Vec<T>, JsValue> {
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(values).map_err(|_| {
+        layout_error(&format!(
+            "the transfer chunk of {values} values cannot be allocated"
+        ))
+    })?;
+    buffer.resize(values, T::default());
+    Ok(buffer)
 }
 
 fn layout_error(reason: &str) -> JsValue {
@@ -107,6 +124,7 @@ impl<T: JsElement> JsSource<T> {
                 )));
             }
             let len = T::length(values) as usize / stride;
+            let chunk = chunk_buffer(CHUNK.min(len) * stride)?;
             return Ok(Some(Self {
                 start,
                 interval,
@@ -117,6 +135,7 @@ impl<T: JsElement> JsSource<T> {
                 },
                 len,
                 truncated: false,
+                chunk: std::cell::Cell::new(chunk),
             }));
         }
         let Some(list) = data.dyn_ref::<js_sys::Array>() else {
@@ -144,12 +163,14 @@ impl<T: JsElement> JsSource<T> {
         let lengths = || arrays.iter().map(|a| T::length(a) as usize);
         let len = lengths().min().unwrap_or(0);
         let truncated = lengths().any(|l| l != len);
+        let chunk = chunk_buffer(CHUNK.min(len) * arrays.len())?;
         Ok(Some(Self {
             start,
             interval,
             layout: Layout::Channels(arrays),
             len,
             truncated,
+            chunk: std::cell::Cell::new(chunk),
         }))
     }
 }
@@ -187,20 +208,18 @@ impl<T: JsElement> MonotonicSource for JsSource<T> {
             return;
         }
         let index = |i: usize| u32::try_from(i).ok();
+        // The chunk allocated with the source; it goes back when the lend
+        // ends (a lend inside a lend finds it empty and lends nothing, which
+        // the renderer never does).
+        let mut buffer = self.chunk.take();
         match &self.layout {
             Layout::Channels(arrays) => {
-                let width = CHUNK.min(end - at);
-                // One chunk per channel; a source that cannot be copied
-                // lends nothing, and the call reduces what it was lent.
-                let mut buffer = Vec::new();
-                if buffer.try_reserve_exact(width * arrays.len()).is_err() {
-                    return;
-                }
-                buffer.resize(width * arrays.len(), T::default());
-                while at < end {
+                // One chunk per channel, `CHUNK.min(len)` values each.
+                let width = CHUNK.min(self.len);
+                while buffer.len() >= width * arrays.len() && at < end {
                     let n = width.min(end - at);
                     let (Some(from), Some(to)) = (index(at), index(at + n)) else {
-                        return;
+                        break;
                     };
                     for (c, array) in arrays.iter().enumerate() {
                         T::copy(array, from, to, &mut buffer[c * width..c * width + n]);
@@ -219,17 +238,12 @@ impl<T: JsElement> MonotonicSource for JsSource<T> {
                 stride,
                 columns,
             } => {
-                let frames = CHUNK.min(end - at);
-                let mut buffer = Vec::new();
-                if buffer.try_reserve_exact(frames * stride).is_err() {
-                    return;
-                }
-                buffer.resize(frames * stride, T::default());
-                while at < end {
+                let frames = CHUNK.min(self.len);
+                while buffer.len() >= frames * stride && at < end {
                     let n = frames.min(end - at);
                     let (Some(from), Some(to)) = (index(at * stride), index((at + n) * stride))
                     else {
-                        return;
+                        break;
                     };
                     let chunk = &mut buffer[..n * stride];
                     T::copy(values, from, to, chunk);
@@ -241,6 +255,7 @@ impl<T: JsElement> MonotonicSource for JsSource<T> {
                 }
             }
         }
+        self.chunk.set(buffer);
     }
 }
 
@@ -343,6 +358,12 @@ fn source_group(entry: &JsValue, group: String) -> Result<LentGroup, JsValue> {
     let columns: Option<Vec<u32>> = if columns_value.is_undefined() || columns_value.is_null() {
         None
     } else {
+        // An array or a typed array of frame columns; anything else (a
+        // number would read as that many zeros) is refused.
+        if !js_sys::Array::is_array(&columns_value) && !js_sys::ArrayBuffer::is_view(&columns_value)
+        {
+            return Err(layout_error("columns is an array of frame column indices"));
+        }
         Some(js_sys::Uint32Array::new(&columns_value).to_vec())
     };
     let grid = (number("start")?, number("interval")?);
@@ -516,13 +537,20 @@ impl FiggyChart {
     /// that would move them. Its monotonic series draw nothing until their
     /// group's first `set_monotonic`. A previous monotonic chart is
     /// replaced; `clear_monotonic_document` shows the general chart again.
+    /// The document keeps the general chart's `chart_area`: the surface owns
+    /// it, and `resize_monotonic` alone changes it. A Feynman diagram's
+    /// layout is committed as on `set_series`. Streamed calls and
+    /// `load_demo` refuse the chart while it is shown (#468).
     pub fn set_monotonic_document(
         &mut self,
         config_json: &str,
         series_json: &str,
     ) -> Result<(), JsValue> {
         let mut config: renderer::Config = serde_json::from_str(config_json).map_err(js_err)?;
-        let series: Vec<SeriesConfig> = serde_json::from_str(series_json).map_err(js_err)?;
+        let mut series: Vec<SeriesConfig> = serde_json::from_str(series_json).map_err(js_err)?;
+        // A diagram's layout is committed as its series is registered, as
+        // on the general chart.
+        super::chart::place_feynman_vertices(&mut series)?;
         config.chart_area = self
             .renderer
             .chart_config(self.chart_id)
@@ -569,6 +597,11 @@ impl FiggyChart {
                 .monotonic_chart(id)
                 .and_then(|chart| chart.remove())
                 .map_err(js_err)?;
+            // A resize made while the monotonic chart was shown moved only
+            // that chart: the general one is placed on the surface again.
+            self.renderer
+                .set_chart_display(self.chart_id, Some(self.surface_size))
+                .map_err(js_err)?;
             self.set_selected_annotation(None);
             self.sync_hitmap()?;
             self.view_dirty = true;
@@ -598,11 +631,24 @@ impl FiggyChart {
         let plot_area = plot_rect(&plot_area)?;
         let groups = lent_groups(&sources)?;
         let refs: Vec<MonotonicGroupRef<'_>> = groups.iter().map(group_ref).collect();
+        self.check_surface_size(w, h)?;
         let area = self.chart_config()?.chart_area.0;
+        let previous_plot = match plot_area {
+            Some(_) => self.chart_config()?.data_area().ok().map(|area| area.0),
+            None => None,
+        };
         self.monotonic_chart()?
             .resize(area, plot_area, Some((w, h)), &refs)
             .map_err(js_err)?;
-        self.renderer.resize(w, h).map_err(js_err)?;
+        if let Err(error) = self.renderer.resize(w, h) {
+            // Atomic: the chart goes back to the surface it still has, with
+            // the same sources.
+            let surface = self.surface_size;
+            self.monotonic_chart()?
+                .resize(area, previous_plot, Some(surface), &refs)
+                .map_err(js_err)?;
+            return Err(js_err(error));
+        }
         self.surface_size = (w, h);
         self.view_dirty = true;
         if plot_area.is_some() {

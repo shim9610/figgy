@@ -4272,7 +4272,8 @@ mod web {
                 config.bottom_x.categories = Some(
                     ["a", "b", "c"]
                         .map(|id| Category::new(id, id.to_uppercase()))
-                        .to_vec(),
+                        .to_vec()
+                        .into(),
                 );
             }
             fn ternary(config: &mut renderer::Config) {

@@ -267,6 +267,25 @@ impl MonotonicChart<'_> {
         self.renderer.step_chart_selection(self.id, dx, dy)
     }
 
+    /// Drags a vertex or a propagator of the Feynman series `series_id`
+    /// ([`Renderer::drag_feynman`], #234). A series edit: the x-to-pixel
+    /// mapping is untouched.
+    pub fn drag_feynman(
+        &mut self,
+        series_id: &str,
+        drag: crate::feynman::FeynmanHit,
+        dx: f32,
+        dy: f32,
+    ) -> Result<crate::layout::NudgeResult> {
+        self.renderer.drag_feynman(self.id, series_id, drag, dx, dy)
+    }
+
+    /// Commits the automatic layout of the Feynman series `series_id`
+    /// ([`Renderer::place_feynman_vertices`], #234).
+    pub fn place_feynman_vertices(&mut self, series_id: &str) -> Result<bool> {
+        self.renderer.place_feynman_vertices(self.id, series_id)
+    }
+
     /// Selects a chart element ([`Renderer::set_chart_selection`]).
     pub fn set_selection(&mut self, selected: Option<HitId>) -> Result<()> {
         self.renderer.set_chart_selection(self.id, selected)

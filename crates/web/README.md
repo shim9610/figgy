@@ -5,10 +5,11 @@
 canvas, forwards pointer events, schedules frames and adapts async calls. It is
 maintained with the renderer: every renderer feature ships its wrapper methods.
 
-The library packages are `figgy-renderer` 0.18.1 and `figgy-model` 0.12.1. The
-browser product is the Cargo package `figgy` 0.15.1, which has its own version
-and is named for its generated JS/WASM filenames. It is built from this
-repository against the renderer and model sources in the checkout through path
+The latest library packages on crates.io are `figgy-renderer` 0.18.1 and
+`figgy-model` 0.12.1. The browser product is the Cargo package `figgy`
+0.16.0-beta.2, which has its own version and is named for its generated JS/WASM
+filenames. It is built from this repository against the renderer
+(0.19.0-beta.2) and model sources in the checkout through path
 dependencies (`publish = false`; the publication target is open,
 [#57](https://github.com/shim9610/figgy/issues/57)). The `figgy` crate on crates.io and the
 `figgy` package on npm are unrelated projects. An application that reuses this
@@ -18,6 +19,10 @@ feature, which the wrapper's JSON methods need:
 ```toml
 renderer = { package = "figgy-renderer", version = "0.18.1", features = ["serde"] }
 ```
+
+The published 0.18.1 renderer predates the wrapper API this README describes,
+which needs renderer 0.19. Until 0.19 is on crates.io, such a crate depends on
+the checkout's renderer by path, as `crates/web/Cargo.toml` does.
 
 The generated module exports two classes. `FiggyChart` draws Cartesian charts,
 including polar plots (`Config.polar`; see the
@@ -204,8 +209,11 @@ value. The call reads back only the selected values, not whole columns.
 `chart.step_selection(dx, dy)` moves the selection through resident data:
 points (point-vector arrows included), histogram bins, category bars (along
 the categories and across the series of the bar group) and matrix cells
-(grid-vector cells included). These two methods are raw `FiggyChart` exports,
-not custom-element forwarders. See the
+(grid-vector cells included). `<figgy-chart>` forwards both
+([#468](https://github.com/shim9610/figgy/issues/468)): its
+`selection_details()` holds the element's operation gate until the readbacks
+resolve, so frames and pointer edits wait for it instead of racing the
+read through `element.kernel`. See the
 [selection contract](SCHEMA.md#resident-selection-details).
 
 The value labels of category bars, box plots and radar series are pick and
