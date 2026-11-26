@@ -356,13 +356,18 @@ impl PrepareContext<'_> {
         let arc_pipelines = self.arc_pipelines.get_or_insert_with(|| {
             data_render::line_arc::create_arc_scan_pipelines_2d_by_set(
                 &self.device,
+                self.pipeline_cache.as_ref(),
                 set,
                 &mut |_| {},
             )
         });
         // Only a 3D chart's line measures through the camera (#453).
         if camera.is_some() {
-            arc_pipelines.ensure_seg_init_3d(&self.device, &mut |_| {});
+            arc_pipelines.ensure_seg_init_3d(
+                &self.device,
+                self.pipeline_cache.as_ref(),
+                &mut |_| {},
+            );
         }
         let arc_pipelines: &data_render::line_arc::ArcScanPipelines = arc_pipelines;
         let scratch = data_render::line_arc::ArcScratch::build(

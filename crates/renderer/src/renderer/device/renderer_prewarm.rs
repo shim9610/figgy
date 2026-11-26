@@ -9,6 +9,7 @@ macro_rules! renderer_prewarm_layouts {
         PrewarmLayouts {
             precise: PreciseLayouts {
                 device: &$renderer.device,
+                cache: $renderer.pipeline_cache.as_ref(),
                 transform_bgl: &$renderer.transform_bgl,
                 style_bgl: &$renderer.style_bgl,
                 per_point_style_map_bgl: &$renderer.per_point_style_map_bgl,
@@ -146,6 +147,7 @@ impl Renderer {
             self.arc_pipelines = Some(
                 data_render::line_arc::create_arc_scan_pipelines_by_set_async(
                     &self.device,
+                    self.pipeline_cache.as_ref(),
                     self.pipelines.shaders.set,
                     observer,
                 )
@@ -166,7 +168,10 @@ impl Renderer {
         }
         // The ink mask pass every on-screen prepare of a chart runs (#381).
         if self.ink_mask_pipeline.is_none() {
-            self.ink_mask_pipeline = Some(InkMaskPipeline::new(&self.device));
+            self.ink_mask_pipeline = Some(InkMaskPipeline::new(
+                &self.device,
+                self.pipeline_cache.as_ref(),
+            ));
         }
         started(observer, "renderer.prewarm", "point picking compute");
         self.enable_gpu_picking_observed_async(observer)
@@ -214,6 +219,7 @@ impl Renderer {
         if self.arc_pipelines.is_none() {
             self.arc_pipelines = Some(data_render::line_arc::create_arc_scan_pipelines_by_set(
                 &self.device,
+                self.pipeline_cache.as_ref(),
                 self.pipelines.shaders.set,
                 observer,
             ));
@@ -226,7 +232,10 @@ impl Renderer {
         }
         // The ink mask pass every on-screen prepare of a chart runs (#381).
         if self.ink_mask_pipeline.is_none() {
-            self.ink_mask_pipeline = Some(InkMaskPipeline::new(&self.device));
+            self.ink_mask_pipeline = Some(InkMaskPipeline::new(
+                &self.device,
+                self.pipeline_cache.as_ref(),
+            ));
         }
         started(observer, "renderer.prewarm", "point picking compute");
         self.enable_gpu_picking_observed(observer)
@@ -243,6 +252,7 @@ impl Renderer {
             || {
                 crate::gpu_contour::ContourLabelPipelines::new_by_set(
                     &self.device,
+                    self.pipeline_cache.as_ref(),
                     &self.field_bgl,
                     self.pipelines.shaders.set,
                 )
@@ -266,6 +276,7 @@ impl Renderer {
                 for pass in data_render::surface_mesh::SurfacePass::ALL {
                     self.pipelines.ensure_surface_pass(
                         &self.device,
+                        self.pipeline_cache.as_ref(),
                         [
                             &self.transform_bgl,
                             &self.style_bgl,
@@ -285,6 +296,7 @@ impl Renderer {
                 for pass in data_render::surface_mesh::SurfacePass::ALL {
                     self.pipelines.ensure_tri_surface_pass(
                         &self.device,
+                        self.pipeline_cache.as_ref(),
                         [
                             &self.transform_bgl,
                             &self.style_bgl,
@@ -304,6 +316,7 @@ impl Renderer {
                         started(observer, "renderer.prewarm", kind.stage());
                         self.pipelines.ensure_view3d_pass(
                             &self.device,
+                            self.pipeline_cache.as_ref(),
                             [
                                 &self.transform_bgl,
                                 &self.style_bgl,
@@ -325,6 +338,7 @@ impl Renderer {
                 for pass in data_render::ternary_region::TernaryRegionPass::ALL {
                     self.pipelines.ensure_ternary_region_pass(
                         &self.device,
+                        self.pipeline_cache.as_ref(),
                         &self.transform_bgl,
                         &self.region_bgl,
                         self.surface_format,
@@ -332,7 +346,8 @@ impl Renderer {
                     );
                 }
                 // The ring-start scan the region draw and pick read (#49).
-                self.pipelines.ensure_ternary_region_scan(&self.device);
+                self.pipelines
+                    .ensure_ternary_region_scan(&self.device, self.pipeline_cache.as_ref());
                 finished(observer, "renderer.prewarm", "ternary region");
             }
         }

@@ -452,6 +452,7 @@ pub fn create_vector_data_bind_group(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_vector_pipeline_with_sample_count(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     shader: &wgpu::ShaderModule,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
@@ -490,7 +491,7 @@ pub(crate) fn create_vector_pipeline_with_sample_count(
             wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
         ),
     }
-    .create(device)
+    .create(device, cache)
 }
 
 /// The 3D vector pipeline (#211) of [`VectorInput::Points3d`]: groups 0–2
@@ -502,6 +503,7 @@ pub(crate) fn create_vector_pipeline_with_sample_count(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_vector_view3d_pipeline(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     shader: &wgpu::ShaderModule,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
@@ -536,7 +538,7 @@ pub(crate) fn create_vector_view3d_pipeline(
         multisample: pass.multisample(sample_count),
         target: pass.color_target(target_format),
     }
-    .create(device)
+    .create(device, cache)
 }
 
 /// One vector series' draw: `draw(0..ARROW_VERTICES, 0..count)` with group 2

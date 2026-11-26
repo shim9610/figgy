@@ -122,6 +122,7 @@ impl NearestPickPipelines {
         let base = crate::gpu_compile::workgroup_options(device);
         crate::gpu_compile::compute_pipeline(
             device,
+            bundle.pipeline_cache.as_ref(),
             &wgpu::ComputePipelineDescriptor {
                 label: Some("figgy GPU pick nearest-datum pipeline"),
                 layout: Some(layout),

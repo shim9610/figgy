@@ -131,6 +131,7 @@ impl StreamTransfer {
             let make_pipeline = |layout: &wgpu::PipelineLayout, entry, blend| {
                 crate::gpu_compile::render_pipeline(
                     &device,
+                    None,
                     &wgpu::RenderPipelineDescriptor {
                         label: Some("stream prefix sample transfer"),
                         layout: Some(layout),

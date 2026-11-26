@@ -505,6 +505,7 @@ impl SurfacePass {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_surface_pipeline(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     shader: &wgpu::ShaderModule,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
@@ -549,7 +550,7 @@ pub(crate) fn create_surface_pipeline(
             write_mask: wgpu::ColorWrites::ALL,
         },
     }
-    .create(device)
+    .create(device, cache)
 }
 
 /// One heatmap or triangle mesh drawn as a surface, its floor contours or

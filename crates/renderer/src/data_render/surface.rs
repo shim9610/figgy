@@ -79,12 +79,19 @@ fn adapter_now(
 /// Open a logical device and its queue with the adapter's supported limits,
 /// so the largest column the pool can hold is the hardware's, not the WebGPU
 /// baseline's 128 MiB binding.
+///
+/// It also asks for `Features::PIPELINE_CACHE` when the adapter has it
+/// (wgpu: Vulkan), so a renderer built on the device creates its pipelines
+/// through a cache a host can save and load
+/// ([`crate::RendererDevice::with_pipeline_cache`], #478). A host that wants
+/// no cache calls [`crate::RendererDevice::without_pipeline_cache`], or
+/// opens its device with its own descriptor (`request_device_with_blocking`).
 pub async fn request_device_async(
     adapter: &wgpu::Adapter,
 ) -> Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError> {
     let descriptor = wgpu::DeviceDescriptor {
         label: Some("figgy main device"),
-        required_features: wgpu::Features::empty(),
+        required_features: adapter.features() & wgpu::Features::PIPELINE_CACHE,
         required_limits: adapter.limits(),
         experimental_features: wgpu::ExperimentalFeatures::disabled(),
         memory_hints: wgpu::MemoryHints::Performance,

@@ -59,6 +59,7 @@ impl Renderer {
             health,
             ledger: gpu_ledger,
             shader_set,
+            pipeline_cache,
         } = gpu;
         started(observer, "renderer", "capabilities");
         let caps = RendererDeviceCaps::from_device(&device);
@@ -139,6 +140,7 @@ impl Renderer {
         // them. The errorbar extent engine requires explicit async preparation.
         let pipelines = create_target_pipelines_observed(
             &device,
+            pipeline_cache.as_ref(),
             &texture_bgl,
             &transform_bgl,
             &style_bgl,
@@ -156,6 +158,7 @@ impl Renderer {
         Ok(Self {
             device,
             queue,
+            pipeline_cache,
             health,
             caps,
             pool,
@@ -242,6 +245,7 @@ impl Renderer {
             health,
             ledger: gpu_ledger,
             shader_set,
+            pipeline_cache,
         } = gpu;
         started(observer, "renderer", "capabilities");
         let caps = RendererDeviceCaps::from_device(&device);
@@ -315,6 +319,7 @@ impl Renderer {
 
         let pipelines = create_target_pipelines_observed_async(
             &device,
+            pipeline_cache.as_ref(),
             &texture_bgl,
             &transform_bgl,
             &style_bgl,
@@ -334,6 +339,7 @@ impl Renderer {
         Ok(Self {
             device,
             queue,
+            pipeline_cache,
             health,
             caps,
             pool,

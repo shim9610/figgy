@@ -52,6 +52,7 @@ impl Renderer {
             self.queue.clone(),
             Arc::clone(&self.gpu_ledger),
             self.health.clone(),
+            self.pipeline_cache.clone(),
             crate::gpu_data_pick::DataPickShaders {
                 bar: &self.pipelines.shaders.bar,
                 field: &self.pipelines.shaders.field,
@@ -130,6 +131,7 @@ impl Renderer {
                 self.queue.clone(),
                 Arc::clone(&self.gpu_ledger),
                 self.health.clone(),
+                self.pipeline_cache.clone(),
                 crate::gpu_data_pick::DataPickShaders {
                     bar: &self.pipelines.shaders.bar,
                     field: &self.pipelines.shaders.field,

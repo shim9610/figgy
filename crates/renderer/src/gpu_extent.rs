@@ -565,19 +565,30 @@ impl GpuErrorbarExtentEngine {
 
     /// [`Self::new`], reporting each initialization step to `observer`.
     pub fn new_observed(gpu: &crate::RendererDevice, observer: &mut dyn FnMut(InitEvent)) -> Self {
-        Self::new_observed_tracked(gpu.device(), Arc::clone(gpu.ledger()), observer)
-            .with_health(gpu.health().clone())
+        Self::new_observed_tracked(
+            gpu.device(),
+            gpu.pipeline_cache(),
+            Arc::clone(gpu.ledger()),
+            observer,
+        )
+        .with_health(gpu.health().clone())
     }
 
     /// Engine whose per-ticket scratch is charged to `ledger`, for the
     /// renderer's own pipeline preparation, which holds the bundle's parts.
-    pub(crate) fn new_tracked(device: &wgpu::Device, ledger: Arc<GpuLedger>) -> Self {
+    /// Its pipelines are created through `cache`, the renderer's (#478).
+    pub(crate) fn new_tracked(
+        device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
+        ledger: Arc<GpuLedger>,
+    ) -> Self {
         let mut noop = |_| {};
-        Self::new_observed_tracked(device, ledger, &mut noop)
+        Self::new_observed_tracked(device, cache, ledger, &mut noop)
     }
 
     pub(crate) fn new_observed_tracked(
         device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
         ledger: Arc<GpuLedger>,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Self {
@@ -637,6 +648,7 @@ impl GpuErrorbarExtentEngine {
         let make_pipeline = |label, layout, entry| {
             crate::gpu_compile::compute_pipeline(
                 &device,
+                cache,
                 &wgpu::ComputePipelineDescriptor {
                     label: Some(label),
                     layout: Some(layout),
@@ -765,6 +777,7 @@ impl GpuErrorbarExtentEngine {
         let make_pipeline = |label, layout, entry| {
             crate::gpu_compile::compute_pipeline(
                 &device,
+                None,
                 &wgpu::ComputePipelineDescriptor {
                     label: Some(label),
                     layout: Some(layout),
@@ -2383,8 +2396,9 @@ mod tests {
             "field-fit-y",
             vec![-2.5, -2.3, 2.3, 2.5],
         );
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
-            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let engine =
+            GpuErrorbarExtentEngine::new_tracked(&device, None, Arc::new(GpuLedger::new()))
+                .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
 
         let samples = resolve_field(
             &engine,
@@ -2473,8 +2487,9 @@ mod tests {
             "legacy-upper",
             vec![100.0, f32::NAN],
         );
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
-            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let engine =
+            GpuErrorbarExtentEngine::new_tracked(&device, None, Arc::new(GpuLedger::new()))
+                .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         let extent = crate::test_gpu::block_on(
             engine
                 .begin(&device, &queue, pool.buffer(), values, lower, upper)
@@ -2525,8 +2540,9 @@ mod tests {
             "legacy-many-upper",
             vec![7.0; 1000],
         );
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
-            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let engine =
+            GpuErrorbarExtentEngine::new_tracked(&device, None, Arc::new(GpuLedger::new()))
+                .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         let extent = crate::test_gpu::block_on(
             engine
                 .begin(&device, &queue, pool.buffer(), values, lower, upper)
@@ -2598,8 +2614,9 @@ mod tests {
         );
         let lower = add_f32(&mut pool, &device, &queue, "series-x-lower", vec![5.0, 0.0]);
         let upper = add_f32(&mut pool, &device, &queue, "series-x-upper", vec![0.0, 5.0]);
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
-            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let engine =
+            GpuErrorbarExtentEngine::new_tracked(&device, None, Arc::new(GpuLedger::new()))
+                .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         let extent = resolve_series(
             &engine,
             &device,
@@ -2646,8 +2663,9 @@ mod tests {
             "line-y",
             vec![0.0, 1.0, f32::NAN, 3.0],
         );
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
-            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let engine =
+            GpuErrorbarExtentEngine::new_tracked(&device, None, Arc::new(GpuLedger::new()))
+                .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         let extent = resolve_series(
             &engine,
             &device,
@@ -2703,8 +2721,9 @@ mod tests {
             vec![f32::NAN, 3.0],
         );
         let y_hi = add_f32(&mut pool, &device, &queue, "modes-y-hi", vec![1000.0, 4.0]);
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
-            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let engine =
+            GpuErrorbarExtentEngine::new_tracked(&device, None, Arc::new(GpuLedger::new()))
+                .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         for mode in [
             GpuSeriesExtentMode::Points,
             GpuSeriesExtentMode::PointsX,
@@ -2785,8 +2804,9 @@ mod tests {
             "paired-invalid-hi",
             vec![100.0; 3],
         );
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
-            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let engine =
+            GpuErrorbarExtentEngine::new_tracked(&device, None, Arc::new(GpuLedger::new()))
+                .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         let extent = resolve_series(
             &engine,
             &device,
@@ -2828,8 +2848,9 @@ mod tests {
             "one-infinite-hi",
             vec![f32::INFINITY],
         );
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
-            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let engine =
+            GpuErrorbarExtentEngine::new_tracked(&device, None, Arc::new(GpuLedger::new()))
+                .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         let extent = resolve_series(
             &engine,
             &device,
@@ -2878,8 +2899,9 @@ mod tests {
         let x_upper = add_f32(&mut pool, &device, &queue, "six-domain-x-hi", vec![1.0; 3]);
         let y_lower = add_f32(&mut pool, &device, &queue, "six-domain-y-lo", vec![2.0]);
         let y_upper = add_f32(&mut pool, &device, &queue, "six-domain-y-hi", vec![2.0]);
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
-            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let engine =
+            GpuErrorbarExtentEngine::new_tracked(&device, None, Arc::new(GpuLedger::new()))
+                .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         let extent = resolve_series(
             &engine,
             &device,
@@ -2920,8 +2942,9 @@ mod tests {
             "subnormal-y",
             vec![tiny * 2.0, tiny * 3.0],
         );
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
-            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let engine =
+            GpuErrorbarExtentEngine::new_tracked(&device, None, Arc::new(GpuLedger::new()))
+                .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         let extent = resolve_series(
             &engine,
             &device,
@@ -2981,8 +3004,9 @@ mod tests {
             let (hi, lo) = split_f64_to_f32_pair(value);
             hi as f64 + lo as f64
         };
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
-            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let engine =
+            GpuErrorbarExtentEngine::new_tracked(&device, None, Arc::new(GpuLedger::new()))
+                .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         let extent = resolve_series(
             &engine,
             &device,
@@ -3033,8 +3057,9 @@ mod tests {
             let (hi, lo) = split_f64_to_f32_pair(value);
             hi as f64 + lo as f64
         };
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
-            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let engine =
+            GpuErrorbarExtentEngine::new_tracked(&device, None, Arc::new(GpuLedger::new()))
+                .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         let extent = resolve_series(
             &engine,
             &device,
@@ -3052,8 +3077,9 @@ mod tests {
     fn reduction_boundaries_and_reuse_have_bounded_first_completion() {
         let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
         let (device, queue) = crate::data_render::shared_device().expect("required adapter");
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
-            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let engine =
+            GpuErrorbarExtentEngine::new_tracked(&device, None, Arc::new(GpuLedger::new()))
+                .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         for count in [1_usize, 63, 64, 65, 127, 128, 129, 4097] {
             let mut pool = ColumnPool::new(
                 crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),

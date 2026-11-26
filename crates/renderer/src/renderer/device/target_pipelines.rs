@@ -94,6 +94,7 @@ impl TargetPipelines {
         if self.bar_envelope.is_none() {
             self.bar_envelope = Some(data_render::bar_envelope::Pipelines::new(
                 layouts.device,
+                layouts.cache,
                 &self.shaders.bar,
                 layouts.transform_bgl,
                 layouts.style_bgl,
@@ -106,10 +107,15 @@ impl TargetPipelines {
 
     /// Create the stacked category-bar fit's reduction when it is missing
     /// (#466): the bar module's `reduce_category_stacks` entry.
-    pub(in crate::renderer) fn ensure_category_stack_fit(&mut self, device: &wgpu::Device) {
+    pub(in crate::renderer) fn ensure_category_stack_fit(
+        &mut self,
+        device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
+    ) {
         if self.category_stack_fit.is_none() {
             self.category_stack_fit = Some(data_render::CategoryStackFit::new(
                 device,
+                cache,
                 &self.shaders.bar,
             ));
         }
@@ -125,6 +131,7 @@ impl TargetPipelines {
             self.ternary[kind as usize] = Some(create_ternary_pipeline(
                 kind,
                 layouts.device,
+                layouts.cache,
                 &self.shaders,
                 layouts.ternary(),
                 layouts.surface_format,
@@ -140,6 +147,7 @@ impl TargetPipelines {
     pub(in crate::renderer) fn ensure_styles_for_items(
         &mut self,
         device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
         queue: &wgpu::Queue,
         transform_bgl: &wgpu::BindGroupLayout,
         style_bgl: &wgpu::BindGroupLayout,
@@ -155,6 +163,7 @@ impl TargetPipelines {
                 create_style_set(
                     v.key,
                     device,
+                    cache,
                     queue,
                     &self.shaders,
                     transform_bgl,
@@ -175,6 +184,7 @@ impl TargetPipelines {
     pub(in crate::renderer) fn ensure_surface_pipelines(
         &mut self,
         device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
         transform_bgl: &wgpu::BindGroupLayout,
         style_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
@@ -195,6 +205,7 @@ impl TargetPipelines {
             for pass in data_render::surface_mesh::SurfacePass::ALL {
                 self.ensure_surface_pass(
                     device,
+                    cache,
                     [transform_bgl, style_bgl, field_bgl, surface_bgl],
                     surface_format,
                     pass,
@@ -207,6 +218,7 @@ impl TargetPipelines {
             for pass in data_render::surface_mesh::SurfacePass::ALL {
                 self.ensure_tri_surface_pass(
                     device,
+                    cache,
                     [transform_bgl, style_bgl, field_bgl, surface_bgl],
                     surface_format,
                     pass,
@@ -220,6 +232,7 @@ impl TargetPipelines {
     pub(in crate::renderer) fn ensure_ternary_region_pipelines(
         &mut self,
         device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
         transform_bgl: &wgpu::BindGroupLayout,
         region_bgl: &wgpu::BindGroupLayout,
         surface_format: wgpu::TextureFormat,
@@ -238,13 +251,14 @@ impl TargetPipelines {
         for pass in data_render::ternary_region::TernaryRegionPass::ALL {
             self.ensure_ternary_region_pass(
                 device,
+                cache,
                 transform_bgl,
                 region_bgl,
                 surface_format,
                 pass,
             );
         }
-        self.ensure_ternary_region_scan(device);
+        self.ensure_ternary_region_scan(device, cache);
     }
 
     /// The region module's shader, compiled once.
@@ -267,12 +281,17 @@ impl TargetPipelines {
     }
 
     /// Compile the ring-start scan when it is missing.
-    pub(in crate::renderer) fn ensure_ternary_region_scan(&mut self, device: &wgpu::Device) {
+    pub(in crate::renderer) fn ensure_ternary_region_scan(
+        &mut self,
+        device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
+    ) {
         if self.ternary_region_scan.is_some() {
             return;
         }
         let scan = data_render::ternary_region::create_ring_scan_pipelines(
             device,
+            cache,
             self.ternary_region_module(device),
         );
         self.ternary_region_scan = Some(scan);
@@ -283,6 +302,7 @@ impl TargetPipelines {
     pub(in crate::renderer) fn ensure_ternary_region_pass(
         &mut self,
         device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
         transform_bgl: &wgpu::BindGroupLayout,
         region_bgl: &wgpu::BindGroupLayout,
         surface_format: wgpu::TextureFormat,
@@ -295,6 +315,7 @@ impl TargetPipelines {
         let shader = self.ternary_region_module(device);
         let pipeline = Some(data_render::ternary_region::create_ternary_region_pipeline(
             device,
+            cache,
             shader,
             transform_bgl,
             region_bgl,
@@ -311,6 +332,7 @@ impl TargetPipelines {
     pub(in crate::renderer) fn ensure_view3d_pass(
         &mut self,
         device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
         bgls: [&wgpu::BindGroupLayout; 6],
         surface_format: wgpu::TextureFormat,
         kind: View3dPipeline,
@@ -321,6 +343,7 @@ impl TargetPipelines {
         self.view3d[kind as usize] = Some(create_view3d_pipeline(
             kind,
             device,
+            cache,
             &self.shaders,
             bgls,
             surface_format,
@@ -333,6 +356,7 @@ impl TargetPipelines {
     pub(in crate::renderer) fn ensure_surface_pass(
         &mut self,
         device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
         bgls: [&wgpu::BindGroupLayout; 4],
         surface_format: wgpu::TextureFormat,
         pass: data_render::surface_mesh::SurfacePass,
@@ -344,6 +368,7 @@ impl TargetPipelines {
         if pass.on_floor() {
             self.surface[pass as usize] = Some(data_render::surface_mesh::create_surface_pipeline(
                 device,
+                cache,
                 &self.shaders.field,
                 transform_bgl,
                 style_bgl,
@@ -375,6 +400,7 @@ impl TargetPipelines {
         if slot.is_none() {
             *slot = Some(data_render::surface_mesh::create_surface_pipeline(
                 device,
+                cache,
                 shader,
                 transform_bgl,
                 style_bgl,
@@ -394,6 +420,7 @@ impl TargetPipelines {
     pub(in crate::renderer) fn ensure_tri_surface_pass(
         &mut self,
         device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
         bgls: [&wgpu::BindGroupLayout; 4],
         surface_format: wgpu::TextureFormat,
         pass: data_render::surface_mesh::SurfacePass,
@@ -424,6 +451,7 @@ impl TargetPipelines {
         };
         self.tri_surface[pass as usize] = Some(data_render::surface_mesh::create_surface_pipeline(
             device,
+            cache,
             shader,
             transform_bgl,
             style_bgl,
@@ -441,6 +469,7 @@ impl TargetPipelines {
     pub(in crate::renderer) fn ensure_tri_mesh_pass(
         &mut self,
         device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
         [transform_bgl, style_bgl, field_bgl]: [&wgpu::BindGroupLayout; 3],
         surface_format: wgpu::TextureFormat,
         pass: data_render::tri_mesh::TriMeshPass,
@@ -454,6 +483,7 @@ impl TargetPipelines {
             .get_or_insert_with(|| data_render::tri_mesh::shader_module(device, variant));
         self.tri_mesh[pass as usize] = Some(data_render::tri_mesh::create_tri_mesh_pipeline(
             device,
+            cache,
             shader,
             transform_bgl,
             style_bgl,

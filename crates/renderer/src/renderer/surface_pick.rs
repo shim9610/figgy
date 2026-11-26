@@ -341,6 +341,7 @@ impl Renderer {
         for pass in [SurfacePass::Pick, SurfacePass::FloorContourPick] {
             self.pipelines.ensure_surface_pass(
                 &self.device,
+                self.pipeline_cache.as_ref(),
                 [
                     &self.transform_bgl,
                     &self.style_bgl,
@@ -352,6 +353,7 @@ impl Renderer {
             );
             self.pipelines.ensure_tri_surface_pass(
                 &self.device,
+                self.pipeline_cache.as_ref(),
                 [
                     &self.transform_bgl,
                     &self.style_bgl,
@@ -370,6 +372,7 @@ impl Renderer {
         ] {
             self.pipelines.ensure_view3d_pass(
                 &self.device,
+                self.pipeline_cache.as_ref(),
                 [
                     &self.transform_bgl,
                     &self.style_bgl,

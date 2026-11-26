@@ -17778,3 +17778,99 @@ fn the_stacked_fit_reduction_is_created_by_a_fit_only() {
         assert!(other.pipelines.category_stack_fit.is_none(), "{mode:?}");
     }
 }
+
+/// Every pipeline a renderer creates goes through its bundle's pipeline
+/// cache (#478): the prewarm's render, arc, extent and contour label
+/// pipelines, the picking pipelines, every resident typed pick kernel and the
+/// radial renderer's. The streamed pick reductions keep none (rule 8). A
+/// backend without `Features::PIPELINE_CACHE` (wgpu implements it on Vulkan
+/// only) has nothing to check.
+#[test]
+fn every_renderer_pipeline_goes_through_the_bundles_pipeline_cache() {
+    use crate::gpu_compile::capture;
+    use crate::gpu_data_pick::DataPickKernel;
+    let bundle = figgy_requested_bundle();
+    if !bundle.has_pipeline_cache() {
+        eprintln!("the device has no PIPELINE_CACHE feature: nothing to check");
+        return;
+    }
+    let session = capture::Session::begin();
+    let mut renderer =
+        Renderer::try_new(bundle.clone(), wgpu::TextureFormat::Rgba8Unorm, 1024 * 1024)
+            .expect("required GPU test: renderer initialization failed");
+    renderer.prewarm_all_blocking().unwrap();
+    renderer.enable_gpu_picking().unwrap();
+    let PickerPipelineState::Ready { data, .. } = &renderer.picker.pipeline_state else {
+        panic!("picking is enabled");
+    };
+    let data = Arc::clone(data);
+    for kernel in DataPickKernel::ALL {
+        if matches!(
+            kernel,
+            DataPickKernel::StreamReduceData | DataPickKernel::StreamReducePoint
+        ) {
+            continue;
+        }
+        renderer.picker.data_kernels.ensure(&data, kernel).unwrap();
+    }
+    crate::radial::RadialRenderer::try_new(bundle, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let captured = session.finish();
+    assert!(
+        captured.pipelines.len() > 100,
+        "the renderer created its pipelines: {}",
+        captured.pipelines.len()
+    );
+    assert_eq!(
+        captured.uncached,
+        Vec::<String>::new(),
+        "pipelines created without the bundle's cache"
+    );
+}
+
+/// A bundle starts with an empty pipeline cache on a device with the
+/// feature, takes a saved one, ignores bytes that are not a cache and can
+/// turn the cache off (#478).
+#[test]
+fn a_bundle_loads_ignores_and_drops_its_pipeline_cache() {
+    let bundle = figgy_requested_bundle();
+    if !bundle.has_pipeline_cache() {
+        assert!(bundle.pipeline_cache_data().is_none());
+        assert!(
+            !bundle
+                .with_pipeline_cache(Some(b"not a cache"))
+                .has_pipeline_cache()
+        );
+        return;
+    }
+    let mut renderer =
+        Renderer::try_new(bundle.clone(), wgpu::TextureFormat::Rgba8Unorm, 1024 * 1024)
+            .expect("required GPU test: renderer initialization failed");
+    renderer.prewarm_all_blocking().unwrap();
+    let saved = renderer
+        .renderer_device()
+        .pipeline_cache_data()
+        .expect("a Vulkan cache reports its data");
+    assert!(!saved.is_empty());
+    let loaded = bundle.clone().with_pipeline_cache(Some(&saved));
+    assert!(loaded.has_pipeline_cache());
+    let garbage = bundle.clone().with_pipeline_cache(Some(b"not a cache"));
+    assert!(
+        garbage.has_pipeline_cache(),
+        "unusable data starts an empty cache"
+    );
+    let off = bundle.without_pipeline_cache();
+    assert!(!off.has_pipeline_cache());
+    assert!(off.pipeline_cache_data().is_none());
+}
+
+/// A bundle on a device opened by figgy's own request, which asks for
+/// `Features::PIPELINE_CACHE` where the adapter has it (#478). The shared
+/// test device is opened with wgpu's default descriptor and has no cache.
+fn figgy_requested_bundle() -> RendererDevice {
+    let instance = crate::test_gpu::instance();
+    let adapter = crate::test_gpu::adapter(&instance);
+    let (device, queue) = crate::data_render::request_device_async(&adapter)
+        .block_on()
+        .expect("required GPU test: device initialization failed");
+    RendererDevice::new(device, queue).expect("figgy poll thread")
+}

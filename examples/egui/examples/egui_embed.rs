@@ -21,6 +21,12 @@
 //! 5. Callback `paint` (`&CallbackResources`): record only the prepared token
 //!    with `renderer::Renderer::paint_prepared(pass, target, token)`.
 //!
+//! The pipeline cache (#478): `main` asks eframe's device for
+//! `Features::PIPELINE_CACHE` where the adapter has it, the renderer's bundle
+//! loads the cache an earlier run saved (`RendererDevice::with_pipeline_cache`,
+//! one file per `RendererDevice::pipeline_cache_key`) and the cache is saved
+//! again on exit, so a second run creates its pipelines from it.
+//!
 //! Run with:
 //! `cargo run --locked --manifest-path examples/egui/Cargo.toml --example egui_embed`
 
@@ -125,6 +131,8 @@ struct PanelEntry {
 /// `Renderer` is `Send + Sync`, so no host-side locking is needed.
 struct FiggyState {
     renderer: Renderer,
+    /// Where the pipeline cache is saved on exit, when the backend has one.
+    pipeline_cache_file: Option<std::path::PathBuf>,
     panels: Vec<PanelEntry>,
     /// Currently selected element: (panel index, hit-map id).
     selected: Option<(usize, HitId)>,
@@ -207,6 +215,9 @@ impl FiggyState {
 impl FiggyState {
     fn shutdown(&mut self) {
         self.renderer.wait_idle().unwrap();
+        if let Some(path) = self.pipeline_cache_file.take() {
+            save_pipeline_cache(&self.renderer.renderer_device(), &path);
+        }
         self.panels.clear();
     }
 }
@@ -543,8 +554,17 @@ impl eframe::App for DemoApp {
             let queue = render_state.queue.clone();
             let format = render_state.target_format;
 
+            // Load the pipeline cache an earlier run saved for this adapter.
+            let pipeline_cache_file = pipeline_cache_file(&render_state.adapter.get_info());
+            let saved = pipeline_cache_file
+                .as_ref()
+                .and_then(|path| std::fs::read(path).ok());
+            let gpu = RendererDevice::new(device, queue)
+                .expect("figgy poll thread")
+                .with_pipeline_cache(saved.as_deref());
+
             let mut renderer = match Renderer::try_new(
-                RendererDevice::new(device, queue).expect("figgy poll thread"),
+                gpu,
                 format,
                 POOL_CAPACITY,
             ) {
@@ -578,6 +598,7 @@ impl eframe::App for DemoApp {
                 .write()
                 .callback_resources
                 .insert(FiggyState {
+                    pipeline_cache_file,
                     renderer,
                     panels,
                     selected: None,
@@ -714,12 +735,53 @@ impl eframe::App for DemoApp {
     }
 }
 
+/// The file this example keeps `info`'s pipeline cache in, or `None` where
+/// the backend has no pipeline cache (wgpu: Vulkan only).
+fn pipeline_cache_file(info: &wgpu::AdapterInfo) -> Option<std::path::PathBuf> {
+    let key = RendererDevice::pipeline_cache_key(info)?;
+    Some(std::env::temp_dir().join("figgy-egui-example").join(key))
+}
+
+/// Save `gpu`'s pipeline cache to `path`: written beside it and renamed over
+/// it, so an interrupted save never leaves half a cache.
+fn save_pipeline_cache(gpu: &RendererDevice, path: &std::path::Path) {
+    let Some(data) = gpu.pipeline_cache_data() else {
+        return;
+    };
+    let temp = path.with_extension("tmp");
+    let saved = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&temp, &data))
+        .and_then(|()| std::fs::rename(&temp, path));
+    if let Err(error) = saved {
+        eprintln!("pipeline cache not saved to {}: {error}", path.display());
+    }
+}
+
 fn main() -> eframe::Result<()> {
+    // eframe's own device descriptor, plus `Features::PIPELINE_CACHE` where
+    // the adapter has it, so the renderer can cache its pipelines (#478).
+    let setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    let base = std::sync::Arc::clone(&setup.device_descriptor);
+    let setup = egui_wgpu::WgpuSetupCreateNew {
+        device_descriptor: std::sync::Arc::new(move |adapter| {
+            let mut descriptor = base(adapter);
+            descriptor.required_features |=
+                adapter.features() & wgpu::Features::PIPELINE_CACHE;
+            descriptor
+        }),
+        ..setup
+    };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1800.0, 500.0])
             .with_title("figgy demo (egui)"),
         renderer: eframe::Renderer::Wgpu,
+        wgpu_options: egui_wgpu::WgpuConfiguration {
+            wgpu_setup: egui_wgpu::WgpuSetup::CreateNew(setup),
+            ..Default::default()
+        },
         ..Default::default()
     };
     eframe::run_native(

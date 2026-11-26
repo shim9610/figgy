@@ -349,18 +349,26 @@ impl ContourLabelPipelines {
     /// `locate`/`grid_value` the fragment shader does (one SSoT block), so a label
     /// cannot land on a grid the lines were not drawn from.
     pub fn new(device: &wgpu::Device, field_bgl: &wgpu::BindGroupLayout) -> Self {
-        Self::new_by_set(device, field_bgl, crate::shader_assembly::ShaderSet::Full)
+        // A standalone engine has no renderer and so no pipeline cache (#478).
+        Self::new_by_set(
+            device,
+            None,
+            field_bgl,
+            crate::shader_assembly::ShaderSet::Full,
+        )
     }
 
     /// [`Self::new`] from the modules assembled for `cuts` (#299): the
     /// renderer's own label pipelines follow its shader set.
     pub(crate) fn new_by_set(
         device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
         field_bgl: &wgpu::BindGroupLayout,
         set: crate::shader_assembly::ShaderSet,
     ) -> Self {
         Self::with_anchor_source(
             device,
+            cache,
             field_bgl,
             CONTOUR_ANCHOR_SHADER_BY_SET.of(set).source,
             CONTOUR_LABEL_SHADER_BY_SET.of(set).source,
@@ -370,6 +378,7 @@ impl ContourLabelPipelines {
 
     fn with_anchor_source(
         device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
         field_bgl: &wgpu::BindGroupLayout,
         anchor_source: &str,
         label_source: &str,
@@ -440,6 +449,7 @@ impl ContourLabelPipelines {
         let pipeline = |entry: &str, label: &str| {
             crate::gpu_compile::compute_pipeline(
                 &device,
+                cache,
                 &wgpu::ComputePipelineDescriptor {
                     label: Some(label),
                     layout: Some(&anchor_layout),
@@ -547,6 +557,7 @@ impl ContourLabelPipelines {
         }
         Self::with_anchor_source(
             device,
+            None,
             field_bgl,
             &source,
             CONTOUR_LABEL_SHADER.source,
@@ -568,6 +579,19 @@ impl ContourLabelPipelines {
         target_format: wgpu::TextureFormat,
         sample_count: u32,
     ) -> wgpu::RenderPipeline {
+        self.render_pipeline_cached(device, None, transform_bgl, target_format, sample_count)
+    }
+
+    /// [`Self::render_pipeline`] through `cache`, the renderer's pipeline
+    /// cache (#478).
+    pub(crate) fn render_pipeline_cached(
+        &self,
+        device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
+        transform_bgl: &wgpu::BindGroupLayout,
+        target_format: wgpu::TextureFormat,
+        sample_count: u32,
+    ) -> wgpu::RenderPipeline {
         let layout = crate::gpu_compile::pipeline_layout(
             &device,
             &wgpu::PipelineLayoutDescriptor {
@@ -580,6 +604,7 @@ impl ContourLabelPipelines {
         // buffer the anchor pass (or a host override) wrote.
         crate::gpu_compile::render_pipeline(
             &device,
+            cache,
             &wgpu::RenderPipelineDescriptor {
                 label: Some("figgy contour label pipeline"),
                 layout: Some(&layout),

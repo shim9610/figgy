@@ -1035,6 +1035,7 @@ impl Renderer {
         // compile only when this export actually draws with them.
         let mut export_target_pipelines = create_target_pipelines(
             &self.device,
+            self.pipeline_cache.as_ref(),
             &self.texture_bgl,
             &self.transform_bgl,
             &self.style_bgl,
@@ -1046,6 +1047,7 @@ impl Renderer {
         self.ensure_contour_label_pipelines(items);
         export_target_pipelines.ensure_surface_pipelines(
             &self.device,
+            self.pipeline_cache.as_ref(),
             &self.transform_bgl,
             &self.style_bgl,
             &self.field_bgl,
@@ -1055,6 +1057,7 @@ impl Renderer {
         );
         export_target_pipelines.ensure_ternary_region_pipelines(
             &self.device,
+            self.pipeline_cache.as_ref(),
             &self.transform_bgl,
             &self.region_bgl,
             export_format,
@@ -1062,6 +1065,7 @@ impl Renderer {
         );
         export_target_pipelines.ensure_styles_for_items(
             &self.device,
+            self.pipeline_cache.as_ref(),
             &self.queue,
             &self.transform_bgl,
             &self.style_bgl,
@@ -1079,6 +1083,7 @@ impl Renderer {
         // fall back to the plain contour pass, as in `prepare` (#465).
         export_target_pipelines.ensure_precise_variants_for_items(
             &self.device,
+            self.pipeline_cache.as_ref(),
             &self.transform_bgl,
             &self.style_bgl,
             &self.per_point_style_map_bgl,

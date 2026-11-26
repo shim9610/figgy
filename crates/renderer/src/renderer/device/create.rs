@@ -4,6 +4,7 @@ use super::*;
 
 pub(in crate::renderer) fn create_target_pipelines(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     texture_bgl: &wgpu::BindGroupLayout,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
@@ -15,6 +16,7 @@ pub(in crate::renderer) fn create_target_pipelines(
     let mut observer = |_| {};
     create_target_pipelines_observed(
         device,
+        cache,
         texture_bgl,
         transform_bgl,
         style_bgl,
@@ -29,6 +31,7 @@ pub(in crate::renderer) fn create_target_pipelines(
 #[allow(clippy::too_many_arguments)]
 pub(in crate::renderer) fn create_target_pipelines_observed(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     texture_bgl: &wgpu::BindGroupLayout,
     _transform_bgl: &wgpu::BindGroupLayout,
     _style_bgl: &wgpu::BindGroupLayout,
@@ -48,6 +51,7 @@ pub(in crate::renderer) fn create_target_pipelines_observed(
         || {
             data_render::create_fullscreen_textured_pipeline_with_sample_count(
                 device,
+                cache,
                 &shaders.fullscreen,
                 texture_bgl,
                 surface_format,
@@ -61,6 +65,7 @@ pub(in crate::renderer) fn create_target_pipelines_observed(
 #[allow(clippy::too_many_arguments)]
 pub(in crate::renderer) async fn create_target_pipelines_observed_async(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     texture_bgl: &wgpu::BindGroupLayout,
     _transform_bgl: &wgpu::BindGroupLayout,
     _style_bgl: &wgpu::BindGroupLayout,
@@ -106,6 +111,7 @@ pub(in crate::renderer) async fn create_target_pipelines_observed_async(
         || {
             data_render::create_fullscreen_textured_pipeline_with_sample_count(
                 device,
+                cache,
                 &shaders.fullscreen,
                 texture_bgl,
                 surface_format,

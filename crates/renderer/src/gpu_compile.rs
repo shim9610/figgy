@@ -178,11 +178,19 @@ pub(crate) fn pipeline_layout(
     result
 }
 
+/// Create a compute pipeline through `cache`, the renderer's pipeline cache
+/// (#478), or none. `desc.cache` is replaced by it, so a call site never
+/// picks a cache of its own.
 #[inline]
 pub(crate) fn compute_pipeline(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     desc: &wgpu::ComputePipelineDescriptor<'_>,
 ) -> wgpu::ComputePipeline {
+    let desc = &wgpu::ComputePipelineDescriptor {
+        cache,
+        ..desc.clone()
+    };
     #[cfg(all(test, not(target_arch = "wasm32")))]
     let started = std::time::Instant::now();
     #[cfg(not(target_arch = "wasm32"))]
@@ -191,14 +199,22 @@ pub(crate) fn compute_pipeline(
     let result = device.create_compute_pipeline(desc);
     #[cfg(all(test, not(target_arch = "wasm32")))]
     capture::compute(desc, started.elapsed());
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    capture::cache_use(desc.label, desc.cache.is_some());
     result
 }
 
+/// Create a render pipeline through `cache`, as [`compute_pipeline`] does.
 #[inline]
 pub(crate) fn render_pipeline(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     desc: &wgpu::RenderPipelineDescriptor<'_>,
 ) -> wgpu::RenderPipeline {
+    let desc = &wgpu::RenderPipelineDescriptor {
+        cache,
+        ..desc.clone()
+    };
     #[cfg(all(test, not(target_arch = "wasm32")))]
     let started = std::time::Instant::now();
     #[cfg(not(target_arch = "wasm32"))]
@@ -207,6 +223,8 @@ pub(crate) fn render_pipeline(
     let result = device.create_render_pipeline(desc);
     #[cfg(all(test, not(target_arch = "wasm32")))]
     capture::render(desc, started.elapsed());
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    capture::cache_use(desc.label, desc.cache.is_some());
     result
 }
 
@@ -250,6 +268,7 @@ mod compile_thread_tests {
                 let health = DeviceHealth::watch(&device, DeviceOrigin::SuppliedByHost);
                 let _pipeline = compute_pipeline(
                     &device,
+                    None,
                     &wgpu::ComputePipelineDescriptor {
                         label: Some("compile thread probe"),
                         layout: None,
@@ -282,6 +301,7 @@ mod compile_thread_tests {
         let result = gpu_checked(&device, "compile thread probe", || {
             compute_pipeline(
                 &device,
+                None,
                 &wgpu::ComputePipelineDescriptor {
                     label: Some("compile thread probe"),
                     layout: None,

@@ -85,6 +85,8 @@ pub(super) struct PrepareContext<'a> {
     /// preparation (a pick) evicts as before.
     pub(super) in_frame: bool,
     pub(super) device: &'a wgpu::Device,
+    /// The renderer's pipeline cache (#478).
+    pub(super) pipeline_cache: &'a Option<wgpu::PipelineCache>,
     pub(super) queue: &'a wgpu::Queue,
     pub(super) caps: &'a RendererDeviceCaps,
     pub(super) pool: &'a ColumnPool,
@@ -226,6 +228,7 @@ impl PrepareContext<'_> {
         self.ensure_contour_label_pipelines(items);
         self.pipelines.ensure_surface_pipelines(
             &self.device,
+            self.pipeline_cache.as_ref(),
             &self.transform_bgl,
             &self.style_bgl,
             &self.field_bgl,
@@ -235,6 +238,7 @@ impl PrepareContext<'_> {
         );
         self.pipelines.ensure_ternary_region_pipelines(
             &self.device,
+            self.pipeline_cache.as_ref(),
             &self.transform_bgl,
             self.region_bgl,
             self.surface_format,
@@ -242,6 +246,7 @@ impl PrepareContext<'_> {
         );
         self.pipelines.ensure_styles_for_items(
             &self.device,
+            self.pipeline_cache.as_ref(),
             &self.queue,
             &self.transform_bgl,
             &self.style_bgl,
@@ -263,6 +268,7 @@ impl PrepareContext<'_> {
         // Nothing before this point reads a target pipeline.
         self.pipelines.ensure_precise_variants_for_items(
             &self.device,
+            self.pipeline_cache.as_ref(),
             &self.transform_bgl,
             &self.style_bgl,
             &self.per_point_style_map_bgl,
@@ -567,9 +573,9 @@ impl PrepareContext<'_> {
                 let series_list: Vec<_> = item.series.iter().map(PreparedSeries::layers).collect();
                 let own = item.own_piece_layers();
                 let all = super::composite::PieceSeries::of(&series_list, &own);
-                let pipeline = self
-                    .ink_mask_pipeline
-                    .get_or_insert_with(|| InkMaskPipeline::new(self.device));
+                let pipeline = self.ink_mask_pipeline.get_or_insert_with(|| {
+                    InkMaskPipeline::new(self.device, self.pipeline_cache.as_ref())
+                });
                 let source = pipeline.source(self.device, &layer_view);
                 let mask_view = self.ink_masks[mask]
                     .texture

@@ -460,6 +460,7 @@ impl PrepareContext<'_> {
             *self.contour_label_pipelines =
                 Some(crate::gpu_contour::ContourLabelPipelines::new_by_set(
                     &self.device,
+                    self.pipeline_cache.as_ref(),
                     &self.field_bgl,
                     self.pipelines.shaders.set,
                 ));
@@ -735,6 +736,7 @@ impl PrepareContext<'_> {
             *self.contour_label_pipelines =
                 Some(crate::gpu_contour::ContourLabelPipelines::new_by_set(
                     &self.device,
+                    self.pipeline_cache.as_ref(),
                     &self.field_bgl,
                     self.pipelines.shaders.set,
                 ));
@@ -791,6 +793,7 @@ impl PrepareContext<'_> {
             *self.contour_label_pipelines =
                 Some(crate::gpu_contour::ContourLabelPipelines::new_by_set(
                     &self.device,
+                    self.pipeline_cache.as_ref(),
                     &self.field_bgl,
                     self.pipelines.shaders.set,
                 ));

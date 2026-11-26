@@ -177,6 +177,7 @@ impl Renderer {
         }
         let mut pipelines = create_target_pipelines(
             &self.device,
+            None,
             &self.texture_bgl,
             &self.transform_bgl,
             &self.style_bgl,
@@ -193,6 +194,7 @@ impl Renderer {
             .collect();
         pipelines.ensure_precise_variants_for_items(
             &self.device,
+            None,
             &self.transform_bgl,
             &self.style_bgl,
             &self.per_point_style_map_bgl,
@@ -216,6 +218,7 @@ impl Renderer {
         );
         pipelines.ensure_styles_for_items(
             &self.device,
+            None,
             &self.queue,
             &self.transform_bgl,
             &self.style_bgl,

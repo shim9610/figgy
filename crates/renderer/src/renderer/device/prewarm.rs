@@ -98,6 +98,7 @@ impl TargetPipelines {
                     if self.tri_mesh[pass as usize].is_none() {
                         prewarm_step!(pass.label(), || self.ensure_tri_mesh_pass(
                             layouts.device,
+                            layouts.cache,
                             layouts.tri_mesh(pass),
                             layouts.surface_format,
                             pass,
@@ -111,7 +112,7 @@ impl TargetPipelines {
         // full prewarm creates it, never a feature's preparation.
         if feature.is_none() && self.category_stack_fit.is_none() {
             prewarm_step!("category stack extent", || self
-                .ensure_category_stack_fit(layouts.device));
+                .ensure_category_stack_fit(layouts.device, layouts.cache));
         }
 
         for (key, stage) in [
@@ -127,6 +128,7 @@ impl TargetPipelines {
                 create_style_set(
                     key,
                     layouts.device,
+                    layouts.cache,
                     queue,
                     &self.shaders,
                     layouts.transform_bgl,
