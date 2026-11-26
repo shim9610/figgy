@@ -130,9 +130,12 @@ redoes only the annotation layer (its underlay and overlay textures). Registered
 charts report that edit through `ChartRenderStamp::needs_annotation_raster_since`
 (see [the annotation layer](INTERACTION.md#annotation-layer)).
 
-Constructors initialize base resources; they do not eagerly populate every
-pipeline cache. Use explicit `prewarm_all` or detached preparation when needed,
+Constructors initialize base resources; they do not create every pipeline in
+advance. Use explicit `prewarm_all` or detached preparation when needed,
 following the [constructor/prewarm table](API.md#construction-and-prewarming).
+On native, a device bundle creates pipelines through a wgpu pipeline cache
+when the device has `Features::PIPELINE_CACHE`; a host can save its bytes and
+load them in the next run ([pipeline cache](API.md#pipeline-cache-native)).
 `set_memory_budget` is a policy for checked allocations, not a hard VRAM ceiling;
 the [budget contract](API.md#gpu-memory-accounting-and-budget-scope) lists its
 initial-pool behavior, tracked lifetime and exclusions.
@@ -207,6 +210,12 @@ let mut items = [ChartDrawItem {
 }];
 renderer.draw(Color::WHITE, &mut items).unwrap();   // acquire surface frame → prepare (redraws a stale raster) → encoder → pass → paint_prepared → submit → present
 ```
+
+A real loop handles `draw`'s errors instead of unwrapping them: an acquire
+failure is `FiggyError::SurfaceAcquireFailed { kind, .. }`, where `kind` says
+whether to skip the frame, resize or rebuild the renderer, and a lost device
+is `FiggyError::DeviceLost` ([Errors](API.md#errors)). `winit_simple.rs`
+handles each case.
 
 ### `ColumnSource` — the data adapter trait
 
@@ -886,7 +895,10 @@ either direction as `DataRenderType::CategoryBars` series over a categorical
 axis, laid out by `Config.bar_groups`. Their positions and values are columns
 uploaded through `ColumnSource`; streamed sources are rejected. Per-bar
 colours, materials, rounding and outlines are per-bar overrides on the
-series, and a bar is picked and selected like a histogram bin.
+series, and a bar is picked and selected like a histogram bin. The
+renderer's fits span a stacked group to its tallest actual stack, measured on
+the GPU; a browser's synchronous fits use a wider bound from the column
+statistics ([details](API.md#entry-points-and-input-contracts)).
 `Config::from_categorical` opens a legacy `CategoricalChart` document as such
 a chart. See the [bar guide](CATEGORICAL.md) or run
 `cargo run -p figgy-renderer --example categorical_gallery -- target/categorical-gallery`.
@@ -1395,9 +1407,11 @@ iced 0.14는 wgpu 27을 사용하므로, wgpu 30과 호환되는 iced 버전이 
 `ChartRenderStamp::needs_annotation_raster_since`로 이 편집을 확인한다
 ([주석 층](INTERACTION.md#annotation-layer)).
 
-생성자는 기본 자원만 초기화하며 모든 파이프라인 캐시를 미리 채우지는 않는다. 필요하면
+생성자는 기본 자원만 초기화하며 모든 파이프라인을 미리 만들지는 않는다. 필요하면
 `prewarm_all`이나 분리 준비 경로를 명시적으로 사용한다
-([생성자·사전 준비 표](API.md#construction-and-prewarming)). `set_memory_budget`은 검사를
+([생성자·사전 준비 표](API.md#construction-and-prewarming)). 네이티브에서 장치에
+`Features::PIPELINE_CACHE`가 있으면 장치 묶음은 wgpu 파이프라인 캐시를 거쳐 파이프라인을 만든다.
+호스트는 그 바이트를 저장했다가 다음 실행에서 불러올 수 있다([파이프라인 캐시](API.md#pipeline-cache-native)). `set_memory_budget`은 검사를
 거치는 할당에 적용하는 정책이며 VRAM의 절대 상한이 아니다. 초기 풀 처리, 추적 기간, 제외
 항목은 [예산 계약](API.md#gpu-memory-accounting-and-budget-scope)에 있다.
 
@@ -1469,6 +1483,11 @@ let mut items = [ChartDrawItem {
 }];
 renderer.draw(Color::WHITE, &mut items).unwrap();   // surface frame 획득 → prepare(오래된 래스터를 다시 그림) → encoder → pass → paint_prepared → submit → present
 ```
+
+실제 루프에서는 `draw`의 오류를 unwrap하지 않고 처리한다. 화면 텍스처를 얻지 못하면
+`FiggyError::SurfaceAcquireFailed { kind, .. }`이고, `kind`가 프레임을 건너뛸지, 크기를 다시
+맞출지, 렌더러를 다시 만들지 알려 준다. 장치를 잃으면 `FiggyError::DeviceLost`다
+([오류](API.md#errors)). `winit_simple.rs`가 각 경우를 처리한다.
 
 <a id="columnsource--데이터-어댑터-trait"></a>
 <a id="columnsource--데이터-어댑터-트레이트"></a>
@@ -2003,7 +2022,9 @@ x에서 픽셀로의 매핑(x 범위, 장치 픽셀 단위 플롯 너비, x 방�
 범주형 막대는 직교 좌표 `Renderer`가 범주형 축 위에 그리는 `DataRenderType::CategoryBars` 시리즈다.
 가로·세로 묶음, 누적, 100% 누적은 `Config.bar_groups`로 정하고, 위치와 값은 `ColumnSource`로 올린
 컬럼에서 읽으며, 스트리밍 소스는 거부한다. 막대별 색·재질·둥근 모서리·외곽선은 시리즈에 막대별로
-덮어쓰는 값이고, 막대 하나는 히스토그램 구간처럼 선택한다. 예전 `CategoricalChart` 문서는
+덮어쓰는 값이고, 막대 하나는 히스토그램 구간처럼 선택한다. 렌더러의 맞춤은 누적 묶음을 GPU로 잰
+실제 누적값 중 가장 높은 것까지 맞춘다. 브라우저의 동기 맞춤은 컬럼 통계에서 얻은 더 넓은 경계를 쓴다
+([자세히](API.md#entry-points-and-input-contracts)). 예전 `CategoricalChart` 문서는
 `Config::from_categorical`로 연다.
 [API 사용법](CATEGORICAL.md#한국어-사용법)을 참고하거나
 `cargo run -p figgy-renderer --example categorical_gallery -- target/categorical-gallery`로 예제 PNG를 만든다.

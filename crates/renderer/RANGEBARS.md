@@ -263,8 +263,10 @@ link's pick: a range link hit (`PickedData::HistogramBin`) carries
 `extent_px`, its predecessor's drawn length in display pixels (a range bar
 hit carries its own), which the host divides by the display scale. Without
 a length the drag cannot be converted and is rejected.
-`set_link_exit_offset(index, fraction)` sets one link's exit directly,
-`0..=1`. In the browser, `press_range_link(series_id, index, extent_px)`
+`set_link_exit_offset(index, Some(fraction))` sets one link's exit
+directly, `0..=1`, and `None` clears it for the next layout; it returns
+`false`, changing nothing, for an index past the links or a fraction
+outside `0..=1`. In the browser, `press_range_link(series_id, index, extent_px)`
 after a `pick_data` hit (`hit.extent_px`) starts the drag, `on_move` moves
 the exit along the value axis as it runs on screen (an inverted axis
 included) and `on_release` ends it; `set_link_exit_offset` is the twin of
@@ -282,6 +284,12 @@ and serialize with every unset option omitted.
 
 [range_bars.rs](examples/range_bars.rs) draws a waterfall, a candlestick
 chart and a Gantt chart (`gallery-waterfall.png`, `gallery-candlestick.png`,
-`gallery-gantt.png`). The playground's *Waterfall (range bars)*,
-*Candlesticks (range bars)* and *Gantt (range bars)* scenes build each chart
-interactively.
+`gallery-gantt.png`), and the default timeline look without a theme
+(`timeline.png` and `timeline@2x.png`). The playground's *Waterfall (range
+bars)*, *Candlesticks (range bars)* and *Gantt (range bars)* scenes build
+each chart interactively.
+
+```sh
+cargo run --locked -p figgy-renderer --example range_bars -- target/range-bars
+cargo test --locked -p figgy-renderer --features serde --test range_bars_render
+```

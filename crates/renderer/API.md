@@ -144,9 +144,10 @@ A monotonic chart takes no Feynman series: `register_monotonic_chart` and
 | `resize(chart_area, plot_area, surface, &[MonotonicGroupRef])` | The resize: the chart area, the plot (data area) a plot-area resize proposes (`None` keeps the margins), the display surface (`None`: no display). A group whose series move to other device pixels is reduced again from its source in the same call. Atomic: without a source a moved group needs, refused with `FiggyError::MonotonicSourceRequired`, and nothing changes; a plot rect the margins cannot place: `RuleKind::NoFeasibleLayout`. |
 | `fit_layout(&[MonotonicGroupRef])` | Applies `layout::auto_layout`, measured with the chart's font. It can move the plot's edges, so it takes the sources of the groups it moves, refused as `resize` is without them. |
 | `edit_config(\|editor\| ..) -> R` | Edits the document through a `MonotonicConfig` (read access to the whole `Config`; editors for the legend, titles, grid, annotations, selection, active layer, backgrounds, axes' titles, labels, ticks and lines, y ranges, overlays and subplots; `nudge` and `drag` for decorations; `assign` for a whole document). No setter writes the x range, x scale, breaks, direction or the chart or plot area; an edit that would move them (`monotonic::same_mapping` is false) is refused with `FiggyError::InvalidConfig { kind: RuleKind::MonotonicMappingEdit, .. }` and changes nothing. |
-| `set_series(series)` | Replaces the series; a style or width edit needs no source. |
-| `step_selection(dx, dy)`, `set_selection(hit)` | The selection: a monotonic point steps over the kept points. |
-| `pick_data(request)`, `pick(request)`, `prepare_picking()` | GPU picks; a monotonic series reports the logical sample index of a kept point. |
+| `set_series(series)` | Replaces the series; a style or width edit needs no source. A Feynman series is refused (`RuleKind::MonotonicFeynman`). |
+| `id()`, `config()`, `series()` | The handle, the document and the series, read only. |
+| `step_selection(dx, dy)`, `set_selection(hit)`, `set_snap_guides(guides)` | The selection: a monotonic point steps over the kept points. The snap guides of a decoration drag are chrome only. |
+| `pick_data(request)`, `pick(request)`, `pick_nearest(request)`, `prepare_picking()` | GPU picks; a monotonic series reports the logical sample index of a kept point. |
 | `remove()` | Removes the chart, its envelopes and their columns. |
 
 Reads take `&Renderer`: `monotonic_config`, `monotonic_series`,

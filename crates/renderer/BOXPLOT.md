@@ -401,7 +401,7 @@ notch and mean with a selected box) from synthetic documents opened through
 the reader, and two designed scenes built from box plot series directly:
 `gallery-violin.png` (split violins, two conditions per category) and
 `gallery-raincloud.png` (horizontal rainclouds: a half violin above a narrow
-box, the raw samples jittered below it). The playground's Cartesian `BoxPlot` scene edits the series
+box, the raw samples jittered below it). The playground's *Box plot* scene edits the series
 style. The browser test `crates/web/tests/boxplot_document_browser.rs` opens a
 document in `FiggyChart`.
 

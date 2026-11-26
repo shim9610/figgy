@@ -1509,7 +1509,7 @@ spliced after `material.wgsl` into the radial draw module and the radial
 pick module by `assembled!` (`radial.rs`). `radial.wgsl` marks where each
 block was taken from with a one-line comment.
 
-### 5.13 Category bars (group 3, bindings 8 to 10)
+### 5.13 Category bars (group 3, bindings 8 to 11)
 
 The bars of a `DataRenderType::CategoryBars` series: one instance per
 category (a row of the series' columns), six vertices each
@@ -1594,7 +1594,8 @@ the selection and the pick all call it:
   share of the category slot (position ± 0.5).
 - Stacked: positive and negative values stack away from zero separately,
   each from the sum of the earlier members' values of the same sign at the
-  same row, read by their lanes in a loop over `members`.
+  same row, read by their lanes in a loop over the members before it
+  (`category_stack(row, member)`).
 - Percent: every value is divided by the row's total of positive values,
   normalized by the largest value first so the total stays finite; the
   top of a stack is exactly 100. A row without a positive total, or a
@@ -1632,9 +1633,16 @@ host budgets it (`category_bars_render`'s
 `a_forty_series_group_over_fifty_categories_draws_and_picks` measures it).
 
 Nothing per bar is stored anywhere: the CPU keeps the pool lane bases and
-the group layout. The value axis fit reads only the value columns' own
-statistics (`ColumnSlot::min` / `max`); the per-category totals exist only
-in this shader, on every draw.
+the group layout. A grouped or percent group's value axis fit reads only
+the value columns' own statistics (`ColumnSlot::min` / `max`). A stacked
+group's fit (#466) runs the compute entry `reduce_category_stacks` in
+`bar_columnar.wgsl`: one invocation per category (two dimensions past
+65535 workgroups) calls `category_stack(row, members)`, the draw's own
+arithmetic over every member, and folds the positive and negative sums
+with `atomicMax` / `atomicMin` of their order-preserving bits
+(`data_pick_ordered_bits`) into `category_stack_extent`, group 3 binding
+11, two `atomic<u32>`. Only those two words are read back; the
+per-category totals are never stored.
 
 ### 5.14 Records, ragged and triangle columns in the pool
 

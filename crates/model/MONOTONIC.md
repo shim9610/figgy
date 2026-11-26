@@ -102,8 +102,10 @@ Register a chart with monotonic series through
 `MonotonicChartId`, and `Renderer::monotonic_chart(id)` lends a
 `MonotonicChart` with the chart's calls. The chart may hold ordinary
 series too, but no Feynman series: registration and `set_series` refuse
-one with `RuleKind::MonotonicFeynman`
-([#468](https://github.com/shim9610/figgy/issues/468)). A diagram's drags
+one with `FiggyError::InvalidSeriesConfig { series_id, kind:
+RuleKind::MonotonicFeynman }` ("a monotonic chart takes no Feynman
+series", [#468](https://github.com/shim9610/figgy/issues/468)) and change
+nothing. A diagram's drags
 are general chart calls, so it lives on a general chart.
 
 Each channel you draw is its own series, with its own id, label, colour,
@@ -646,7 +648,9 @@ M1–M7.
 단조 시리즈가 있는 차트는 `Renderer::register_monotonic_chart(config, series)`로 등록한다. 이
 호출은 `MonotonicChartId`를 돌려주고, `Renderer::monotonic_chart(id)`가 차트 호출을 담은
 `MonotonicChart`를 빌려준다. 차트에 일반 시리즈를 함께 넣어도 되지만 Feynman 시리즈는 넣을 수
-없다. 등록과 `set_series`는 Feynman 시리즈를 `RuleKind::MonotonicFeynman`으로 거부한다(#468).
+없다. 등록과 `set_series`는 Feynman 시리즈를
+`FiggyError::InvalidSeriesConfig { series_id, kind: RuleKind::MonotonicFeynman }`("a monotonic chart
+takes no Feynman series")으로 거부하고 아무것도 바꾸지 않는다(#468).
 다이어그램 드래그는 일반 차트 호출이므로 다이어그램은 일반 차트에 둔다.
 
 그리는 채널마다 시리즈가 하나씩이며 각자 id, 라벨, 색, 스타일, 범례 항목을 가진다.
