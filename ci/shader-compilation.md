@@ -225,7 +225,59 @@ complete:
 
 Later frames are unchanged (about 40 ms in the browser, 6 ms natively). The
 polar heatmap's browser time is the full set's contour fragment, which still
-carries the walk; it is the next issue.
+carries the walk; #465 below reduces it.
+
+## The full set's field entries (#465)
+
+A compiler that inlines every call compiles each call site again, and the
+full set's axis transform (`axis_pair_to_t`, with the probability scales and
+axis breaks) is the largest part of every field entry. `axis_t` called it in
+a branch per axis and `boundary_t` called `axis_t` in a branch per lattice,
+and the contour pick searched the sample lattice twice (`contour_sample`,
+then its own `locate` pair). Now `axis_t` has one call site with its
+arguments chosen per axis, `boundary_t` one with the pair chosen per
+lattice, and `locate_sample_cells` searches both axes in one flat loop with
+one call site of each search function; the contour pick and the floor
+contour pick name the cells it returns. Inlined copies of `axis_pair_to_t`
+in the full set: `fs_contour` 56 → 12, `fs_contour_labelled` 60 → 16,
+`fs_floor_contour` 56 → 12, `pick_field_contour` 84 → 16
+(`the_field_entries_inline_one_axis_transform_per_boundary`). Frames,
+exports at 1x and 2x and picks are byte-identical.
+
+Pipeline creation in Chromium 158 + SwiftShader, full set, before → after
+(`ci/shader_compile.cjs`, one run; a fragment entry's code generation at its
+first draw comes on top):
+
+| Entry | before | after |
+|---|---:|---:|
+| `fs_main` | 3.25 s | 1.53 s |
+| `fs_contour` | 4.57 s | 1.58 s |
+| `fs_contour_labelled` | 5.07 s | 1.79 s |
+| `fs_floor_contour` | 5.06 s | 1.53 s |
+| `fs_floor_contour_pick` | 5.90 s | 1.94 s |
+| `fs_data_selection` | 8.48 s | 3.40 s |
+| `pick_field_contour` | 12.81 s | 6.10 s |
+| `pick_field_cell` | 9.09 s | 4.86 s |
+| `anchor_step` | 1.71 s | 0.40 s |
+| `anchor_project` | 2.64 s | 1.02 s |
+
+First complete frame, median of three, 4-core container, headed Chromium 158
+with SwiftShader under Xvfb (the `figgy` wrapper, `first_frame_ready` after
+`set_series`) and native lavapipe, Mesa 25.2.8 (the first `export_rgba` at 1x,
+shader cache off):
+
+| Scene | Browser, before | after | lavapipe, before | after |
+|---|---:|---:|---:|---:|
+| Polar heatmap with labelled contours | 34.8 s | 14.1 s | 5.95 s | 4.56 s |
+| Polar contours with a selected level | 23.6 s | 6.9 s | 6.77 s | 3.91 s |
+| 2D field with labelled contours | 4.4 s | 2.7 s | 1.49 s | 1.11 s |
+| 2D contours with a selected level | 1.43 s | 0.65 s | 0.80 s | 0.70 s |
+
+Later frames are unchanged (2 to 6 ms in the browser). The first pick of the
+polar contour scene, after the compile queue settles, takes 10.9 s instead of
+20.2 s in the browser (one run each; one of three earlier runs before the
+change lost the device); the polar heatmap's first pick stays at about
+10.5 s.
 
 ## Exact pick variant table (#363, removed in #381)
 
@@ -317,6 +369,12 @@ scan의 `seg_init_3d`는 3D 차트의 선에만 만든다. 결과 픽셀과 픽�
 필드가 12.8초에서 5.9초로, 3D 곡면이 9.4초에서 5.1초로 줄었다. lavapipe에서는 2D 등고선 필드가 8.5초에서 1.5초로,
 극좌표 히트맵이 14.0초에서 7.0초로 줄었다. 브라우저의 극좌표 히트맵(약 36초)은 full 세트의 등고선 프래그먼트가 원인이며
 다음 이슈에서 다룬다.
+
+#465에서는 full 세트의 field 진입점이 축 변환(`axis_pair_to_t`, 확률 눈금과 축 끊김 포함)을 호출 자리마다 다시
+인라인하던 것을 줄였다. `axis_t`와 `boundary_t`는 분기마다 따로 호출하던 것을 호출 한 번으로 바꿨고, 표본 격자 검색은
+`locate_sample_cells`의 평탄한 반복문 하나로 두 축을 찾는다. 등고선 픽은 같은 셀을 두 번 찾지 않는다. 결과 픽셀과 픽은
+바이트 단위로 같다. 브라우저 첫 프레임은 극좌표 히트맵이 34.8초에서 14.1초로, 극좌표 등고선이 23.6초에서 6.9초로
+줄었다.
 
 데이터 픽 커널(#363) 중 violin·value label·category bar·range bar·box 커널은 투영 함수
 `data_to_ndc`를 분기와 끝점마다 따로 인라인하던 것을 짧은 반복문 안의 한 번 호출로 바꿨다.

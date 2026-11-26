@@ -97,8 +97,29 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
     1.5 s; 3D surface 9.4 s → 5.1 s and 1.7 s → 1.3 s; polar heatmap with
     contours 35.6 s → 36.3 s and 14.0 s → 7.0 s. TriSurface, the 3D quiver,
     the 2D vector field and the path-arrow lines change by less than run-to-run
-    noise (at most 0.3 s). The polar contour fragment of the full set stays
-    heavy in the browser; it is the next issue.
+    noise (at most 0.3 s). The polar contour fragment of the full set stayed
+    heavy in the browser; the #465 entry above reduces it.
+
+- **Faster first frames for polar contours: the full set's field entries
+  inline the axis transform once per call site**
+  ([#465](https://github.com/shim9610/figgy/issues/465), item 3). Frames,
+  exports at 1x and 2x and picks are byte-identical; later frames are
+  unchanged. No API or wire change.
+  - `axis_t` calls `axis_pair_to_t` once with its arguments chosen per
+    axis, and `boundary_t` calls `axis_t` once with the pair chosen per
+    lattice. The full set's transform carries the probability scales and
+    axis breaks, and a software GPU compiler inlines it at every call site.
+  - `locate_sample_cells` searches the sample lattice along both axes in one
+    flat loop with one call site of each search function. `contour_sample`
+    uses it, and the contour pick and the floor contour pick name the cells
+    it returns instead of searching again.
+  - Inlined copies of the transform in the full set: `fs_contour` 56 → 12,
+    `pick_field_contour` 84 → 16.
+  - First complete frame in headed Chromium 158 on SwiftShader, median of
+    three, before → after: polar heatmap with labelled contours 34.8 s →
+    14.1 s, polar contours 23.6 s → 6.9 s, 2D field with labelled contours
+    4.4 s → 2.7 s. On lavapipe: 5.95 s → 4.56 s, 6.77 s → 3.91 s and
+    1.49 s → 1.11 s ([shader compilation](ci/shader-compilation.md)).
 
 - **A large categorical axis validates and places its labels in linear
   time** ([#450](https://github.com/shim9610/figgy/issues/450)). Same
