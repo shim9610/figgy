@@ -1287,6 +1287,12 @@ impl Draggable<RadialChart> for RadialDecoration {
             None => NudgeResult::Rejected(NudgeReject::OutOfBounds),
         }
     }
+    /// The decoration policy of the snap (#440): every decoration but the
+    /// plot region snaps while it drags, as
+    /// [`DecorationElement`]'s `Draggable` says.
+    fn snaps(&self, chart: &RadialChart) -> bool {
+        Draggable::<model::DecorationLayout>::snaps(&self.nudge_element(), &chart.decorations)
+    }
 }
 impl Resizable<RadialChart> for RadialDecoration {
     fn resize_targets(
@@ -1364,8 +1370,9 @@ pub(super) enum Labels<'a> {
     /// Nowhere: the frame's sectors and hit map only.
     None,
     /// Into the frame's label raster, inside labels at rest while the shader
-    /// lifts them, with the selected decoration's selection box.
-    Raster,
+    /// lifts them, with the selected decoration's selection box and the
+    /// snap guides of the drag in progress (#440, #465).
+    Raster(crate::layout::SnapGuides),
     /// Into `sink` in logical pixels, inside labels at their lifted place,
     /// without a selection box: the vector export.
     Into(&'a mut dyn Sink),
@@ -1377,7 +1384,11 @@ pub(super) fn layout(
     scale: f32,
     labels: Labels<'_>,
 ) -> Result<Layout, RadialError> {
-    let annotate = matches!(labels, Labels::Raster);
+    let guides = match labels {
+        Labels::Raster(guides) => Some(guides),
+        _ => None,
+    };
+    let annotate = guides.is_some();
     let w = size.0 as f32;
     let h = size.1 as f32;
     let mut canvas = Canvas::new(
@@ -1428,7 +1439,7 @@ pub(super) fn layout(
     let mut raster = None;
     let mut paint: Option<&mut dyn Sink> = match labels {
         Labels::None => None,
-        Labels::Raster => {
+        Labels::Raster(_) => {
             let sink: &mut dyn Sink = raster.insert(CanvasSink::placed(
                 None,
                 Some(&mut canvas),
@@ -1517,6 +1528,9 @@ pub(super) fn layout(
             && let Some(id) = out.decorations.find(&selected.element_id())
             && let Some(selection) = out.decorations.selection_box(id, chart, &measure)
         {
+            // The guides of the drag in progress go with the selection box
+            // (#440); an export lays out without them (`Labels::Into`).
+            let selection = selection.with_snap_guides(guides.unwrap_or_default());
             crate::axis_render::draw_selection_box(&mut canvas, &selection, [0.0, 0.0], scale);
         }
         out.annotations = canvas.into_rgba();
@@ -1637,7 +1651,13 @@ mod title_tests {
         };
         c.format_labels();
         let glyphs = |c: &RadialChart, scale: f32| {
-            let l = layout(c, (800, 520), scale, Labels::Raster).unwrap();
+            let l = layout(
+                c,
+                (800, 520),
+                scale,
+                Labels::Raster(crate::layout::SnapGuides::NONE),
+            )
+            .unwrap();
             let label = bounds(&l, c, false).unwrap();
             let ink: Vec<[u8; 3]> = crop(&l.annotations, label, scale)
                 .chunks_exact(4)
@@ -1675,7 +1695,13 @@ mod title_tests {
         c.set_title_text("Independent title");
         c.format_labels();
         for scale in [1., 2.] {
-            let original = layout(&c, (800, 520), scale, Labels::Raster).unwrap();
+            let original = layout(
+                &c,
+                (800, 520),
+                scale,
+                Labels::Raster(crate::layout::SnapGuides::NONE),
+            )
+            .unwrap();
             let tb = bounds(&original, &c, true).unwrap();
             let lb = bounds(&original, &c, false).unwrap();
             let title_ink = crop(&original.annotations, tb, scale);
@@ -1683,7 +1709,13 @@ mod title_tests {
             let saved = c.clone();
             c.font_size *= 1.25;
             c.label_color = Color::new(0.8, 0.1, 0.1, 1.);
-            let labels = layout(&c, (800, 520), scale, Labels::Raster).unwrap();
+            let labels = layout(
+                &c,
+                (800, 520),
+                scale,
+                Labels::Raster(crate::layout::SnapGuides::NONE),
+            )
+            .unwrap();
             assert_eq!(bounds(&labels, &c, true), Some(tb));
             assert_eq!(
                 crop(&labels.annotations, tb, scale),
@@ -1693,7 +1725,13 @@ mod title_tests {
             assert!(bounds(&labels, &c, false).unwrap().height > lb.height);
             c = saved.clone();
             c.chart_title.as_mut().unwrap().text.font_size += 6.;
-            let sized = layout(&c, (800, 520), scale, Labels::Raster).unwrap();
+            let sized = layout(
+                &c,
+                (800, 520),
+                scale,
+                Labels::Raster(crate::layout::SnapGuides::NONE),
+            )
+            .unwrap();
             assert!(bounds(&sized, &c, true).unwrap().height > tb.height);
             let label = bounds(&sized, &c, false).unwrap();
             assert!(
@@ -1702,7 +1740,13 @@ mod title_tests {
             );
             c = saved.clone();
             c.chart_title.as_mut().unwrap().text.color = Color::new(0.1, 0.7, 0.1, 1.);
-            let colored = layout(&c, (800, 520), scale, Labels::Raster).unwrap();
+            let colored = layout(
+                &c,
+                (800, 520),
+                scale,
+                Labels::Raster(crate::layout::SnapGuides::NONE),
+            )
+            .unwrap();
             assert_ne!(crop(&colored.annotations, tb, scale), title_ink);
             assert_eq!(
                 crop(&colored.annotations, lb, scale),
@@ -1712,14 +1756,26 @@ mod title_tests {
             c = saved.clone();
             c.chart_title.as_mut().unwrap().text.segments[0].bold = true;
             c.chart_title.as_mut().unwrap().text.segments[1].superscript = true;
-            let rich = layout(&c, (800, 520), scale, Labels::Raster).unwrap();
+            let rich = layout(
+                &c,
+                (800, 520),
+                scale,
+                Labels::Raster(crate::layout::SnapGuides::NONE),
+            )
+            .unwrap();
             assert_ne!(
                 crop(&rich.annotations, tb, scale),
                 title_ink,
                 "rich text is actually painted"
             );
             c.chart_title.as_mut().unwrap().visible = false;
-            let hidden = layout(&c, (800, 520), scale, Labels::Raster).unwrap();
+            let hidden = layout(
+                &c,
+                (800, 520),
+                scale,
+                Labels::Raster(crate::layout::SnapGuides::NONE),
+            )
+            .unwrap();
             assert!(bounds(&hidden, &c, true).is_none());
             c = saved;
         }

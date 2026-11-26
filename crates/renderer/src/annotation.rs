@@ -1069,6 +1069,7 @@ impl RadialAnnotationCache {
         size: (u32, u32),
         scale: f32,
         selected: Option<usize>,
+        guides: crate::layout::SnapGuides,
     ) -> RasterKey {
         RasterKey {
             layer: {
@@ -1083,7 +1084,7 @@ impl RadialAnnotationCache {
             size,
             scale,
             selected,
-            guides: crate::layout::SnapGuides::NONE,
+            guides,
             policy: FontPolicy::Standard,
             fonts: crate::text_render::font_generation(),
         }
@@ -1098,8 +1099,9 @@ impl RadialAnnotationCache {
         size: (u32, u32),
         scale: f32,
         selected: Option<usize>,
+        guides: crate::layout::SnapGuides,
     ) -> bool {
-        let key = Self::key(layer, space, size, scale, selected);
+        let key = Self::key(layer, space, size, scale, selected, guides);
         !self.rasters.as_ref().is_some_and(|(k, _)| *k == key)
     }
 
@@ -1114,8 +1116,9 @@ impl RadialAnnotationCache {
         size: (u32, u32),
         scale: f32,
         selected: Option<usize>,
+        guides: crate::layout::SnapGuides,
     ) -> crate::Result<Arc<BoundedAnnotationFrame>> {
-        let key = Self::key(layer, space, size, scale, selected);
+        let key = Self::key(layer, space, size, scale, selected, guides);
         if let Some((k, visible, frame)) = &self.frame
             && *k == key
             && *visible == layer.visible
