@@ -52,8 +52,10 @@ pub enum FiggyError {
         reason: String,
     },
 
-    /// Acquiring the next surface texture failed.
+    /// Acquiring the next surface texture failed. `kind` says what the host
+    /// does next (#469); `reason` is wgpu's status, for logs.
     SurfaceAcquireFailed {
+        kind: SurfaceAcquireKind,
         reason: String,
     },
 
@@ -241,8 +243,8 @@ impl std::fmt::Display for FiggyError {
             Self::SurfaceConfigurationFailed { reason } => {
                 write!(f, "wgpu surface configuration failed: {reason}")
             }
-            Self::SurfaceAcquireFailed { reason } => {
-                write!(f, "wgpu surface acquire failed: {reason}")
+            Self::SurfaceAcquireFailed { kind, reason } => {
+                write!(f, "wgpu surface acquire failed ({kind:?}): {reason}")
             }
             Self::UnsupportedSurfaceFormat { format, reason } => {
                 write!(f, "unsupported surface format {format:?}: {reason}")
@@ -341,9 +343,33 @@ impl From<AllocError> for FiggyError {
     }
 }
 
+/// What a host does after [`FiggyError::SurfaceAcquireFailed`] (#469).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SurfaceAcquireKind {
+    /// No frame this time (a timeout, an occluded window, or a validation
+    /// error wgpu has already reported): skip the frame and draw the next
+    /// one as usual.
+    Skip,
+    /// The surface still did not match its configuration after the draw
+    /// reconfigured it once at its current size: call
+    /// `WindowedRenderer::resize` with the window's current size, then
+    /// draw again.
+    Reconfigure,
+    /// The surface is lost and must be created again. A
+    /// `WindowedRenderer` owns its surface, so the host drops it and builds
+    /// a new one for the window (`Renderer::for_window_*`), then registers
+    /// its columns and charts again. A device that is lost as well reports
+    /// [`FiggyError::DeviceLost`] instead.
+    Lost,
+}
+
 impl From<crate::gpu_pick::GpuPickError> for FiggyError {
     fn from(error: crate::gpu_pick::GpuPickError) -> Self {
-        Self::GpuPick(error)
+        match error {
+            // One variant for a lost device on every call (#469).
+            crate::gpu_pick::GpuPickError::DeviceLost { reason } => Self::DeviceLost { reason },
+            other => Self::GpuPick(other),
+        }
     }
 }
 

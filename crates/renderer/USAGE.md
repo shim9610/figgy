@@ -422,9 +422,11 @@ The one-shot `Renderer::paint(&mut self, …)` is for hosts that own
 the renderer exclusively during their frame (winit loop, wasm wrapper): it
 runs both phases back to back.
 
-Full version: [egui_embed.rs](https://github.com/shim9610/figgy/blob/master/examples/egui/examples/egui_embed.rs). That example
-does not call `end_gpu_frame`; [tools/playground/src/main.rs](https://github.com/shim9610/figgy/blob/master/tools/playground/src/main.rs)
-is a host that calls it once after `queue.submit`.
+Full version: [egui_embed.rs](https://github.com/shim9610/figgy/blob/master/examples/egui/examples/egui_embed.rs). Every
+egui example calls `end_gpu_frame` once per frame, at the first panel prepare
+of a new egui frame (`Context::cumulative_frame_nr`), for the frame egui has
+already submitted; [tools/playground/src/main.rs](https://github.com/shim9610/figgy/blob/master/tools/playground/src/main.rs)
+is a host that calls it once after its own `queue.submit`.
 
 ### GPU results: awaited, blocking or checked
 
@@ -966,7 +968,7 @@ use renderer::{Chart, Color, SeriesConfig};
 
 let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
 let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
-chart.apply_theme("midnight", &mut series)?;  // refits the layout too
+chart.apply_theme("midnight", &mut series)?;  // refits a fitted layout too
 
 // Any other look: a custom theme, here the member with one colour changed.
 let mut theme = chart.theme("midnight", &series)?;
@@ -1089,8 +1091,9 @@ chart.apply_custom_theme(&theme, &mut series)?;
   outside the scope keeps its look. `chart.apply_custom_theme_to(&theme,
   &mut series, ThemeScope::Subplots(&[0]))` themes an inset alone, whatever
   the base chart's kind.
-- **The parts on their own.** The `Chart` calls refit the layout to the new
-  text sizes (`fit_layout`). `theme.apply_chrome(&mut config, &series,
+- **The parts on their own.** The `Chart` calls refit a fitted layout to
+  the new text sizes; a `Fixed` layout (dragged, or a document drawn as
+  saved) is kept, as every other edit keeps it. `theme.apply_chrome(&mut config, &series,
   scope)` writes the chrome alone (the legend symbols follow `series`; pass
   `&[]` for a chart without series yet) and `theme.style_series(&mut series,
   index)` styles one series as the `index`-th of its chart.
@@ -1617,7 +1620,7 @@ impl egui_wgpu::CallbackTrait for FiggyCallback {
 
 토큰으로 기록한 명령 버퍼는 그 토큰의 `ChartView`를 다시 바꾸기 전에 제출해야 한다. `refresh_axis`, `update_transform`, 같은 뷰로 실행하는 다음 `prepare`가 여기에 해당한다. 렌더러는 기록하기 전에 오래된 입력을 거부하지만, 호스트에 넘어간 명령 버퍼는 검사하거나 순서를 정할 수 없다.
 
-winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사용하는 호스트는 두 단계를 연속 실행하는 `Renderer::paint(&mut self, …)`를 사용하면 된다. 전체 예제는 [egui_embed.rs](https://github.com/shim9610/figgy/blob/master/examples/egui/examples/egui_embed.rs)를 참고한다. 이 예제는 `end_gpu_frame`을 호출하지 않는다. `queue.submit` 뒤에 한 번 호출하는 호스트는 [tools/playground/src/main.rs](https://github.com/shim9610/figgy/blob/master/tools/playground/src/main.rs)에서 볼 수 있다.
+winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사용하는 호스트는 두 단계를 연속 실행하는 `Renderer::paint(&mut self, …)`를 사용하면 된다. 전체 예제는 [egui_embed.rs](https://github.com/shim9610/figgy/blob/master/examples/egui/examples/egui_embed.rs)를 참고한다. egui 예제는 모두 새 egui 프레임의 첫 패널 prepare에서(`Context::cumulative_frame_nr`) egui가 이미 제출한 이전 프레임에 대해 `end_gpu_frame`을 한 번 호출한다. 자기 `queue.submit` 뒤에 한 번 호출하는 호스트는 [tools/playground/src/main.rs](https://github.com/shim9610/figgy/blob/master/tools/playground/src/main.rs)에서 볼 수 있다.
 
 ### GPU 결과: 비동기, 동기, 확인
 
@@ -2069,7 +2072,7 @@ use renderer::{Chart, Color, SeriesConfig};
 
 let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
 let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
-chart.apply_theme("midnight", &mut series)?;  // 레이아웃도 다시 맞춘다
+chart.apply_theme("midnight", &mut series)?;  // 맞춘 레이아웃이면 다시 맞춘다
 
 // 그 밖의 모양은 직접 만든 테마다. 여기서는 구성원의 색 하나를 바꾼다.
 let mut theme = chart.theme("midnight", &series)?;
@@ -2162,7 +2165,8 @@ chart.apply_custom_theme(&theme, &mut series)?;
   `BaseAnd(&[인덱스])`(기본 차트와 그 서브플롯) 중 하나다. 범위 안의 서브플롯은 자기 오버레이와 함께
   테마를 받고, 범위 밖 차트에 그려지는 시리즈는 모양을 유지한다. `chart.apply_custom_theme_to(&theme,
   &mut series, ThemeScope::Subplots(&[0]))`은 기본 차트의 종류와 관계없이 삽입 차트만 꾸민다.
-- **부분만 적용하기.** `Chart`의 호출은 바뀐 글자 크기에 맞춰 레이아웃을 다시 맞춘다(`fit_layout`).
+- **부분만 적용하기.** `Chart`의 호출은 맞춘 레이아웃을 바뀐 글자 크기에 맞춰 다시 맞춘다. 끌어 옮겼거나
+  저장된 대로 그리는 `Fixed` 레이아웃은 다른 편집과 마찬가지로 그대로 둔다.
   `theme.apply_chrome(&mut config, &series, scope)`는 크롬만 쓴다(범례 기호는 `series`를 따르며,
   아직 시리즈가 없는 차트에는 `&[]`를 넘긴다). `theme.style_series(&mut series, index)`는 시리즈
   하나를 차트의 `index`번째 시리즈로 꾸민다.

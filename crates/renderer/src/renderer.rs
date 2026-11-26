@@ -95,7 +95,7 @@ use crate::data_render::{
     ColumnPool, ColumnScatterLayer, DefragPolicy, ERRORBAR_HAS_X, ERRORBAR_HAS_Y, PrimitiveStyle,
     RaggedId, RaggedSource, RecordId, RecordSource, TriangleId, TriangleSource,
 };
-use crate::error::{FiggyError, Result};
+use crate::error::{FiggyError, Result, SurfaceAcquireKind};
 use crate::gpu_memory::{
     GpuLedger, GpuMemoryUsage, GpuResourceKind, ResidentAdmission, ResidentAdmissionRequest,
     ResidentAdmissionStatus, TrackedBuffer, TrackedTexture,

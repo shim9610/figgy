@@ -1106,7 +1106,11 @@ impl RadialAnnotationCache {
     }
 
     /// The annotation frame for `layer` in `space`. `size` is physical; the
-    /// raster is drawn at `scale` physical pixels per logical pixel.
+    /// raster is drawn at `scale` physical pixels per logical pixel. With
+    /// `keep` false (an export, #469) the cached raster and frame are reused
+    /// when they match but never replaced, so the frame drawn on screen
+    /// stays cached.
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare(
         &mut self,
         gpu: &RendererDevice,
@@ -1117,6 +1121,7 @@ impl RadialAnnotationCache {
         scale: f32,
         selected: Option<usize>,
         guides: crate::layout::SnapGuides,
+        keep: bool,
     ) -> crate::Result<Arc<BoundedAnnotationFrame>> {
         let key = Self::key(layer, space, size, scale, selected, guides);
         if let Some((k, visible, frame)) = &self.frame
@@ -1147,7 +1152,9 @@ impl RadialAnnotationCache {
                     overlay,
                     map: raster.map,
                 });
-                self.rasters = Some((key.clone(), Arc::clone(&rasters)));
+                if keep {
+                    self.rasters = Some((key.clone(), Arc::clone(&rasters)));
+                }
                 rasters
             }
         };
@@ -1157,7 +1164,9 @@ impl RadialAnnotationCache {
             visible: layer.visible,
             size,
         });
-        self.frame = Some((key, layer.visible, Arc::clone(&frame)));
+        if keep {
+            self.frame = Some((key, layer.visible, Arc::clone(&frame)));
+        }
         Ok(frame)
     }
 }

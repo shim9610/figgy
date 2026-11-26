@@ -50,6 +50,8 @@ impl RadialRenderer {
         ) {
             return Err(RadialError::Invalid(crate::RuleKind::RadialTargetFormat));
         }
+        // A lost device refuses here (#469), as every later call would.
+        gpu.health().check().map_err(radial_gpu_error)?;
         let device = gpu.device();
         let layout = crate::gpu_compile::bind_group_layout(
             &device,

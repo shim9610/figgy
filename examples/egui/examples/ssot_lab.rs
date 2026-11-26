@@ -155,6 +155,9 @@ struct LabState {
     last_error: Option<String>,
     data_variant: u32,
     points_per_series: usize,
+    /// The egui frame whose first prepare last called
+    /// `Renderer::end_gpu_frame`.
+    ended_frame: Option<u64>,
 }
 
 impl LabState {
@@ -215,6 +218,8 @@ fn one_series<'a>(cfg: &'a SeriesConfig, style: &'a ChartStyle) -> [Series<'a>; 
 struct LabCallback {
     panel_idx: usize,
     panel_rect_px: Rect,
+    /// `Context::cumulative_frame_nr` of the frame this callback draws.
+    frame_nr: u64,
 }
 
 impl CallbackTrait for LabCallback {
@@ -229,6 +234,15 @@ impl CallbackTrait for LabCallback {
         let Some(state) = callback_resources.get_mut::<LabState>() else {
             return Vec::new();
         };
+        // Report the previous frame's GPU boundary once, at the first
+        // panel prepare of a new frame: egui submitted that frame before it
+        // started this one, and the other panels of this frame have not
+        // recorded anything yet (USAGE "end_gpu_frame"). Without it the
+        // resources a redraw retires are never released.
+        if state.ended_frame != Some(self.frame_nr) {
+            state.renderer.end_gpu_frame();
+            state.ended_frame = Some(self.frame_nr);
+        }
         let Some(panel) = state.panels.get_mut(self.panel_idx) else {
             return Vec::new();
         };
@@ -425,6 +439,7 @@ impl LabApp {
             last_error: None,
             data_variant: 0,
             points_per_series: n,
+            ended_frame: None,
         })
     }
 
@@ -490,6 +505,7 @@ impl eframe::App for LabApp {
 
         let time = ctx.input(|i| i.time);
         let pixels_per_point = ctx.pixels_per_point();
+        let frame_nr = ctx.cumulative_frame_nr();
 
         // -- Sidebar + per-frame SSoT edits (x-linked pan). ------------------
         {
@@ -619,6 +635,7 @@ impl eframe::App for LabApp {
                                     LabCallback {
                                         panel_idx,
                                         panel_rect_px,
+                                        frame_nr,
                                     },
                                 ));
                         }

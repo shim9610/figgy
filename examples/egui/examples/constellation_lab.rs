@@ -175,6 +175,11 @@ impl CallbackTrait for LabCallback {
         let Some(state) = callback_resources.get_mut::<FiggyState>() else {
             return Vec::new();
         };
+        // One callback per frame: report the previous frame's GPU boundary
+        // here, before this frame records anything. egui submitted that
+        // frame before it started this one (USAGE "end_gpu_frame"); without
+        // it the resources a redraw retires are never released.
+        state.renderer.end_gpu_frame();
 
         // Slider → SSoT. Only on change, so the chart does not churn.
         // `Renderer::prepare` below redraws what the change made stale and

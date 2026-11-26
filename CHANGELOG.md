@@ -53,6 +53,48 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 `color` and the transition arrows' `color_by_wavelength` and
 `label_knockout`) are additive.
 
+- **Host wrapper fixes from the pre-release sweep**
+  ([#469](https://github.com/shim9610/figgy/issues/469), items 4–7 and
+  9–13).
+  - `WindowedRenderer::pick_chart_at`, `pick_chart_data_at`,
+    `compile_pick_pipelines_at` and `compile_data_pick_pipelines_at` place
+    the chart as its draws do (the display from `set_chart_display` or
+    `hold_chart_display`, or the stored document at 1x), not letterboxed to
+    the window's surface. A cursor on drawn ink now picks that datum.
+  - `WindowedRenderer::draw*` reconfigures an `Outdated` surface once at its
+    size and acquires again before it reports a failure, and the failure is
+    typed (below).
+  - The radial SVG and PDF exports on a lost device return
+    `RadialError::Gpu` instead of panicking inside wgpu, and
+    `RadialRenderer::try_new` on a lost device is refused the same way.
+  - A radial raster export at another size or scale builds its frame for
+    itself: the frame, label texture and annotation layer cached for the
+    screen stay cached, as RADIAL.md states. Pixels are unchanged.
+  - `Chart::apply_theme`, `apply_theme_to`, `apply_custom_theme` and
+    `apply_custom_theme_to` keep a `Fixed` layout, as every other chart
+    edit does; a `Fitted` layout is still fitted.
+  - Every egui example calls `end_gpu_frame` once per frame, so the bytes
+    a redraw retires are released.
+  - `winit_simple` handles each acquire failure and rebuilds its renderer
+    for a lost surface or device.
+  - Docs: RADIAL.md gives `export_svg(&chart, size, options)`, and the
+    headless helper names the exports' own `Rgba16Float` target.
+  - **Breaking:** `FiggyError::SurfaceAcquireFailed` gains
+    `kind: SurfaceAcquireKind` (`Skip`, `Reconfigure`, `Lost`).
+    *Migration:* a pattern `SurfaceAcquireFailed { reason }` becomes
+    `SurfaceAcquireFailed { reason, .. }` or matches `kind`: skip the
+    frame for `Skip`, call `resize` with the window's size for
+    `Reconfigure`, and drop and rebuild the `WindowedRenderer` for `Lost`
+    (API.md, "Errors"). A host that matched the strings `"lost"` or
+    `"outdated"` matches `kind` instead.
+  - **Breaking:** `GpuPickError` gains `DeviceLost { reason }`, which the
+    picks return for a lost device instead of `Gpu(String)`, and
+    `From<GpuPickError> for FiggyError` turns it into
+    `FiggyError::DeviceLost`. *Migration:* an exhaustive `match` on
+    `GpuPickError` adds the arm; a host that looked for
+    `"device lost"` in `GpuPickError::Gpu`'s string matches
+    `GpuPickError::DeviceLost` (or `FiggyError::DeviceLost`) instead.
+
 - **The egui examples moved out of figgy-renderer; the `egui_demo`
   feature is removed** ([#459](https://github.com/shim9610/figgy/issues/459)).
   `egui_embed`, `radial_editor`, `ssot_lab`, `streaming_capacity_demo` and

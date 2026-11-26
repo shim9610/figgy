@@ -7,7 +7,7 @@ impl Renderer {
     pub(super) fn pick_health(&self) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         self.health
             .check()
-            .map_err(|error| crate::gpu_pick::GpuPickError::Gpu(error.to_string()))
+            .map_err(crate::gpu_pick::GpuPickError::from_figgy)
     }
 
     /// Enable exact GPU picking for this renderer.

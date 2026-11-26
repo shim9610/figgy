@@ -29,15 +29,19 @@ impl RadialRenderer {
         guides: crate::layout::SnapGuides,
     ) -> Result<Arc<crate::annotation::BoundedAnnotationFrame>, RadialError> {
         let frame = self.prepare(chart, size, scale)?;
-        self.prepare_annotations_guided(&frame, chart, scale, guides)
+        self.prepare_annotations_guided(&frame, chart, scale, guides, true)
     }
-    pub(super) fn prepare_annotations_for(
+    /// The annotation layer of a raster export's `frame`
+    /// ([`Self::export_frame`]): the cached layer when it matches, otherwise
+    /// one built for the export alone, so the layer drawn on screen stays
+    /// cached (#469).
+    pub(super) fn export_annotations(
         &mut self,
         frame: &RadialFrame,
         chart: &RadialChart,
         scale: f32,
     ) -> Result<Arc<crate::annotation::BoundedAnnotationFrame>, RadialError> {
-        self.prepare_annotations_guided(frame, chart, scale, crate::layout::SnapGuides::NONE)
+        self.prepare_annotations_guided(frame, chart, scale, crate::layout::SnapGuides::NONE, false)
     }
     fn prepare_annotations_guided(
         &mut self,
@@ -45,6 +49,7 @@ impl RadialRenderer {
         chart: &RadialChart,
         scale: f32,
         guides: crate::layout::SnapGuides,
+        keep: bool,
     ) -> Result<Arc<crate::annotation::BoundedAnnotationFrame>, RadialError> {
         let selected = crate::annotation::selected_index(chart.decorations.selected.as_ref());
         let guides = selected.map_or(crate::layout::SnapGuides::NONE, |_| guides);
@@ -72,6 +77,7 @@ impl RadialRenderer {
                 scale,
                 selected,
                 guides,
+                keep,
             )
             .map_err(|error| RadialError::Gpu(error.to_string()))
     }
@@ -107,6 +113,32 @@ impl RadialRenderer {
     ) -> Result<Arc<RadialFrame>, RadialError> {
         let guides = frame_selection(&chart.decorations.selected)
             .map_or(crate::layout::SnapGuides::NONE, |_| guides);
+        self.build_frame(chart, size, scale, guides, true)
+    }
+
+    /// A raster export's frame (#469): the cached frame when it matches,
+    /// otherwise one built for the export alone. Neither the frame cache
+    /// nor the label raster cache is replaced, so the frame drawn on screen
+    /// stays cached, as the vector export's uncached frame leaves it.
+    pub(super) fn export_frame(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        scale: f32,
+    ) -> Result<Arc<RadialFrame>, RadialError> {
+        self.build_frame(chart, size, scale, crate::layout::SnapGuides::NONE, false)
+    }
+
+    /// [`Self::prepare_with_guides`] once `guides` apply; `keep` false
+    /// leaves both caches as they are.
+    fn build_frame(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        scale: f32,
+        guides: crate::layout::SnapGuides,
+        keep: bool,
+    ) -> Result<Arc<RadialFrame>, RadialError> {
         // A lost device refuses here, before any buffer is created: wgpu's
         // `create_buffer_init` panics on a destroyed device.
         self.gpu.health().check().map_err(radial_gpu_error)?;
@@ -218,6 +250,9 @@ impl RadialRenderer {
             scale,
             space: l.space,
         });
+        if !keep {
+            return Ok(frame);
+        }
         self.annotations_cached = Some(((key, guides), size, scale, fonts, annotations));
         self.cached = Some((
             (FrameKey::of(chart), guides),
