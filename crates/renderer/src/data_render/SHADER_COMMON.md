@@ -569,7 +569,9 @@ The code is the fragments [`data_render/common/sample_validity.wgsl`](common/sam
 
 `locate`의 `lattice` 인자는 검색할 격자를 정한다. 채움은 `Shading`에 따른 사각형 격자를, 등고선은 실제 Z값이 있는 표본 격자를 사용한다. 두 경우 모두 같은 이진 탐색을 수행한다.
 
-The binary search is three functions, `locate_begin` (the bracket, or a miss), `locate_step` (one halving) and `locate_end` (the cell and its fraction); `locate` runs them with its own loop. `contour_sample` is `locate` on each axis followed by `contour_sample_cells`, which evaluates the located cell. A caller that already loops, the polar foot-point walk below, takes the same three functions one halving per iteration of its own loop, so the search is not a loop inside it.
+The binary search is three functions, `locate_begin` (the bracket, or a miss), `locate_step` (one halving) and `locate_end` (the cell and its fraction); `locate` runs them with its own loop. `contour_sample` is `locate_sample_cells` followed by `contour_sample_cells`, which evaluates the located cell. `locate_sample_cells` searches the sample lattice along x and then y in one flat loop with one call site of each search function, so it compiles one search, not one per axis; the contour pick and the floor contour pick name the cells it returns instead of searching again (#465). A caller that already loops, the polar foot-point walk below, takes the same three functions one halving per iteration of its own loop, so the search is not a loop inside it.
+
+A compiler that inlines every call (Chromium's SwiftShader, lavapipe) compiles each call site of `axis_t` again, and in the full set `axis_t` carries the probability scales and axis breaks (`axis_pair_to_t`). So `axis_t` has one call site of `axis_pair_to_t`, its arguments chosen per axis, and `boundary_t` one call site of `axis_t`, its pair chosen per lattice (#465). The values are the ones the branches computed.
 
 `level_colors`(binding 5)는 앵커 셰이더에서 읽지 않지만 바인드 그룹 배치를 맞추기 위해 공통 블록에 둔다. WGSL은 사용하지 않는 전역 선언을 허용한다.
 

@@ -85,6 +85,35 @@ fn category_finite(v: vec2<f32>) -> bool {
     return bar_finite(v.x) && bar_finite(v.y) && bar_finite(v.x + v.y);
 }
 
+/// The positive and the negative stack of row `row` over the group's
+/// members before `end`, as `(hi, lo)` pairs that keep their low parts.
+struct CategoryStack {
+    positive: vec2<f32>,
+    negative: vec2<f32>,
+};
+
+/// The stack arithmetic of a stacked group: positive values stack up from
+/// zero and negative ones down, independently, and a missing (non-finite)
+/// or zero cell is skipped. A bar starts on the stack of the members before
+/// it (`category_bar`); the stacked fit sums every member
+/// (`reduce_category_stacks`, #466).
+fn category_stack(row: u32, end: u32) -> CategoryStack {
+    var stack = CategoryStack(vec2<f32>(0.0), vec2<f32>(0.0));
+    for (var k = 0u; k < end; k = k + 1u) {
+        let x = category_value(k, row);
+        if (!category_finite(x)) {
+            continue;
+        }
+        let xv = x.x + x.y;
+        if (xv < 0.0) {
+            stack.negative = stack.negative + x;
+        } else if (xv > 0.0) {
+            stack.positive = stack.positive + x;
+        }
+    }
+    return stack;
+}
+
 /// One bar as the draw, the pick and the selection see it, in chart-area
 /// render pixels with y down.
 struct CategoryBar {
@@ -364,27 +393,20 @@ fn category_bar(row: u32, resolved: ResolvedBarStyle) -> CategoryBar {
         // short of 100.
         end = vec2<f32>(select(below + value / largest / total * 100.0, 100.0, exposed), 0.0);
     } else if (mode == CATEGORY_BAR_MODE_STACKED) {
-        // Positive and negative values stack away from zero independently;
-        // the pairs keep their low parts.
-        var positive = vec2<f32>(0.0);
-        var negative = vec2<f32>(0.0);
-        for (var k = 0u; k < category_params.members; k = k + 1u) {
+        // Positive and negative values stack away from zero independently
+        // (`category_stack`); a later bar of the same sign covers the end.
+        let stack = category_stack(row, member);
+        for (var k = member + 1u; k < category_params.members; k = k + 1u) {
             let x = category_value(k, row);
             if (!category_finite(x)) {
                 continue;
             }
             let xv = x.x + x.y;
-            if (k < member) {
-                if (xv < 0.0) {
-                    negative = negative + x;
-                } else if (xv > 0.0) {
-                    positive = positive + x;
-                }
-            } else if (k > member && xv != 0.0 && (xv < 0.0) == (value < 0.0)) {
+            if (xv != 0.0 && (xv < 0.0) == (value < 0.0)) {
                 exposed = false;
             }
         }
-        start = select(positive, negative, value < 0.0);
+        start = select(stack.positive, stack.negative, value < 0.0);
         end = start + v;
     }
 

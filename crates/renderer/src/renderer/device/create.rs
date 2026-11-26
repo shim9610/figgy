@@ -140,6 +140,7 @@ impl TargetPipelines {
             ternary_region: Default::default(),
             ternary_region_scan: None,
             bar_envelope: None,
+            category_stack_fit: None,
             sample_count,
             styled: HashMap::new(),
         }

@@ -577,14 +577,9 @@ fn fs_floor_contour_pick(in: FieldOut) -> @location(0) vec4<u32> {
     if (paint.level == 0xffffffffu) {
         discard;
     }
-    let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
-    let along_cells = select(field.cols, field.rows, columns_are_y);
-    let across_cells = select(field.rows, field.cols, columns_are_y);
-    let x = locate(field.x_base, field.x_len, quad_count(along_cells, LATTICE_SAMPLES), 0u,
-        in.axis_t.x, LATTICE_SAMPLES);
-    let y = locate(field.y_base, field.y_len, quad_count(across_cells, LATTICE_SAMPLES), 1u,
-        in.axis_t.y, LATTICE_SAMPLES);
-    return vec4<u32>(u32(view3d.flags.w) | 0x80000000u, paint.level, x.index, y.index);
+    let cells = locate_sample_cells(in.axis_t);
+    return vec4<u32>(u32(view3d.flags.w) | 0x80000000u, paint.level, cells.x.index,
+        cells.y.index);
 }
 
 /// Whether this contour fragment sits under one of the exact label quads that
@@ -745,32 +740,16 @@ fn field_pick_contour(cursor_t: vec2<f32>) -> DataPickCandidate {
         return best;
     }
     let t = lookup.t;
-    let s = contour_sample(t);
+    // The cells are located once: `contour_sample` is this search and
+    // `contour_sample_cells`, and the candidate names the same cells. A
+    // second search compiled every inlined boundary again (#465).
+    let cells = locate_sample_cells(t);
+    let x = cells.x;
+    let y = cells.y;
+    let s = contour_sample_cells(x, y);
     let metric = contour_metric_at(s, lookup);
     if (!metric.valid || !f32_is_finite(data_pick_query.limits.x)
         || !f32_is_finite(data_pick_query.limits.z)) {
-        return best;
-    }
-    let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
-    let along_cells = select(field.cols, field.rows, columns_are_y);
-    let across_cells = select(field.rows, field.cols, columns_are_y);
-    let x = locate(
-        field.x_base,
-        field.x_len,
-        quad_count(along_cells, LATTICE_SAMPLES),
-        0u,
-        t.x,
-        LATTICE_SAMPLES,
-    );
-    let y = locate(
-        field.y_base,
-        field.y_len,
-        quad_count(across_cells, LATTICE_SAMPLES),
-        1u,
-        t.y,
-        LATTICE_SAMPLES,
-    );
-    if (!x.hit || !y.hit) {
         return best;
     }
     let half_width = max(data_pick_query.limits.z, 0.0) * 0.5;

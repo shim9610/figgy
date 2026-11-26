@@ -62,8 +62,29 @@ impl Renderer {
         sources: &[MonotonicGroupRef<'_>],
     ) -> Result<Vec<ColumnId>> {
         let mut transient = Vec::new();
+        // A failure at any series removes what the earlier ones built, so a
+        // failed export leaves no transient column or group behind (#469).
+        match self.build_monotonic_export(chart, export_config, series, sources, &mut transient) {
+            Ok(()) => Ok(transient),
+            Err(error) => {
+                self.end_monotonic_export(&transient);
+                Err(error)
+            }
+        }
+    }
+
+    /// The body of [`Self::begin_monotonic_export`]: pushes each transient
+    /// column id to `transient` as soon as it is uploaded.
+    fn build_monotonic_export(
+        &mut self,
+        chart: ChartId,
+        export_config: &Config,
+        series: &mut [SeriesConfig],
+        sources: &[MonotonicGroupRef<'_>],
+        transient: &mut Vec<ColumnId>,
+    ) -> Result<()> {
         if !series.iter().any(|s| s.monotonic().is_some()) {
-            return Ok(transient);
+            return Ok(());
         }
         let panels = DocumentPanels::new(export_config)?;
         for index in 0..series.len() {
@@ -129,11 +150,7 @@ impl Renderer {
                     channel,
                     x,
                 };
-                let upload = self.upload_envelope_column(id, &rows);
-                if let Err(error) = upload {
-                    self.end_monotonic_export(&transient);
-                    return Err(error);
-                }
+                self.upload_envelope_column(id, &rows)?;
                 transient.push(id.clone());
             }
             // The transient columns are drawn as one more group of this
@@ -164,7 +181,7 @@ impl Renderer {
             series[index].x_column = x;
             series[index].y_column = y;
         }
-        Ok(transient)
+        Ok(())
     }
 
     /// Removes an export's transient envelope columns and their groups.

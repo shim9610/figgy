@@ -116,7 +116,8 @@ series draws channel `channel` of it, counted from 0. In JSON the series is
 The document never holds the samples. A series' `x_column` and `y_column`
 name the two pool columns the chart draws its envelope from, and the helper
 names them `<id>.monotonic.x` and `<id>.monotonic.y`. Only the chart writes
-them: writing or removing one yourself fails with `ReservedColumnId`.
+them: writing or removing one yourself fails with `ReservedColumnId`, and
+so does any other series that reads one, in this chart or another.
 
 The document must suit the reduction, or the chart refuses it:
 
@@ -215,6 +216,9 @@ source reduces from whatever source you lend it.
   that were counted but not kept, that is, samples an earlier append
   without `sliding` placed beyond the right edge. Make a full call with
   the source instead.
+- A slide also fails, with `MonotonicSourceRequired { change: XRange }`,
+  when the x axis it moves draws another group too. A refused append
+  changes nothing.
 
 An append before the group's first full call fails with `NotBuilt`, and an
 append with another channel count fails with `ChannelCountChanged`.
@@ -372,7 +376,7 @@ the error's `kind` field.
 |---|---|
 | `FiggyError::UnknownMonotonicGroup { group }` | No series of the chart names the group. |
 | `FiggyError::MonotonicSourceRequired { series_id, change }` | A resize, layout fit or export would move a series whose group's source was not passed. Nothing changes. |
-| `FiggyError::ReservedColumnId { id }` | A host write or removal of an envelope column. |
+| `FiggyError::ReservedColumnId { id }` | A host write or removal of an envelope column, or a series other than its monotonic series that reads one. |
 | `RuleKind::MonotonicRange` | `MonotonicRange::X` with a range that is not finite and increasing. |
 | `RuleKind::MonotonicMappingEdit` | An editor change that would move the mapping. |
 | `RuleKind::NoFeasibleLayout` | A resize's plot rect the margins cannot place. |
@@ -541,7 +545,8 @@ JSON 형태는 `{"MonotonicLine": {"group": .., "channel": .., "line": {..}}}`�
 
 문서에는 샘플이 들어가지 않는다. 시리즈의 `x_column`과 `y_column`은 차트가 엔벌로프를 그릴 때
 읽는 풀 컬럼 두 개의 이름이며, 도우미는 이를 `<id>.monotonic.x`, `<id>.monotonic.y`로 짓는다.
-이 컬럼은 차트만 쓴다. 호스트가 직접 쓰거나 지우면 `ReservedColumnId`로 실패한다.
+이 컬럼은 차트만 쓴다. 호스트가 직접 쓰거나 지우면 `ReservedColumnId`로 실패하고, 이 차트든 다른
+차트든 다른 시리즈가 이 컬럼을 읽으려 해도 같은 오류로 실패한다.
 
 문서가 축약에 맞지 않으면 차트가 거부한다.
 
@@ -615,6 +620,8 @@ x 축 스케일·끊기·방향이 여기에 속한다. 차트는 엔벌로프�
   다를 수 있다.
 - 세기만 하고 남기지 않은 샘플, 곧 `sliding` 없이 덧붙여 창 오른쪽 끝 너머에 놓인 샘플이 밀어내기로
   화면에 들어와야 하면 `SlidePastKept`로 실패한다. 이때는 소스를 넘겨 전체 호출을 한다.
+- 밀어내기가 옮기는 x축에 다른 묶음도 그려지면 `MonotonicSourceRequired { change: XRange }`로
+  실패한다. 거부된 덧붙이기는 아무것도 바꾸지 않는다.
 
 묶음의 첫 전체 호출 전에 덧붙이면 `NotBuilt`, 채널 수가 다른 소스를 덧붙이면
 `ChannelCountChanged`로 실패한다.
@@ -740,7 +747,7 @@ x 축 스케일·끊기·방향이 여기에 속한다. 차트는 엔벌로프�
 |---|---|
 | `FiggyError::UnknownMonotonicGroup { group }` | 그 묶음을 가리키는 시리즈가 차트에 없다. |
 | `FiggyError::MonotonicSourceRequired { series_id, change }` | 크기 조정, 배치 맞춤, 내보내기가 소스를 넘기지 않은 묶음의 시리즈를 옮긴다. 아무것도 바뀌지 않는다. |
-| `FiggyError::ReservedColumnId { id }` | 호스트가 엔벌로프 컬럼을 쓰거나 지우려 했다. |
+| `FiggyError::ReservedColumnId { id }` | 호스트가 엔벌로프 컬럼을 쓰거나 지우려 했거나, 그 컬럼의 단조 시리즈가 아닌 시리즈가 읽으려 했다. |
 | `RuleKind::MonotonicRange` | `MonotonicRange::X`의 범위가 유한하지 않거나 증가하지 않는다. |
 | `RuleKind::MonotonicMappingEdit` | 편집기에서 매핑을 바꾸려 했다. |
 | `RuleKind::NoFeasibleLayout` | 크기 조정의 플롯 사각형을 여백으로 놓을 수 없다. |

@@ -83,11 +83,31 @@ fn pool_pair(base: u32, i: u32) -> vec2<f32> {
 }
 
 /// `axis_pair_to_t` for whichever axis: 0 = x, 1 = y.
+///
+/// One call site of `axis_pair_to_t`, its arguments chosen per axis, so a
+/// compiler that inlines it (Chromium's SwiftShader, lavapipe) does so once
+/// per `axis_t` rather than once per axis (#465): the full set's scale and
+/// cut code is the largest part of every field entry.
 fn axis_t(pair: vec2<f32>, axis: u32) -> f32 {
-    if (axis == 0u) {
-        return axis_pair_to_t(pair, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x, transform.scale_prob.x, transform.data_to_panel_scale.x, transform.data_to_panel_offset.x, cuts_of(transform.breaks, transform.break_info, 0u));
+    let on_x = axis == 0u;
+    // The axis picks its log flag by a branch: a log flag never passes
+    // through `select` (SHADER_COMMON §3.1).
+    var is_log = transform.scale_log.y;
+    if (on_x) {
+        is_log = transform.scale_log.x;
     }
-    return axis_pair_to_t(pair, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.scale_prob.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y, cuts_of(transform.breaks, transform.break_info, 1u));
+    return axis_pair_to_t(
+        pair,
+        select(transform.data_min.y, transform.data_min.x, on_x),
+        select(transform.data_max.y, transform.data_max.x, on_x),
+        select(transform.data_min_lo.y, transform.data_min_lo.x, on_x),
+        select(transform.data_max_lo.y, transform.data_max_lo.x, on_x),
+        is_log,
+        select(transform.scale_prob.y, transform.scale_prob.x, on_x),
+        select(transform.data_to_panel_scale.y, transform.data_to_panel_scale.x, on_x),
+        select(transform.data_to_panel_offset.y, transform.data_to_panel_offset.x, on_x),
+        cuts_of(transform.breaks, transform.break_info, axis),
+    );
 }
 
 /// Cell boundary `k` along one axis, in pool `(hi, lo)` pair form.
@@ -136,12 +156,16 @@ fn lattice_is_samples(lattice: u32) -> bool {
     return lattice == LATTICE_SAMPLES || field_flag(FIELD_INTERPOLATED);
 }
 
-/// Boundary `k` of one lattice along one axis.
+/// Boundary `k` of one lattice along one axis. The lattice picks the pair
+/// and one `axis_t` places it, for the reason `axis_t` gives (#465).
 fn boundary_t(base: u32, n: u32, k: u32, axis: u32, lattice: u32) -> f32 {
+    var pair: vec2<f32>;
     if (lattice_is_samples(lattice)) {
-        return axis_t(sample_point_pair(base, n, k), axis);
+        pair = sample_point_pair(base, n, k);
+    } else {
+        pair = cell_edge_pair(base, n, k);
     }
-    return axis_t(cell_edge_pair(base, n, k), axis);
+    return axis_t(pair, axis);
 }
 
 /// Quads along one axis: one per cell on the quad lattice, one per gap between
@@ -499,12 +523,58 @@ struct ContourSample {
 };
 
 fn contour_sample(t: vec2<f32>) -> ContourSample {
+    let cells = locate_sample_cells(t);
+    return contour_sample_cells(cells.x, cells.y);
+}
+
+/// The sample-lattice cells of chart-area `t` on both axes.
+struct SampleCells {
+    x: CellHit,
+    y: CellHit,
+};
+
+/// `locate` on the sample lattice along x and then along y, in one flat
+/// loop: an iteration begins an axis's search, halves it or ends it. One
+/// call site of each search function, as the polar foot-point walk takes
+/// them (`contour_foot_advance`), so a compiler that inlines them
+/// (Chromium's SwiftShader, lavapipe) compiles one search, not one per axis
+/// (#465). The same searches in the same order as two `locate` calls, so
+/// the same cells.
+fn locate_sample_cells(t: vec2<f32>) -> SampleCells {
+    var out: SampleCells;
     let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
-    let along_cells = select(field.cols, field.rows, columns_are_y);
-    let across_cells = select(field.rows, field.cols, columns_are_y);
-    let x = locate(field.x_base, field.x_len, quad_count(along_cells, LATTICE_SAMPLES), 0u, t.x, LATTICE_SAMPLES);
-    let y = locate(field.y_base, field.y_len, quad_count(across_cells, LATTICE_SAMPLES), 1u, t.y, LATTICE_SAMPLES);
-    return contour_sample_cells(x, y);
+    var axis = 0u;
+    var begun = false;
+    var search: CellSearch;
+    loop {
+        if (axis >= 2u) {
+            break;
+        }
+        let on_x = axis == 0u;
+        let base = select(field.y_base, field.x_base, on_x);
+        let len = select(field.y_len, field.x_len, on_x);
+        if (!begun) {
+            let cells = select(select(field.rows, field.cols, columns_are_y),
+                select(field.cols, field.rows, columns_are_y), on_x);
+            search = locate_begin(base, len, quad_count(cells, LATTICE_SAMPLES), axis,
+                select(t.y, t.x, on_x), LATTICE_SAMPLES);
+            begun = true;
+            continue;
+        }
+        if (locate_searching(search)) {
+            search = locate_step(base, len, axis, LATTICE_SAMPLES, search);
+            continue;
+        }
+        let hit = locate_end(search);
+        if (on_x) {
+            out.x = hit;
+        } else {
+            out.y = hit;
+        }
+        axis = axis + 1u;
+        begun = false;
+    }
+    return out;
 }
 
 /// `contour_sample` at the sample-lattice cells `x` and `y` already
