@@ -298,6 +298,7 @@ rule_kinds! {
         PolarMonotonic => "monotonic series are not drawn on polar axes",
         StreamedMonotonic => "monotonic series are fed by their own calls; streamed displays do not draw them",
         MonotonicGeneralChart => "a monotonic line series lives only in a chart registered as a monotonic chart",
+        MonotonicFeynman => "a monotonic chart takes no Feynman series",
         MonotonicMappingEdit => "a monotonic chart's x range, x scale, breaks, direction and plot area change only through its monotonic calls",
         MonotonicRange => "a monotonic series' x range must be finite and increasing",
         VectorPixels => "vector width_px, head_length_px, head_width_px and min_length_px must be finite and non-negative",
@@ -1891,6 +1892,10 @@ mod tests {
             (
                 RuleKind::MonotonicGeneralChart,
                 "a monotonic line series lives only in a chart registered as a monotonic chart",
+            ),
+            (
+                RuleKind::MonotonicFeynman,
+                "a monotonic chart takes no Feynman series",
             ),
             (
                 RuleKind::MonotonicMappingEdit,

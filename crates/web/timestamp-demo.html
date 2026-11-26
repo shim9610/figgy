@@ -367,15 +367,28 @@
         `${formatRange(startMs, endMs)} | ${POINTS} points | ${unitLabel} | width ${widthInput.value}px`;
     }
 
+    // An export holds the chart's operation gate: an edit waits for the
+    // next animation frame in which the chart is not busy.
+    let pendingUpdate = 0;
+    function scheduleUpdate() {
+      if (pendingUpdate) return;
+      pendingUpdate = requestAnimationFrame(() => {
+        pendingUpdate = 0;
+        if (chart.busy) { scheduleUpdate(); return; }
+        try { update(); }
+        catch (error) { status.textContent = `update failed: ${error?.message ?? error}`; }
+      });
+    }
+
     function setStageWidth() {
       stage.style.setProperty("--chart-width", `${widthInput.value}px`);
       chart.resize();
-      update();
+      scheduleUpdate();
     }
 
     for (const input of [centerInput, windowSelect, unitSelect, zoneSelect, fractionSelect, labelModeSelect]) {
-      input.addEventListener("input", update);
-      input.addEventListener("change", update);
+      input.addEventListener("input", scheduleUpdate);
+      input.addEventListener("change", scheduleUpdate);
     }
     widthInput.addEventListener("input", setStageWidth);
 

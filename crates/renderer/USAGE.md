@@ -788,7 +788,8 @@ let series = vec![
     SeriesConfig::monotonic_line("ch1", "daq", 1).label("channel 1"),
 ];
 // A chart with monotonic series is a monotonic chart, reached only through
-// its handle: no general chart call takes it.
+// its handle: no general chart call takes it. It holds other series too, but
+// no Feynman series (`RuleKind::MonotonicFeynman`).
 let id = renderer.register_monotonic_chart(chart.config().clone(), series)?;
 // The source carries the samples, start and interval. The full call reduces
 // them in full; `Autoscale` fits the x range to the samples and each y axis
@@ -819,7 +820,8 @@ Only these four calls move the x-to-pixel mapping (the x range, the plot's
 width in device pixels, the x direction), and each takes the source. The
 general chart calls take a `ChartId`, which a monotonic chart never hands
 out, so they cannot reach it; `register_chart` and the series calls refuse a
-monotonic line series (`RuleKind::MonotonicGeneralChart`). The document
+monotonic line series (`RuleKind::MonotonicGeneralChart`), and a monotonic
+chart refuses a Feynman series (`RuleKind::MonotonicFeynman`). The document
 editor (`MonotonicConfig`) edits the legend, titles, axis titles, ticks,
 tick labels and their format, colours, annotations, the selection and
 decoration drags, and has no setter for the x range, x scale or plot area;
@@ -1949,7 +1951,8 @@ daq.edit_config(|config| {
 x에서 픽셀로의 매핑(x 범위, 장치 픽셀 단위 플롯 너비, x 방향)을 옮기는 호출은 이 넷뿐이고
 모두 소스를 받는다. 일반 차트 호출은 `ChartId`를 받는데 단조 차트는 이를 내주지 않으므로 단조
 차트에 닿지 못한다. `register_chart`와 시리즈 호출은 단조 선 시리즈를 거부한다
-(`RuleKind::MonotonicGeneralChart`). 문서 편집기(`MonotonicConfig`)는 범례, 제목, 축 제목,
+(`RuleKind::MonotonicGeneralChart`). 단조 차트는 Feynman 시리즈를 거부한다
+(`RuleKind::MonotonicFeynman`). 문서 편집기(`MonotonicConfig`)는 범례, 제목, 축 제목,
 눈금, 눈금 라벨과 형식, 색, 주석, 선택, 꾸밈 요소 끌기를 고치며 x 범위, x 스케일, 플롯 영역을
 쓰는 메서드는 없다. 이를 옮길 수정은 거부한다(`RuleKind::MonotonicMappingEdit`). 선 굵기는
 일반 스타일 수정이다(`set_series`). 굵기가 장치 픽셀 약 120까지인 선은 가장자리를 정확히 그리고,

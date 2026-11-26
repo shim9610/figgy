@@ -41,7 +41,11 @@ impl FiggyChart {
         self.renderer
             .preflight_chart_styles(&series)
             .map_err(js_err)?;
+        let annotations_replaced = self.annotations_replaced_by(&new_cfg)?;
         self.replace_chart_config(new_cfg)?;
+        if annotations_replaced {
+            self.set_selected_annotation(None);
+        }
         if legend_content_changed {
             self.legend_auto_managed = false;
         }
@@ -797,9 +801,16 @@ impl FiggyChart {
                 .monotonic_chart(id)
                 .and_then(|chart| chart.remove())
                 .map_err(|error| internal("ending the monotonic chart", js_err(error)))?;
-            self.set_selected_annotation(None);
+            // The general chart is placed on the surface as it is now: a
+            // resize made while the monotonic chart was shown moved only it.
+            self.renderer
+                .set_chart_display(self.chart_id, Some(self.surface_size))
+                .map_err(|error| internal("placing the chart", js_err(error)))?;
             self.view_dirty = true;
         }
+        // The document brought its own annotations: no index of the
+        // previous list names one of them.
+        self.set_selected_annotation(None);
         self.sync_hitmap()
             .map_err(|error| internal("rebuilding the hit map", error))
     }

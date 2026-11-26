@@ -292,16 +292,33 @@ impl FiggyChart {
     }
 
     /// Set the WebGPU surface clear color used behind the chart panel.
-    /// Components are linear 0..1 RGBA floats. This is host/app state:
-    /// it does not change the chart Config JSON.
+    /// Components are linear 0..1 RGBA floats, each clamped to 0..1; a
+    /// non-finite component (NaN, ±Infinity) is read as 0. This is
+    /// host/app state: it does not change the chart Config JSON.
     pub fn set_clear_color(&mut self, r: f32, g: f32, b: f32, a: f32) {
-        self.clear_color = Color::from_rgba(
-            r.clamp(0.0, 1.0),
-            g.clamp(0.0, 1.0),
-            b.clamp(0.0, 1.0),
-            a.clamp(0.0, 1.0),
-        );
+        let unit = |c: f32| {
+            if c.is_finite() {
+                c.clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        };
+        self.clear_color = Color::from_rgba(unit(r), unit(g), unit(b), unit(a));
         self.request_host_redraw();
+    }
+
+    /// Refuses a surface the device cannot hold: a side past
+    /// `max_texture_dimension_2d` (a negative JavaScript number arrives as
+    /// a huge `u32`). The browser reports such a configuration only later,
+    /// through the uncaptured-error handler, so it is checked first.
+    pub(in crate::web) fn check_surface_size(&self, w: u32, h: u32) -> Result<(), JsValue> {
+        let max = self.renderer.device().limits().max_texture_dimension_2d;
+        if w > max || h > max {
+            return Err(js_err(format!(
+                "a {w} x {h} surface exceeds the device's {max} px texture limit"
+            )));
+        }
+        Ok(())
     }
 
     /// Resize the swap chain viewport. The chart Config keeps its
@@ -315,10 +332,17 @@ impl FiggyChart {
         if self.monotonic.is_some() {
             return self.resize_monotonic(w, h, js_sys::Array::new(), JsValue::UNDEFINED);
         }
+        self.check_surface_size(w, h)?;
         self.renderer
             .set_chart_display(self.chart_id, Some((w, h)))
             .map_err(js_err)?;
-        self.renderer.resize(w, h).map_err(js_err)?;
+        if let Err(error) = self.renderer.resize(w, h) {
+            // Atomic: the display goes back to the surface it still has.
+            self.renderer
+                .set_chart_display(self.chart_id, Some(self.surface_size))
+                .map_err(js_err)?;
+            return Err(js_err(error));
+        }
         self.surface_size = (w, h);
         self.view_dirty = true;
         Ok(())

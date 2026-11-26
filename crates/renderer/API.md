@@ -132,6 +132,9 @@ can change its config, view, display, fit or stream. A monotonic line series
 lives only there: `register_chart`, `set_chart_series`, `set_chart_state`
 and `begin_replace_chart_columns` / `begin_replace_chart_sources` refuse it with
 `FiggyError::InvalidSeriesConfig { kind: RuleKind::MonotonicGeneralChart, .. }`.
+A monotonic chart takes no Feynman series: `register_monotonic_chart` and
+`MonotonicChart::set_series` refuse one with `RuleKind::MonotonicFeynman`
+(#468).
 `monotonic_chart(id) -> MonotonicChart` lends its calls:
 
 | `MonotonicChart::` | Contract |

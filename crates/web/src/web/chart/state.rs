@@ -59,7 +59,10 @@ impl FiggyChart {
     /// The document as the shown chart stores it, through the general call
     /// or a monotonic chart's editor (#271), which refuses a document that
     /// would move its x-to-pixel mapping.
-    fn write_chart_config(&mut self, config: renderer::Config) -> Result<(), JsValue> {
+    pub(in crate::web) fn write_chart_config(
+        &mut self,
+        config: renderer::Config,
+    ) -> Result<(), JsValue> {
         match self.monotonic {
             Some(id) => self
                 .renderer
@@ -77,6 +80,19 @@ impl FiggyChart {
                 .set_chart_config(self.chart_id, config)
                 .map_err(js_err),
         }
+    }
+
+    /// Whether `next` holds another annotation list than the shown
+    /// document: another number of items or another id at some index. The
+    /// selection's index names the same item only in the same list; an
+    /// edit of an item's content keeps it.
+    pub(in crate::web) fn annotations_replaced_by(
+        &self,
+        next: &renderer::Config,
+    ) -> Result<bool, JsValue> {
+        let current = &self.chart_config()?.annotations.items;
+        let next = &next.annotations.items;
+        Ok(current.len() != next.len() || current.iter().zip(next).any(|(a, b)| a.id != b.id))
     }
 
     pub(in crate::web) fn replace_chart_config(
@@ -317,6 +333,13 @@ impl FiggyChart {
     }
 
     pub(in crate::web) fn ensure_columns_exist(&self, cfg: &SeriesConfig) -> Result<(), JsValue> {
+        // A monotonic line series' columns are its envelope, which its
+        // group's reduction writes (#271): the renderer skips them as well
+        // (`validate.rs`), and refuses the series on a general chart with
+        // `MonotonicGeneralChart`.
+        if cfg.monotonic().is_some() {
+            return Ok(());
+        }
         for id in referenced_columns(cfg) {
             if !self.column_registered(id) {
                 return Err(js_err(format!(
@@ -350,13 +373,16 @@ impl FiggyChart {
         let current = self.chart_series()?.to_vec();
         let existing = current.iter().position(|c| c.series_id == series_id);
         let color = match existing {
+            // The series' own colour: its line's, or, with markers only,
+            // its markers' (a scatter, a stem or a series with errors).
             Some(i) => match &current[i].render_type {
                 DataRenderType::Xy(renderer::data_config::XySeries {
-                    scatter: None,
-                    line: Some(line),
-                    errors: None,
-                    ..
+                    line: Some(line), ..
                 }) => line.line_color,
+                DataRenderType::Xy(renderer::data_config::XySeries {
+                    scatter: Some(scatter),
+                    ..
+                }) => scatter.point_color,
                 _ => self.cycle.color(i),
             },
             None => self.cycle.color(self.color_seq),

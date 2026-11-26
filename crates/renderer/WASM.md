@@ -577,7 +577,7 @@ chart.auto_fit_y("adc", 0.05);                     // 표시 범위에 맞는 �
 `&mut self`를 빌리는 비동기 메서드가 실행 중일 때 같은 객체에 다시 접근하면 `"recursive use of an object"` 예외가 발생할 수 있다. wasm-bindgen은 호출을 대기열에 넣지 않는다. `<figgy-chart>` 래퍼는 작업 중인 객체에 대한 추가 호출을 거부한다. 저수준 커널을 직접 사용한다면 다음 규칙을 지켜야 한다.
 
 - rAF 루프는 WASM을 호출하기 전에 다음 `requestAnimationFrame(tick)`을 예약한다. 예외가 발생해도 루프가 끊어지지 않게 하기 위해서다.
-- 생성·연결, 두 전체 사전 준비 메서드, `prewarm_gpu_picking`, 출력(`export_png`, 스트림 출력의 `finish_stream_export` / `cancel_stream_operation_and_wait`), `first_frame_ready`, `ensure_extent_engine`, 상주 `auto_fit_all`, `pick_point` / `pick_data`, `release_unused_gpu_memory`, `cancel_streaming_and_wait`가 실행되는 동안 연결 세대와 커널을 확인하는 `busy` 토큰을 유지한다. 저수준 `selection_details()`의 비동기 GPU 읽기 중에도 같은 접근 제한을 적용한다. 그동안 `frame()`·포인터·크기 변경·대리 호출은 생략하거나 거부한다. 상주 `auto_fit_all`은 완료 시 설정을 직접 바꾸므로 실행 중 `frame()`을 호출할 수 없다.
+- 생성·연결, 두 전체 사전 준비 메서드, `prewarm_gpu_picking`, 출력(`export_png`, 스트림 출력의 `finish_stream_export` / `cancel_stream_operation_and_wait`), `first_frame_ready`, `ensure_extent_engine`, 상주 `auto_fit_all`, `pick_point` / `pick_data`, `release_unused_gpu_memory`, `cancel_streaming_and_wait`가 실행되는 동안 연결 세대와 커널을 확인하는 `busy` 토큰을 유지한다. `selection_details()` 대리 메서드도 비동기 GPU 읽기가 끝날 때까지 같은 `busy` 토큰을 유지한다(#468). 그동안 `frame()`·포인터·크기 변경·대리 호출은 생략하거나 거부한다. 상주 `auto_fit_all`은 완료 시 설정을 직접 바꾸므로 실행 중 `frame()`을 호출할 수 없다.
 - 웹 래퍼의 스트리밍 `auto_fit_all()`은 위 저수준 비동기 메서드를 호출하지 않는다. 렌더러에 범위 계산을 요청하고 스트리밍 작업의 `done`을 기다린다. 청크 공급과 커널 호출을 계속해야 하므로 일반 `busy` 토큰을 잡지 않으며, 작업 중 `busy`가 `false`일 수 있다. 스트리밍 실행기가 변경 요청을 최신 상태에 맞춰 반영한다.
 - 작업 중 들어온 크기 변경과 포인터 해제는 마지막 것만 보관했다가, 작업이 끝나면 WASM에 적용한 뒤 토큰을 해제한다. 연결이 끊겨도 작업이 사용 중인 커널은 작업이 끝난 뒤 해제한다. 이전 연결 세대의 작업이 끝났다고 새 세대의 토큰을 해제하지 않는다.
 
@@ -642,7 +642,7 @@ cd crates/web && python3 -m http.server 8137   # wasm은 file://로 열 수 없�
 | 프리셋 | `apply_axis_preset(AxisPreset)`, `apply_color_cycle(ColorCycle)`, `color_cycle_css(cycle)`. `theme_with_palette(name, cycle)`은 `theme(name)`과 같은 구성원을 팔레트만 프리셋 `cycle`로 바꿔 돌려주고(`apply_custom_theme`에 넘긴다), `FiggyBoundedChart.apply_theme_with_palette(name, cycle)`은 원형 차트에 계열의 원형 구성원을 프리셋 팔레트로 적용한다(#357). 프리셋의 출처와 라이선스는 [Palette presets](USAGE.md#palette-presets)에 있다. |
 | 포인터 입력 | 웹 래퍼가 포인터 이벤트를 처리한다. 직접 전달할 때는 `on_press(x, y)`, `on_move(dx, dy)`, `on_release()`, `has_selection()`을 사용한다. 이 경로는 활성 레이어를 따른다. `"Annotations"`가 활성이면 선택된 주석의 핸들이 먼저 답하고, 그다음 위치의 주석 항목을 선택해(요소 선택은 지움) `on_move`로 끌며, 주석이 없는 곳을 누르면 아래 공유 요소로 넘어가고 주석 선택을 지운다. `has_selection()`은 요소나 주석이 선택돼 있으면 `true`다. 값 라벨은 CPU 히트 맵에 없으므로, 피킹이 돌려준 `label_id`로 `press_value_label(label_id)`를 호출해 선택하고 끌기를 시작한다. 이후 `on_move`가 그 시리즈의 `labels.offsets`를 바꾸고 `on_release`가 끝낸다. 파인만 도표(#234)의 꼭짓점·전파자·라벨은 `pick_point`가 `kind`(`"feynman_vertex"`·`"feynman_propagator"`·`"feynman_label"`)와 `index`, 라벨이면 `part`로 돌려준다. 이 값으로 `press_feynman(series_id, kind, index, part)`를 호출하면 선택과 끌기가 시작되고, `on_move`가 꼭짓점을 옮기거나(첫 끌기가 배치를 확정한다) 전파자를 휜다. 라벨은 값 라벨 끌기와 같은 경로로 오프셋을 옮긴다. 래퍼는 시리즈를 등록할 때 도표의 자동 배치를 확정하며, 시리즈를 직접 고친 뒤에는 `place_feynman_vertices(series_id)`로 다시 확정한다. `on_press`의 반환값과 `has_selection()`의 차이는 [3.4절](#34-이벤트-입력--포인터를-모델-정책으로-그대로-전달)을 참고한다. `"Base"`가 활성이면 서브플롯의 플롯이나 테두리를 눌러 끌면 서브플롯 전체가 정수 픽셀 단위로 움직이고, 선택된 테두리의 조절점은 크기를 바꾼다. 부모 차트 밖으로도 나갈 수 있다(#205). 끄는 동안 래퍼는 문서 배치를 고정하고(`Renderer::hold_chart_display`) `on_release()`가 고정을 풀어 문서를 다시 캔버스에 맞춘다. 그래서 `on_release()`는 `Result<(), JsValue>`를 돌려주며 실패하면 throw한다. |
 | 선택 표시 | `set_picked_data(json)`는 `DataSelectionsConfig` 또는 `null` JSON 문자열로 `Config.picked_data`만 교체한다. 점·막대·셀·등고선·값 라벨 선택이 모두 여기에 들어간다. `null`은 표시를 지운다. |
-| 배경 | `set_clear_color(r, g, b, a)`는 선형 RGBA를 성분별 0~1로 제한하고 다시 그리기를 요청한다. 화면 상태만 바꾸므로 Config JSON이나 축 이미지는 갱신하지 않는다. |
+| 배경 | `set_clear_color(r, g, b, a)`는 선형 RGBA를 성분별 0~1로 제한하고 다시 그리기를 요청한다. 유한하지 않은 성분(NaN, ±Infinity)은 0으로 읽는다. 화면 상태만 바꾸므로 Config JSON이나 축 이미지는 갱신하지 않는다. |
 | 출력 | `export_png(scale)`은 PNG의 `Uint8Array`를 비동기로 반환한다. 문서 출력이므로 오버레이 레이어와 서브플롯도 함께 그린다. |
 | 제목 | `set_title`, `set_x_title`, `set_y_title`, `set_colorbar_title`. `$…$` 구간은 수식이다(3.8절 「라벨 속 수식」). 색상 막대 제목에 빈 문자열을 주면 숨긴다. `set_title`은 헬퍼이므로 제목이 제목 영역보다 높으면 `chart_title.top_margin`을 함께 늘린다. 영역에 들어가는 제목은 여백을 바꾸지 않는다. |
 
@@ -650,7 +650,7 @@ cd crates/web && python3 -m http.server 8137   # wasm은 file://로 열 수 없�
 
 <a id="figgy-chart-kernel"></a>
 
-`element.kernel`로 저수준 WASM `FiggyChart`에 직접 접근할 수 있다. 이 getter는 작업 중이면 `"figgy chart is busy"`, 준비 전이면 준비되지 않았다는 오류를 던진다. 받은 객체로 하는 호출은 웹 래퍼의 작업 중 접근 제한과 수명 관리를 거치지 않는다. [주석 레이어 메서드](#annotation-layer), `decoration_bounds`, `step_selection`, `selection_details`, `auto_fit_subplot`은 `<figgy-chart>`에 전달 메서드가 없으므로 이 경로로 호출한다. 비동기 `selection_details()`가 끝날 때까지 같은 요소의 다른 호출을 막는다. 연결이 끊기거나 `free()`를 호출하면 커널이 해제되므로 받은 객체를 보관하지 말고 호출할 때마다 `element.kernel`로 다시 얻는다.
+`element.kernel`로 저수준 WASM `FiggyChart`에 직접 접근할 수 있다. 이 getter는 작업 중이면 `"figgy chart is busy"`, 준비 전이면 준비되지 않았다는 오류를 던진다. 받은 객체로 하는 호출은 웹 래퍼의 작업 중 접근 제한과 수명 관리를 거치지 않는다. [주석 레이어 메서드](#annotation-layer), `decoration_bounds`, `auto_fit_subplot`은 `<figgy-chart>`에 전달 메서드가 없으므로 이 경로로 호출한다. `selection_details()`와 `step_selection(dx, dy)`는 요소의 전달 메서드로 호출한다(#468). `selection_details()`는 작업 게이트를 잡으므로 읽기가 끝날 때까지 프레임과 포인터 편집이 기다린다. 이 경로로 비동기 호출을 하면 끝날 때까지 같은 요소의 다른 호출을 막는다. 연결이 끊기거나 `free()`를 호출하면 커널이 해제되므로 받은 객체를 보관하지 말고 호출할 때마다 `element.kernel`로 다시 얻는다.
 
 <a id="exact-streaming"></a>
 
@@ -749,7 +749,7 @@ const png = await chart.export_png(2);
 
 진행 중인 자동 맞춤 요청은 요청 당시의 설정과 시리즈에 속한다. `set_config()`·`set_series()`로 설정이나 시리즈를 복원하거나 작업을 취소하면 이전 요청을 해제한다. 같은 WASM 객체로 다른 차트를 표시해도 이전 차트의 맞춤 요청을 이어받지 않는다. 다시 맞춰야 한다면 설정과 시리즈를 모두 적용한 뒤 명시적으로 요청한다.
 
-창 크기나 DPR이 바뀌면 실제 캔버스 픽셀 크기와 `resize(width, height)`를 함께 갱신한다. 저수준 스트리밍 호스트는 `request_auto_streaming_chart()`를 다시 호출해 새 크기의 표시 타깃을 요청하고 완료까지 진행한다. 이때 `auto_fit_all()`은 호출하지 않는다. 저장된 축 범위와 문서 크기는 유지하고, 글자·테두리·최종 데이터를 새 해상도로 그린다. 작은 캔버스를 CSS로 늘린 상태를 최종 화면으로 사용하지 않는다.
+창 크기나 DPR이 바뀌면 실제 캔버스 픽셀 크기와 `resize(width, height)`를 함께 갱신한다. 장치의 `max_texture_dimension_2d`를 넘는 변은 거부하며 아무것도 바꾸지 않는다(음수 JavaScript 값은 아주 큰 `u32`로 들어온다). 표면 재구성이 실패해도 표시 배치는 이전 표면에 그대로 남는다. 저수준 스트리밍 호스트는 `request_auto_streaming_chart()`를 다시 호출해 새 크기의 표시 타깃을 요청하고 완료까지 진행한다. 이때 `auto_fit_all()`은 호출하지 않는다. 저장된 축 범위와 문서 크기는 유지하고, 글자·테두리·최종 데이터를 새 해상도로 그린다. 작은 캔버스를 CSS로 늘린 상태를 최종 화면으로 사용하지 않는다.
 
 자동 맞춤은 현재 데이터로 범위를 계산하는 동작이다. 데이터와 여백이 같으면 처음 맞춘 범위로 돌아가지만, 데이터가 바뀌었다면 새 데이터에 맞춘다. `padding`은 유한한 0 이상의 수이며, `0`은 여백 없음, `0.05`는 5% 여백이다. 범위 계산과 통계 재사용은 렌더러가 담당한다.
 
@@ -920,7 +920,7 @@ Ordinary points and lines read the full range twice: in the first forward pass a
 
 A pending auto-fit request belongs to the configuration and series current when it was made. Restoring the configuration or the series with `set_config()` or `set_series()`, or cancelling the job, releases the earlier request. Showing another chart with the same WASM object does not inherit the previous chart's fit request. To fit again, apply both the configuration and the series, then request the fit explicitly.
 
-When the window size or DPR changes, update the actual canvas pixel size and call `resize(width, height)` together. A raw streaming host calls `request_auto_streaming_chart()` again to request a display target of the new size and runs it to completion. Do not call `auto_fit_all()` at this point. The saved axis range and document size are kept, and text, borders and the final data are drawn at the new resolution. A small canvas stretched with CSS is never used as the final display.
+When the window size or DPR changes, update the actual canvas pixel size and call `resize(width, height)` together. A side past the device's `max_texture_dimension_2d` is refused and changes nothing (a negative JavaScript number arrives as a huge `u32`); a surface reconfiguration that fails leaves the display placed on the previous surface. A raw streaming host calls `request_auto_streaming_chart()` again to request a display target of the new size and runs it to completion. Do not call `auto_fit_all()` at this point. The saved axis range and document size are kept, and text, borders and the final data are drawn at the new resolution. A small canvas stretched with CSS is never used as the final display.
 
 Auto-fit computes the range from the current data. With the same data and padding it returns to the range fitted first; if the data changed, it fits the new data. `padding` is a finite number of at least 0: `0` means no padding and `0.05` means 5% padding. The renderer computes the range and reuses the statistics.
 
@@ -1267,6 +1267,7 @@ reports it, or `null` for an id that is not registered. The returned
 | `push(offset, typedArray)` | Writes one chunk of at most `max_chunk_bytes` bytes at value `offset`, which must be `written()`. The array is read in place into the mapped staging range. An overlapping, gapped, past-the-end or mistyped chunk throws with `code` `"invalid_chunk"` and changes nothing; the upload stays open. |
 | `commit(chart)` | Installs the column on the chart that began the upload as one atomic insert or replacement. Throws `"invalid_chunk"` when a value was not written, `"stale"` when the column changed since `begin_column_upload` or `chart` is another chart, and the registration codes (`"budget_exceeded"`, `"pool_space"`, `"device_limit"`, `"allocation_failed"`, with byte fields) when the GPU cannot hold it. Closes the handle either way. |
 | `cancel()` | Releases the staging buffer; nothing was registered. |
+| `free()` | Releases the wasm object now (and a staging buffer it still holds) instead of at garbage collection. The `<figgy-chart>` wrapper forwards it ([#468](https://github.com/shim9610/figgy/issues/468)). |
 | `written()`, `length()`, `is_open()` | The next offset, the column length, whether the handle is open. |
 
 A closed handle throws `"upload_closed"`. `begin_column_upload` itself
@@ -1296,6 +1297,7 @@ number of staged columns is not limited.
 | `set_state(config_json, series_json?)` | Stages the next Config and, when given, the next Series, which may read the staged columns. Without `series_json` the chart keeps its series. The commit installs them as `set_config` followed by `set_series` would, legend included. JSON that does not parse throws here. |
 | `commit(chart)` | Installs every staged column, the state and the picker in one renderer transaction (`Renderer::commit_column_uploads`). Every column's revision is checked: one that changed since it was staged throws `"stale"` naming it, an incomplete column `"invalid_chunk"`, a budget or device that cannot hold the commit the registration codes. A state, or without one the chart's own Config and Series, that does not hold against the staged columns throws at `stage` `"state"` with the code the setters give. A monotonic chart takes no state (`"monotonic_chart"`). Closes the transaction either way. |
 | `cancel()` | Releases every staging buffer; nothing was registered. |
+| `free()` | Releases the wasm object now (and the staging buffers it still holds) instead of at garbage collection. The `<figgy-chart>` wrapper forwards it. |
 | `is_open()`, `written(id)`, `length(id)`, `staged_count()`, `has_state()` | Whether it is open, a staged column's next offset and length (`undefined` for an id not staged), how many columns are staged, whether a state is staged. |
 
 Every error is an `Error` with `stage` (`"stage"`, `"push"`, `"state"` or
@@ -1347,13 +1349,25 @@ monotonic chart instead (the kernel holds its handle;
 (`set_config`, `set_series`, `set_title`, `apply_theme`, the legend, axis,
 annotation and selection calls, decoration drags) edit its document through
 the monotonic chart's editor, which refuses a document that would move the
-x-to-pixel mapping (`MonotonicMappingEdit`); `auto_fit_all` and the streamed
-calls refuse a monotonic chart explicitly.
+x-to-pixel mapping (`MonotonicMappingEdit`); `auto_fit_all`, `load_demo` and
+every streamed call (`begin_streaming`, `stream_step`, the automatic,
+selection and operation range calls, chunk budgets, and the streamed column
+registrations) refuse a monotonic chart explicitly
+([#468](https://github.com/shim9610/figgy/issues/468)). The document keeps
+the general chart's `chart_area`: the kernel's surface owns it, and only
+`resize_monotonic` changes it. `set_series` takes monotonic series before
+their group's first `set_monotonic` (they draw nothing until it).
+`remove_column` edits the monotonic chart's document (its legend loses the
+rows of the series that read the column) and keeps the hidden general
+chart's own document. A monotonic chart takes no Feynman series:
+`set_monotonic_document` and `set_series` refuse one with `code`
+`MonotonicFeynman`, so a diagram, its drags and `place_feynman_vertices`
+stay on the general chart.
 
 | `FiggyChart` / `<figgy-chart>` | Takes |
 | --- | --- |
 | `set_monotonic_document(config, series)`, `clear_monotonic_document()` | Shows a monotonic chart (a document and series as `set_config` and `set_series` take them), or the general one again. |
-| `set_monotonic(group, start, interval, data, range, stride?, columns?)` | The full call with the group's whole source, its samples at `start + i × interval`: `data` is an `Array` of typed arrays, one per channel, or one interleaved typed array with `stride` values per frame and the frame `columns` its channels read (every column by default). `Float64Array`, `Float32Array`, `Int32Array`, `Int16Array`, `Uint16Array` or `Uint8Array`. `range` sets the x range, the only call that does: `[xMin, xMax]`, or `"autoscale"` to fit the x range to the samples' span and each y axis the group draws on to the values every monotonic series on that axis keeps, this group's and any other's (the general auto-fit refuses a chart with monotonic series). |
+| `set_monotonic(group, start, interval, data, range, stride?, columns?)` | The full call with the group's whole source, its samples at `start + i × interval`: `data` is an `Array` of typed arrays, one per channel, or one interleaved typed array with `stride` values per frame and the frame `columns` its channels read (an array or typed array of indices; every column by default; any other value is refused). A transfer chunk that cannot be allocated refuses the call; nothing is reduced from part of the data. `Float64Array`, `Float32Array`, `Int32Array`, `Int16Array`, `Uint16Array` or `Uint8Array`. `range` sets the x range, the only call that does: `[xMin, xMax]`, or `"autoscale"` to fit the x range to the samples' span and each y axis the group draws on to the values every monotonic series on that axis keeps, this group's and any other's (the general auto-fit refuses a chart with monotonic series). |
 | `append_monotonic(group, data, sliding, stride?, columns?)` | Only the new samples, in either layout; they continue the full call's grid. With `sliding` the window keeps its length and the x range moves by their span. |
 | `resize_monotonic(sources, plotArea?)` (element), `resize_monotonic(width, height, sources, plotArea)` (kernel) | The resize of a monotonic chart: the canvas to its measured size (the element) or to `width` × `height` device pixels, and the plot to `plotArea` (`{ x, y, width, height }` in document pixels, as `figgy-plot-resize` proposes it; omitted keeps the margins), each group whose series move to other device pixels reduced again from `sources`, `[{ group, start, interval, data, stride?, columns? }]`. Atomic: a refusal changes nothing. |
 | `take_plot_resize_request()` (kernel) | The plot rect the last plot-area resize gesture proposed, as JSON, once; the element emits it as `figgy-plot-resize`. |
@@ -1373,6 +1387,10 @@ chart area or layout) is refused by the editor and changes nothing; the plain
 does not resize a monotonic chart by itself: when its box or the device
 pixel ratio changes, the canvas keeps its size and `figgy-resize` carries
 `monotonic: true`; the host answers with `resize_monotonic(sources)`. A
+change while the element is busy (an export, say) dispatches nothing and
+leaves the canvas as it is; one `figgy-resize` with `monotonic: true` follows
+when the operation settles. Both report `cssWidth` / `cssHeight` as the
+element measured them. A
 plot-area resize gesture applies nothing while it drags: on release the
 element emits `figgy-plot-resize` with `{ plotArea, monotonic: true }`, and
 the host applies it with `resize_monotonic(sources, plotArea)`. Wheel and
@@ -1922,8 +1940,13 @@ a point of a series with a `z_column` (a 3D chart's) adds `z`.
 `zoom_view(factor)` zooms a 3D chart's camera (`Config.view_3d`): the eye
 distance is divided by `factor` and clamped; it returns whether the view
 changed, and a flat chart never does. A data-area drag orbits the camera.
-`<figgy-chart>` has no forwarding methods for these or for the annotation
-methods; call them through [`element.kernel`](#figgy-chart-kernel).
+`<figgy-chart>` forwards `selection_details()` and `step_selection(dx, dy)`
+([#468](https://github.com/shim9610/figgy/issues/468)). Its
+`selection_details()` holds the element's operation gate while the readbacks
+are pending, so frames and pointer edits wait for it (a raw call through
+`element.kernel` would race the element's frame loop). It has no forwarding
+methods for `zoom_view` or the annotation methods; call them through
+[`element.kernel`](#figgy-chart-kernel).
 See the [selection JSON contract](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md#resident-selection-details).
 Hold the host's async gate during selected-value reads as well as exports.
 

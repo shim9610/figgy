@@ -1698,7 +1698,8 @@ categorical or broken x axis, and polar, ternary, parallel and 3D charts,
 are refused. Monotonic series live
 only in a monotonic chart (`set_monotonic_document(config, series)`); the
 general chart's `set_series` refuses them (`MonotonicGeneralChart`), and a
-streamed display refuses them too.
+streamed display refuses them too. A monotonic chart takes no Feynman
+series (`MonotonicFeynman`).
 
 `pick_data(x, y, d)` answers a kept point of the envelope as a `"point"`
 whose `point_index` is the logical sample index (sample `i` of the group);

@@ -844,6 +844,22 @@ pub(in crate::renderer) fn refuse_monotonic_series(series: &[SeriesConfig]) -> R
     }
 }
 
+/// A monotonic chart holds no Feynman series (#468): its handle edits only
+/// series that need no general chart call, and a diagram's drags are
+/// general chart calls.
+pub(in crate::renderer) fn refuse_feynman_series(series: &[SeriesConfig]) -> Result<()> {
+    match series
+        .iter()
+        .find(|series| series.render_type.feynman().is_some())
+    {
+        Some(series) => Err(FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            kind: crate::RuleKind::MonotonicFeynman,
+        }),
+        None => Ok(()),
+    }
+}
+
 /// `config` with its layout fitted when the chart keeps it fitted
 /// ([`crate::LayoutState::Fitted`], #357): the fit
 /// [`crate::layout::auto_layout`] makes, measured with the font the draw

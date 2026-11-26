@@ -2540,6 +2540,56 @@ fn autoscale_keeps_every_group_on_a_shared_y_axis_in_view() {
     assert_eq!(config.bottom_x.max, 7_999.0);
 }
 
+/// A monotonic chart takes no Feynman series (#468): registration and a
+/// series replacement refuse one, and the chart keeps its series.
+#[test]
+fn a_monotonic_chart_refuses_a_feynman_series() {
+    use renderer::feynman::{FeynmanSeries, FeynmanVertex, ParticleLine, Propagator, VertexRole};
+    let diagram = SeriesConfig {
+        series_id: "d".into(),
+        source_id: None,
+        label: None,
+        x_column: String::new(),
+        y_column: String::new(),
+        z_column: None,
+        render_type: renderer::DataRenderType::Feynman(FeynmanSeries {
+            vertices: vec![
+                FeynmanVertex::new("a", VertexRole::Incoming),
+                FeynmanVertex::new("b", VertexRole::Outgoing),
+            ],
+            propagators: vec![Propagator::new("p", "a", "b", ParticleLine::Photon)],
+            ..FeynmanSeries::default()
+        }),
+    };
+    let refused = |result: Result<(), FiggyError>| {
+        matches!(
+            result,
+            Err(FiggyError::InvalidSeriesConfig {
+                ref series_id,
+                kind: renderer::RuleKind::MonotonicFeynman,
+            }) if series_id == "d"
+        )
+    };
+    let mut r = renderer();
+    let config = bare_config(320, 200, (0.0, 1.0), (0.0, 1.0));
+    assert!(refused(
+        r.register_monotonic_chart(config.clone(), vec![monotonic_series(1.0), diagram.clone()])
+            .map(|_| ())
+    ));
+    let id = r
+        .register_monotonic_chart(config.clone(), vec![monotonic_series(1.0)])
+        .expect("monotonic chart");
+    assert!(refused(
+        r.monotonic_chart(id)
+            .expect("chart")
+            .set_series(vec![monotonic_series(1.0), diagram.clone()])
+    ));
+    assert_eq!(r.monotonic_series(id).expect("series").len(), 1);
+    // The general chart takes it.
+    r.register_chart(config, vec![diagram])
+        .expect("general chart");
+}
+
 // ---------------------------------------------------------------------------
 // Refused calls leave no state (#469)
 // ---------------------------------------------------------------------------
