@@ -109,9 +109,10 @@ The pages and [figgy-chart.js](figgy-chart.js) load the generated `pkg/` files.
 Keep the JavaScript and WASM from the same build together. `pkg/` is generated,
 not checked into the source snapshot.
 
-The browser tests (`tests/*_browser.rs`) compile in CI but do not run there yet.
-Run them locally with [`ci/wasm_browser_test.cjs`](../../ci/wasm_browser_test.cjs)
-(Playwright Chromium), as the [CI guide](../../ci/README.md) describes.
+The browser tests (`tests/*_browser.rs`) run in CI's `browser` job, in
+Chromium on SwiftShader WebGPU. Run them locally the same way with
+[`ci/wasm_browser_test.cjs`](../../ci/wasm_browser_test.cjs) (Playwright
+Chromium), as the [CI guide](../../ci/README.md#browser-tests) describes.
 
 The `<figgy-chart>` element has its own test,
 [tests/figgy-chart.test.mjs](tests/figgy-chart.test.mjs). It loads
@@ -291,8 +292,8 @@ on the renderer, with its own deployment and UI.
 Cargo 패키지 `figgy` 0.15.1은 렌더러와 별도로 버전을 매기며 이 저장소에서 빌드한다
 (`publish = false`, 배포 대상은 아직 정하지 않았다: [#57](https://github.com/shim9610/figgy/issues/57)).
 crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝트와 관계없다.
-브라우저 테스트(`tests/*_browser.rs`)는 CI에서 컴파일만 하고 아직 실행하지 않는다.
-로컬에서는 `ci/wasm_browser_test.cjs`(Playwright Chromium)로 실행한다.
+브라우저 테스트(`tests/*_browser.rs`)는 CI의 `browser` 작업이 SwiftShader WebGPU를 쓰는
+Chromium에서 실행한다. 로컬에서도 같은 방식으로 `ci/wasm_browser_test.cjs`(Playwright Chromium)로 실행한다.
 `<figgy-chart>` 요소 테스트(`tests/figgy-chart.test.mjs`)는 빌드나 브라우저 없이 Node만으로
 실행한다: `node --experimental-vm-modules --test crates/web/tests/figgy-chart.test.mjs`.
 
