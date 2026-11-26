@@ -5,7 +5,9 @@
 //! resize/DPR handling, pointer wiring, busy gate, and CustomEvent output.
 //! This Rust module exposes the raw `FiggyChart` wasm class that the Custom
 //! Element uses as its low-level kernel; advanced hosts may call it directly
-//! when they intentionally want to own those browser responsibilities.
+//! when they intentionally want to own those browser responsibilities. It
+//! also exports `FiggyBoundedChart`, the radial (pie and donut) chart host,
+//! which the Custom Element does not wrap.
 //!
 //! Lifecycle model: **one instance, register/unregister**. Columns and series
 //! are managed by id. Column registration and explicit registration updates
@@ -13,15 +15,18 @@
 //! drawing. `remove_*` unregisters (and drops dependents), and pool
 //! defragmentation runs automatically after removals.
 //!
-//! The whole implementation is gated to `wasm32`: on native targets this
-//! crate compiles to an empty library so `cargo test --workspace` stays
-//! green. Build the artifact with:
+//! The implementation is gated to `wasm32`: on native targets the library
+//! is empty outside `cfg(test)`, where the target-independent helpers (JSON
+//! conversion, validation, frame decisions) and their unit tests compile, so
+//! `cargo test --workspace` runs them on native. Build the
+//! artifact from the repository root with:
 //!
 //! ```bash
-//! npx wasm-pack build crates/web --release --target web
+//! npx --yes wasm-pack@0.15.0 build crates/web --release --target web --locked
 //! ```
 //!
-//! See `crates/renderer/WASM.md` for the I/O architecture this implements.
+//! `crates/web/README.md` covers building and serving the pages, and
+//! `crates/renderer/WASM.md` the I/O architecture this implements.
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod borrowed_column;

@@ -432,7 +432,9 @@ unless the document has an explicit `decorations.data_area`.
       "label_font": "",
       "label_offset_x": 0.0,
       "label_offset_y": 0.0,
-      "format": "Decimal",
+      "format": {
+        "Auto": {}
+      },
       "significant_digits": 3
     },
     "tick": "Inside",
@@ -486,7 +488,9 @@ unless the document has an explicit `decorations.data_area`.
       "label_font": "",
       "label_offset_x": 0.0,
       "label_offset_y": 0.0,
-      "format": "Decimal",
+      "format": {
+        "Auto": {}
+      },
       "significant_digits": 3
     },
     "tick": "Inside",
@@ -540,7 +544,9 @@ unless the document has an explicit `decorations.data_area`.
       "label_font": "",
       "label_offset_x": 0.0,
       "label_offset_y": 0.0,
-      "format": "Decimal",
+      "format": {
+        "Auto": {}
+      },
       "significant_digits": 3
     },
     "tick": "Inside",
@@ -594,7 +600,9 @@ unless the document has an explicit `decorations.data_area`.
       "label_font": "",
       "label_offset_x": 0.0,
       "label_offset_y": 0.0,
-      "format": "Decimal",
+      "format": {
+        "Auto": {}
+      },
       "significant_digits": 3
     },
     "tick": "Inside",
@@ -794,7 +802,9 @@ unless the document has an explicit `decorations.data_area`.
       "label_font": "",
       "label_offset_x": 0.0,
       "label_offset_y": 0.0,
-      "format": "Decimal",
+      "format": {
+        "Auto": {}
+      },
       "significant_digits": 3
     },
     "tick": "Outside",

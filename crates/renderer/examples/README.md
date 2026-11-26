@@ -180,16 +180,14 @@ These open native windows and show host event handling as well as drawing.
 
 ```bash
 cargo run --locked -p figgy-renderer --example winit_simple
-cargo run --locked --manifest-path examples/egui/Cargo.toml --example egui_embed
-cargo run --locked --manifest-path examples/egui/Cargo.toml --example radial_editor
-cargo run --locked --release --manifest-path examples/egui/Cargo.toml --example ssot_lab
-cargo run --locked --release --manifest-path examples/egui/Cargo.toml --example streaming_capacity_demo
-cargo run --locked --manifest-path examples/egui/Cargo.toml --example constellation_lab
 ```
 
-All but `winit_simple` are in the standalone
-[egui example crate](https://github.com/shim9610/figgy/blob/master/examples/egui), so figgy-renderer itself has no
-egui dependency. Run them from the repository root as shown.
+The others are in the standalone
+[egui example crate](https://github.com/shim9610/figgy/blob/master/examples/egui/README.md),
+which has its own `Cargo.lock`, so figgy-renderer itself has no egui
+dependency. Its README lists the commands, for example
+`cargo run --locked --manifest-path examples/egui/Cargo.toml --example egui_embed`
+from the repository root.
 
 - **winit_simple** and **egui_embed** draw three panels in a host window and
   handle pointer input. `winit_simple` also selects, drags and resizes chart
