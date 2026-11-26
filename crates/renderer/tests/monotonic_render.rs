@@ -2539,3 +2539,480 @@ fn autoscale_keeps_every_group_on_a_shared_y_axis_in_view() {
     assert_eq!(config.overlays[0].x_axis.max, 2_999.0 * 3.0);
     assert_eq!(config.bottom_x.max, 7_999.0);
 }
+
+// ---------------------------------------------------------------------------
+// Refused calls leave no state (#469)
+// ---------------------------------------------------------------------------
+
+/// A chart with series `a` (group `ga`) and `b` (group `gb`), both on the
+/// chart's x axis, each after one full call on `values` at x range
+/// `0..len - 1`.
+fn two_groups(values: &[f64]) -> (Renderer, MonotonicChartId) {
+    let mut r = renderer();
+    let last = (values.len() - 1) as f64;
+    let config = bare_config(600, 300, (0.0, last), (-1.6, 1.6));
+    let id = r
+        .register_monotonic_chart(
+            config,
+            vec![
+                SeriesConfig::monotonic_line("a", "ga", 0)
+                    .color(BLUE)
+                    .width(1.0),
+                SeriesConfig::monotonic_line("b", "gb", 0)
+                    .color(BLUE)
+                    .width(1.0),
+            ],
+        )
+        .expect("chart");
+    let channels = [values];
+    let source = MonotonicSlices::new(0.0, 1.0, &channels);
+    for group in ["ga", "gb"] {
+        r.monotonic_chart(id)
+            .expect("monotonic chart")
+            .set_monotonic(
+                group,
+                &source,
+                MonotonicRange::X {
+                    min: 0.0,
+                    max: last,
+                },
+            )
+            .expect("set_monotonic");
+    }
+    (r, id)
+}
+
+fn all_needs(r: &Renderer, id: MonotonicChartId) -> Vec<renderer::renderer::MonotonicSourceNeed> {
+    r.monotonic_needs_source(id).expect("needs_source")
+}
+
+fn column_ids(r: &Renderer) -> Vec<String> {
+    let mut ids: Vec<String> = r.logical_column_ids().map(str::to_owned).collect();
+    ids.sort();
+    ids
+}
+
+/// An export at another mapping that fails at its second group, for each
+/// reason it can fail there (no source, a channel the source lacks, a
+/// refused reduction, a transient column id already taken), removes the
+/// first group's transient columns and group: the columns, the groups a
+/// chart needs sources for and the screen image are as before, and a retry
+/// with every source succeeds, as PNG, blocking PNG and SVG.
+#[test]
+fn a_failed_rescaled_export_leaves_no_transient_state() {
+    let values = signal_values(0..20_000);
+    let (mut r, id) = two_groups(&values);
+    let columns = column_ids(&r);
+    let screen = export(&mut r, id, 1.0).expect("1x");
+    let channels = [values.as_slice()];
+    let good = MonotonicSlices::new(0.0, 1.0, &channels);
+    let no_channels: [&[f64]; 0] = [];
+    let empty = MonotonicSlices::new(0.0, 1.0, &no_channels);
+    let bad_grid = MonotonicSlices::new(0.0, f64::NAN, &channels);
+    let check = |r: &mut Renderer, what: &str| {
+        assert_eq!(column_ids(r), columns, "{what}: transient columns left");
+        assert!(all_needs(r, id).is_empty(), "{what}: a group left behind");
+        assert_identical(&export(r, id, 1.0).expect("1x"), &screen, what);
+    };
+    let only_a = [MonotonicGroupRef::new("ga", &good)];
+    let missing = r
+        .export_rgba(
+            ExportSource::Monotonic {
+                chart: id,
+                monotonic: &only_a,
+            },
+            ExportOptions::panel(2.0),
+        )
+        .block_on();
+    assert!(
+        matches!(
+            &missing,
+            Err(FiggyError::MonotonicSourceRequired { series_id, .. }) if series_id == "b"
+        ),
+        "{:?}",
+        missing.err()
+    );
+    check(&mut r, "missing source");
+    let no_channel = [
+        MonotonicGroupRef::new("ga", &good),
+        MonotonicGroupRef::new("gb", &empty),
+    ];
+    let channel = r
+        .export_rgba(
+            ExportSource::Monotonic {
+                chart: id,
+                monotonic: &no_channel,
+            },
+            ExportOptions::panel(2.0),
+        )
+        .block_on();
+    assert!(
+        matches!(
+            &channel,
+            Err(FiggyError::InvalidSeriesConfig {
+                kind: renderer::RuleKind::MonotonicChannel { .. },
+                ..
+            })
+        ),
+        "{:?}",
+        channel.err()
+    );
+    check(&mut r, "missing channel");
+    let refused = [
+        MonotonicGroupRef::new("ga", &good),
+        MonotonicGroupRef::new("gb", &bad_grid),
+    ];
+    let reduction = r
+        .export_rgba(
+            ExportSource::Monotonic {
+                chart: id,
+                monotonic: &refused,
+            },
+            ExportOptions::panel(2.0),
+        )
+        .block_on();
+    assert!(
+        matches!(&reduction, Err(FiggyError::Monotonic { group, .. }) if group == "gb"),
+        "{:?}",
+        reduction.err()
+    );
+    check(&mut r, "refused reduction");
+    // A host column under the second series' transient id.
+    r.add_column("b.monotonic.y\u{1}export", &vec![0.0, 1.0])
+        .expect("host column");
+    let both = [
+        MonotonicGroupRef::new("ga", &good),
+        MonotonicGroupRef::new("gb", &good),
+    ];
+    let with = ExportSource::Monotonic {
+        chart: id,
+        monotonic: &both,
+    };
+    let taken = r.export_rgba(with, ExportOptions::panel(2.0)).block_on();
+    assert!(
+        matches!(
+            &taken,
+            Err(FiggyError::InvalidSeriesConfig {
+                kind: renderer::RuleKind::MonotonicColumnTaken { .. },
+                ..
+            })
+        ),
+        "{:?}",
+        taken.err()
+    );
+    r.remove_column("b.monotonic.y\u{1}export")
+        .expect("host column removed");
+    check(&mut r, "taken column id");
+    // The blocking and vector twins clean up the same way.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let only_a = ExportSource::Monotonic {
+            chart: id,
+            monotonic: &only_a,
+        };
+        assert!(
+            r.export_rgba_blocking(only_a, ExportOptions::panel(2.0))
+                .is_err()
+        );
+        check(&mut r, "blocking png");
+        assert!(
+            r.export_svg_blocking(only_a, ExportOptions::document(2.0))
+                .is_err()
+        );
+        check(&mut r, "blocking svg");
+    }
+    assert!(
+        r.export_svg(
+            ExportSource::Monotonic {
+                chart: id,
+                monotonic: &only_a,
+            },
+            ExportOptions::document(2.0)
+        )
+        .block_on()
+        .is_err()
+    );
+    check(&mut r, "svg");
+    // Every source lent: the retry succeeds, and leaves nothing either.
+    let image = export_with(&mut r, id, 2.0, &both);
+    assert_eq!((image.width, image.height), (1200, 600));
+    #[cfg(not(target_arch = "wasm32"))]
+    r.export_png_blocking(with, ExportOptions::panel(2.0))
+        .expect("blocking retry");
+    r.export_svg(with, ExportOptions::document(2.0))
+        .block_on()
+        .expect("svg retry");
+    check(&mut r, "retries");
+}
+
+/// A sliding append of `ga` moves the x axis `gb` is drawn on too, so it is
+/// refused, and the refusal changes nothing: the document, the envelope
+/// (no point of the refused samples is kept), the image, the sources the
+/// chart needs and its picks are as before. A non-sliding append and a
+/// slide of both groups' axes through full calls still work after it.
+#[test]
+fn a_refused_sliding_append_changes_nothing() {
+    let values = signal_values(0..200);
+    let (mut r, id) = two_groups(&values);
+    let config = r.monotonic_config(id).expect("config").clone();
+    let series = r.monotonic_series(id).expect("series").to_vec();
+    let image = export(&mut r, id, 1.0).expect("before");
+    assert!(
+        r.monotonic_kept_point(id, "a", 199)
+            .expect("kept")
+            .is_some()
+    );
+    let fresh = signal_values(200..210);
+    let channels = [fresh.as_slice()];
+    let refused = r
+        .monotonic_chart(id)
+        .expect("monotonic chart")
+        .append_monotonic(
+            "ga",
+            &MonotonicSlices::new(0.0, 1.0, &channels),
+            MonotonicAppend { sliding: true },
+        );
+    assert!(
+        matches!(
+            &refused,
+            Err(FiggyError::MonotonicSourceRequired {
+                series_id,
+                change: MappingChange::XRange,
+            }) if series_id == "b"
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(r.monotonic_config(id).expect("config"), &config);
+    assert_eq!(r.monotonic_series(id).expect("series"), series.as_slice());
+    for index in 200..210 {
+        assert_eq!(
+            r.monotonic_kept_point(id, "a", index).expect("kept"),
+            None,
+            "refused sample {index} is kept"
+        );
+    }
+    assert!(
+        r.monotonic_kept_point(id, "a", 199)
+            .expect("kept")
+            .is_some()
+    );
+    assert!(all_needs(&r, id).is_empty());
+    assert_identical(&export(&mut r, id, 1.0).expect("after"), &image, "refused");
+    let chart = renderer::Chart::new(config.clone());
+    let mut view = r
+        .create_chart_view(&chart, config.chart_area.0)
+        .expect("view");
+    r.prepare_monotonic(&mut [renderer::MonotonicChartDrawItem {
+        chart: id,
+        view: &mut view,
+    }])
+    .expect("prepare after the refusal");
+    pick_middle(&mut r, id).expect("pick after the refusal");
+    // The same append without sliding keeps the axis, so it is accepted.
+    r.monotonic_chart(id)
+        .expect("monotonic chart")
+        .append_monotonic(
+            "ga",
+            &MonotonicSlices::new(0.0, 1.0, &channels),
+            MonotonicAppend { sliding: false },
+        )
+        .expect("non-sliding append");
+    assert_eq!(r.monotonic_config(id).expect("config"), &config);
+    assert!(all_needs(&r, id).is_empty());
+    export(&mut r, id, 1.0).expect("after the append");
+}
+
+/// An export past the device's texture limit fails with `GpuResourceLimit`
+/// before anything is reduced, uploaded or allocated, with every source
+/// lent, as a plain chart's export does.
+#[test]
+fn an_export_past_the_texture_limit_allocates_nothing() {
+    let values = signal_values(0..20_000);
+    let (mut r, id) = two_groups(&values);
+    let channels = [values.as_slice()];
+    let source = MonotonicSlices::new(0.0, 1.0, &channels);
+    let both = [
+        MonotonicGroupRef::new("ga", &source),
+        MonotonicGroupRef::new("gb", &source),
+    ];
+    let with = ExportSource::Monotonic {
+        chart: id,
+        monotonic: &both,
+    };
+    let columns = column_ids(&r);
+    // Past any device's texture limit (65536 px wide and more), far past
+    // it, and unbounded.
+    for scale in [110.0, 3000.0, f32::INFINITY, f32::MAX] {
+        r.end_gpu_frame();
+        let usage = r.gpu_memory_usage();
+        let result = r.export_rgba(with, ExportOptions::panel(scale)).block_on();
+        assert!(
+            matches!(result, Err(FiggyError::GpuResourceLimit { .. })),
+            "scale {scale}: {:?}",
+            result.err()
+        );
+        let after = r.gpu_memory_usage();
+        assert_eq!(
+            after.live_bytes(),
+            usage.live_bytes(),
+            "scale {scale}: live"
+        );
+        assert_eq!(
+            after.retired_bytes(),
+            usage.retired_bytes(),
+            "scale {scale}: retired"
+        );
+        assert_eq!(column_ids(&r), columns, "scale {scale}: columns");
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let blocking = r.export_svg_blocking(with, ExportOptions::document(scale));
+            assert!(
+                matches!(blocking, Err(FiggyError::GpuResourceLimit { .. })),
+                "svg scale {scale}: {:?}",
+                blocking.err()
+            );
+            assert_eq!(r.gpu_memory_usage().live_bytes(), usage.live_bytes());
+        }
+    }
+    assert!(all_needs(&r, id).is_empty());
+    export_with(&mut r, id, 2.0, &both);
+}
+
+/// An envelope column holds the renderer's reduction, not data (rule 1,
+/// M1): no series but its own monotonic series may read it. A general
+/// chart's registration, series and state replacement, a column
+/// replacement batch, and a monotonic chart's ordinary series are refused
+/// with `ReservedColumnId`, leaving everything as it was.
+#[test]
+fn a_general_series_cannot_read_an_envelope_column() {
+    let values = signal_values(0..200);
+    let (mut r, id) = single(&values);
+    let config = r.monotonic_config(id).expect("config").clone();
+    let mut general = config.clone();
+    general.layout_state = renderer::LayoutState::Fixed;
+    let reader = || SeriesConfig::line("h", "m.monotonic.x", "m.monotonic.y").color(BLUE);
+    let reserved = |result: Result<(), FiggyError>| matches!(result, Err(FiggyError::ReservedColumnId { ref id }) if id.starts_with("m.monotonic"));
+    let charts = r.chart_order().len();
+    assert!(reserved(
+        r.register_chart(general.clone(), vec![reader()])
+            .map(|_| ())
+    ));
+    assert!(reserved(
+        r.register_chart_as_given(general.clone(), vec![reader()])
+            .map(|_| ())
+    ));
+    // Any column of a series, not only x and y.
+    r.upsert_column("x", &vec![0.0, 1.0]).expect("x");
+    r.upsert_column("y", &vec![0.0, 1.0]).expect("y");
+    let mut z_reader = SeriesConfig::line("h", "x", "y").color(BLUE);
+    z_reader.z_column = Some("m.monotonic.y".into());
+    assert!(reserved(
+        r.register_chart(general.clone(), vec![z_reader])
+            .map(|_| ())
+    ));
+    assert_eq!(r.chart_order().len(), charts, "nothing registered");
+    let plain = r
+        .register_chart(general.clone(), vec![SeriesConfig::line("h", "x", "y")])
+        .expect("plain chart");
+    assert!(reserved(r.set_chart_series(plain, vec![reader()])));
+    assert!(reserved(r.set_chart_state(
+        plain,
+        general.clone(),
+        vec![reader()]
+    )));
+    let batch =
+        r.begin_replace_chart_columns::<0, _>(plain, [], |_| Ok((general.clone(), vec![reader()])));
+    assert!(reserved(batch.map(|_| ())));
+    assert_eq!(
+        r.chart_series(plain).expect("series")[0].x_column,
+        "x",
+        "the plain chart keeps its series"
+    );
+    // A monotonic chart's ordinary series: in the same document the model
+    // already refuses a second reader of the series' columns; in another
+    // monotonic chart the renderer refuses it.
+    assert!(matches!(
+        r.monotonic_chart(id)
+            .expect("monotonic chart")
+            .set_series(vec![monotonic_series(1.0), reader()]),
+        Err(FiggyError::InvalidSeriesConfig {
+            kind: renderer::RuleKind::MonotonicColumnsShared,
+            ..
+        })
+    ));
+    assert!(reserved(
+        r.register_monotonic_chart(config.clone(), vec![reader()])
+            .map(|_| ())
+    ));
+    let other = r
+        .register_monotonic_chart(config, vec![named_monotonic("o", 1.0)])
+        .expect("other monotonic chart");
+    assert!(reserved(
+        r.monotonic_chart(other)
+            .expect("monotonic chart")
+            .set_series(vec![named_monotonic("o", 1.0), reader()])
+    ));
+    assert_eq!(r.monotonic_series(id).expect("series").len(), 1);
+    assert!(needs(&r, id).is_empty());
+    // Once the envelope is gone the id is an ordinary unknown column.
+    r.monotonic_chart(id)
+        .expect("monotonic chart")
+        .remove()
+        .expect("remove");
+    assert!(matches!(
+        r.register_chart(general, vec![reader()]),
+        Err(FiggyError::UnknownColumn { .. })
+    ));
+}
+
+/// A selected sample that slides out of the window stays the document's
+/// selection, draws no highlight (the envelope keeps no point for it), and
+/// steps to the nearest kept point, the first one the envelope keeps
+/// (#469).
+#[test]
+fn a_slid_out_selection_draws_nothing_and_steps_back_in() {
+    let values = signal_values(0..1_000);
+    let (mut r, id) = single(&values);
+    select(&mut r, id, Some(2));
+    // Past the window and the margin the envelope keeps beyond its edge.
+    let fresh = signal_values(1_000..1_400);
+    let channels = [fresh.as_slice()];
+    r.monotonic_chart(id)
+        .expect("monotonic chart")
+        .append_monotonic(
+            "g",
+            &MonotonicSlices::new(0.0, 1.0, &channels),
+            MonotonicAppend { sliding: true },
+        )
+        .expect("slide");
+    assert_eq!(r.monotonic_kept_point(id, "m", 2).expect("kept"), None);
+    {
+        let ringed = export(&mut r, id, 1.0).expect("selected");
+        select(&mut r, id, None);
+        let plain = export(&mut r, id, 1.0).expect("plain");
+        assert_identical(&ringed, &plain, "slid-out selection");
+        select(&mut r, id, Some(2));
+    }
+    assert!(
+        r.monotonic_chart(id)
+            .expect("monotonic chart")
+            .step_selection(1, 0)
+            .expect("step")
+    );
+    let stepped = match r.monotonic_config(id).expect("config").picked_data.as_ref() {
+        Some(selection) => match selection.refs.first() {
+            Some(renderer::PickedDataRef::Point { point_index, .. }) => *point_index,
+            other => panic!("selection {other:?}"),
+        },
+        None => panic!("no selection"),
+    };
+    assert!(stepped > 2, "stepped to {stepped}, a kept point");
+    assert!(
+        r.monotonic_kept_point(id, "m", stepped)
+            .expect("kept")
+            .is_some()
+    );
+    // The first kept point may lie in the margin beyond the plot's left
+    // edge, where its ring is clipped; the image still draws.
+    export(&mut r, id, 1.0).expect("stepped");
+}

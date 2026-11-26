@@ -447,42 +447,64 @@ impl Renderer {
                 .ok_or_else(not_built)?;
             member_panels.push(record.panel);
         }
-        let state = self
+        // The append runs on copies of the group's envelopes (their size
+        // is the plot's width and the channel count, never the data's, M3),
+        // so a refusal at any step leaves the group as it was (#469).
+        let mut panels: Vec<Arc<MonotonicEnvelope>> = self
             .monotonic
             .groups
-            .get_mut(&chart)
-            .and_then(|groups| groups.get_mut(group))
-            .ok_or_else(not_built)?;
+            .get(&chart)
+            .and_then(|groups| groups.get(group))
+            .ok_or_else(not_built)?
+            .panels
+            .clone();
         let mut update = None;
-        for (index, envelope) in state.panels.iter_mut().enumerate() {
-            // The core refuses an append before it changes anything, so a
-            // refused first envelope leaves the group as it was; a later
-            // one leaves the group needing its source.
-            match append(Arc::make_mut(envelope)) {
-                Ok(done) => {
-                    update.get_or_insert(done);
-                }
-                Err(error) => {
-                    if index > 0 {
-                        self.forget_monotonic_group(chart, group);
-                    }
-                    return Err(FiggyError::Monotonic {
-                        group: group.to_owned(),
-                        error,
-                    });
-                }
-            }
+        for envelope in &mut panels {
+            // `make_mut` copies: the group still holds the original.
+            let done = append(Arc::make_mut(envelope)).map_err(|error| FiggyError::Monotonic {
+                group: group.to_owned(),
+                error,
+            })?;
+            update.get_or_insert(done);
         }
         let update = update.ok_or_else(not_built)?;
-        let panels: Vec<Arc<MonotonicEnvelope>> = state.panels.clone();
+        // The appended envelopes become the group's, and the slid ranges
+        // are reconciled against them. The reconcile refuses before it
+        // writes anything when the slide would move another group's
+        // mapping; the group then gets its original envelopes back.
+        let previous = self.replace_group_panels(chart, group, panels.clone());
         if sliding {
-            self.write_slid_ranges(chart, &members, &member_panels, &panels)?;
+            if let Err(error) = self.write_slid_ranges(chart, &members, &member_panels, &panels) {
+                // A failed write after the reconcile forgot the chart's
+                // monotonic state; only a group still held is restored.
+                if let Some(previous) = previous {
+                    self.replace_group_panels(chart, group, previous);
+                }
+                return Err(error);
+            }
         }
         if let Err(error) = self.upload_members(&members, &member_panels, &panels) {
             self.forget_monotonic_group(chart, group);
             return Err(error);
         }
         Ok(update)
+    }
+
+    /// Replaces the envelopes of group `group` of chart `chart` with
+    /// `panels` and returns the ones it held; `None`, and nothing changes,
+    /// when the chart does not hold the group.
+    fn replace_group_panels(
+        &mut self,
+        chart: ChartId,
+        group: &str,
+        panels: Vec<Arc<MonotonicEnvelope>>,
+    ) -> Option<Vec<Arc<MonotonicEnvelope>>> {
+        let state = self
+            .monotonic
+            .groups
+            .get_mut(&chart)
+            .and_then(|groups| groups.get_mut(group))?;
+        Some(std::mem::replace(&mut state.panels, panels))
     }
 
     /// Writes the x range each slid envelope now covers to the axis its

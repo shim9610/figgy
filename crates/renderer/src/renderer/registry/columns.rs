@@ -487,6 +487,7 @@ impl Renderer {
             chart_states,
             chart_order,
             monotonic_order,
+            monotonic,
             visual_revision,
             pending_defrag,
             picker,
@@ -503,6 +504,7 @@ impl Renderer {
         super::charts::refuse_monotonic_series(&series)?;
         crate::chart::validate_renderer_config(&config)?;
         validate_renderer_series(inner.pool(), &config, &series)?;
+        monotonic.refuse_envelope_readers(&series)?;
         let chart_plan = prepare_chart_replacement_plan(
             chart_states,
             chart_order,

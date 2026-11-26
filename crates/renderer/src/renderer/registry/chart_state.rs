@@ -27,6 +27,7 @@ impl Renderer {
     ) -> Result<()> {
         crate::chart::validate_renderer_config(&config)?;
         validate_renderer_series(&(&self.pool, &self.streaming_sources), &config, &series)?;
+        self.monotonic.refuse_envelope_readers(&series)?;
         self.require_resident_overlay_series(&config, &series)?;
         config.set_active_layer(config.active_layer);
         let state = self
