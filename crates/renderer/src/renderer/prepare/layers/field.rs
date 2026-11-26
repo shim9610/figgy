@@ -20,10 +20,15 @@ impl PrepareContext<'_> {
             ..
         } = *s;
         let series = &s.series;
+        // A heatmap on a 3D chart draws as a surface into the panel
+        // composite, never as the flat field, so it needs no flat field
+        // pipeline (#453).
+        let to_surface =
+            chart_config.view_3d().is_some() && crate::renderer::device::draws_surface(rt);
         // A field: the group-2 state was resolved in `ensure_field_scratches`
         // (the prepare phase's `&mut self` half) and is reused whole while
         // nothing it depends on changes.
-        let field = if primitives.field {
+        let field = if primitives.field && !to_surface {
             let scratch = self
                 .field_cache
                 .get(cfg.series_id.as_str())
@@ -109,23 +114,16 @@ impl PrepareContext<'_> {
             }
         }
 
-        // A heatmap on a 3D chart draws as a surface into the panel
-        // composite, not as the flat field: the same group 2, its own
-        // camera and look as group 3.
-        let (field, surface, selected_surface) = match field {
-            Some(flat)
-                if chart_config.view_3d().is_some()
-                    && crate::renderer::device::draws_surface(rt) =>
-            {
-                let scratch = self
-                    .field_cache
-                    .get(cfg.series_id.as_str())
-                    .ok_or(FiggyError::internal("prepare ensured this field's scratch"))?;
-                let (surface, selected) =
-                    self.surface_layers(view, chart_config, series, pipelines, scratch, idx, flat)?;
-                (None, surface, selected)
-            }
-            other => (other, None, None),
+        // The surface reads the field's group 2 under its own camera and
+        // look as group 3.
+        let (surface, selected_surface) = if primitives.field && to_surface {
+            let scratch = self
+                .field_cache
+                .get(cfg.series_id.as_str())
+                .ok_or(FiggyError::internal("prepare ensured this field's scratch"))?;
+            self.surface_layers(view, chart_config, series, pipelines, scratch, idx)?
+        } else {
+            (None, None)
         };
         let surface = surface.or(mesh_surface);
         let selected_surface = selected_surface.or(mesh_selected);

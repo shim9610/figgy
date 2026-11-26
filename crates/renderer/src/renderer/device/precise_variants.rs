@@ -74,18 +74,33 @@ impl PreciseNeeds {
             if style_variant(&item.chart_config.draw_style).is_some() {
                 continue;
             }
+            // Whether the panel has the camera its 3D entries draw with.
+            let camera = item.chart_config.view_matrix().is_some();
             for series in item.series {
                 let primitives = effective_series_primitives(
                     &item.chart_config.draw_style,
                     &series.config.render_type,
                 );
-                needs.add(K::Field, primitives.field);
+                // On a 3D chart a heatmap draws as a surface and a contour on
+                // the box floor, through the surface pipelines
+                // (`ensure_surface_pipelines`), and a series with a height
+                // column through the 3D entries below: none of them draws
+                // through a planar pipeline, so none is compiled (#453).
+                let planar = item.chart_config.view_3d().is_none();
+                // As the layers decide (`build_series_layers_with_columns`):
+                // a height column draws through the 3D entries when the
+                // panel has a camera, and through the planar ones otherwise.
+                let planar_series = !(camera && series.config.z_column.is_some());
+                needs.add(
+                    K::Field,
+                    primitives.field && (planar || !draws_surface(&series.config.render_type)),
+                );
                 // A contour is the field quad through a different fragment entry
                 // point, so it needs no line pipeline at all any more.
-                needs.add(K::Contour, primitives.contour);
+                needs.add(K::Contour, primitives.contour && planar);
                 // A mesh on a 3D chart draws through the surface pipelines
                 // (`ensure_surface_pipelines`), not the flat mesh ones.
-                let mesh_flat = item.chart_config.view_3d().is_none();
+                let mesh_flat = planar;
                 needs.tri_mesh[TriMeshPass::Fill as usize] |= primitives.mesh && mesh_flat;
                 needs.tri_mesh[TriMeshPass::Contour as usize] |=
                     primitives.mesh_contour && mesh_flat;
@@ -103,7 +118,7 @@ impl PreciseNeeds {
                             )
                         })
                     });
-                needs.add(K::Line, primitives.line);
+                needs.add(K::Line, primitives.line && planar_series);
                 // Streamline arrowheads draw through the path vector pipeline.
                 needs.add(
                     K::VectorPath,
@@ -123,13 +138,14 @@ impl PreciseNeeds {
                             .streamlines()
                             .is_some_and(|streamlines| streamlines.color_map.is_some()),
                 );
-                contour_label |=
-                    primitives.contour && series_wants_contour_labels(&series.config.render_type);
+                contour_label |= primitives.contour
+                    && planar
+                    && series_wants_contour_labels(&series.config.render_type);
                 // A parallel series' rows, and the picked row's redraw when
                 // a point is picked (#141).
                 needs.add(K::LineParallel, primitives.parallel);
                 needs.add(K::LineParallelSelection, primitives.parallel && typed_point);
-                needs.add(K::Scatter, primitives.scatter);
+                needs.add(K::Scatter, primitives.scatter && planar_series);
                 needs.add(K::Bar, primitives.bar);
                 needs.add(K::CategoryBar, primitives.category_bars);
                 needs.add(
@@ -454,6 +470,15 @@ pub(in crate::renderer) fn items_pipeline_labels(
             }
             if crate::renderer::prepare::series_arc_need(&config.draw_style, series).0 {
                 each(data_render::line_arc::ARC_SCAN_LABEL);
+                // A 3D chart's line measures its chords through the camera
+                // (`prepare_arc_items`), and only it waits for that entry
+                // (#453).
+                if render_type.ternary_c_column().is_none()
+                    && series.config.z_column.is_some()
+                    && config.view_matrix().is_some()
+                {
+                    each(data_render::line_arc::ARC_SCAN_3D_LABEL);
+                }
             }
         }
     }
@@ -496,6 +521,7 @@ mod label_tests {
         }
         waited.push(crate::data_render::ternary_region::RING_SCAN_LABEL);
         waited.push(crate::data_render::line_arc::ARC_SCAN_LABEL);
+        waited.push(crate::data_render::line_arc::ARC_SCAN_3D_LABEL);
         waited.extend(crate::gpu_contour::CONTOUR_ANCHOR_LABELS);
         for key in [
             super::StyleKey::Sketch,

@@ -45,17 +45,12 @@ swash = "0.2"
 tiny-skia = "0.12"
 # The OpenType MATH table (constants, italic corrections, accent attachments,
 # glyph variants and assemblies) and the GSUB `ssty` script alternates of the
-# math layout (#45). swash and egui pin read-fonts 0.41, which has no MATH
-# table; this is the release that does. Unify with theirs when they move.
-read-fonts = { version = "0.46", default-features = false, features = ["std"] }
+# math layout (#45). swash pins read-fonts 0.41, which has no MATH table;
+# this is the release that does. Unify with its version when it moves.
+read-fonts = { version = "0.47", default-features = false, features = ["std"] }
 # Lock-free reads of the registered-font snapshot; registration publishes a
 # successor under its own mutex (#160).
 arc-swap = "1.7"
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-eframe = { version = "0.36", optional = true, default-features = false, features = ["wgpu", "x11", "wayland"] }
-egui = { version = "0.36", optional = true }
-egui-wgpu = { version = "0.36", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
@@ -81,36 +76,10 @@ helpers = ["model/helpers"]
 serde = ["model/serde"]
 # Test support: the CPU twins of the shader coverage (`renderer::pick::cpu_twin`).
 cpu-twin = []
-egui_demo = ["dep:eframe", "dep:egui", "dep:egui-wgpu"]
 
 [[example]]
 name = "winit_simple"
 path = "examples/winit_simple.rs"
-
-[[example]]
-name = "constellation_lab"
-path = "examples/constellation_lab.rs"
-required-features = ["egui_demo"]
-
-[[example]]
-name = "egui_embed"
-path = "examples/egui_embed.rs"
-required-features = ["egui_demo"]
-
-[[example]]
-name = "streaming_capacity_demo"
-path = "examples/streaming_capacity_demo.rs"
-required-features = ["egui_demo"]
-
-[[example]]
-name = "ssot_lab"
-path = "examples/ssot_lab.rs"
-required-features = ["egui_demo"]
-
-[[example]]
-name = "radial_editor"
-path = "examples/radial_editor.rs"
-required-features = ["egui_demo"]
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"

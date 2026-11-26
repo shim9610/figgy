@@ -186,6 +186,213 @@ fn flat_pixel(pixel: vec2<f32>,margin: f32) -> FlatPixel {
     }
     return FlatPixel(true,color);
 }
+// Whether `flat_pixel` takes the chart: every sector Flat, level and
+// unshadowed (or no sector at all). Uniform: it reads read-only storage.
+fn flat_chart() -> bool {
+    // Field by field: a whole sector per pixel and sector cost a Flat chart
+    // a third more on SwiftShader.
+    for(var i=0u;i<u32(globals.size.z);i++) {
+        if u32(sectors[i].material.params.x)!=MATERIAL_FLAT || sectors[i].arc.w>0.0
+            || sectors[i].arc.z!=0.0 || sectors[i].light.w>0.0 {
+            return false;
+        }
+    }
+    return true;
+}
+// Where the ray `hit_pixel` casts through `pixel` meets the plane of sector
+// `s`'s top face, in the sector's frame: x and y on the footprint; z, how far
+// y falls while the ray crosses the solid's depth (inside the solid the ray
+// runs from y down to y - z at this x); w, the ray's height above the top
+// where it starts, so that t at the top is w / cos(tilt).
+fn top_plane(pixel: vec2<f32>,s: Sector) -> vec4<f32> {
+    let cs=cos(s.arc.z);let sn=sin(s.arc.z);let mid=s.arc.x+s.arc.y*0.5;
+    let center=s.geometry.xy+s.detail.x*s.geometry.z*vec2(cos(mid),sin(mid)*cs);
+    let xy=(pixel-center)/s.geometry.z;
+    return vec4(xy.x,(xy.y+sn*(s.rounding.z+s.arc.w))/cs,sn*max(s.arc.w,0.0)/cs,
+        -xy.y*sn+cs*3.0-s.rounding.z-s.arc.w);
+}
+// The hit `hit_sector` returns on the flat part of a top face, at the ray's
+// point on the top plane under `pixel`, whether or not the sector covers it:
+// what an edge pixel shades a sector with where its first sample misses it.
+fn top_hit(pixel: vec2<f32>,s: Sector) -> Hit {
+    let cs=cos(s.arc.z);let sn=sin(s.arc.z);let mid=s.arc.x+s.arc.y*0.5;
+    let center=s.geometry.xy+s.detail.x*s.geometry.z*vec2(cos(mid),sin(mid)*cs);
+    let xy=(pixel-center)/s.geometry.z;
+    let ro=vec3(xy.x,xy.y*cs+sn*3.0,-xy.y*sn+cs*3.0-s.rounding.z);let rd=vec3(0.0,-sn,-cs);
+    let t=max((s.arc.w-ro.z)/rd.z,0.0);
+    return Hit(t,ro+rd*t,vec3(0.0,0.0,1.0));
+}
+// A lower bound of `footprint` along the segment x = `x`, y from `y0` to
+// `y1`: the footprint is at least its unrounded edges (`round_intersection`
+// of a and b is at least max(a, b)), and the least value of each edge on the
+// segment is exact. The rings' distances are least where y is nearest 0 or
+// farthest from it; the angular edges are linear in y, their larger (a span
+// up to half a turn) convex, least at an end or where they cross.
+fn column_floor(x: f32,y0: f32,y1: f32,s: Sector) -> f32 {
+    let far=max(length(vec2(x,y0)),length(vec2(x,y1)));
+    let rings=max(length(vec2(x,clamp(0.0,y0,y1)))-1.0,select(-10.0,s.geometry.w-far,s.geometry.w>0.0));
+    if s.arc.y>=TAU-0.00001 { return rings; }
+    let a=s.arc.x+s.detail.y*0.5;let b=s.arc.x+s.arc.y-s.detail.y*0.5;
+    let na=vec2(sin(a),-cos(a));let nb=vec2(-sin(b),cos(b));
+    let a0=dot(vec2(x,y0),na);let a1=dot(vec2(x,y1),na);
+    let b0=dot(vec2(x,y0),nb);let b1=dot(vec2(x,y1),nb);
+    var side=min(min(a0,a1),min(b0,b1));
+    if b-a<=TAU*0.5 {
+        side=min(max(a0,b0),max(a1,b1));
+        let slope=nb.y-na.y;
+        if abs(slope)>0.000001 {
+            let y=clamp(x*(na.x-nb.x)/slope,y0,y1);
+            side=min(side,max(dot(vec2(x,y),na),dot(vec2(x,y),nb)));
+        }
+    }
+    return max(rings,side);
+}
+// Whether every sector's coverage is its top face's footprint: no depth
+// (`hit_sector` takes the plane), or level with no bevel, where a straight
+// ray down meets the flat top or nothing. Uniform: it reads read-only storage.
+fn analytic_chart() -> bool {
+    for(var i=0u;i<u32(globals.size.z);i++) {
+        let arc=sectors[i].arc;
+        let bevel=min(min(sectors[i].detail.z,arc.w*0.48),(1.0-sectors[i].geometry.w)*0.2);
+        if arc.w>0.0 && (arc.z!=0.0 || bevel>0.0) { return false; }
+    }
+    return true;
+}
+// A chart `flat_pixel` does not take: materials, tilt, depth, bevel or a
+// shadow (#454). One ray per pixel replaces the samples wherever that gives
+// the samples' own colour or an analytic edge; `exact` is false where it
+// cannot, and the pixel takes the samples. `color` is premultiplied and
+// leaves out the background: the caller adds the ground (the background and
+// its floor shadow) times one minus its alpha, so `floor_shadow` is inlined
+// once.
+//
+// Each sector is measured at the pixel centre on its top plane
+// (`top_plane`). The footprint is a distance on that plane, and a pixel's
+// samples, within 0.48 px of its centre, move it by at most `reach`: `margin`
+// over the radius times cos(tilt), since tilt shortens y on screen. A sector
+// is out of every sample's reach when the footprint stays above zero along
+// the whole column its rays cross inside the solid (`column_floor`, less
+// `reach`): `hit_sector` stops only where `solid`, at least the footprint,
+// is below 0.00012.
+//
+// - No sector in reach: the background, as every sample draws it.
+// - Every sample on one sector's flat top (the footprint below minus the
+//   bevel, `reach` and the outline band), and every other sector out of
+//   reach or nearer the ground than that top along each ray: every sample
+//   hits that sector there, straight up, so they share one normal, one
+//   material evaluated at the first sample (what the samples share) and no
+//   ink. The pixel takes that colour from one ray at the first sample.
+// - A chart whose coverage is its top faces' footprints (`analytic_chart`),
+//   with every sector's ray starting above its top: `flat_pixel`'s analytic
+//   edges, over each sector's footprint on its top plane (in physical pixels
+//   along x and up to 1 / cos(tilt) times that along y, so `fwidth` is
+//   clamped to [1, 1.5 / cos(tilt)]), each sector shaded once at the first
+//   sample (`hit_pixel`, or `top_hit` where that sample misses it) and the
+//   background with its floor shadow. A pixel at least `margin` from every
+//   edge takes the nearest covering sector's colour, as its samples do.
+// - Anything else takes the samples: a bevel or a crease (normals that differ
+//   across the pixel), a tilted side wall (where it meets its top face or the
+//   background, the samples shade the two apart), sectors that may overlap,
+//   a NaN distance.
+//
+// Only how a pixel is antialiased depends on this: which sector covers a
+// point, its colour and its ink are as on the sampled path. The derivatives
+// are taken for every sector before any choice made per pixel, so they stay
+// in uniform control flow.
+fn material_pixel(pixel: vec2<f32>,margin: f32) -> FlatPixel {
+    let first=pixel+(vec2(0.0)+0.5)/f32(u32(globals.size.w))-0.5;
+    let analytic=analytic_chart();
+    var color=vec4(0.0);var closest=10000.0;
+    var near=false;var finite=true;var rays=true;
+    var covered=vec3(0.0);var total=0.0;
+    // Whether any sector is in reach; how many sectors have a flat top that
+    // every sample hits, the colour of that top and the largest t there; the
+    // least t at which any other sector in reach can be hit.
+    var reached=false;var tops=0u;var shaded=vec3(0.0);var top_t=0.0;var other=10000.0;
+    for(var i=0u;i<u32(globals.size.z);i++) {
+        let s=sectors[i];
+        let cs=cos(s.arc.z);let sn=sin(s.arc.z);
+        let c=top_plane(pixel,s);
+        let f=footprint(c.xy,s);
+        let d=f*s.geometry.z;
+        // Taken for every sector before any choice made per pixel. Across a
+        // crease the quad's differences cancel, so the width keeps at least 1.
+        let aa=clamp(fwidth(d),1.0,1.5/cs);
+        let reach=margin/(s.geometry.z*cs);
+        finite=finite && (f>=0.0 || f<0.0);
+        var out=f-c.z-reach>0.001;
+        if !out && f-reach>0.001 { out=column_floor(c.x,c.y-c.z-0.001,c.y,s)-reach>0.001; }
+        reached=reached || !out;
+        let bevel=select(0.0,min(min(s.detail.z,s.arc.w*0.48),(1.0-s.geometry.w)*0.2),s.arc.w>0.0);
+        // Any ink: a sample on the other side of `is_rim` takes the other band.
+        let band=select(0.0,s.outline.w/(s.geometry.z*cs),
+            max(max(s.outline.x,s.outline.y),s.outline.z)>0.0 && s.outline.w>0.0);
+        // How far each sample's ray can move along the plane's normal.
+        let rise=margin*sn/s.geometry.z;
+        let on_top=f+bevel+reach+band< -0.001 && c.w-rise>0.05;
+        if on_top {
+            tops+=1u;top_t=(c.w+rise)/cs;
+        } else if !out {
+            // Above the top the ray is outside the solid; to reach it the
+            // ray falls at least as far as its footprint is from zero.
+            other=min(other,(c.w-rise)/cs+select(0.0,max(f-reach-0.001,0.0)/max(sn,0.000001),sn>0.0));
+        }
+        var amount=0.0;var inks=false;var ink=0.0;var a=0.0;var plain=0.0;
+        if analytic {
+            rays=rays && (out || c.w-rise>0.05);
+            let e=edges(c.xy,s);
+            let is_rim=min(abs(e.x),abs(e.y))<=abs(e.z);
+            amount=max(select(s.outline.y,s.outline.x,is_rim),s.outline.z);
+            inks=amount>0.0 && s.outline.w>0.0;
+            // `outlined` at a hit on a top face: inked where one of the four
+            // neighbours `band` px away along x or y misses the sector.
+            let width=s.outline.w*select(0.5,1.0,is_rim);
+            ink=d+width;
+            if inks && d*cs+width>-margin && d*cs<margin {
+                ink=-10000.0;
+                let offsets=array<vec2<f32>,4>(vec2(width,0.0),vec2(-width,0.0),vec2(0.0,width),vec2(0.0,-width));
+                for(var j=0u;j<4u;j++) {
+                    ink=max(ink,footprint(top_plane(pixel+offsets[j],s).xy,s)*s.geometry.z);
+                }
+            }
+            // In physical pixels at most: both move by at most 1 / cos(tilt)
+            // times the distance on screen.
+            let edge=min(abs(d),select(10000.0,abs(ink),inks))*cs;
+            near=near || edge<margin;
+            finite=finite && (edge>=margin || edge<margin);
+            a=1.0-smoothstep(-0.5*aa,0.5*aa,d);
+            plain=select(a,1.0-smoothstep(-0.5*aa,0.5*aa,ink),inks);
+        }
+        // One place shades a sector, at the first sample: every call is
+        // inlined, and a second copy of the march and the material slowed
+        // even Flat charts on SwiftShader.
+        if a>0.0 || on_top {
+            var h=hit_pixel(first,s);
+            if h.t>=9999.0 { h=top_hit(first,s); }
+            let surface=sector_surface(h,s);
+            if on_top { shaded=surface; }
+            let inked=select(surface,mix(surface,s.outline_color.rgb,s.outline_color.a*amount),inks);
+            // Ink adds its difference from the fill over its band.
+            covered+=surface*a+(inked-surface)*(a-plain);total+=a;
+            if d<=0.0 && h.t<closest {
+                closest=h.t;
+                color=vec4(select(surface,inked,inks && ink>0.0),1.0);
+            }
+        }
+    }
+    if !finite { return FlatPixel(false,color); }
+    if analytic {
+        if !rays { return FlatPixel(false,color); }
+        if near {
+            // Overlapping coverage (more than one in all) shares the pixel.
+            color=vec4(covered/max(total,1.0),min(total,1.0));
+        } else if closest>=10000.0 { color=vec4(0.0); }
+        return FlatPixel(true,color);
+    }
+    if !reached { return FlatPixel(true,vec4(0.0)); }
+    if tops==1u && other>top_t+0.0001 { return FlatPixel(true,vec4(shaded,1.0)); }
+    return FlatPixel(false,color);
+}
 // Outside labels stay fixed during interaction. Inside glyphs translate with
 // their slice by sampling the unchanged full-resolution annotation texture.
 fn label_pixel(pixel: vec2<f32>) -> vec4<f32> {
@@ -226,14 +433,26 @@ fn label_pixel(pixel: vec2<f32>) -> vec4<f32> {
 @fragment fn fs(@builtin(position) p:vec4<f32>)->@location(0) vec4<f32> {
     var color=vec4(0.0);let grid=u32(globals.size.w);
     // The samples lie within 0.48 px of the center (a 3x3 grid's corner);
-    // 0.75 px covers that times sqrt(2). `flat_pixel` refuses a chart whose
-    // first sector is not Flat at that sector, so such a chart skips the call:
-    // entering it at every pixel cost a Ceramic donut 5% on Apple M4 (#41).
+    // 0.75 px covers that times sqrt(2). The choice of path is uniform (it
+    // reads read-only storage), so both keep their derivatives in uniform
+    // control flow.
     var flat=FlatPixel(false,vec4(0.0));
-    if globals.size.z<1.0 || u32(sectors[0].material.params.x)==MATERIAL_FLAT { flat=flat_pixel(p.xy,0.75); }
+    let level=flat_chart();
+    if level { flat=flat_pixel(p.xy,0.75); } else { flat=material_pixel(p.xy,0.75); }
+    // The floor shadow, a soft blur, is taken once at the pixel center: the
+    // ground under the samples and under `material_pixel`'s colour.
+    var ground=vec4(0.0);
+    if !level || !flat.exact {
+        let shade=floor_shadow(p.xy);
+        ground=vec4(globals.background.rgb*globals.background.a*(1.0-shade),
+            shade+globals.background.a*(1.0-shade));
+    }
     // Branch once, outside the sample loops: the same choice made per sample
     // inside them left some pixels zero on lavapipe (Mesa 25.2.8).
     if flat.exact {
+        // Nothing of the ground where a sector covers the pixel, all of it
+        // where none does: the samples' own colour, bit for bit.
+        if !level { flat.color+=ground*(1.0-flat.color.a); }
         // The same sum in the same order as the samples, so a pixel away
         // from every edge is bit-identical to theirs.
         for(var k=0u;k<grid*grid;k++) { color+=flat.color; }
@@ -245,11 +464,7 @@ fn label_pixel(pixel: vec2<f32>) -> vec4<f32> {
         // that hit one sector with one normal, at the first of them, and
         // used for each, added in sample order: an interior pixel of a face
         // evaluates one material, while samples across a bevel or a crease
-        // keep their own normal and highlight. The floor shadow, a soft
-        // blur, is taken once at the pixel center.
-        let shade=floor_shadow(p.xy);
-        let ground=vec4(globals.background.rgb*globals.background.a*(1.0-shade),
-            shade+globals.background.a*(1.0-shade));
+        // keep their own normal and highlight.
         // Indexed by sample: a grid side is at most 3 (`Globals::size.w`).
         var winners=array<u32,9>();var normals=array<vec3<f32>,9>();var surfaces=array<vec3<f32>,9>();
         for(var y=0u;y<grid;y++) { for(var x=0u;x<grid;x++) {

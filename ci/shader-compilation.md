@@ -189,6 +189,44 @@ pipeline in both runs: it waited in the browser's compile queue, so its
 own size no longer decides the time. These are single local runs on a
 software adapter, not physical-GPU results.
 
+## First frames on software GPUs (#453)
+
+lavapipe and Chromium's SwiftShader generate code for a pipeline at its first
+draw or dispatch, not when it is created, so a frame's first submit pays for
+every shader byte the entries it uses can reach, executed or not. On lavapipe
+this shows as a blocked first submit (the queue thread holds the device while
+it compiles); in the browser as `first_frame_ready` waiting for GPU completion
+after every compile has resolved. Four changes remove code no chart reaches:
+
+- The polar contour distance's foot-point walk lives in `field_polar.wgsl`;
+  the basic set's twin ends at once. The basic contour entries compiled it for
+  every rectangular and 3D chart.
+- `anchor_select` reads each kept label back from `anchors` instead of
+  1024-entry private arrays (about 9 s at the first lavapipe dispatch; later
+  dispatches 3.5 ms either way). The private arrays had replaced workgroup
+  arrays for WARP (above); the Windows/DX12 CI confirms WARP with neither.
+- A 3D chart creates no planar field, contour, line or scatter pipeline.
+- The arc scan's `seg_init_3d` is created only for a 3D chart's line, under
+  its own label.
+
+First complete frame, median of three runs (min–max), 4-core container,
+measured with a host that registers each playground scene and draws it until
+complete:
+
+| Scene | Chromium 158 + SwiftShader, before | after | lavapipe, before | after |
+|---|---:|---:|---:|---:|
+| 2D field, labelled contours | 12.75 s (12.13–13.04) | 5.86 s (5.67–6.09) | 8.45 s | 1.48 s |
+| 3D surface with floor contours | 9.41 s (9.11–9.46) | 5.14 s (4.88–5.17) | 1.72 s | 1.34 s |
+| Polar heatmap with labelled contours | 35.6 s | 36.3 s | 14.05 s | 7.01 s |
+| TriSurface | 2.65 s | 2.51 s | 0.69 s | 0.71 s |
+| 2D vector field | 3.08 s | 3.26 s | 0.79 s | 0.75 s |
+| Lines with a colour map and path arrows | 2.05 s | 1.96 s | 0.64 s | 0.67 s |
+| 3D quiver | 1.45 s | 1.75 s | 0.29 s | 0.29 s |
+
+Later frames are unchanged (about 40 ms in the browser, 6 ms natively). The
+polar heatmap's browser time is the full set's contour fragment, which still
+carries the walk; it is the next issue.
+
 ## Exact pick variant table (#363, removed in #381)
 
 The table of every exact pick pipeline a chart could reach
@@ -270,6 +308,15 @@ and cell kernels (up to 13 s on the full set) are not pathological in this sense
 are unchanged.
 
 ## 한국어 요약
+
+소프트웨어 GPU(lavapipe, SwiftShader)는 파이프라인의 첫 draw나 dispatch 때 코드를 생성하므로, 실행되지 않더라도
+진입점이 도달할 수 있는 셰이더 코드가 많을수록 첫 프레임이 느려진다(#453). 극좌표 등고선의 foot-point 반복을
+`field_polar.wgsl`로 옮겨 basic 세트의 등고선 진입점이 컴파일하지 않게 했고, `anchor_select`는 1024칸 private 배열
+대신 `anchors`에서 같은 값을 다시 읽는다. 3D 차트는 평면 field·contour·line·scatter 파이프라인을 만들지 않고, arc
+scan의 `seg_init_3d`는 3D 차트의 선에만 만든다. 결과 픽셀과 픽은 바이트 단위로 같다. 브라우저 첫 프레임은 2D 등고선
+필드가 12.8초에서 5.9초로, 3D 곡면이 9.4초에서 5.1초로 줄었다. lavapipe에서는 2D 등고선 필드가 8.5초에서 1.5초로,
+극좌표 히트맵이 14.0초에서 7.0초로 줄었다. 브라우저의 극좌표 히트맵(약 36초)은 full 세트의 등고선 프래그먼트가 원인이며
+다음 이슈에서 다룬다.
 
 데이터 픽 커널(#363) 중 violin·value label·category bar·range bar·box 커널은 투영 함수
 `data_to_ndc`를 분기와 끝점마다 따로 인라인하던 것을 짧은 반복문 안의 한 번 호출로 바꿨다.

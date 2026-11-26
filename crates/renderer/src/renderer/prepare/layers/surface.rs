@@ -25,7 +25,6 @@ impl PrepareContext<'_> {
         pipelines: &'a TargetPipelines,
         scratch: &FieldScratch,
         index: usize,
-        flat: data_render::ColumnFieldLayer<'a>,
     ) -> Result<(
         Option<data_render::surface_mesh::ColumnSurfaceLayer<'a>>,
         Option<data_render::surface_mesh::ColumnSurfaceLayer<'a>>,
@@ -50,7 +49,7 @@ impl PrepareContext<'_> {
         } else {
             (params.cols, params.rows)
         };
-        let quads = if flat.drawable {
+        let quads = if scratch.drawable {
             mesh::surface_quad_count(along, across)
         } else {
             0
@@ -72,12 +71,12 @@ impl PrepareContext<'_> {
         let surface = mesh::ColumnSurfaceLayer {
             pipeline,
             transform_bg: &view.transform_bg,
-            style_bg: flat.style_bg.clone(),
-            field_bg: flat.field_bg.clone(),
+            style_bg: scratch.style_bg.clone(),
+            field_bg: scratch.field_bg.clone(),
             surface_bg,
             vertices: mesh::SURFACE_QUAD_VERTICES,
             instances: quads,
-            charge: std::borrow::Cow::Owned(Arc::clone(&flat.charge)),
+            charge: std::borrow::Cow::Owned(Arc::clone(&scratch.charge)),
             surface_charge: std::borrow::Cow::Owned(surface_charge),
         };
         // The picked sample: the chart's matrix cell of this series, in
@@ -125,11 +124,11 @@ impl PrepareContext<'_> {
                     pipeline,
                     transform_bg: &view.transform_bg,
                     style_bg,
-                    field_bg: flat.field_bg.clone(),
+                    field_bg: scratch.field_bg.clone(),
                     surface_bg,
                     vertices: mesh::SURFACE_QUAD_VERTICES,
                     instances: mesh::SURFACE_SELECTED_INSTANCES,
-                    charge: std::borrow::Cow::Owned(Arc::clone(&flat.charge)),
+                    charge: std::borrow::Cow::Owned(Arc::clone(&scratch.charge)),
                     surface_charge: std::borrow::Cow::Owned(surface_charge),
                 })
             }

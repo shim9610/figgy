@@ -503,7 +503,10 @@ pub(crate) fn browser_on_demand_compute_source(
     let sources: [crate::browser_compile::RenderSource<'static>; 4] = [
         (
             super::line_arc::LINE_ARC_SHADER_BY_SET.of(set).source,
-            &[("arc prefix scan", super::line_arc::ARC_SCAN_LABEL)],
+            &[
+                ("arc prefix scan", super::line_arc::ARC_SCAN_LABEL),
+                ("3D arc prefix scan", super::line_arc::ARC_SCAN_3D_LABEL),
+            ],
         ),
         (
             super::ternary_region::TERNARY_REGION_SHADER_BY_SET

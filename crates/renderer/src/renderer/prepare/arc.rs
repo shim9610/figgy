@@ -352,14 +352,19 @@ impl PrepareContext<'_> {
         #[cfg(not(test))]
         let chunk_override = None;
         let set = self.pipelines.shaders.set;
-        let arc_pipelines: &data_render::line_arc::ArcScanPipelines =
-            self.arc_pipelines.get_or_insert_with(|| {
-                data_render::line_arc::create_arc_scan_pipelines_by_set(
-                    &self.device,
-                    set,
-                    &mut |_| {},
-                )
-            });
+        let camera = third.and_then(|third| third.camera());
+        let arc_pipelines = self.arc_pipelines.get_or_insert_with(|| {
+            data_render::line_arc::create_arc_scan_pipelines_2d_by_set(
+                &self.device,
+                set,
+                &mut |_| {},
+            )
+        });
+        // Only a 3D chart's line measures through the camera (#453).
+        if camera.is_some() {
+            arc_pipelines.ensure_seg_init_3d(&self.device, &mut |_| {});
+        }
+        let arc_pipelines: &data_render::line_arc::ArcScanPipelines = arc_pipelines;
         let scratch = data_render::line_arc::ArcScratch::build(
             &self.device,
             &self.gpu_ledger,
@@ -373,7 +378,7 @@ impl PrepareContext<'_> {
             star_pitch.is_some().then_some(&self.star_data_bgl),
             step_mode,
             c.map_or(0, |(base, _)| base),
-            third.and_then(|third| third.camera()),
+            camera,
         )?
         .ok_or(FiggyError::internal(
             "the arc scan has a dispatch grid (try_new rejects zero-limit adapters)",

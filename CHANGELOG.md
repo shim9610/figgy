@@ -53,6 +53,53 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 `color` and the transition arrows' `color_by_wavelength` and
 `label_knockout`) are additive.
 
+- **The egui examples moved out of figgy-renderer; the `egui_demo`
+  feature is removed** ([#459](https://github.com/shim9610/figgy/issues/459)).
+  `egui_embed`, `radial_editor`, `ssot_lab`, `streaming_capacity_demo` and
+  `constellation_lab` are now in `examples/egui/`, a standalone crate with
+  its own lockfile, like `tools/playground`. figgy-renderer no longer lists
+  `eframe`, `egui` or `egui-wgpu`, even as optional dependencies. The examples
+  themselves are unchanged and still use egui 0.36. CI checks them in the
+  repository job.
+  *Migration:* drop `egui_demo` from any `features = [...]` list for
+  figgy-renderer. To run an example, use
+  `cargo run --locked --manifest-path examples/egui/Cargo.toml --example egui_embed`
+  from the repository root instead of `--features egui_demo`.
+
+- **Faster first frames on software GPUs: contours, 3D surfaces and
+  path arrows compile less shader code**
+  ([#453](https://github.com/shim9610/figgy/issues/453)). lavapipe and
+  SwiftShader generate code at a pipeline's first draw or dispatch, so every
+  byte an entry can reach costs first-frame time even when it never runs.
+  Frames, exports at 1x and 2x and picks are byte-identical; later frames are
+  unchanged. No API or wire change.
+  - The polar contour distance's foot-point walk (#208) moves from
+    `field_columnar.wgsl` into `common/field_polar.wgsl`, and
+    `field_polar_basic.wgsl` gets a twin that ends at once. The basic set's
+    contour entries (`fs_contour`, `fs_contour_labelled`, `fs_floor_contour`,
+    `pick_field_contour`), which a polar chart never uses, no longer compile
+    it. The streaming field module assembles the full set and is unchanged.
+  - The contour label selector (`anchor_select`) reads each kept label's
+    position and radius back from `anchors` instead of 1024-entry private
+    arrays: the same functions of the same record, so the same labels.
+  - A 3D chart no longer creates the planar field, contour, line and scatter
+    pipelines: its heatmaps draw as surfaces, its contours on the floor and
+    its height-column series through the 3D entries. The legend is part of
+    the CPU decoration raster and uses none of them.
+  - The arc scan's `seg_init_3d` entry is created only for a 3D chart's line
+    and has its own label (`figgy arc scan 3D pipeline`), so a browser frame
+    with a planar dashed line or path arrows no longer waits for it. The
+    prewarms, the preparations and the streaming runtime still create every
+    entry.
+  - First complete frame, median of three, before → after (4-core container;
+    headed Chromium 158 on SwiftShader under Xvfb; native lavapipe, Mesa
+    25.2.8): 2D field with labelled contours 12.8 s → 5.9 s and 8.5 s →
+    1.5 s; 3D surface 9.4 s → 5.1 s and 1.7 s → 1.3 s; polar heatmap with
+    contours 35.6 s → 36.3 s and 14.0 s → 7.0 s. TriSurface, the 3D quiver,
+    the 2D vector field and the path-arrow lines change by less than run-to-run
+    noise (at most 0.3 s). The polar contour fragment of the full set stays
+    heavy in the browser; it is the next issue.
+
 - **A large categorical axis validates and places its labels in linear
   time** ([#450](https://github.com/shim9610/figgy/issues/450)). Same
   results, same errors, same pixels.
@@ -870,6 +917,8 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 
 ### Model (`figgy-model` 0.13.0)
 
+- **Zooming a 3D chart in never pushes its box axes off the chart.** `Config::view_matrix` fitted the box at `view3d::REFERENCE_DISTANCE` (3) and then applied `View3d::distance` as a zoom about the data-area centre, so a distance below 3 magnified the box past the band reserved for the box axes' ticks, labels and titles, and the labels and titles placed past its edges left the chart area. A 1000 x 800 temperature surface with a right colourbar, camera azimuth -25, elevation 10 and distance 2.7 drew its z title ("Temperature (°C)") wholly off the left edge and cut its z labels. A distance below the reference is now fitted at that distance itself: the box keeps its fitted size, so every box-axis label and title stays inside the chart area. Zooming out (a distance above 3) is unchanged. Appearance change: a document with `view_3d.distance` below 3 draws its box at the size distance 3 gives. An orthographic view looks as it does at distance 3; a perspective view keeps the shorter distance's stronger foreshortening, within that fitted size. `Config::zoom_view` below 3 no longer enlarges the box. Documents keep their wire form and parse unchanged.
+  Tests: `box_axis_text_stays_inside_the_chart_at_every_camera` (`surface_render`: azimuth -180 to 180 in steps of 5, elevation 5 to 60 in steps of 5, both projections, distances 1.2, 2, 2.7, 3 and 5; every box-axis tick label and title inside the chart area) and `the_z_title_is_drawn_at_a_short_camera_distance` (z title ink inside the chart at 1x and 2x at azimuth -25 / elevation 10 orthographic and azimuth -170 / elevation 5 perspective). `zoom_and_orbit_move_the_camera_and_clamp` now checks that zooming out shrinks the box and zooming in keeps its fitted size.
 - **Decorations snap to guides while they drag** ([#440](https://github.com/shim9610/figgy/issues/440)). `HitMap::drag_snapped` moves an element through its own drag policy after snapping its drawn box, within `layout::SNAP_THRESHOLD_PX` (6 px on screen, divided by the display scale), to the chart and plot centres (`layout::SnapAreas`, `Config::snap_areas`), its own axis' centre lines (an axis title on a 2D, ternary or 3D box axis) and the edges and centres of the other snapping elements of the map that it does not carry. The snapped move is stored as the element's usual offset. The gesture state is one fixed-size `layout::DragSnap` the host keeps from press to release: it absorbs the pointer's travel while the element is held on a guide (so the element leaves the guide once the pointer moves past the reach), turns off for the gesture with `set_enabled(false)` (the Alt / Option modifier) and keeps the `layout::SnapGuides` of the last move, which `SelectionBox::with_snap_guides` hands to the selection overlay. Snapping elements (`Draggable::snaps`): the chart title, axis titles and tick label bands (not a polar chart's), the legend, the colourbar strip, labels and title, parallel axis labels, category group headers, overlay legends and titles, subplot decorations and inset frames, annotation text boxes and arrows and the radial chart's decorations. A colourbar strip and an inset frame do not snap to what they carry (`Draggable::snap_carries`). `Config::snap_to_guides: Option<bool>` turns it off (`Some(false)`); `None`, the key absent in JSON, is on (`Config::snaps_while_dragging`). Guides are never stored in the document and never exported.
   Migration: an exhaustive `Config { .. }` pattern or literal names `snap_to_guides` (`None` for the default). JSON documents need nothing.
   Tests: `layout::snap::tests` (centre snap and release past the reach, disabled gesture, display scale, edges, `the_snap_option_round_trips`), `drag::tests::{a_title_drag_snaps_to_a_centre_and_shows_its_guide, an_axis_title_snaps_to_its_axis_centre, a_held_modifier_disables_the_snap, carried_elements_are_not_snap_targets}`.
@@ -2522,6 +2571,7 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 
 - **Unicode superscript and subscript characters always draw as styled base characters** ([#353](https://github.com/shim9610/figgy/issues/353)). A `RichSegment` whose `text` is a Unicode superscript or subscript character (`⁰`–`⁹`, `⁺`, `⁻`, `⁽`, `⁾`, `ⁿ`, `ᵗ`, `₀`–`₉`, `₊`, `₋`, `₍`, `₎`) now draws as its base character at the superscript or subscript position, the same pixels as a base-character segment with the `superscript` or `subscript` flag, whatever fonts are installed. Before, it drew the character from the font: the bundled faces have no U+207A or U+207B, so in the browser a Feynman label written `e⁻` or `μ⁺` as literal segments showed a .notdef box on the canvas and in PNG, and a native host drew whatever face it had installed. The mapping is the table the string conversions already used, now public as `text::unicode_script_char` (with `text::UnicodeScript`), applied where segments are measured, drawn and exported (canvas, label rasters, SVG, PDF and math formula leaves), so the pen after a mapped character sits where measurement ends it and selection boxes follow. A character in a segment that is already a script combines with its flags (a `⁻` in a superscript segment is raised once; superscript wins over subscript). In a TeX formula such a character is a script of an empty base, as `{}^-`. The stored segments and the serialized document are unchanged. Tests: `unicode_script_characters_draw_as_styled_base_characters`, `drawn_char_maps_every_unicode_script_character` (`text_render.rs`), `unicode_script_characters_in_a_formula_are_scripts` (`math_layout.rs`), `literal_unicode_charges_draw_as_superscript_signs` (`tests/feynman_render.rs`, PNG at 1x and 2x, SVG and PDF), `literal_unicode_charges_draw_without_the_notdef_box` (`crates/web/tests/feynman_browser.rs`, canvas and PNG).
 
+- **One ray per pixel for radial material charts** ([#454](https://github.com/shim9610/figgy/issues/454)). A radial chart with a material, tilt, depth, bevel or shadow took its 2 × 2 samples at every pixel, each marching every slice, so on a software GPU every frame cost about as much as the first (on Chromium's SwiftShader, about 15 s at 1200 × 800 for a Ceramic donut, and an eleven-material donut lost the device). Each pixel now first measures every slice once, at its centre, on the plane of the slice's top face, and settles from one ray wherever that is exact: a pixel no slice can reach takes the background and its floor shadow, a pixel whose samples all land on one slice's flat top takes that one material evaluation, and a chart whose slices are flat tops (no depth, or level with no bevel) takes the analytic edges of the Flat path over those planes, each slice shaded once. Bevels, creases, tilted side walls and slices that may overlap keep the samples. Appearance only: in the gallery's material scenes, the Ceramic donut and the eleven materials, every chart with a bevel or a side wall draws the same bytes, and the flat-top charts change only within two pixels of an edge (a mean of at most 0.17 and a 99th percentile of at most 3 levels of 255); slice angles, radii, colours, ink, labels and picks are unchanged. No API or wire change. Test: `one_ray_material_pixels_stay_within_the_pinned_difference` (`radial.rs`).
 - **Smooth Flat radial edges.** A Flat, level radial chart (pie, donut, sunburst) antialiased the pixels near a slice edge with a fixed 2 × 2 grid, so a slanted edge, an angular gap or a separator line stepped in quarters and showed 1 px stairs. Those pixels now take each slice's analytic coverage: the distance to its arcs and radial edges (after the gap, explode and rounded corners) and to its ink band (rim, separators, emphasis), in physical pixels, smoothed over its own `fwidth`. Touching slices and sunburst rings measure complementary distances, so no background shows through a shared edge. Charts with a 3D material, tilt, depth or shadow keep the supersampled path of #349. Appearance only: slice angles, radii, colours, ink, labels and picks are unchanged, and every pixel more than one pixel from an edge draws the same bytes; at edges the gallery sunburst, a donut and a pie move by a mean of at most about 0.2 and a 99th percentile of at most 3 levels of 255. No API or wire change. Tests: `analytic_flat_edges_stay_within_the_pinned_difference` and `a_slanted_flat_separator_has_a_smooth_monotonic_edge_profile` (`radial.rs`).
 - **Faster radial shading** ([#349](https://github.com/shim9610/figgy/issues/349)). A 3D radial chart shaded every sector that became the nearest so far, in each of a pixel's four antialiasing samples, and took each sector's ray-march normal inside the march loop. It now shades only the nearest sector, takes the normal once after the march, and supersamples coverage only: each sample still finds the slice it hits (or the background) and that slice's outline at its own position, while the lit material is evaluated once per surface a pixel's samples hit (one slice, one normal), and the floor shadow once per pixel. Edges, slice geometry, labels, picks and the Flat fast path are unchanged, and Flat charts without a shadow draw the same bytes; a material chart's pixels move by a mean of at most about 0.2 and at most 14 levels of 255 inside a textured face. No API or wire change. Test: `shading_once_per_surface_stays_within_the_pinned_difference` (`radial.rs`).
 

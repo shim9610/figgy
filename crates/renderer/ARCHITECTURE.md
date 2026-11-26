@@ -185,7 +185,7 @@ the shared picker pipeline bundle, at most one derived active-chart picker cache
 pending pool maintenance, renderer-level bind groups, and the shared
 `wgpu::Device` / `wgpu::Queue` (both reference-counted handles). It creates `ChartView` and `ChartStyle`
 values and returns them to the host, which keeps them in its panel state (see
-[the egui host](examples/egui_embed.rs)). A `PreparedFrame` holds
+[the egui host](https://github.com/shim9610/figgy/blob/master/examples/egui/examples/egui_embed.rs)). A `PreparedFrame` holds
 its own GPU handles and shared charges, so dropping a host view/style does not
 necessarily release those resources. `WindowedRenderer` additionally retains
 the surface, instance, adapter, and optional MSAA target. A `ChartId` is opaque
@@ -856,7 +856,7 @@ lines, split connectors and annotation overlay through the same sink
 
 `Renderer`는 차트별 `Config`, 순서가 있는 `SeriesConfig`, 상주 `ColumnPool`, 비상주 소스 메타데이터, 렌더링·컴퓨트 파이프라인을 보관한다. 피킹 파이프라인은 공유하고, 현재 차트용 피킹 캐시는 최대 하나만 유지한다. 대기 중인 풀 정리 작업, 렌더러 공통 바인드 그룹, `wgpu::Device`와 `wgpu::Queue` 핸들(둘 다 참조 카운트 핸들)도 관리한다.
 
-생성해서 반환한 `ChartView`와 `ChartStyle`은 호스트가 패널 상태에 보관한다([egui 예제](examples/egui_embed.rs)). `PreparedFrame` 역시 GPU 핸들과 공유 할당 정보를 유지하므로 호스트가 뷰·스타일을 해제해도 자원이 즉시 사라지지는 않을 수 있다. `WindowedRenderer`는 추가로 surface·instance·adapter와 선택적인 MSAA 렌더 타깃을 보관한다. `ChartId`는 발급한 렌더러에서만 유효하다. 설정과 시리즈를 함께 편집하려면 `set_chart_state`로 둘을 검증한 뒤 한꺼번에 교체한다.
+생성해서 반환한 `ChartView`와 `ChartStyle`은 호스트가 패널 상태에 보관한다([egui 예제](https://github.com/shim9610/figgy/blob/master/examples/egui/examples/egui_embed.rs)). `PreparedFrame` 역시 GPU 핸들과 공유 할당 정보를 유지하므로 호스트가 뷰·스타일을 해제해도 자원이 즉시 사라지지는 않을 수 있다. `WindowedRenderer`는 추가로 surface·instance·adapter와 선택적인 MSAA 렌더 타깃을 보관한다. `ChartId`는 발급한 렌더러에서만 유효하다. 설정과 시리즈를 함께 편집하려면 `set_chart_state`로 둘을 검증한 뒤 한꺼번에 교체한다.
 
 컬럼 교체·제거·재배치는 풀, 차트, 리비전, 피킹 캐시를 먼저 준비하고 성공했을 때만 반영한다. 동기 준비 과정에서 오류가 나면 기존 상태를 유지하며, 마지막 반영 단계에서는 새 메모리를 할당하지 않는다. `remove_column`은 해당 컬럼을 참조하는 모든 등록 시리즈를 함께 제거하지만 `Config::legend`는 바꾸지 않는다. 범례까지 함께 바꾸려면 `remove_column_with_chart_config`를 사용한다. 이 호출은 풀, 영향을 받는 모든 시리즈, 해당 차트의 새 `Config`를 하나의 트랜잭션으로 반영한다. 웹 래퍼는 자동 범례와 직접 편집한 범례를 구분해 이 API를 사용한다.
 

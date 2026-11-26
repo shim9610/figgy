@@ -601,7 +601,12 @@ mod shading_tolerance_tests {
     fn shading_once_per_surface_stays_within_the_pinned_difference() {
         let mut r = renderer();
         let reference = per_sample_pipeline(&r);
-        let shipped = r.pipeline.clone();
+        // The supersampled draw that shades once per surface: the shipped
+        // draw takes it wherever one ray per pixel cannot settle a pixel
+        // (#454), and `one_ray_material_pixels_stay_within_the_pinned_difference`
+        // compares the two.
+        let restore = r.pipeline.clone();
+        let shipped = reference_pipeline(&r, "fs_material_supersampled");
         let size = (600, 400);
         let mut report = String::new();
         for (name, chart) in charts() {
@@ -721,7 +726,7 @@ mod shading_tolerance_tests {
                 r.end_frame();
             }
         }
-        r.pipeline = shipped;
+        r.pipeline = restore;
         println!("{report}");
     }
 
@@ -1182,5 +1187,300 @@ mod shading_tolerance_tests {
             );
         }
         r.pipeline = shipped;
+    }
+
+    /// The gallery's material scenes (`examples/radial_gallery.rs`): the
+    /// traffic donut in each material of the gallery look, the raised Flat
+    /// pie with its rim and separators, sharp and rounded level corners, a
+    /// slice edited by hand, the pie of pie and a hover lift; then the
+    /// Ceramic donut of #349, the eleven-material donut, and the shading
+    /// test's charts that take analytic edges (no depth, or level with no
+    /// bevel), which the gallery has only twice.
+    fn material_charts() -> Vec<(String, RadialChart)> {
+        use crate::theme::RadialTheme;
+        let slice = |label: &str, value: f64| RadialSlice::new(label, value, crate::Color::BLACK);
+        let base = |theme: &RadialTheme| {
+            let mut chart = RadialChart::default();
+            chart.kind = RadialKind::Donut { inner_radius: 0.5 };
+            chart.labels = RadialLabels::Outside;
+            chart.label_format = RadialLabelFormat::NamePercent;
+            chart.slices = vec![
+                slice("Search", 40.0),
+                slice("Direct", 25.0),
+                slice("Email", 15.0),
+                slice("Union", 12.0),
+                slice("Video", 8.0),
+            ];
+            let mut chart = chart.with_title("Regional share");
+            theme.apply(&mut chart);
+            chart
+        };
+        let ceramic = crate::theme::ThemeFamily::Gallery.radial();
+        let mut matte = ceramic.clone();
+        matte.material = Material::Matte;
+        let mut v = Vec::new();
+        for (name, material) in [
+            ("matte", Material::Matte),
+            ("ceramic", Material::Ceramic),
+            ("satin-metal", Material::SatinMetal),
+            ("toon", Material::Toon),
+            ("enamel", Material::Enamel),
+            ("brushed-metal", Material::BrushedMetal),
+            ("paper", Material::Paper),
+            ("plywood", Material::Wood),
+            ("hatch", Material::Hatch),
+            ("pearl", Material::Pearl),
+        ] {
+            let mut theme = ceramic.clone();
+            theme.material = material;
+            if material == Material::Toon {
+                theme.outline.rim = true;
+                theme.outline.separators = true;
+            }
+            if matches!(
+                material,
+                Material::Hatch | Material::Pearl | Material::Paper | Material::Wood
+            ) {
+                theme.texture_strength = 0.7;
+            }
+            if material == Material::Wood {
+                theme.roughness = 0.9;
+                theme.gloss = 0.1;
+            }
+            v.push((format!("gallery {name}"), base(&theme)));
+        }
+        let mut flat = matte.clone();
+        flat.material = Material::Flat;
+        flat.depth = 0.3;
+        flat.bevel = 0.0;
+        flat.gap_degrees = 0.0;
+        flat.inner_corner = 0.0;
+        flat.outer_corner = 0.0;
+        flat.outline.rim = true;
+        flat.outline.separators = true;
+        let mut pie = base(&flat);
+        pie.kind = RadialKind::Pie;
+        pie.slices = vec![
+            slice("Control", 2.0),
+            slice("Low", 3.0),
+            slice("Medium", 4.0),
+            slice("High", 5.0),
+        ];
+        flat.apply(&mut pie);
+        v.push(("gallery outlined raised pie".into(), pie));
+        for (name, amount) in [("sharp", 0.0), ("rounded", 0.12)] {
+            let mut theme = matte.clone();
+            theme.inner_corner = amount;
+            theme.outer_corner = amount;
+            theme.depth = 0.0;
+            theme.tilt_degrees = 0.0;
+            theme.shadow = false;
+            v.push((format!("gallery corners {name}"), base(&theme)));
+        }
+        let mut edited = base(&matte);
+        edited.interaction.selected = Some(RadialTarget::main(0));
+        let mut style = edited.style.clone();
+        style.material = Material::Ceramic;
+        style.outline = RadialOutline::default();
+        style.outline.emphasis = true;
+        style.outline.width = 1.5;
+        let first = edited.slice_mut(RadialTarget::main(0)).unwrap();
+        first.color = crate::Color::from_rgb8(195, 80, 210);
+        first.style = Some(style);
+        v.push(("gallery individual edit".into(), edited));
+        let mut split = base(&matte);
+        split.labels = RadialLabels::Inside;
+        split.label_format = RadialLabelFormat::Percent;
+        split.split = Some(RadialSplit {
+            slice_index: 4,
+            kind: RadialKind::Donut { inner_radius: 0.4 },
+            children: vec![
+                RadialSlice::new("D", 2.0, crate::Color::from_rgb8(72, 176, 205)),
+                RadialSlice::new("E", 6.0, crate::Color::from_rgb8(106, 218, 234)),
+            ],
+        });
+        v.push(("gallery pie of pie".into(), split));
+        let mut hover = base(&ceramic);
+        for _ in 0..10 {
+            hover
+                .interaction
+                .animate_hover(Some(RadialTarget::main(0)), 0.02, 0.2);
+        }
+        v.push(("gallery hover lift".into(), hover));
+        for (name, chart) in charts() {
+            if matches!(
+                name,
+                "ceramic" | "materials" | "flat shadow" | "ceramic depth 0" | "ceramic sunburst"
+            ) {
+                v.push((name.into(), chart));
+            }
+        }
+        for (_, chart) in &mut v {
+            chart.format_labels();
+        }
+        v
+    }
+
+    /// `chart` drawn as `coverage_chart` draws it, keeping its outline in an
+    /// opaque green: a magenta pixel has every sample on a sector's fill, a
+    /// green one every sample on its ink, a grey one every sample on the
+    /// background, and any other is an edge (or a label).
+    fn ink_mask_chart(chart: &RadialChart) -> RadialChart {
+        let green = crate::Color::from_rgb8(0, 255, 0);
+        let mut c = coverage_chart(chart);
+        let keep = |mask: &mut RadialStyle, original: &RadialStyle| {
+            mask.outline.rim = original.outline.rim;
+            mask.outline.separators = original.outline.separators;
+            mask.outline.emphasis = original.outline.emphasis;
+            mask.outline.color = green;
+        };
+        keep(&mut c.style, &chart.style);
+        fn slices(
+            mask: &mut [RadialSlice],
+            original: &[RadialSlice],
+            keep: &dyn Fn(&mut RadialStyle, &RadialStyle),
+        ) {
+            for (m, o) in mask.iter_mut().zip(original) {
+                if let (Some(m), Some(o)) = (m.style.as_mut(), o.style.as_ref()) {
+                    keep(m, o);
+                }
+                slices(&mut m.children, &o.children, keep);
+            }
+        }
+        slices(&mut c.slices, &chart.slices, &keep);
+        if let (Some(m), Some(o)) = (c.split.as_mut(), chart.split.as_ref()) {
+            slices(&mut m.children, &o.children, &keep);
+        }
+        c
+    }
+
+    /// One ray per material pixel (#454) changes appearance only: against
+    /// the 2 x 2 supersampled draw it replaces (`fs_material_supersampled`),
+    /// every pixel more than two pixels from an edge (of coverage, of ink,
+    /// or between sectors) is byte-identical, the difference at edges stays
+    /// within a pinned mean and 99th percentile, and the pick is the same
+    /// from frames of both draws. Over the gallery's material scenes, the
+    /// Ceramic donut and the eleven materials, at 600 x 400 at 1x and 2x and
+    /// at 333 x 257 at 2x.
+    #[test]
+    fn one_ray_material_pixels_stay_within_the_pinned_difference() {
+        #[derive(Clone, Copy, PartialEq)]
+        enum Mask {
+            Fill,
+            Ink,
+            Background,
+            Edge,
+        }
+        let mut r = renderer();
+        let reference = reference_pipeline(&r, "fs_material_supersampled");
+        let shipped = r.pipeline.clone();
+        let mut report = String::new();
+        let analytic = [
+            "gallery corners sharp",
+            "gallery corners rounded",
+            "flat shadow",
+            "ceramic depth 0",
+            "ceramic sunburst",
+        ];
+        for (name, chart) in material_charts() {
+            for (size, scale) in [((600, 400), 1.0f32), ((600, 400), 2.0), ((333, 257), 2.0)] {
+                let new = export_with(&mut r, &shipped, &chart, size, scale);
+                let old = export_with(&mut r, &reference, &chart, size, scale);
+                let mask = export_with(&mut r, &reference, &ink_mask_chart(&chart), size, scale);
+                let (w, h) = (new.width as usize, new.height as usize);
+                let mask: Vec<Mask> = mask
+                    .rgba
+                    .chunks_exact(4)
+                    .map(|p| match p {
+                        [255, 0, 255, 255] => Mask::Fill,
+                        [0, 255, 0, 255] => Mask::Ink,
+                        [r, g, b, 255] if r == g && g == b => Mask::Background,
+                        _ => Mask::Edge,
+                    })
+                    .collect();
+                // Within `r` pixels of an edge: the (2r + 1)-square around
+                // the pixel holds an edge of the mask or another class.
+                let within = |i: usize, r: usize| {
+                    let (x, y) = (i % w, i / w);
+                    (y.saturating_sub(r)..=(y + r).min(h - 1)).any(|v| {
+                        (x.saturating_sub(r)..=(x + r).min(w - 1))
+                            .any(|u| mask[v * w + u] == Mask::Edge || mask[v * w + u] != mask[i])
+                    })
+                };
+                let mut differences: Vec<u8> = new
+                    .rgba
+                    .chunks_exact(4)
+                    .zip(old.rgba.chunks_exact(4))
+                    .map(|(a, b)| (0..4).map(|i| a[i].abs_diff(b[i])).max().unwrap())
+                    .collect();
+                let far_max = (0..w * h)
+                    .filter(|&i| !within(i, 2))
+                    .map(|i| differences[i])
+                    .max()
+                    .unwrap_or(0);
+                let changed = differences.iter().filter(|&&d| d > 0).count();
+                let mean = differences.iter().map(|&d| d as f64).sum::<f64>() / (w * h) as f64;
+                differences.sort_unstable();
+                let p99 = differences[(w * h * 99) / 100];
+                let max = differences[w * h - 1];
+                report.push_str(&format!(
+                    "{name} {}x{} @{scale}x: mean {mean:.3}, p99 {p99}, max {max}, \
+                     changed {changed} px, beyond two pixels of an edge {far_max}\n",
+                    size.0, size.1
+                ));
+                assert_eq!(
+                    far_max, 0,
+                    "{name} @{scale}x: beyond two pixels of an edge\n{report}"
+                );
+                // Measured on lavapipe: the charts whose slices are flat
+                // tops (no depth, or level with no bevel) take analytic
+                // edges, a mean of at most 0.17 and a p99 of at most 3, as
+                // the Flat edges of #439; every other chart settles its
+                // pixels from one ray only where that ray gives the samples'
+                // own colour, and draws the same bytes.
+                if analytic.contains(&name.as_str()) {
+                    assert!(changed > 0, "{name} @{scale}x: analytic edges\n{report}");
+                } else {
+                    assert_eq!(max, 0, "{name} @{scale}x: the same bytes\n{report}");
+                }
+                assert!(mean <= 0.3, "{name} @{scale}x: mean {mean}\n{report}");
+                assert!(p99 <= 5, "{name} @{scale}x: p99 {p99}\n{report}");
+                if scale != 1.0 {
+                    continue;
+                }
+                // The pick, at points more than a pixel from any edge, is
+                // the same from frames of both draws and finds a sector
+                // exactly where the old draw covered one.
+                let frames = [&shipped, &reference].map(|pipeline| {
+                    r.pipeline = pipeline.clone();
+                    r.cached = None;
+                    r.prepare(&chart, size, scale).unwrap()
+                });
+                let mut points = 0;
+                for y in (2..h - 2).step_by(11) {
+                    for x in (2..w - 2).step_by(11) {
+                        let i = y * w + x;
+                        if within(i, 1) {
+                            continue;
+                        }
+                        points += 1;
+                        let at = [x as f32 + 0.5, y as f32 + 0.5];
+                        let picked = frames
+                            .each_ref()
+                            .map(|f| f.pick(at).unwrap().resolve().block_on().unwrap());
+                        assert_eq!(picked[0], picked[1], "{name} at {at:?}");
+                        assert_eq!(
+                            picked[0].is_some(),
+                            mask[i] != Mask::Background,
+                            "{name} at {at:?}"
+                        );
+                    }
+                }
+                assert!(points > 500, "{name}: {points} points");
+                r.end_frame();
+            }
+        }
+        r.pipeline = shipped;
+        println!("{report}");
     }
 }

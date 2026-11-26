@@ -464,14 +464,15 @@ with their twins, which declare the same functions with none of that code
 | `probability.wgsl` | `probability_basic.wgsl` | `prob_in_domain` is false, so a probability axis draws no sample; `prob_forward`, `prob_slope` and `prob_inverse` are unreached with code 0 |
 | `axis_scale.wgsl` | `axis_scale_basic.wgsl` | `axis_data_t` and `axis_pair_to_t` with the same linear and logarithmic arithmetic, no probability branch and no cut remap |
 | `polar.wgsl` | `polar_basic.wgsl` | `polar_sample_valid` and `polar_fragment_visible` are true on a rectangular chart and false on a polar one; `polar_ndc` and `polar_unproject` are unreached with the polar flag 0 |
-| `field_polar.wgsl` | `field_polar_basic.wgsl` | `field_polar_lookup` misses; `field_lookup` reaches it only with the polar flag set |
+| `field_polar.wgsl` | `field_polar_basic.wgsl` | `field_polar_lookup` misses; `field_lookup` reaches it only with the polar flag set. The contour distance's foot-point walk (`ContourFootWalk`, `contour_foot_walk`, `contour_foot_advance`, #453) ends at once; `contour_foot_begin` starts one only with the polar flag set |
 
 The two modules differ in nothing else, so every binding, layout and entry
 point is the same and one pipeline descriptor fits both
 (`shader_pipeline_contract.json` stores it once, under the basic source).
 
-- A fragment outside the table calls only the 16 functions the twins
-  declare and names the types `AxisCuts` and `PolarUnproject`. It never
+- A fragment outside the table calls only the 18 functions the twins
+  declare and names the types `AxisCuts`, `PolarUnproject` and
+  `ContourFootWalk`. It never
   reads a member of `AxisCuts`, builds one with its constructor or calls a
   function only a full fragment has (`piece_slope`, `cut_piece_slope`,
   `prob_pq`, `prob_normal`, `prob_weibull_w`, `prob_erfcc`): the basic
@@ -598,7 +599,8 @@ bilinear Hessian `Jᵀ H J`. That only starts the distance: along a pixel line
 the polar field is not a quadratic, so `contour_level_distance_at` finds the
 closest point on the level set by foot-point iteration
 (`CONTOUR_POLAR_FOOT_STEPS`, 4; `contour_foot_begin`, then the walk
-`contour_foot_walk` / `contour_foot_advance`): at the current point the
+`contour_foot_walk` / `contour_foot_advance`, which live in
+`field_polar.wgsl` so the basic set compiles none of it, #453): at the current point the
 level set is linearized from the field read through `field_lookup` and the
 located cell (`contour_sample_cells`), and the point moves to the foot of
 the perpendicular from the fragment. The distance is the Euclidean pixel
@@ -1407,8 +1409,9 @@ answer sector 0 (#63).
 
 `hit_sector` marches to the surface and takes the six-sample normal once,
 at the point the march stopped. The draw supersamples coverage and shades
-once per surface (#349), in this order, for a pixel outside the Flat fast
-path (`flat_pixel`, #41):
+once per surface (#349), in this order, for a pixel that neither one-ray
+path settles (the Flat fast path `flat_pixel`, #41, and `material_pixel`,
+#454, below):
 
 1. `floor_shadow` once, at the pixel centre: a soft blur, it shades the
    background samples.
@@ -1450,6 +1453,42 @@ compares it with the 2 × 2 samples (`fs_supersampled` in
 any edge, the difference at edges pinned by its mean and percentiles; a
 second (`a_slanted_flat_separator_has_a_smooth_monotonic_edge_profile`)
 checks the profile across a slanted gap and a slanted ink separator.
+
+Every other chart (a material, tilt, depth, bevel or shadow) first tries
+one ray per pixel (`material_pixel`, #454). Each sector is measured at the
+pixel centre on the plane of its top face (`top_plane`), where the
+footprint is a distance that the pixel's samples move by at most `reach`
+(0.75 px over the radius times cos(tilt)). A sector is out of every
+sample's reach when a lower bound of the footprint along the column its
+rays cross inside the solid (`column_floor`: the unrounded edges, each
+least on the segment exactly) stays above zero. Then:
+
+- No sector in reach: the background with its floor shadow, as every
+  sample draws it.
+- Every sample on one sector's flat top (the footprint below minus its
+  bevel, `reach` and the outline width) and every other sector in reach
+  nearer the ground along each ray: one `hit_pixel` at the first sample and
+  one `sector_surface`, the colour the samples share (one sector, one
+  normal, no ink), added in sample order.
+- A chart whose coverage is its top faces' footprints (`analytic_chart`:
+  no depth, or level with no bevel): `flat_pixel`'s analytic edges over the
+  top planes, with `fwidth` clamped to [1, 1.5 / cos(tilt)], each sector
+  shaded once at the first sample (`hit_pixel`, or `top_hit` where that
+  sample misses it), the background with its floor shadow, and ink by
+  `outlined`'s rule. A pixel at least `margin` from every edge takes the
+  nearest covering sector's colour.
+- Anything else takes the 2 × 2 samples above: bevels and creases (normals
+  that differ across the pixel), tilted side walls where they meet their top
+  face or the background, sectors that may overlap, and a NaN distance.
+
+The choice between `flat_pixel` and `material_pixel` reads read-only
+storage (`flat_chart`), so each takes its derivatives in uniform control
+flow. A unit test (`one_ray_material_pixels_stay_within_the_pinned_difference`
+in `radial.rs`) compares the draw with the samples alone
+(`fs_material_supersampled` in `tests/support/radial_per_sample.wgsl`) over
+the gallery's material scenes, the Ceramic donut and the eleven materials:
+byte-identical beyond two pixels of any edge, the difference at edges pinned
+by its mean and 99th percentile, and the same picks.
 
 Rust twin: `radial::Sector` (`radial.rs`), built per slice by
 `radial_layout.rs`; `mirrored_struct_layouts_match_their_rust_twins` holds

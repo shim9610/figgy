@@ -357,7 +357,7 @@ animations and interactive examples.
 | Goal | Example or guide |
 |---|---|
 | Draw in a native window | [winit_simple.rs](crates/renderer/examples/winit_simple.rs) |
-| Embed in egui | [egui_embed.rs](crates/renderer/examples/egui_embed.rs), run with `--features egui_demo` |
+| Embed in egui | [egui_embed.rs](examples/egui/examples/egui_embed.rs) in the [egui example crate](examples/egui/README.md) |
 | Edit pies or donuts | [Native editors](crates/renderer/examples/README.md#interactive-examples) |
 | Connect picking, dragging and plot-area resizing | [Interaction guide](crates/renderer/INTERACTION.md) |
 | Fit margins, title offsets and label formats so labels and titles do not overlap | `layout::auto_layout` in the [convenience helpers](crates/renderer/API.md#direct-ssot-edits-and-convenience-helpers); `autoLayout(configJson)` in the browser |

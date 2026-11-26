@@ -1,5 +1,5 @@
 //! Native SSOT editor. Click a slice, change its color/style/label, or edit the chart.
-//! cargo run -p figgy-renderer --example radial_editor --features egui_demo
+//! cargo run --locked --manifest-path examples/egui/Cargo.toml --example radial_editor
 use eframe::egui_wgpu::RenderState;
 use renderer::{Color, Material, RendererDevice, radial::*};
 use std::sync::Arc;

@@ -55,7 +55,8 @@ that waits for the GPU has a `_blocking` form (see
 ### Host crates
 
 The default library features require neither winit, egui nor iced. Add only the
-host crates you use (the crate's own egui examples run with `--features egui_demo`):
+host crates you use (the repository's egui examples are a separate
+[example crate](https://github.com/shim9610/figgy/blob/master/examples/egui) with these dependencies):
 
 ```toml
 # winit standalone
@@ -303,7 +304,7 @@ never handles wgpu types.
 
 ```bash
 cargo run -p figgy-renderer --example winit_simple
-cargo run -p figgy-renderer --example egui_embed --features egui_demo
+cargo run --locked --manifest-path examples/egui/Cargo.toml --example egui_embed
 ```
 
 Each example shows:
@@ -338,7 +339,7 @@ python3 -m http.server 8142 --bind 127.0.0.1
 ### Live editing at scale (`ssot_lab`)
 
 ```bash
-cargo run --release -p figgy-renderer --example ssot_lab --features egui_demo
+cargo run --locked --release --manifest-path examples/egui/Cargo.toml --example ssot_lab
 ```
 
 A 2×2 grid, one draw style per panel (Precise dashed / Sketch / Milkyway /
@@ -360,7 +361,8 @@ The frame is split to match host callback shapes: every mutation lives in
 `Mutex` around the renderer:
 
 ```rust
-// Sketch: parameter types are elided; see examples/egui_embed.rs for the full code.
+// Sketch: parameter types are elided; see examples/egui/examples/egui_embed.rs
+// in the repository for the full code.
 // stored in CallbackResources as plain FiggyState
 struct FiggyState { renderer: renderer::Renderer, panels: Vec<PanelEntry> }
 struct PanelEntry { /* chart, view, … */ prepared: Option<renderer::PreparedFrame> }
@@ -420,7 +422,7 @@ The one-shot `Renderer::paint(&mut self, …)` is for hosts that own
 the renderer exclusively during their frame (winit loop, wasm wrapper): it
 runs both phases back to back.
 
-Full version: [examples/egui_embed.rs](examples/egui_embed.rs). That example
+Full version: [egui_embed.rs](https://github.com/shim9610/figgy/blob/master/examples/egui/examples/egui_embed.rs). That example
 does not call `end_gpu_frame`; [tools/playground/src/main.rs](https://github.com/shim9610/figgy/blob/master/tools/playground/src/main.rs)
 is a host that calls it once after `queue.submit`.
 
@@ -892,8 +894,8 @@ a chart. See the [bar guide](CATEGORICAL.md) or run
 surfaces. Rounded sector corners, outlines, hover/selection, per-slice colors and
 styles, and label content are fields of that model. It shares the host wgpu device
 and does not use the column pool or column streams.
-Try the [native editor](examples/radial_editor.rs) with
-`cargo run -p figgy-renderer --example radial_editor --features egui_demo`.
+Try the [native editor](https://github.com/shim9610/figgy/blob/master/examples/egui/examples/radial_editor.rs) with
+`cargo run --locked --manifest-path examples/egui/Cargo.toml --example radial_editor`.
 The [radial chart guide](RADIAL.md) covers the API with an example,
 [option defaults and ranges](RADIAL.md#style-option-defaults-and-ranges),
 [per-slice editing](RADIAL.md#editing-the-model-and-selection), and
@@ -1328,7 +1330,7 @@ wgpu     = "30"
 ### 호스트 크레이트
 
 기본 라이브러리 기능에는 winit·egui·iced가 필요하지 않다. 사용하는 호스트 크레이트만
-추가한다. 이 크레이트의 egui 예제는 `--features egui_demo`로 실행한다.
+추가한다. 저장소의 egui 예제는 이 의존성을 쓰는 별도 [예제 크레이트](https://github.com/shim9610/figgy/blob/master/examples/egui)에 있다.
 
 ```toml
 # winit standalone
@@ -1533,7 +1535,7 @@ renderer.add_column("temperature", &my_series)?;   // my_series: MyTimeSeries
 
 ```bash
 cargo run -p figgy-renderer --example winit_simple
-cargo run -p figgy-renderer --example egui_embed --features egui_demo
+cargo run --locked --manifest-path examples/egui/Cargo.toml --example egui_embed
 ```
 
 각 예제에서 다음 기능을 확인할 수 있다.
@@ -1565,7 +1567,7 @@ python3 -m http.server 8142 --bind 127.0.0.1
 ### 대용량 실시간 편집 예제 (`ssot_lab`)
 
 ```bash
-cargo run --release -p figgy-renderer --example ssot_lab --features egui_demo
+cargo run --locked --release --manifest-path examples/egui/Cargo.toml --example ssot_lab
 ```
 
 2×2 패널에 `Precise`(점선)·`Sketch`·`Milkyway`·`Constellation` 그리기 스타일을 하나씩 표시한다. 네 시리즈는 GPU 풀의 `x` 컬럼 하나를 공유한다. 사이드바에서 X축이 연동된 패널 쌍의 이동 방향, 표시 범위의 너비, 시리즈당 데이터 수를 바꿀 수 있다. 데이터 수는 시리즈당 최대 300만 개(총 1200만 개, 컬럼 5개)이며, 장치가 허용한 풀 크기가 작으면 상한도 낮아진다.
@@ -1577,7 +1579,8 @@ cargo run --release -p figgy-renderer --example ssot_lab --features egui_demo
 호스트의 콜백 구조에 맞춰 프레임 준비와 명령 기록을 나눈다. 상태 변경은 `Renderer::prepare`가 `&mut self`로 수행하고, `Renderer::paint_prepared`는 `&self`로 그리기 명령만 기록한다. 따라서 paint 콜백에서 렌더러를 `Mutex`로 감쌀 필요가 없다.
 
 ```rust
-// 개요 코드다. 매개변수 타입은 생략했으며 전체 코드는 examples/egui_embed.rs에 있다.
+// 개요 코드다. 매개변수 타입은 생략했으며 전체 코드는 저장소의
+// examples/egui/examples/egui_embed.rs에 있다.
 // FiggyState를 Mutex 없이 CallbackResources에 그대로 저장한다
 struct FiggyState { renderer: renderer::Renderer, panels: Vec<PanelEntry> }
 struct PanelEntry { /* chart, view, … */ prepared: Option<renderer::PreparedFrame> }
@@ -1614,7 +1617,7 @@ impl egui_wgpu::CallbackTrait for FiggyCallback {
 
 토큰으로 기록한 명령 버퍼는 그 토큰의 `ChartView`를 다시 바꾸기 전에 제출해야 한다. `refresh_axis`, `update_transform`, 같은 뷰로 실행하는 다음 `prepare`가 여기에 해당한다. 렌더러는 기록하기 전에 오래된 입력을 거부하지만, 호스트에 넘어간 명령 버퍼는 검사하거나 순서를 정할 수 없다.
 
-winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사용하는 호스트는 두 단계를 연속 실행하는 `Renderer::paint(&mut self, …)`를 사용하면 된다. 전체 예제는 [egui_embed.rs](examples/egui_embed.rs)를 참고한다. 이 예제는 `end_gpu_frame`을 호출하지 않는다. `queue.submit` 뒤에 한 번 호출하는 호스트는 [tools/playground/src/main.rs](https://github.com/shim9610/figgy/blob/master/tools/playground/src/main.rs)에서 볼 수 있다.
+winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사용하는 호스트는 두 단계를 연속 실행하는 `Renderer::paint(&mut self, …)`를 사용하면 된다. 전체 예제는 [egui_embed.rs](https://github.com/shim9610/figgy/blob/master/examples/egui/examples/egui_embed.rs)를 참고한다. 이 예제는 `end_gpu_frame`을 호출하지 않는다. `queue.submit` 뒤에 한 번 호출하는 호스트는 [tools/playground/src/main.rs](https://github.com/shim9610/figgy/blob/master/tools/playground/src/main.rs)에서 볼 수 있다.
 
 ### GPU 결과: 비동기, 동기, 확인
 
@@ -2005,8 +2008,8 @@ x에서 픽셀로의 매핑(x 범위, 장치 픽셀 단위 플롯 너비, x 방�
 그린다. 무광·세라믹·새틴 금속·툰 등의 재질, 둥근 모서리, 외곽선, 호버·선택을 지원한다.
 조각별 색·스타일·표기 내용은 `RadialChart` 모델에서 직접 편집한다. 호스트의 wgpu 장치를 공유하며
 컬럼 풀이나 컬럼 스트림은 쓰지 않는다.
-[네이티브 편집기](examples/radial_editor.rs)는
-`cargo run -p figgy-renderer --example radial_editor --features egui_demo`로 실행한다.
+[네이티브 편집기](https://github.com/shim9610/figgy/blob/master/examples/egui/examples/radial_editor.rs)는
+저장소 루트에서 `cargo run --locked --manifest-path examples/egui/Cargo.toml --example radial_editor`로 실행한다.
 [사용법과 예제](RADIAL.md#한국어-사용법)에서 [옵션 기본값과 범위](RADIAL.md#스타일-옵션-기본값과-범위),
 [조각별 편집과 상속](RADIAL.md#모델-편집과-선택), 프레임 수명과 내보내기를 포함한
 [호스트 갱신 순서](RADIAL.md#호스트의-갱신-순서)를 확인할 수 있다.

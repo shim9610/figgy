@@ -1,10 +1,26 @@
-# Version updates for the Rust workspace and the pinned GitHub Actions (#160).
+# Version updates for the Rust workspace, the standalone crates and the
+# pinned GitHub Actions (#160).
 # Security alerts are a repository setting; see SECURITY.md.
 version: 2
 updates:
   - package-ecosystem: cargo
     directory: /
     target-branch: integration/0.19
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  # Standalone crates with their own lockfiles (#459): not workspace members,
+  # so the root entry does not see them. Their wgpu major follows the
+  # renderer's, so a wgpu major bump comes from the root entry, not here.
+  - package-ecosystem: cargo
+    directories:
+      - /tools/playground
+      - /tools/loom-poller
+      - /examples/egui
+    target-branch: integration/0.19
+    ignore:
+      - dependency-name: wgpu
+        update-types: ["version-update:semver-major"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

@@ -79,8 +79,8 @@ pub const LABEL_VERTICES: u32 = 6;
 
 /// Anchors `anchor_select` may keep, for the whole series.
 ///
-/// A ceiling, and also the size of the private arrays the select pass compares
-/// against — GPU twin: `contour_anchor.wgsl::MAX_KEPT`. Automatic and explicit
+/// A ceiling on the labels the select pass keeps — GPU twin:
+/// `contour_anchor.wgsl::MAX_KEPT`. Automatic and explicit
 /// placement share the model's full 1024-level capacity, and the model
 /// rejects a longer explicit list (`MAX_CONTOUR_LABEL_ANCHORS`).
 pub const MAX_CONTOUR_LABELS_TOTAL: u32 = crate::data_config::MAX_CONTOUR_LABEL_ANCHORS as u32;
@@ -532,14 +532,17 @@ impl ContourLabelPipelines {
         let old_call = "data_to_ndc(a.x, a.y)";
         assert_eq!(source.matches(old_call).count(), 1);
         source = source.replace(old_call, "data_to_ndc(transform, a.x, a.y)");
-        // Selection is still one invocation in both versions. Keep its scratch
-        // address space aligned, without changing the frozen projection loop.
-        // Otherwise the oracle incurs WARP's slow workgroup initialization.
+        // Selection is still one invocation in both versions. The frozen
+        // selector keeps its scratch arrays, moved out of workgroup memory
+        // without changing the frozen projection loop; otherwise the oracle
+        // incurs WARP's slow workgroup initialization. The current selector
+        // has no scratch array: it reads its kept labels back from `anchors`
+        // (#453).
         for name in ["kept_px", "kept_r"] {
             let old = format!("var<workgroup> {name}:");
             let new = format!("var<private> {name}:");
             assert_eq!(source.matches(&old).count(), 1);
-            assert_eq!(current.matches(&new).count(), 1);
+            assert!(!current.contains(name), "{name}");
             source = source.replace(&old, &new);
         }
         Self::with_anchor_source(
