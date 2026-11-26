@@ -4422,6 +4422,8 @@ impl Renderer {
                     chart_config: config,
                     series: &series,
                 }],
+                // Streaming keeps its plain contour pass (rule 8).
+                None,
             );
         }
         let transform = data_render::scatter_transform_from_config(config);
