@@ -30,8 +30,7 @@ fixtures.
 
 Prepare changes on a public candidate branch and open a PR into `master` to
 request CI. All three backend jobs run on every such PR, including experimental
-Metal. The
-separate Metal precision probe is manual-only.
+Metal. The separate Metal precision probe is manual-only.
 
 GitHub's standard hosted runner compute is free for public repositories; artifact
 storage has its own limits.
@@ -69,8 +68,8 @@ covers the shader changes that avoid WARP's slow first-use workgroup initializat
 
 The separate `CodeQL` workflow runs only for public, non-draft pull requests,
 using the same opened/updated/reopened/ready-for-review events as the package
-matrix, into any branch. It has no push, scheduled or manual trigger. It analyzes Rust, Python,
-JavaScript/TypeScript and GitHub Actions with the `security-extended` query suite
+matrix, into any branch. It has no push, scheduled or manual trigger. It
+analyzes Rust, Python, JavaScript/TypeScript and GitHub Actions with the `security-extended` query suite
 on standard Ubuntu runners. CodeQL actions, like every action in the other
 workflows, are pinned to exact commit IDs.
 
@@ -154,9 +153,8 @@ images. Existing opt-in stress/probe tests remain `#[ignore]` and are reported b
 Tests run sequentially so GPU memory measurements do not overlap. These are headless
 native renderer tests; WASM compilation is not a browser execution test.
 
-The docs.rs metadata enables `serde`. Renderer API
-pages are built for native Linux and WASM; the model needs only the native default
-target. These builds do not initialize a graphics adapter. docs.rs builds its
+The docs.rs metadata enables `serde`. Renderer API pages are built for native
+Linux and WASM; the model needs only the native default target. These builds do not initialize a graphics adapter. docs.rs builds its
 pages from each published crate version after publication, not from master.
 Local rustdoc builds do not check what docs.rs hosts.
 
@@ -369,7 +367,8 @@ CI는 공개 저장소에서 `master`로 향하는 초안이 아닌 PR을 열거
 Vulkan(렌더 장치가 없으면 lavapipe)에서 체크아웃 자체를 검사한다. 브라우저 래퍼 `crates/web`(패키지
 `figgy`)을 포함한 워크스페이스 전체 테스트를 실행하고, 워크스페이스에 속하지 않는 `tools/playground`의
 selftest, `examples/egui`의 egui 예제 빌드 검사, `tools/loom-poller`의 loom 검사를 실행한다.
-`static` 단계는 이 독립 크레이트들의 `Cargo.lock`이 `--locked`로 여전히 해석되는지도 확인한다. selftest가 단계마다 내보낸 PNG는 실패해도 `playground-selftest`
+`static` 단계는 이 독립 크레이트들의 `Cargo.lock`이 `--locked`로 여전히 해석되는지도 확인한다.
+selftest가 단계마다 내보낸 PNG는 실패해도 `playground-selftest`
 아티팩트로 7일간 남으므로 이전 실행과 비교해 렌더링 변화를 확인할 수 있다.
 이 작업은 변경 범위와 상관없이 매번 `cargo deny check`(`deny.toml`)도 실행해서, RustSec
 보안 권고, 허용 목록 밖의 라이선스, 와일드카드 버전, 알 수 없는 출처의 의존성을 막는다.
