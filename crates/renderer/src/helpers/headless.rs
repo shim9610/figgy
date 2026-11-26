@@ -2,9 +2,12 @@
 //!
 //! It makes the GPU instance, adapter and device itself, honouring
 //! `WGPU_BACKEND` (and the other `wgpu` environment selections) as the
-//! tests do, and renders into `Rgba8Unorm`, the format the exports read
-//! back. The instance and adapter are not kept: the device holds what it
-//! needs for as long as the renderer lives.
+//! tests do. Its own target format, the one the host's draws through it
+//! (`prepare`, `paint`) are built for, is `Rgba8Unorm`; the exports do not
+//! use it: each renders into and reads back its own half-float target
+//! (`Rgba16Float`) through a pipeline set made for that call. The instance
+//! and adapter are not kept: the device holds what it needs for as long as
+//! the renderer lives.
 
 use crate::{FiggyError, Renderer, RendererDevice, Result};
 
@@ -28,7 +31,9 @@ impl Default for HeadlessOptions {
     }
 }
 
-/// The texture format a headless renderer draws into: the exports' own.
+/// The target format of a headless renderer's own pipelines, for the
+/// host's draws through it. Exports render into their own half-float
+/// target instead (`EXPORT_FORMAT`).
 const HEADLESS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 async fn headless_device(options: HeadlessOptions) -> Result<(wgpu::Device, wgpu::Queue)> {

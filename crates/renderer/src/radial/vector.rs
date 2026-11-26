@@ -52,6 +52,10 @@ impl RadialRenderer {
         size: (u32, u32),
         scale: f32,
     ) -> Result<RadialVectorFrame, RadialError> {
+        // A lost device refuses here, before any buffer is created: wgpu's
+        // `create_buffer_init` panics on a destroyed device (#469), as in
+        // `prepare`.
+        self.gpu.health().check().map_err(radial_gpu_error)?;
         let (width, height) = self.frame_size(chart, size, scale)?;
         let count = chart.node_count();
         self.admit(

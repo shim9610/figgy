@@ -505,6 +505,12 @@ export button. To keep a clicked slice raised, keep
 animation, copy the model at the moment you want, and do not reset
 `interaction` or set `hover_progress` to 0 before exporting.
 
+A raster export reuses the frame `prepare` cached when it was prepared for
+the same chart, size and scale. At another size or scale it builds a frame
+for that export alone and drops it afterwards: the frame drawn on screen,
+its label texture and its annotation layer stay cached, so the next
+`prepare` at the screen's size and scale returns the same frame (#469).
+
 `export_rgba_with_background(&chart, size, options, background)` and
 `export_png_with_background` (native synchronous version
 `export_rgba_with_background_blocking`) export with only the background
@@ -519,7 +525,7 @@ frame's slice table and label texture are used as they are, and a separate
 of the export. A color with a component outside 0 to 1 is rejected with
 `RadialError::Invalid`.
 
-`export_svg(&chart, size, scale)` and `export_pdf` (native synchronous
+`export_svg(&chart, size, options)` and `export_pdf` (native synchronous
 versions `export_svg_blocking` / `export_pdf_blocking`) export the same
 snapshot as SVG and PDF documents. Size and scale are checked by the same
 rules as `prepare`. The slices and background go in as one raster image. The
@@ -1104,6 +1110,11 @@ let png = renderer::encode_png(&image)?;
 모양까지 남기려면 원하는 시점에 모델을 복사하고, 내보내기 전에 `interaction`을 초기화하거나
 `hover_progress`를 0으로 바꾸지 않는다.
 
+래스터 내보내기는 같은 차트, 크기, 배율로 준비해 둔 `prepare`의 캐시 프레임을 그대로 쓴다. 크기나
+배율이 다르면 그 내보내기만을 위한 프레임을 만들고 끝나면 버린다. 화면에 그리는 프레임과 그 라벨
+텍스처, 주석 레이어는 캐시에 그대로 남으므로, 화면 크기와 배율로 다시 부르는 `prepare`는 같은
+프레임을 돌려준다(#469).
+
 `export_rgba_with_background(&chart, size, options, background)`와
 `export_png_with_background`(네이티브 동기 버전 `export_rgba_with_background_blocking`)는
 배경만 바꿔 내보낸다(#313). `RadialExportBackground::Document`는 `export_rgba`와 같고,
@@ -1113,7 +1124,7 @@ let png = renderer::encode_png(&image)?;
 배경만 바꾼 112바이트 uniform을 내보내기 동안 따로 만든다. 성분이 0~1을 벗어난 색은
 `RadialError::Invalid`로 거부한다.
 
-`export_svg(&chart, size, scale)`와 `export_pdf`(네이티브 동기 버전 `export_svg_blocking` /
+`export_svg(&chart, size, options)`와 `export_pdf`(네이티브 동기 버전 `export_svg_blocking` /
 `export_pdf_blocking`)는 같은 스냅샷을 SVG와 PDF 문서로 내보낸다.
 크기와 배율은 `prepare`와 같은 규칙으로 검사한다. 조각과 배경은 래스터 이미지 한 장으로 들어간다.
 제목, 라벨과 그 지시선, 분할 원을 잇는 선, 주석은 벡터로 들어가며 글자는 글리프

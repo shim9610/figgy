@@ -148,7 +148,7 @@ pub use data_render::{
     TriangleStats,
 };
 pub use drag::Draggable;
-pub use error::{FiggyError, Result};
+pub use error::{FiggyError, Result, SurfaceAcquireKind};
 pub use gpu_data_pick::{DataPickResult, GpuDataPickTicket};
 pub use gpu_extent::{
     GpuErrorbarExtent, GpuErrorbarExtentTicket, GpuExtentError, GpuFieldExtentMode,

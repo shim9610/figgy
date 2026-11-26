@@ -260,8 +260,10 @@ impl Chart {
     /// chart, its overlays, every subplot and every series
     /// ([`Self::apply_theme_to`] with [`ThemeScope::All`]). The base chart
     /// and every subplot take the family's member for their own kind, so a
-    /// dashboard whose subplots mix kinds takes one name. The layout is
-    /// then fitted to the new text sizes ([`Self::fit_layout`]). For any
+    /// dashboard whose subplots mix kinds takes one name. A fitted layout
+    /// is then fitted to the new text sizes; a `Fixed` one
+    /// ([`crate::LayoutState::Fixed`], a layout the user dragged or a
+    /// document drawn as saved) is kept, as every other edit keeps it. For any
     /// other look, edit a member ([`Self::theme`]) and apply it with
     /// [`Self::apply_custom_theme`].
     ///
@@ -293,7 +295,9 @@ impl Chart {
         let mut themed = self.config().clone();
         Theme::apply_named(name, &mut themed, series, scope)?;
         *self.config_mut() = themed;
-        self.fit_layout();
+        // A `Fixed` layout (a dragged or saved one) is kept, as every other
+        // edit keeps it (#469).
+        self.refit_kept_layout();
         Ok(())
     }
 
@@ -341,8 +345,8 @@ impl Chart {
     /// ([`Theme::apply_to_its_kind`]): the base chart and every subplot of
     /// [`Theme::kind`], or that draws no series yet, with their overlays
     /// and the series drawn there. Charts of another kind are left as they
-    /// are. The layout is then fitted to the new text sizes
-    /// ([`Self::fit_layout`]).
+    /// are. A fitted layout is then fitted to the new text sizes; a `Fixed`
+    /// one is kept ([`Self::apply_theme`]).
     ///
     /// Refused, changing nothing, when no chart is of the theme's kind
     /// ([`ThemeError::WrongKind`]), or when the theme's draw style cannot
@@ -358,7 +362,9 @@ impl Chart {
         let mut themed = self.config().clone();
         theme.apply_to_its_kind(&mut themed, series, crate::draw_style_supports)?;
         *self.config_mut() = themed;
-        self.fit_layout();
+        // A `Fixed` layout (a dragged or saved one) is kept, as every other
+        // edit keeps it (#469).
+        self.refit_kept_layout();
         Ok(())
     }
 
@@ -381,7 +387,9 @@ impl Chart {
         let mut themed = self.config().clone();
         theme.apply(&mut themed, series, scope)?;
         *self.config_mut() = themed;
-        self.fit_layout();
+        // A `Fixed` layout (a dragged or saved one) is kept, as every other
+        // edit keeps it (#469).
+        self.refit_kept_layout();
         Ok(())
     }
 

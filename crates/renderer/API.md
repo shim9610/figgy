@@ -578,6 +578,37 @@ browser product puts in a thrown error's `code`. A rule checked while JSON is
 deserialized surfaces as the deserializer's error, whose text is the same
 sentence followed by the position.
 
+`WindowedRenderer::pick_chart_at`, `pick_chart_data_at`,
+`compile_pick_pipelines_at` and `compile_data_pick_pipelines_at` place the
+chart as its draws do ([#469](https://github.com/shim9610/figgy/issues/469)):
+the display set with `set_chart_display` (fitted to that surface, or held by
+`hold_chart_display`), or the stored document at scale 1 when no display is
+set, as `chart_display_config` returns it. The window's own surface size
+plays no part, so a cursor on drawn ink picks that datum.
+
+A lost device is one typed variant on every call
+([#469](https://github.com/shim9610/figgy/issues/469)): `FiggyError::DeviceLost
+{ reason }` from the renderer's calls and `GpuPickError::DeviceLost { reason }`
+from the picks (`pick_chart`, `pick_chart_at`, a ticket's `try_resolve`,
+`resolve` and `resolve_blocking`). A pick error converted into a `FiggyError`
+(`From<GpuPickError>`, as the typed data pick returns it) is
+`FiggyError::DeviceLost` again, so a host handles the loss in one place: it
+recreates the device and the renderer. `RadialError` keeps reporting the
+loss as `RadialError::Gpu` (its message reads `wgpu device lost: ...`).
+
+`WindowedRenderer::draw` and its siblings return
+`FiggyError::SurfaceAcquireFailed { kind, reason }` when no surface texture
+can be acquired. `kind` (`SurfaceAcquireKind`) says what the host does:
+
+| `kind` | wgpu status | Host action |
+| --- | --- | --- |
+| `Skip` | `Timeout`, `Occluded`, or `Validation` (an error the device has not reported otherwise) | Skip the frame; the next draw tries again. |
+| `Reconfigure` | `Outdated` after one reconfiguration | The draw already reconfigured the surface once at its configured size and acquired again; call `resize` with the window's current size and draw again. |
+| `Lost` | `Lost` | Drop the `WindowedRenderer` and build a new one for the window (`Renderer::for_window_*`), then register its columns and charts again. A `WindowedRenderer` owns its surface and has no call that replaces it. |
+
+A lost device reports `FiggyError::DeviceLost` instead, before any acquire.
+`examples/winit_simple.rs` handles each kind.
+
 ## Construction and prewarming
 
 Construction and full Cartesian prewarming are separate operations:

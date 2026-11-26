@@ -46,23 +46,22 @@ impl<'w> WindowedRenderer<'w> {
         self.surface_config.format
     }
 
-    /// Pick one chart using this window's current physical surface size.
+    /// Pick chart `id` at a surface pixel, through the placement the
+    /// window's draws give it (#469): the display set with
+    /// [`Renderer::set_chart_display`] (fitted to its surface, or held with
+    /// [`Renderer::hold_chart_display`]), or the stored document at scale 1
+    /// when no display is set. The surface's own size plays no part, so a
+    /// pick lands on the ink [`Self::draw_registered`] drew under the cursor.
     pub fn pick_chart_at(
         &mut self,
         id: ChartId,
         canvas_position_px: [f32; 2],
         max_distance_px: f32,
     ) -> std::result::Result<crate::gpu_pick::GpuPickTicket, crate::gpu_pick::GpuPickError> {
-        let config = self
+        let (display_scale, display_panel_px) = self
             .inner
-            .chart_states
-            .get(&id)
+            .window_pick_placement(id)
             .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?;
-        let logical = config.config.document_area();
-        let (display_scale, display_panel_px) = fit_display_panel(
-            (logical.width, logical.height),
-            (self.surface_config.width, self.surface_config.height),
-        );
         self.inner.pick_chart(
             id,
             GpuPickRequest {
@@ -88,16 +87,10 @@ impl<'w> WindowedRenderer<'w> {
         canvas_position_px: [f32; 2],
         max_distance_px: f32,
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
-        let config = self
+        let (display_scale, display_panel_px) = self
             .inner
-            .chart_states
-            .get(&id)
+            .window_pick_placement(id)
             .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?;
-        let logical = config.config.document_area();
-        let (display_scale, display_panel_px) = fit_display_panel(
-            (logical.width, logical.height),
-            (self.surface_config.width, self.surface_config.height),
-        );
         let request = GpuPickRequest {
             canvas_position_px,
             display_panel_px,
@@ -118,16 +111,10 @@ impl<'w> WindowedRenderer<'w> {
         canvas_position_px: [f32; 2],
         max_distance_px: f32,
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
-        let config = self
+        let (display_scale, display_panel_px) = self
             .inner
-            .chart_states
-            .get(&id)
+            .window_pick_placement(id)
             .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?;
-        let logical = config.config.document_area();
-        let (display_scale, display_panel_px) = fit_display_panel(
-            (logical.width, logical.height),
-            (self.surface_config.width, self.surface_config.height),
-        );
         let request = GpuPickRequest {
             canvas_position_px,
             display_panel_px,
@@ -139,23 +126,18 @@ impl<'w> WindowedRenderer<'w> {
             .await
     }
 
-    /// Typed data pick using this window's current physical surface size.
+    /// Typed data pick of chart `id` at a surface pixel, through the
+    /// placement the window's draws give it, as [`Self::pick_chart_at`].
     pub fn pick_chart_data_at(
         &mut self,
         id: ChartId,
         canvas_position_px: [f32; 2],
         max_distance_px: f32,
     ) -> Result<crate::GpuDataPickTicket> {
-        let config = self
+        let (display_scale, display_panel_px) = self
             .inner
-            .chart_states
-            .get(&id)
+            .window_pick_placement(id)
             .ok_or(FiggyError::UnknownChart { id })?;
-        let logical = config.config.document_area();
-        let (display_scale, display_panel_px) = fit_display_panel(
-            (logical.width, logical.height),
-            (self.surface_config.width, self.surface_config.height),
-        );
         self.inner.pick_chart_data(
             id,
             GpuPickRequest {
@@ -255,21 +237,20 @@ impl<'w> WindowedRenderer<'w> {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            wgpu::CurrentSurfaceTexture::Lost => {
-                return Err(FiggyError::SurfaceAcquireFailed {
-                    reason: "lost".into(),
-                });
-            }
+            // The surface changed under its configuration: configure it
+            // again at its current size, through `resize` so the MSAA
+            // target and the pipelines follow whatever the new
+            // configuration chose, and acquire once more (#469).
             wgpu::CurrentSurfaceTexture::Outdated => {
-                return Err(FiggyError::SurfaceAcquireFailed {
-                    reason: "outdated".into(),
-                });
+                let (width, height) = self.surface_size();
+                self.resize(width, height)?;
+                match self.surface.get_current_texture() {
+                    wgpu::CurrentSurfaceTexture::Success(t)
+                    | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+                    other => return Err(self.surface_acquire_error(other)),
+                }
             }
-            other => {
-                return Err(FiggyError::SurfaceAcquireFailed {
-                    reason: format!("{other:?}"),
-                });
-            }
+            other => return Err(self.surface_acquire_error(other)),
         };
         let target = frame
             .texture
@@ -318,6 +299,22 @@ impl<'w> WindowedRenderer<'w> {
         self.inner.queue().present(frame);
         // An error this frame's work sent to the uncaptured-error handler.
         self.inner.health.check()
+    }
+
+    /// A surface texture that could not be acquired, as the typed error a
+    /// host branches on (#469). A validation error wgpu reported through
+    /// the device is returned as that error.
+    fn surface_acquire_error(&self, status: wgpu::CurrentSurfaceTexture) -> FiggyError {
+        if matches!(status, wgpu::CurrentSurfaceTexture::Validation)
+            && let Err(error) = self.inner.health.check()
+        {
+            return error;
+        }
+        let (kind, reason) = surface_status(&status);
+        FiggyError::SurfaceAcquireFailed {
+            kind,
+            reason: reason.into(),
+        }
     }
 
     /// Submit one frame and wait until that GPU work has finished executing.
@@ -385,6 +382,15 @@ impl Drop for WindowedRenderer<'_> {
 }
 
 impl Renderer {
+    /// The display scale and where chart `id`'s whole document lands on the
+    /// surface, as [`Self::prepare_registered`] draws it
+    /// ([`Self::chart_display_config`]): the window picks' placement
+    /// (#469). `None` for an unknown chart.
+    pub(super) fn window_pick_placement(&self, id: ChartId) -> Option<(f32, Rect)> {
+        let (placed, _, scale) = self.chart_display_config(id).ok()?;
+        Some((scale, placed.document_area()))
+    }
+
     /// `result`, or the GPU error the call that produced it raised: an `Ok`
     /// value is returned only when no GPU error is pending (#158). An `Err`
     /// is returned as it is; a GPU error pending beside it stays counted for
@@ -596,6 +602,23 @@ impl Renderer {
     }
 }
 
+/// What a host does after a surface status that carries no texture, and
+/// the status's name (#469). A status that does carry one never reaches
+/// it; it is classed as a skip so the function stays total.
+pub(super) fn surface_status(
+    status: &wgpu::CurrentSurfaceTexture,
+) -> (SurfaceAcquireKind, &'static str) {
+    match status {
+        wgpu::CurrentSurfaceTexture::Success(_) => (SurfaceAcquireKind::Skip, "success"),
+        wgpu::CurrentSurfaceTexture::Suboptimal(_) => (SurfaceAcquireKind::Skip, "suboptimal"),
+        wgpu::CurrentSurfaceTexture::Timeout => (SurfaceAcquireKind::Skip, "timeout"),
+        wgpu::CurrentSurfaceTexture::Occluded => (SurfaceAcquireKind::Skip, "occluded"),
+        wgpu::CurrentSurfaceTexture::Validation => (SurfaceAcquireKind::Skip, "validation"),
+        wgpu::CurrentSurfaceTexture::Outdated => (SurfaceAcquireKind::Reconfigure, "outdated"),
+        wgpu::CurrentSurfaceTexture::Lost => (SurfaceAcquireKind::Lost, "lost"),
+    }
+}
+
 /// A window's instance and surface: the first step of every windowed
 /// constructor.
 fn window_surface<'w>(
@@ -688,3 +711,7 @@ impl<'w> std::ops::DerefMut for WindowedRenderer<'w> {
         &mut self.inner
     }
 }
+
+#[cfg(test)]
+#[path = "window_tests.rs"]
+mod window_tests;

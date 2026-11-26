@@ -138,6 +138,9 @@ struct FiggyState {
     selected: Option<(usize, HitId)>,
     /// Resize in progress via one of the selected element's handles.
     active_resize: Option<ResizeHandle>,
+    /// The egui frame whose first prepare last called
+    /// `Renderer::end_gpu_frame`.
+    ended_frame: Option<u64>,
 }
 
 impl FiggyState {
@@ -375,6 +378,8 @@ fn panel_series<'a>(series: &'a [SeriesConfig], styles: &'a [ChartStyle]) -> Vec
 struct FiggyCallback {
     panel_idx: usize,
     panel_rect_px: Rect, // physical pixels (egui logical * pixels_per_point).
+    /// `Context::cumulative_frame_nr` of the frame this callback draws.
+    frame_nr: u64,
 }
 
 impl CallbackTrait for FiggyCallback {
@@ -389,6 +394,15 @@ impl CallbackTrait for FiggyCallback {
         let Some(state) = callback_resources.get_mut::<FiggyState>() else {
             return Vec::new();
         };
+        // Report the previous frame's GPU boundary once, at the first
+        // panel prepare of a new frame: egui submitted that frame before it
+        // started this one, and the other panels of this frame have not
+        // recorded anything yet (USAGE "end_gpu_frame"). Without it the
+        // resources a redraw retires are never released.
+        if state.ended_frame != Some(self.frame_nr) {
+            state.renderer.end_gpu_frame();
+            state.ended_frame = Some(self.frame_nr);
+        }
         let selected = state.selected;
         let Some(panel) = state.panels.get_mut(self.panel_idx) else {
             return Vec::new();
@@ -603,6 +617,7 @@ impl eframe::App for DemoApp {
                     panels,
                     selected: None,
                     active_resize: None,
+                    ended_frame: None,
                 });
             self.initialized = true;
             self.renderer_error = None;
@@ -628,6 +643,7 @@ impl eframe::App for DemoApp {
 
         // 2) UI.
         let pixels_per_point = ctx.pixels_per_point();
+        let frame_nr = ctx.cumulative_frame_nr();
         let render_state_clone = render_state.clone();
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(EGUI_BG))
@@ -708,6 +724,7 @@ impl eframe::App for DemoApp {
                             FiggyCallback {
                                 panel_idx: i,
                                 panel_rect_px,
+                                frame_nr,
                             },
                         );
                         col_ui.painter().add(cb);
