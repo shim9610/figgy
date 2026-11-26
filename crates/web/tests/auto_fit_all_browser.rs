@@ -355,3 +355,52 @@ async fn auto_fit_all_fits_a_linked_axis_to_its_whole_link_group() {
     );
     chart.frame().expect("frame after the linked fits");
 }
+
+// A stacked category-bar chart fits its value axis to the actual
+// per-category stacks on the GPU (#466). A = (100, 1) and B = (1, 100) both
+// stack to 101: the synchronous document fit has no readback and keeps the
+// column statistics' bound (100 + 100), and `auto_fit_all` compiles the
+// reduction on its first stacked fit and resolves asynchronously to 0..101.
+#[wasm_bindgen_test(async)]
+async fn auto_fit_all_fits_stacked_bars_to_their_actual_stacks() {
+    const DOCUMENT: &str = r#"{
+        "categories": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}],
+        "series": [
+            {"id": "first", "label": "First", "values": [100.0, 1.0],
+             "color": {"r": 0.33, "g": 0.56, "b": 0.83, "a": 1.0}},
+            {"id": "second", "label": "Second", "values": [1.0, 100.0],
+             "color": {"r": 1.0, "g": 0.65, "b": 0.41, "a": 1.0}}
+        ],
+        "mode": "Stacked"
+    }"#;
+    let mut chart = FiggyChart::create(canvas())
+        .await
+        .expect("FiggyChart.create");
+    chart
+        .set_categorical_document(DOCUMENT, None)
+        .expect("set_categorical_document");
+    let value_axis = |chart: &FiggyChart| -> (f64, f64) {
+        let cfg: serde_json::Value =
+            serde_json::from_str(&chart.get_config().expect("get_config")).expect("config json");
+        (
+            cfg["left_y"]["min"].as_f64().unwrap(),
+            cfg["left_y"]["max"].as_f64().unwrap(),
+        )
+    };
+    let (_, bound) = value_axis(&chart);
+    assert!(bound >= 200.0, "the statistics bound, {bound}");
+    // A draw compiles no reduction; the fit does.
+    chart.frame().expect("frame before the fit");
+    chart.auto_fit_all(0.0).await.expect("auto_fit_all");
+    let (min, max) = value_axis(&chart);
+    assert_close(min, 0.0, "left_y.min");
+    assert_close(max, 101.0, "left_y.max");
+    // A second fit reuses the reduction.
+    chart.auto_fit_all(0.0).await.expect("second auto_fit_all");
+    assert_close(value_axis(&chart).1, 101.0, "left_y.max again");
+    chart.frame().expect("frame after auto_fit_all");
+    for scale in [1.0, 2.0] {
+        let png = chart.export_png(scale).await.expect("export_png");
+        assert!(png.length() > 0);
+    }
+}

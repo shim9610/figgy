@@ -1725,3 +1725,279 @@ fn categorical_frames_are_unchanged_by_interactions_and_shared_categories() {
         assert!(export(&mut r, &copied) == before, "with a copied list");
     }
 }
+
+// ───── The renderer's stacked fit (#466) ─────
+//
+// `Chart::auto_fit_layer_union` has no device and fits the statistics bound
+// above; the renderer's fits measure the actual per-category stacks on the
+// GPU and read back only their two extremes.
+
+/// `chart` over `n` categories on the direction's category axis.
+fn chart_over(mode: CategoryBarMode, direction: CategoryBarDirection, n: usize) -> Chart {
+    let mut chart = chart(mode, direction, (0.0, 1.0));
+    let mut config = chart.config().clone();
+    let categories = Some(harness::categories(n).into());
+    match direction {
+        CategoryBarDirection::Vertical => config.bottom_x.categories = categories,
+        CategoryBarDirection::Horizontal => config.left_y.categories = categories,
+    }
+    *chart.config_mut() = config;
+    chart
+}
+
+/// The value axis range of `config`.
+fn value_range(config: &renderer::Config, direction: CategoryBarDirection) -> (f64, f64) {
+    match direction {
+        CategoryBarDirection::Vertical => (config.left_y.min, config.left_y.max),
+        CategoryBarDirection::Horizontal => (config.bottom_x.min, config.bottom_x.max),
+    }
+}
+
+/// The value axis ranges the renderer's fits give the series `one` and
+/// `two` of `r` over `n` categories, without padding: the candidate fit
+/// (`fit_config`, which waits for the readback on native), and the
+/// whole-chart fit of a registered chart (`begin_auto_fit_all`, resolved
+/// on this thread).
+fn renderer_fits(
+    r: &mut Renderer,
+    mode: CategoryBarMode,
+    direction: CategoryBarDirection,
+    n: usize,
+) -> [(f64, f64); 2] {
+    let chart = chart_over(mode, direction, n);
+    let series = vec![bars("one", RED, direction), bars("two", BLUE, direction)];
+    let candidate = r.fit_config(chart.config(), &series, 0.0).unwrap();
+    let id = r
+        .register_chart_as_given(chart.config().clone(), series)
+        .unwrap();
+    r.ensure_errorbar_extent_engine_blocking().unwrap();
+    let resolved = r
+        .begin_auto_fit_all(id, 0.0)
+        .unwrap()
+        .resolve_blocking()
+        .unwrap();
+    r.commit_auto_fit_all(resolved).unwrap();
+    let whole = value_range(r.chart_config(id).unwrap(), direction);
+    r.remove_chart(id).unwrap();
+    [value_range(&candidate, direction), whole]
+}
+
+/// The issue's case: A = (100, 1) and B = (1, 100) both stack to 101, and
+/// the renderer fits `0..101` in both directions, where the column
+/// statistics bound 200.
+#[test]
+fn a_stacked_fit_reaches_the_tallest_actual_stack() {
+    let mut r = renderer(&[100.0, 1.0], &[1.0, 100.0]);
+    for direction in DIRECTIONS {
+        assert_eq!(
+            renderer_fits(&mut r, CategoryBarMode::Stacked, direction, 2),
+            [(0.0, 101.0); 2],
+            "{direction:?}"
+        );
+        // The device-less fit keeps the statistics bound.
+        let mut chart = chart_over(CategoryBarMode::Stacked, direction, 2);
+        let series = [bars("one", RED, direction), bars("two", BLUE, direction)];
+        chart
+            .auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)
+            .unwrap();
+        assert_eq!(value_range(chart.config(), direction), (0.0, 200.0));
+    }
+    // The fitted chart draws, at 1x and 2x, with the tallest stack's top on
+    // the data area's top edge.
+    let direction = CategoryBarDirection::Vertical;
+    let series = [bars("one", RED, direction), bars("two", BLUE, direction)];
+    let config = r
+        .fit_config(
+            chart_over(CategoryBarMode::Stacked, direction, 2).config(),
+            &series,
+            0.0,
+        )
+        .unwrap();
+    for scale in [1.0f32, 2.0] {
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&Chart::new(config.clone()), &series),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        assert!(
+            harness::count(&img, is_red) > 0 && harness::count(&img, is_blue) > 0,
+            "{scale}x"
+        );
+    }
+}
+
+/// Positive and negative peaks in different categories: the range
+/// encloses the actual stacks on both sides of zero, inside the bound of
+/// the columns' extremes on both sides.
+#[test]
+fn a_stacked_fit_encloses_both_signs_from_different_categories() {
+    // Stacks: a = +30 and -25, b = +1 and -20, c = +41. The bound would be
+    // -45..70.
+    let mut r = renderer(&[30.0, -20.0, 1.0], &[-25.0, 1.0, 40.0]);
+    for direction in DIRECTIONS {
+        assert_eq!(
+            renderer_fits(&mut r, CategoryBarMode::Stacked, direction, 3),
+            [(-25.0, 41.0); 2],
+            "{direction:?}"
+        );
+        assert_eq!(
+            value_fit(&r, CategoryBarMode::Stacked, direction),
+            (-45.0, 70.0),
+            "the bound, {direction:?}"
+        );
+    }
+}
+
+/// Missing cells (NaN) are skipped by the stack, as the draw skips them.
+#[test]
+fn a_stacked_fit_ignores_missing_cells() {
+    let mut r = renderer(&[100.0, f64::NAN, 1.0], &[1.0, 100.0, f64::NAN]);
+    for direction in DIRECTIONS {
+        assert_eq!(
+            renderer_fits(&mut r, CategoryBarMode::Stacked, direction, 3),
+            [(0.0, 101.0); 2],
+            "{direction:?}"
+        );
+    }
+}
+
+/// Percent stacks keep `0..100` and grouped bars the union of their
+/// columns: the renderer's fits give what the statistics give.
+#[test]
+fn percent_stacks_and_grouped_bars_fit_as_before() {
+    let one = [10.0, 25.0, 5.0];
+    let two = [20.0, 10.0, 15.0];
+    let mut r = renderer(&one, &two);
+    for direction in DIRECTIONS {
+        for mode in [CategoryBarMode::PercentStacked, CategoryBarMode::Grouped] {
+            let statistics = value_fit(&r, mode, direction);
+            assert_eq!(
+                renderer_fits(&mut r, mode, direction, 3),
+                [statistics; 2],
+                "{mode:?} {direction:?}"
+            );
+        }
+        assert_eq!(
+            value_fit(&r, CategoryBarMode::PercentStacked, direction),
+            (0.0, 100.0)
+        );
+    }
+}
+
+/// No count limit (rule 10): a stacked group with more categories than one
+/// dispatch dimension holds (65535 workgroups of 64) fits every one, the
+/// tallest stack in the last category.
+#[test]
+fn a_stacked_fit_reads_past_one_dispatch_dimension() {
+    let n = 65_535 * 64 + 3;
+    let one: Vec<f64> = (0..n).map(|k| (k % 7) as f64).collect();
+    let mut two: Vec<f64> = (0..n).map(|k| -((k % 5) as f64)).collect();
+    two[n - 1] = 50.0;
+    let (device, queue) = shared_device();
+    let mut r = Renderer::try_new(
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
+        wgpu::TextureFormat::Rgba8Unorm,
+        96 * 1024 * 1024,
+    )
+    .unwrap();
+    r.add_columns(&[
+        ("one", &col(one.clone()) as &dyn ColumnSource),
+        ("two", &col(two) as &dyn ColumnSource),
+    ])
+    .unwrap();
+    r.add_column("pos", &col((0..n).map(|k| k as f64).collect()))
+        .unwrap();
+    let direction = CategoryBarDirection::Vertical;
+    let series = [bars("one", RED, direction), bars("two", BLUE, direction)];
+    let config = r
+        .fit_config(
+            chart_over(CategoryBarMode::Stacked, direction, 3).config(),
+            &series,
+            0.0,
+        )
+        .unwrap();
+    // The last category stacks (n - 1) % 7 + 50; the lowest is -4.
+    let top = ((n - 1) % 7) as f64 + 50.0;
+    assert_eq!(value_range(&config, direction), (-4.0, top));
+}
+
+/// Each layer's stacked group fits its own actual stacks (#466): the
+/// parent's, an overlay's on its own value axis and a subplot's, through
+/// the candidate fit and each layer's whole-chart fit.
+#[test]
+fn overlays_and_subplots_fit_their_own_stacks() {
+    let mut r = renderer(&[100.0, 1.0], &[1.0, 100.0]);
+    for (id, values) in [
+        ("three", [5.0, -30.0]),
+        ("four", [-40.0, 6.0]),
+        ("five", [10.0, 50.0]),
+        ("six", [45.0, 2.0]),
+    ] {
+        r.add_column(id, &col(values.to_vec())).unwrap();
+    }
+    let direction = CategoryBarDirection::Vertical;
+    let mut parent = chart_over(CategoryBarMode::Stacked, direction, 2);
+    let mut overlay = renderer::OverlayLayer::default();
+    overlay.series = vec!["three".into(), "four".into()];
+    let mut sub = chart_over(CategoryBarMode::Stacked, direction, 2)
+        .config()
+        .clone();
+    sub.chart_area = ChartArea(Rect {
+        x: 0,
+        y: HEIGHT,
+        width: WIDTH,
+        height: HEIGHT,
+    });
+    let config = parent.config_mut();
+    config.overlays.push(overlay);
+    config.subplots.push(renderer::Subplot {
+        config: sub,
+        series: vec!["five".into(), "six".into()],
+        link_x: None,
+        link_y: None,
+        marker: None,
+        text_scale: Default::default(),
+        anchor: None,
+    });
+    let series: Vec<SeriesConfig> = ["one", "two", "three", "four", "five", "six"]
+        .into_iter()
+        .map(|id| bars(id, RED, direction))
+        .collect();
+    // Overlay stacks: a = +5 and -40, b = +6 and -30. Subplot stacks: 55
+    // and 52, where the bound is 95.
+    let expected = |config: &renderer::Config| {
+        assert_eq!((config.left_y.min, config.left_y.max), (0.0, 101.0));
+        let overlay = &config.overlays[0].y_axis;
+        assert_eq!((overlay.min, overlay.max), (-40.0, 6.0));
+        let sub = &config.subplots[0].config.left_y;
+        assert_eq!((sub.min, sub.max), (0.0, 55.0));
+    };
+    expected(&r.fit_config(parent.config(), &series, 0.0).unwrap());
+    let id = r
+        .register_chart_as_given(parent.config().clone(), series.clone())
+        .unwrap();
+    r.ensure_errorbar_extent_engine_blocking().unwrap();
+    for layer in [LayerRef::Base, LayerRef::Overlay(0), LayerRef::Subplot(0)] {
+        r.set_active_layer(id, layer).unwrap();
+        let resolved = r
+            .begin_auto_fit_all(id, 0.0)
+            .unwrap()
+            .resolve_blocking()
+            .unwrap();
+        r.commit_auto_fit_all(resolved).unwrap();
+    }
+    let mut fitted = r.chart_config(id).unwrap().clone();
+    fitted.active_layer = parent.config().active_layer;
+    expected(&fitted);
+    // The fitted document draws at 1x and 2x.
+    for scale in [1.0f32, 2.0] {
+        r.export_rgba(
+            renderer::ExportSource::chart(&Chart::new(fitted.clone()), &series),
+            renderer::ExportOptions::document(scale),
+        )
+        .block_on()
+        .unwrap();
+    }
+}

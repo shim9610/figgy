@@ -107,6 +107,13 @@ impl TargetPipelines {
             }
         }
 
+        // The stacked category-bar fit (#466): a fit pipeline, so only the
+        // full prewarm creates it, never a feature's preparation.
+        if feature.is_none() && self.category_stack_fit.is_none() {
+            prewarm_step!("category stack extent", || self
+                .ensure_category_stack_fit(layouts.device));
+        }
+
         for (key, stage) in [
             (StyleKey::Sketch, "hand-drawn style"),
             (StyleKey::Milkyway, "milkyway style"),

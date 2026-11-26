@@ -3605,6 +3605,49 @@
           "visibility": 4
         }
       ]
+    ],
+    [
+      null,
+      null,
+      null,
+      [
+        {
+          "binding": 8,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 4
+        },
+        {
+          "binding": 9,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 4
+        },
+        {
+          "binding": 10,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 4
+        },
+        {
+          "binding": 11,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "storage"
+          },
+          "visibility": 4
+        }
+      ]
     ]
   ],
   "pipelines": [
@@ -3926,7 +3969,7 @@
         "layout": 32
       },
       "kind": "compute",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -3938,7 +3981,7 @@
         "layout": 32
       },
       "kind": "compute",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -3998,7 +4041,7 @@
         "layout": 33
       },
       "kind": "compute",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -4046,7 +4089,7 @@
         "layout": 32
       },
       "kind": "compute",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -4058,7 +4101,7 @@
         "layout": 32
       },
       "kind": "compute",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -4082,7 +4125,7 @@
         "layout": 32
       },
       "kind": "compute",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -4094,7 +4137,7 @@
         "layout": 33
       },
       "kind": "compute",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -4106,7 +4149,7 @@
         "layout": 30
       },
       "kind": "compute",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -4154,7 +4197,7 @@
         "layout": 30
       },
       "kind": "compute",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -4178,7 +4221,7 @@
         "layout": 32
       },
       "kind": "compute",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -4190,7 +4233,19 @@
         "layout": 22
       },
       "kind": "compute",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
+    },
+    {
+      "descriptor": {
+        "compute": {
+          "constants": {},
+          "entryPoint": "reduce_category_stacks"
+        },
+        "label": "category stack extent",
+        "layout": 53
+      },
+      "kind": "compute",
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -6628,7 +6683,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -6674,7 +6729,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -6720,7 +6775,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -6766,7 +6821,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -6812,7 +6867,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -6858,7 +6913,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -6904,7 +6959,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -6950,7 +7005,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -6996,7 +7051,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -7042,7 +7097,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -7088,7 +7143,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -7134,7 +7189,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -7180,7 +7235,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -7226,7 +7281,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -8286,7 +8341,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -8366,7 +8421,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -9960,7 +10015,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -10040,7 +10095,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -10462,7 +10517,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -10542,7 +10597,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -10622,7 +10677,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -10702,7 +10757,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -13606,7 +13661,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -13652,7 +13707,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -13698,7 +13753,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -13744,7 +13799,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -13790,7 +13845,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -13836,7 +13891,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -13882,7 +13937,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -13928,7 +13983,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -15456,7 +15511,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -15502,7 +15557,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -15548,7 +15603,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -15594,7 +15649,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -15640,7 +15695,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -15686,7 +15741,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -15732,7 +15787,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
@@ -15778,7 +15833,7 @@
         }
       },
       "kind": "render",
-      "source": "1f957a1e1b0a4661"
+      "source": "e7c2f750e6a328d2"
     },
     {
       "descriptor": {
