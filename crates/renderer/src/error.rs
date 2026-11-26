@@ -355,11 +355,12 @@ pub enum SurfaceAcquireKind {
     /// `WindowedRenderer::resize` with the window's current size, then
     /// draw again.
     Reconfigure,
-    /// The surface is lost and must be created again. A
-    /// `WindowedRenderer` owns its surface, so the host drops it and builds
-    /// a new one for the window (`Renderer::for_window_*`), then registers
-    /// its columns and charts again. A device that is lost as well reports
-    /// [`FiggyError::DeviceLost`] instead.
+    /// The surface is lost and must be created again: call
+    /// `WindowedRenderer::replace_surface` with the window and its current
+    /// size (#474), which keeps the device, the columns and the charts. If
+    /// that fails the renderer is unchanged; the host then drops it and
+    /// builds a new one for the window (`Renderer::for_window_*`). A device
+    /// that is lost as well reports [`FiggyError::DeviceLost`] instead.
     Lost,
 }
 

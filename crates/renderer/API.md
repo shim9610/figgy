@@ -604,9 +604,23 @@ can be acquired. `kind` (`SurfaceAcquireKind`) says what the host does:
 | --- | --- | --- |
 | `Skip` | `Timeout`, `Occluded`, or `Validation` (an error the device has not reported otherwise) | Skip the frame; the next draw tries again. |
 | `Reconfigure` | `Outdated` after one reconfiguration | The draw already reconfigured the surface once at its configured size and acquired again; call `resize` with the window's current size and draw again. |
-| `Lost` | `Lost` | Drop the `WindowedRenderer` and build a new one for the window (`Renderer::for_window_*`), then register its columns and charts again. A `WindowedRenderer` owns its surface and has no call that replaces it. |
+| `Lost` | `Lost` | Call `replace_surface(window, size)` with the window and its current size, then draw again. The device, the column pool, the charts, their views and caches are kept. If it fails, drop the `WindowedRenderer` and build a new one for the window (`Renderer::for_window_*`), then register its columns and charts again. |
 
-A lost device reports `FiggyError::DeviceLost` instead, before any acquire.
+A lost device reports `FiggyError::DeviceLost` instead, before any acquire;
+the host then rebuilds the renderer.
+
+`WindowedRenderer::replace_surface(target, size)`
+([#474](https://github.com/shim9610/figgy/issues/474)) creates a surface
+from `target` on the renderer's `instance()`, checks that the renderer's
+`adapter()` can present to it, and configures it at `size` as `resize`
+does: the MSAA target and the pipelines' target follow the new surface's
+format, so a different format rebuilds the pipelines. It fails with
+`FiggyError::DeviceLost` on a lost device, `SurfaceCreationFailed` when the
+surface cannot be created or the adapter cannot present to it, and
+`SurfaceConfigurationFailed` when it cannot be configured; on each of these
+the renderer is left as it was, the old surface in place. The old surface is
+dropped only after the new one is configured. Chart areas are the host's, as
+after `resize`.
 `examples/winit_simple.rs` handles each kind.
 
 ## Construction and prewarming

@@ -1,11 +1,14 @@
-//! The window wrapper's picks and its surface-acquire errors (#469).
+//! The window wrapper's picks, its surface-acquire errors (#469) and the
+//! replacement of a lost surface (#474).
 //!
 //! No adapter in CI presents a surface, so a `WindowedRenderer` cannot be
 //! built here. The picks are tested through the placement they all build
-//! their request from (`Renderer::window_pick_placement`), and the acquire
-//! errors through the classification `draw_prepared` returns them by.
+//! their request from (`Renderer::window_pick_placement`), the acquire
+//! errors through the classification `draw_prepared` returns them by, and
+//! `replace_surface` through the step it shares with `resize`
+//! (`Renderer::frame_target`) and its error paths.
 use super::super::*;
-use super::surface_status;
+use super::{surface_status, unpresentable_surface};
 
 /// A 400x300 chart over x 0..10, y 0..100, with markers at x 2 and 8.
 fn two_marker_chart(r: &mut Renderer) -> ChartId {
@@ -150,4 +153,110 @@ fn a_surface_acquire_failure_is_classed_by_what_the_host_does() {
             format!("wgpu surface acquire failed ({kind:?}): {name}")
         );
     }
+}
+
+/// A surface configuration as `try_configure_surface` returns one, at
+/// `format` and 64x48.
+fn surface_config(format: wgpu::TextureFormat) -> wgpu::SurfaceConfiguration {
+    wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format,
+        color_space: wgpu::SurfaceColorSpace::Auto,
+        width: 64,
+        height: 48,
+        present_mode: wgpu::PresentMode::Fifo,
+        alpha_mode: wgpu::CompositeAlphaMode::Auto,
+        view_formats: Vec::new(),
+        desired_maximum_frame_latency: 2,
+    }
+}
+
+fn test_renderer(device: wgpu::Device, queue: wgpu::Queue) -> Renderer {
+    Renderer::try_new(
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
+        wgpu::TextureFormat::Rgba8Unorm,
+        1 << 20,
+    )
+    .expect("required GPU test: renderer initialization failed")
+}
+
+/// #474: the step `replace_surface` shares with `resize` keeps the
+/// pipelines when the new surface has the old format, rebuilds them when
+/// it picks another one (as `resize` does), and returns an MSAA target of
+/// the surface's size and format whenever the preferred count is above one.
+/// The registered columns and chart survive both.
+#[test]
+fn a_replacement_surface_follows_the_resize_path() {
+    let (device, queue) = crate::test_gpu::device();
+    let mut r = test_renderer(device, queue);
+    let id = two_marker_chart(&mut r);
+    let config = surface_config(wgpu::TextureFormat::Rgba8Unorm);
+    // The first call settles the sample count the surface prefers.
+    let msaa = r.frame_target(&config).unwrap();
+    let (format, samples, generation) = (
+        r.surface_format,
+        r.target_sample_count,
+        r.target_pipeline_generation,
+    );
+    assert_eq!(format, wgpu::TextureFormat::Rgba8Unorm);
+    assert_eq!(msaa.is_some(), samples > 1);
+    // The same format again: nothing is rebuilt.
+    let msaa = r.frame_target(&config).unwrap();
+    assert_eq!(msaa.is_some(), samples > 1);
+    assert_eq!(r.target_pipeline_generation, generation);
+    if let Some(target) = msaa.as_ref() {
+        let size = target._texture.size();
+        assert_eq!((size.width, size.height), (64, 48));
+        assert_eq!(target._texture.format(), config.format);
+    }
+    // Another format rebuilds the pipelines' target for it.
+    let other = surface_config(wgpu::TextureFormat::Bgra8Unorm);
+    r.frame_target(&other).unwrap();
+    assert_eq!(r.surface_format, wgpu::TextureFormat::Bgra8Unorm);
+    assert_eq!(r.target_pipeline_generation, generation + 1);
+    // The device's state is kept: the chart still draws and picks.
+    draw(&mut r, id);
+    assert!(r.window_pick_placement(id).is_some());
+}
+
+/// #474: on a lost device the shared step fails with `DeviceLost` before it
+/// creates anything, so the pipelines' target is left as it was.
+#[test]
+fn a_replacement_surface_on_a_lost_device_changes_nothing() {
+    let (device, queue) = crate::test_gpu::device();
+    let mut r = test_renderer(device.clone(), queue);
+    let (format, samples, generation) = (
+        r.surface_format,
+        r.target_sample_count,
+        r.target_pipeline_generation,
+    );
+    device.destroy();
+    // The loss reaches the renderer's health through the device's callback.
+    let _ = r.wait_idle();
+    let result = r.frame_target(&surface_config(wgpu::TextureFormat::Bgra8Unorm));
+    assert!(
+        matches!(result, Err(FiggyError::DeviceLost { .. })),
+        "a lost device returned {:?}",
+        result.map(|t| t.is_some())
+    );
+    assert_eq!(
+        (
+            r.surface_format,
+            r.target_sample_count,
+            r.target_pipeline_generation
+        ),
+        (format, samples, generation)
+    );
+}
+
+/// #474: a surface the renderer's adapter cannot present to is refused as a
+/// surface creation failure, the variant the host already rebuilds on.
+#[test]
+fn an_unpresentable_replacement_surface_is_a_creation_failure() {
+    let error = unpresentable_surface();
+    assert!(matches!(error, FiggyError::SurfaceCreationFailed { .. }));
+    assert_eq!(
+        error.to_string(),
+        "wgpu surface creation failed: the renderer's adapter cannot present to the new surface"
+    );
 }

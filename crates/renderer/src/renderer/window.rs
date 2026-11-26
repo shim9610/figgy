@@ -7,6 +7,7 @@ use super::*;
 /// surface config, encoder, or render pass — just calls `draw` per frame.
 ///
 /// This type owns what the surface needs: its size and format (`resize`),
+/// its replacement after a loss (`replace_surface`),
 /// the frame draws (`draw`, `draw_registered`, `draw_prepared`,
 /// `first_frame_ready`) and the picks placed in the surface
 /// (`pick_chart_at`, `pick_chart_data_at`). Everything else is the
@@ -162,26 +163,51 @@ impl<'w> WindowedRenderer<'w> {
             w.max(1),
             h.max(1),
         )?;
-        let preferred_sample_count =
-            preferred_msaa_sample_count(self.inner.caps, self.surface_config.format);
-        let (target_sample_count, msaa_target) = match create_msaa_target(
-            self.inner.device(),
-            self.inner.gpu_ledger(),
-            self.inner.caps,
-            "figgy frame msaa target",
-            self.surface_config.width,
-            self.surface_config.height,
-            self.surface_config.format,
-            preferred_sample_count,
-        ) {
-            Ok(target) => (preferred_sample_count, target),
-            Err(_) if preferred_sample_count > 1 => (1, None),
-            Err(e) => return Err(e),
-        };
-        self.inner
-            .ensure_target(self.surface_config.format, target_sample_count)?;
-        self.msaa_target = msaa_target;
+        self.msaa_target = self.inner.frame_target(&self.surface_config)?;
         // An error the reconfiguration sent to the uncaptured-error handler.
+        self.inner.health.check()
+    }
+
+    /// Replace a lost surface (#474) with one created from `target` on this
+    /// renderer's [`Self::instance`], configured at `size` for this
+    /// renderer's device, without rebuilding the device, the column pool or
+    /// any chart. Columns, charts, views and caches are kept.
+    ///
+    /// Call it when a draw returns [`FiggyError::SurfaceAcquireFailed`] with
+    /// [`SurfaceAcquireKind::Lost`]. The new surface is configured as
+    /// [`Self::resize`] configures one, so the MSAA target and the
+    /// pipelines' target follow its format; a format other than the old
+    /// surface's rebuilds the pipelines for it.
+    ///
+    /// It fails with [`FiggyError::DeviceLost`] on a lost device (the host
+    /// rebuilds the renderer then), with [`FiggyError::SurfaceCreationFailed`]
+    /// when the surface cannot be created or this renderer's adapter cannot
+    /// present to it, and with [`FiggyError::SurfaceConfigurationFailed`]
+    /// when it cannot be configured. On any of these the renderer is left as
+    /// it was, the old surface in place. The old surface is dropped only once
+    /// the new one is configured.
+    pub fn replace_surface(
+        &mut self,
+        target: impl Into<wgpu::SurfaceTarget<'w>>,
+        size: (u32, u32),
+    ) -> Result<()> {
+        self.inner.health.check()?;
+        let surface = create_window_surface(&self._instance, target)?;
+        if !self._adapter.is_surface_supported(&surface) {
+            return Err(unpresentable_surface());
+        }
+        let surface_config = data_render::try_configure_surface(
+            &surface,
+            &self._adapter,
+            self.inner.device(),
+            size.0.max(1),
+            size.1.max(1),
+        )?;
+        let msaa_target = self.inner.frame_target(&surface_config)?;
+        self.surface = surface;
+        self.surface_config = surface_config;
+        self.msaa_target = msaa_target;
+        // An error the configuration sent to the uncaptured-error handler.
         self.inner.health.check()
     }
 
@@ -389,6 +415,37 @@ impl Renderer {
     pub(super) fn window_pick_placement(&self, id: ChartId) -> Option<(f32, Rect)> {
         let (placed, _, scale) = self.chart_display_config(id).ok()?;
         Some((scale, placed.document_area()))
+    }
+
+    /// The frame's MSAA target for a surface configured as `config`, with
+    /// the pipelines' target set to its format and sample count: the step
+    /// [`WindowedRenderer::resize`] and [`WindowedRenderer::replace_surface`]
+    /// share (#474). The preferred sample count falls back to one when its
+    /// target cannot be created. On an error the pipelines' target is left as
+    /// it was; a lost device fails with [`FiggyError::DeviceLost`] before
+    /// anything is created.
+    pub(super) fn frame_target(
+        &mut self,
+        config: &wgpu::SurfaceConfiguration,
+    ) -> Result<Option<MsaaTarget>> {
+        self.health.check()?;
+        let preferred_sample_count = preferred_msaa_sample_count(self.caps, config.format);
+        let (target_sample_count, msaa_target) = match create_msaa_target(
+            self.device(),
+            self.gpu_ledger(),
+            self.caps,
+            "figgy frame msaa target",
+            config.width,
+            config.height,
+            config.format,
+            preferred_sample_count,
+        ) {
+            Ok(target) => (preferred_sample_count, target),
+            Err(_) if preferred_sample_count > 1 => (1, None),
+            Err(e) => return Err(e),
+        };
+        self.ensure_target(config.format, target_sample_count)?;
+        Ok(msaa_target)
     }
 
     /// `result`, or the GPU error the call that produced it raised: an `Ok`
@@ -629,13 +686,31 @@ fn window_surface<'w>(
     // wgpu reports surface failures as `CreateSurfaceError`; there is no
     // device yet whose error scopes could capture anything else.
     let surface = observe_result(observer, "window", "surface", || {
-        data_render::create_surface_for_window(&instance, target).map_err(|e| {
-            FiggyError::SurfaceCreationFailed {
-                reason: format!("{e}"),
-            }
-        })
+        create_window_surface(&instance, target)
     })?;
     Ok((instance, surface))
+}
+
+/// A surface for `target` on `instance`, for a new windowed renderer or a
+/// replacement surface (#474).
+fn create_window_surface<'w>(
+    instance: &wgpu::Instance,
+    target: impl Into<wgpu::SurfaceTarget<'w>>,
+) -> Result<wgpu::Surface<'w>> {
+    data_render::create_surface_for_window(instance, target).map_err(|e| {
+        FiggyError::SurfaceCreationFailed {
+            reason: format!("{e}"),
+        }
+    })
+}
+
+/// A replacement surface the renderer's adapter cannot present to (#474):
+/// the device was requested from that adapter, so the host rebuilds the
+/// renderer for the window instead.
+pub(super) fn unpresentable_surface() -> FiggyError {
+    FiggyError::SurfaceCreationFailed {
+        reason: "the renderer's adapter cannot present to the new surface".into(),
+    }
 }
 
 /// What a windowed renderer is built on once its device exists: the device
