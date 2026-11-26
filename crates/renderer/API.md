@@ -213,7 +213,7 @@ field setters:
 | `set_x_range(...)` / `set_y_range(...)` | Set both axes in the pair, give the partner (`top_x`, `right_y`) the `scale` of the main axis (`bottom_x`, `left_y`), and choose each axis's major spacing, minor count, label format and precision from that scale, so a logarithmic `left_y` puts decades on both edges. The auto-fits and subplot setters do the same. A categorical partner keeps its scale, and on a 3D or ternary chart, where `right_y` is the z or c axis, the partner keeps its own scale and gets the ticks of it. A second value axis with its own scale is an overlay layer (`Config::overlays`); a view state applies each axis's scale as it carries it. The spacing is `tick::axis_major_spacing`: 0.2, 0.5 or 1 × 10^k of the span on a linear axis (5 to 10 major intervals), and on a logarithmic axis 1 decade per major tick up to 6 decades, 2 up to 12, then `ceil(decades / 6)`. On a linear axis an existing timestamp format is kept and any other format, including a polar `Degrees` or `Radians` format, becomes `Decimal`. On a polar chart `set_x_range` only chooses the angle ticks, spokes and labels drawn. Every range helper keeps `log_ticks`: an `Adaptive` logarithmic axis plans its majors from the new range and does not draw the written decade step. |
 | `auto_fit_x*` / `auto_fit_y*` / `auto_fit_colorbar*` | Derive a range from data or supplied extents with padding, then apply the associated tick and label adjustments. These leave a categorical axis (`categories` set) unchanged; `set_x_range` / `set_y_range` set its `category_window` ([#205](https://github.com/shim9610/figgy/issues/205)), the categories it shows, and the full range clears it. |
 | `Renderer::fit_config(&config, &series, padding)` / `fit_y_axes_config(...)` | Return a copy of the candidate `config`, the input and every chart untouched, with the ranges `fit_ranges` would give each layer, by the same code and at the padding given ([#312](https://github.com/shim9610/figgy/issues/312)). The Y variant returns every X axis (`bottom_x`, `top_x`, overlay `x_axis`, in subplots too) as given. A layer naming a series not in `series` is `LayerSeriesUnknown`; a bad padding `FitPadding`; streamed sources and monotonic series are refused as in `fit_ranges`. |
-| `Renderer::fit_config_scoped(&config, &series, padding, &scope)` | `fit_config` for one layer's chosen axes ([#334](https://github.com/shim9610/figgy/issues/334)): only the `FitScope::axes` (`FitAxes { x, y, z }`, `z` a 3D chart's `right_y`, parallel axes as `y`) of `FitScope::layer` move, with their link groups; every other axis comes back as given. `LinkedFitData::Group` reads every series drawn against a linked axis' group; `Target` only the target panel's (the group still shares the range). An axis in `keep` (`FitAxisRef { layer, axis }`), or linked to one, holds its range. Statistics only: error bar ends, heatmap cell half-widths and arrow tips are not included. The refusals are `fit_config`'s, plus `InvalidConfig { field: "fit_scope", kind: FitScopeLayer }` for a scope or kept layer the candidate does not have. |
+| `Renderer::fit_config_scoped(&config, &series, padding, &scope)` | `fit_config` for one layer's chosen axes ([#334](https://github.com/shim9610/figgy/issues/334)): only the `FitScope::axes` (`FitAxes { x, y, z }`, `z` a 3D chart's `right_y`, parallel axes as `y`) of `FitScope::layer` move, with their link groups; every other axis comes back as given. `LinkedFitData::Group` reads every series drawn against a linked axis' group; `Target` only the target panel's (the group still shares the range). An axis in `keep` (`FitAxisRef { layer, axis }`), or linked to one, holds its range. Column statistics only, apart from the stacks of stacked category bars (see Categorical bars below): error bar ends, heatmap cell half-widths and arrow tips are not included. The refusals are `fit_config`'s, plus `InvalidConfig { field: "fit_scope", kind: FitScopeLayer }` for a scope or kept layer the candidate does not have. |
 | `Renderer::fit_point_size_domain(&mut series)` / `fit_vector_scale(&config, &mut series, target)` | Write one series' `PointSizeMap` domain (`fit_domain`) or `VectorStyle` scale (`fit_scale`, `fit_scale_3d` for a point field `config` draws in 3D) from its columns' cached statistics, nothing read back ([#312](https://github.com/shim9610/figgy/issues/312)). An empty, non-finite or degenerate extent, a missing map, a non-vector series, a bad target and a streamed column are errors that leave the series unchanged. |
 | `with_title(...)` | Replace the title text and grow its band when the measured text is taller than the current band. The band never shrinks. `$…$` spans are TeX ([math in labels](USAGE.md#math-in-labels)). |
 | `with_x_title(...)` / `with_y_title(...)` | Replace the bottom/left axis title text, `$…$` spans as TeX; these helpers do not fit margins. |
@@ -336,10 +336,17 @@ for horizontal ones), laid out by `Config.bar_groups` (grouped, stacked or
 percent, the group width and the gap). Each reads a positions column
 `0..n` and a values column of one value per category; NaN is a missing
 bar. `AxisOptions::cross_at` puts the category axis line at a value of the
-value axis. `auto_fit_layer_union` fits the value axis from zero to the
-bars' values: a grouped series by its value range, a stacked group by the
-sum of each series' largest positive and most negative value (which can be
-wider than the tallest stack), and a percent group to 0–100. A bar is picked as
+value axis. A fit spans the value axis from zero to the bars' values: a
+grouped series by its value range, a percent group to 0–100, and a stacked
+group by its tallest positive and deepest negative stack (#466). The
+renderer measures those stacks on the GPU and reads back only the two sums:
+natively `Renderer::fit_ranges`, `fit_config`, `fit_y_axes_config`,
+`fit_config_scoped` and `register_chart`'s first fit wait for them, and on
+every target `begin_auto_fit_all` resolves them with its ticket. A browser's
+synchronous fits cannot wait, and `Chart::auto_fit_layer_union` and
+`chart::category_bar_value_extent` have no device: these use the sum of
+each series' largest positive and most negative value, which can be wider
+than the tallest stack. A bar is picked as
 `PickedData::HistogramBin` with the category row, and selected through
 `PickedDataRef::HistogramBin`. `Config::from_categorical` opens a legacy
 `CategoricalChart` document as such a chart; see the
@@ -879,9 +886,9 @@ monotonic chart and a chart with a streamed series are not warmed.
 a scheduled compile instead of starting their own, and otherwise compile, through
 `createComputePipelineAsync`, what a pick at that position needs and has not created
 yet, then create it from the browser's cache. The web `pick_point` and `pick_data` call
-them before they submit, so a first pick compiles nothing on the page's thread. Fit needs nothing of this: `fit_ranges`
-reads column statistics only, and the GPU auto-fit awaits its compute pipelines through
-`createComputePipelineAsync` already. Natively every frame is complete,
+them before they submit, so a first pick compiles nothing on the page's thread. Fit needs nothing of this: in a
+browser `fit_ranges` reads column statistics only, and the GPU auto-fit awaits its compute
+pipelines through `createComputePipelineAsync` already. Natively every frame is complete,
 the counts are zero and both waits resolve at once.
 
 Every background compile ends, and a wait on one ends with it: the browser settles
