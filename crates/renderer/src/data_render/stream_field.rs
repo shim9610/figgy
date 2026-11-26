@@ -98,6 +98,7 @@ impl Pipelines {
         let render = |entry| {
             crate::gpu_compile::render_pipeline(
                 &device,
+                None,
                 &wgpu::RenderPipelineDescriptor {
                     label: Some(entry),
                     layout: None,
@@ -128,6 +129,7 @@ impl Pipelines {
         let compute = |entry| {
             crate::gpu_compile::compute_pipeline(
                 &device,
+                None,
                 &wgpu::ComputePipelineDescriptor {
                     label: Some(entry),
                     layout: None,

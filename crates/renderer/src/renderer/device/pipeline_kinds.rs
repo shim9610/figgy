@@ -103,6 +103,7 @@ impl TernaryPipeline {
 pub(super) fn create_ternary_pipeline(
     kind: TernaryPipeline,
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     shaders: &data_render::ShaderModules,
     [transform_bgl, style_bgl, style_map_bgl, value_map_bgl]: [&wgpu::BindGroupLayout; 4],
     surface_format: wgpu::TextureFormat,
@@ -112,6 +113,7 @@ pub(super) fn create_ternary_pipeline(
     match kind {
         TernaryPipeline::Line => data_render::create_line_pipeline(
             device,
+            cache,
             &shaders.line,
             &[Some(transform_bgl), Some(style_bgl)],
             data_render::LINE_MAPPED_SLOTS,
@@ -130,6 +132,7 @@ pub(super) fn create_ternary_pipeline(
             };
             data_render::create_scatter_pipeline(
                 device,
+                cache,
                 &shaders.scatter,
                 [transform_bgl, style_bgl],
                 surface_format,
@@ -148,6 +151,7 @@ pub(super) fn create_ternary_pipeline(
             };
             data_render::create_scatter_mapped_pipeline(
                 device,
+                cache,
                 &shaders.scatter,
                 [transform_bgl, style_bgl, style_map_bgl, value_map_bgl],
                 surface_format,
@@ -265,6 +269,7 @@ impl View3dPipeline {
 pub(super) fn create_view3d_pipeline(
     kind: View3dPipeline,
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     shaders: &data_render::ShaderModules,
     [
         transform_bgl,
@@ -287,6 +292,7 @@ pub(super) fn create_view3d_pipeline(
         View3dPipeline::Vector | View3dPipeline::VectorPick => {
             data_render::vector::create_vector_view3d_pipeline(
                 device,
+                cache,
                 &shaders.vector_points_3d,
                 transform_bgl,
                 style_bgl,
@@ -304,6 +310,7 @@ pub(super) fn create_view3d_pipeline(
             };
             data_render::create_line_pipeline(
                 device,
+                cache,
                 &shaders.line,
                 &[
                     Some(transform_bgl),
@@ -328,6 +335,7 @@ pub(super) fn create_view3d_pipeline(
             };
             data_render::create_scatter_pipeline(
                 device,
+                cache,
                 &shaders.scatter,
                 [transform_bgl, style_bgl],
                 surface_format,
@@ -346,6 +354,7 @@ pub(super) fn create_view3d_pipeline(
             };
             data_render::create_scatter_mapped_pipeline(
                 device,
+                cache,
                 &shaders.scatter,
                 [
                     transform_bgl,
@@ -645,6 +654,8 @@ impl PrecisePipeline {
 #[derive(Clone, Copy)]
 pub(in crate::renderer) struct PreciseLayouts<'a> {
     pub(in crate::renderer) device: &'a wgpu::Device,
+    /// The renderer's pipeline cache (#478).
+    pub(in crate::renderer) cache: Option<&'a wgpu::PipelineCache>,
     pub(in crate::renderer) transform_bgl: &'a wgpu::BindGroupLayout,
     pub(in crate::renderer) style_bgl: &'a wgpu::BindGroupLayout,
     pub(in crate::renderer) per_point_style_map_bgl: &'a wgpu::BindGroupLayout,
@@ -704,6 +715,7 @@ pub(super) fn create_precise_pipeline(
     use PrecisePipeline as K;
     let PreciseLayouts {
         device,
+        cache,
         transform_bgl,
         style_bgl,
         per_point_style_map_bgl,
@@ -722,6 +734,7 @@ pub(super) fn create_precise_pipeline(
     let category_axis = |entries: (&str, &str)| {
         data_render::create_category_axis_pipeline(
             device,
+            cache,
             &shaders.bar,
             [
                 transform_bgl,
@@ -739,6 +752,7 @@ pub(super) fn create_precise_pipeline(
                  fragment_entry: &str| {
         data_render::create_field_render_pipeline(
             device,
+            cache,
             &shaders.field,
             [transform_bgl, group1, field_bgl],
             group3,
@@ -752,6 +766,7 @@ pub(super) fn create_precise_pipeline(
     let bar = |group2: Option<&wgpu::BindGroupLayout>, vertex_entry: &str| {
         data_render::create_bar_pipeline(
             device,
+            cache,
             &shaders.bar,
             transform_bgl,
             style_bgl,
@@ -764,6 +779,7 @@ pub(super) fn create_precise_pipeline(
     let errorbar = |entries: (&str, &str)| {
         data_render::create_errorbar_pipeline(
             device,
+            cache,
             &shaders.errorbar,
             [transform_bgl, style_bgl],
             surface_format,
@@ -775,6 +791,7 @@ pub(super) fn create_precise_pipeline(
     Some(match kind {
         K::Line => data_render::create_line_pipeline(
             device,
+            cache,
             &shaders.line,
             &[Some(transform_bgl), Some(style_bgl)],
             data_render::LINE_SLOTS,
@@ -787,6 +804,7 @@ pub(super) fn create_precise_pipeline(
         ),
         K::LineMapped => data_render::create_line_pipeline(
             device,
+            cache,
             &shaders.line,
             &[
                 Some(transform_bgl),
@@ -804,6 +822,7 @@ pub(super) fn create_precise_pipeline(
         ),
         K::Area => data_render::create_line_area_pipeline_with_sample_count(
             device,
+            cache,
             &shaders.line,
             transform_bgl,
             style_bgl,
@@ -818,6 +837,7 @@ pub(super) fn create_precise_pipeline(
             };
             data_render::create_line_pipeline(
                 device,
+                cache,
                 &shaders.line,
                 &[
                     Some(transform_bgl),
@@ -842,6 +862,7 @@ pub(super) fn create_precise_pipeline(
             };
             data_render::create_scatter_pipeline(
                 device,
+                cache,
                 &shaders.scatter,
                 [transform_bgl, style_bgl],
                 surface_format,
@@ -860,6 +881,7 @@ pub(super) fn create_precise_pipeline(
             };
             data_render::create_scatter_mapped_pipeline(
                 device,
+                cache,
                 &shaders.scatter,
                 [
                     transform_bgl,
@@ -878,6 +900,7 @@ pub(super) fn create_precise_pipeline(
         K::ErrorbarStem => errorbar(("vs_stem", "fs_stem")),
         K::ErrorbarMapped => data_render::create_errorbar_mapped_pipeline(
             device,
+            cache,
             &shaders.errorbar,
             transform_bgl,
             style_bgl,
@@ -917,6 +940,7 @@ pub(super) fn create_precise_pipeline(
             };
             data_render::create_category_axis_pipeline(
                 device,
+                cache,
                 &shaders.bar,
                 [
                     transform_bgl,
@@ -950,6 +974,7 @@ pub(super) fn create_precise_pipeline(
             };
             data_render::vector::create_vector_pipeline_with_sample_count(
                 device,
+                cache,
                 shaders.vector(input),
                 transform_bgl,
                 style_bgl,
@@ -960,8 +985,12 @@ pub(super) fn create_precise_pipeline(
                 input,
             )
         }
-        K::ContourLabel => {
-            label_pipelines?.render_pipeline(device, transform_bgl, surface_format, sample_count)
-        }
+        K::ContourLabel => label_pipelines?.render_pipeline_cached(
+            device,
+            cache,
+            transform_bgl,
+            surface_format,
+            sample_count,
+        ),
     })
 }

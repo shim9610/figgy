@@ -43,6 +43,7 @@ impl Renderer {
             PrepareContext {
                 in_frame: false,
                 device: &self.device,
+                pipeline_cache: &self.pipeline_cache,
                 queue: &self.queue,
                 caps: &self.caps,
                 pool: &self.pool,

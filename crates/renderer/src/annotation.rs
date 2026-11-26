@@ -813,7 +813,11 @@ pub(crate) struct AnnotationPipeline {
 }
 
 impl AnnotationPipeline {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
+        format: wgpu::TextureFormat,
+    ) -> Self {
         let layout = crate::data_render::create_texture_bind_group_layout(device);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("figgy annotation sampler"),
@@ -822,7 +826,7 @@ impl AnnotationPipeline {
             ..Default::default()
         });
         let pipeline =
-            crate::data_render::create_fullscreen_textured_pipeline(device, &layout, format);
+            crate::data_render::create_fullscreen_textured_pipeline(device, cache, &layout, format);
         Self {
             layout,
             sampler,
@@ -1135,7 +1139,11 @@ impl RadialAnnotationCache {
                     rgba.map(|rgba| {
                         self.pipeline
                             .get_or_insert_with(|| {
-                                AnnotationPipeline::new(&gpu.device(), self.format)
+                                AnnotationPipeline::new(
+                                    &gpu.device(),
+                                    gpu.pipeline_cache(),
+                                    self.format,
+                                )
                             })
                             .upload(gpu, ledger, label, size, &rgba)
                     })

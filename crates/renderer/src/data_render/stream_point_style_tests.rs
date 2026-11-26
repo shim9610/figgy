@@ -150,6 +150,7 @@ fn probe_identity(@builtin(global_invocation_id) gid: vec3<u32>) {
             );
             let pipeline = crate::gpu_compile::compute_pipeline(
                 &device,
+                None,
                 &wgpu::ComputePipelineDescriptor {
                     label: Some("streamed style identity probe"),
                     layout: Some(&layout),
@@ -378,6 +379,7 @@ fn probe_identity(@builtin(global_invocation_id) gid: vec3<u32>) {
         for samples in [1, 4] {
             let scatter = create_scatter_pipeline(
                 &device,
+                None,
                 &shaders.scatter,
                 [&transform_bgl, &style_bgl],
                 wgpu::TextureFormat::Rgba8Unorm,
@@ -389,6 +391,7 @@ fn probe_identity(@builtin(global_invocation_id) gid: vec3<u32>) {
             );
             let errorbar = create_errorbar_pipeline(
                 &device,
+                None,
                 &shaders.errorbar,
                 [&transform_bgl, &style_bgl],
                 wgpu::TextureFormat::Rgba8Unorm,
@@ -398,6 +401,7 @@ fn probe_identity(@builtin(global_invocation_id) gid: vec3<u32>) {
             );
             let milky = create_milkyway_set(
                 &device,
+                None,
                 &queue,
                 &shaders,
                 &transform_bgl,
@@ -408,6 +412,7 @@ fn probe_identity(@builtin(global_invocation_id) gid: vec3<u32>) {
             );
             let cons = create_point_constellation_set(
                 &device,
+                None,
                 &queue,
                 &shaders,
                 &transform_bgl,

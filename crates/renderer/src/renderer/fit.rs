@@ -881,7 +881,8 @@ impl Renderer {
                 .await
                 .map_err(crate::gpu_extent::GpuExtentError::AsyncCompileFailed)?;
             }
-            self.pipelines.ensure_category_stack_fit(&self.device);
+            self.pipelines
+                .ensure_category_stack_fit(&self.device, self.pipeline_cache.as_ref());
         }
         Ok(())
     }
@@ -904,7 +905,8 @@ impl Renderer {
             self.finish_errorbar_extent_engine_preparation(Ok(()))
         };
         if result.is_ok() && self.category_stack_fit_missing() {
-            self.pipelines.ensure_category_stack_fit(&self.device);
+            self.pipelines
+                .ensure_category_stack_fit(&self.device, self.pipeline_cache.as_ref());
         }
         self.reported_as(result, crate::gpu_extent::GpuExtentError::from_figgy)
     }
@@ -917,6 +919,7 @@ impl Renderer {
         self.errorbar_extent_engine = Some(
             crate::gpu_extent::GpuErrorbarExtentEngine::new_tracked(
                 &self.device,
+                self.pipeline_cache.as_ref(),
                 Arc::clone(&self.gpu_ledger),
             )
             .with_health(self.health.clone()),
@@ -2654,6 +2657,7 @@ impl Renderer {
             None => {
                 made = crate::gpu_extent::GpuErrorbarExtentEngine::new_tracked(
                     &self.device,
+                    self.pipeline_cache.as_ref(),
                     Arc::clone(&self.gpu_ledger),
                 )
                 .with_health(self.health.clone());
@@ -3164,6 +3168,7 @@ impl Renderer {
             None => {
                 made = crate::gpu_extent::GpuErrorbarExtentEngine::new_tracked(
                     &self.device,
+                    self.pipeline_cache.as_ref(),
                     Arc::clone(&self.gpu_ledger),
                 )
                 .with_health(self.health.clone());
@@ -3486,6 +3491,7 @@ impl Renderer {
                 None => {
                     made = data_render::CategoryStackFit::new(
                         &self.device,
+                        self.pipeline_cache.as_ref(),
                         &self.pipelines.shaders.bar,
                     );
                     &made
@@ -3512,7 +3518,8 @@ impl Renderer {
         series: &[SeriesConfig],
     ) {
         if self.pipelines.category_stack_fit.is_none() && draws_any_stacked_bars(config, series) {
-            self.pipelines.ensure_category_stack_fit(&self.device);
+            self.pipelines
+                .ensure_category_stack_fit(&self.device, self.pipeline_cache.as_ref());
         }
     }
 

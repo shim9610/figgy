@@ -281,11 +281,12 @@ pub(crate) const ARC_SCAN_3D_LABEL: &str = "figgy arc scan 3D pipeline";
 /// runtime create them all.
 pub(crate) fn create_arc_scan_pipelines_by_set(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     set: ShaderSet,
     observer: &mut dyn FnMut(InitEvent),
 ) -> ArcScanPipelines {
-    let mut pipelines = create_arc_scan_pipelines_2d_by_set(device, set, observer);
-    pipelines.ensure_seg_init_3d(device, observer);
+    let mut pipelines = create_arc_scan_pipelines_2d_by_set(device, cache, set, observer);
+    pipelines.ensure_seg_init_3d(device, cache, observer);
     pipelines
 }
 
@@ -294,6 +295,7 @@ pub(crate) fn create_arc_scan_pipelines_by_set(
 /// ([`ArcScanPipelines::ensure_seg_init_3d`], #453).
 pub(crate) fn create_arc_scan_pipelines_2d_by_set(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     set: ShaderSet,
     observer: &mut dyn FnMut(InitEvent),
 ) -> ArcScanPipelines {
@@ -411,6 +413,7 @@ pub(crate) fn create_arc_scan_pipelines_2d_by_set(
     let pipeline = |layout: &wgpu::PipelineLayout, entry: &str| {
         crate::gpu_compile::compute_pipeline(
             &device,
+            cache,
             &wgpu::ComputePipelineDescriptor {
                 label: Some(ARC_SCAN_LABEL),
                 layout: Some(layout),
@@ -466,6 +469,7 @@ pub(crate) fn create_arc_scan_pipelines_2d_by_set(
 /// compute prewarm (#299).
 pub(crate) async fn create_arc_scan_pipelines_by_set_async(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     set: ShaderSet,
     observer: &mut dyn FnMut(InitEvent),
 ) -> Result<ArcScanPipelines, String> {
@@ -488,7 +492,9 @@ pub(crate) async fn create_arc_scan_pipelines_by_set_async(
         observer,
     )
     .await?;
-    Ok(create_arc_scan_pipelines_by_set(device, set, observer))
+    Ok(create_arc_scan_pipelines_by_set(
+        device, cache, set, observer,
+    ))
 }
 
 impl ArcScanPipelines {
@@ -497,6 +503,7 @@ impl ArcScanPipelines {
     pub(crate) fn ensure_seg_init_3d(
         &mut self,
         device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
         observer: &mut dyn FnMut(InitEvent),
     ) {
         if self.seg_init_3d.is_some() {
@@ -505,6 +512,7 @@ impl ArcScanPipelines {
         let pipeline = observe_value(observer, INIT_SCOPE, "seg_init_3d", || {
             crate::gpu_compile::compute_pipeline(
                 device,
+                cache,
                 &wgpu::ComputePipelineDescriptor {
                     label: Some(ARC_SCAN_3D_LABEL),
                     layout: Some(&self.layout_3d),
@@ -1600,7 +1608,8 @@ mod replay_product_tests {
         let max_workgroups = adapter.limits().max_compute_workgroups_per_dimension;
         assert!(adapter.limits().max_compute_workgroup_size_x >= WG);
         assert!(adapter.limits().max_compute_invocations_per_workgroup >= WG);
-        let pipelines = create_arc_scan_pipelines_by_set(&device, ShaderSet::Full, &mut |_| {});
+        let pipelines =
+            create_arc_scan_pipelines_by_set(&device, None, ShaderSet::Full, &mut |_| {});
         let transform = ScatterTransform {
             data_min: [0.0, 0.0],
             data_max: [100.0, 100.0],

@@ -64,6 +64,7 @@ pub const BAR_SELECTION_VERTICES: u32 = 24;
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_bar_pipeline(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     shader: &wgpu::ShaderModule,
     transform_bgl: &wgpu::BindGroupLayout,
     group_one_bgl: &wgpu::BindGroupLayout,
@@ -110,7 +111,7 @@ pub(crate) fn create_bar_pipeline(
             wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
         ),
     }
-    .create(device)
+    .create(device, cache)
 }
 
 /// One columnar bar (histogram) series.
@@ -566,7 +567,11 @@ impl CategoryStackFit {
     pub(crate) const ENTRY: &'static str = "reduce_category_stacks";
 
     /// The pipeline from `shader`, the bar module.
-    pub(crate) fn new(device: &wgpu::Device, shader: &wgpu::ShaderModule) -> Self {
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
+        shader: &wgpu::ShaderModule,
+    ) -> Self {
         let buffer = |binding, ty| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::COMPUTE,
@@ -599,6 +604,7 @@ impl CategoryStackFit {
         );
         let pipeline = crate::gpu_compile::compute_pipeline(
             device,
+            cache,
             &wgpu::ComputePipelineDescriptor {
                 label: Some(CATEGORY_STACK_FIT_LABEL),
                 layout: Some(&pipeline_layout),
@@ -622,6 +628,7 @@ impl CategoryStackFit {
 /// each with a `_selection` pair for the picked one's highlight.
 pub(crate) fn create_category_axis_pipeline(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     shader: &wgpu::ShaderModule,
     [transform_bgl, style_bgl, style_map_bgl, data_bgl]: [&wgpu::BindGroupLayout; 4],
     target_format: wgpu::TextureFormat,
@@ -652,7 +659,7 @@ pub(crate) fn create_category_axis_pipeline(
             wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
         ),
     }
-    .create(device)
+    .create(device, cache)
 }
 
 /// One category bar series (`count` instances of `CATEGORY_BAR_VERTICES`),

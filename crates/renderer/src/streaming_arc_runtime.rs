@@ -124,6 +124,7 @@ impl Renderer {
             // its shader set's variant (#299).
             self.arc_pipelines = Some(data_render::line_arc::create_arc_scan_pipelines_by_set(
                 &self.device,
+                None,
                 self.pipelines.shaders.set,
                 &mut |_| {},
             ));

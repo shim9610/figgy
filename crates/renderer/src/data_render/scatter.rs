@@ -73,6 +73,7 @@ pub(crate) const SCATTER_SHADER: crate::shader_assembly::Assembled = SCATTER_SHA
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_scatter_mapped_pipeline(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     shader: &wgpu::ShaderModule,
     [transform_bgl, style_bgl, style_map_bgl, value_map_bgl]: [&wgpu::BindGroupLayout; 4],
     target_format: wgpu::TextureFormat,
@@ -118,7 +119,7 @@ pub(crate) fn create_scatter_mapped_pipeline(
         sample_count,
         three_d,
     )
-    .create(device)
+    .create(device, cache)
 }
 
 /// Bytes per vertex of the unit quad at slot 0.
@@ -206,6 +207,7 @@ fn point_spec<'a>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_scatter_pipeline(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     shader: &wgpu::ShaderModule,
     [transform_bgl, style_bgl]: [&wgpu::BindGroupLayout; 2],
     target_format: wgpu::TextureFormat,
@@ -254,7 +256,7 @@ pub(crate) fn create_scatter_pipeline(
         sample_count,
         three_d.map(|(_, pass)| pass),
     )
-    .create(device)
+    .create(device, cache)
 }
 
 /// Which target a 3D chart's point pipeline draws into (#132): the panel

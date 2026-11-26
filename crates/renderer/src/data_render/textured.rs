@@ -179,7 +179,7 @@ pub(crate) fn blended_target(
 /// pipelines (#341). Every other part is shared: one module for both stages
 /// with the default compilation options, triangles of `topology` without a
 /// strip index format, counter-clockwise and unculled, filled, one colour
-/// target, no multiview and no pipeline cache.
+/// target and no multiview. The pipeline cache is the renderer's (#478).
 pub(crate) struct RenderPipelineSpec<'a> {
     pub(crate) label: &'a str,
     pub(crate) layout: &'a wgpu::PipelineLayout,
@@ -210,10 +210,15 @@ impl RenderPipelineSpec<'_> {
         )
     }
 
-    /// Create the pipeline this spec describes.
-    pub(crate) fn create(self, device: &wgpu::Device) -> wgpu::RenderPipeline {
+    /// Create the pipeline this spec describes, through `cache`.
+    pub(crate) fn create(
+        self,
+        device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
+    ) -> wgpu::RenderPipeline {
         crate::gpu_compile::render_pipeline(
             device,
+            cache,
             &wgpu::RenderPipelineDescriptor {
                 label: Some(self.label),
                 layout: Some(self.layout),
@@ -672,12 +677,14 @@ pub(crate) async fn prewarm_browser_render_feature(
 /// twice and darken AA edges.
 pub fn create_fullscreen_textured_pipeline(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     bind_group_layout: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
     let shader = ShaderModules::fullscreen(device);
     create_fullscreen_textured_pipeline_with_sample_count(
         device,
+        cache,
         &shader,
         bind_group_layout,
         target_format,
@@ -687,6 +694,7 @@ pub fn create_fullscreen_textured_pipeline(
 
 pub(crate) fn create_fullscreen_textured_pipeline_with_sample_count(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     shader: &wgpu::ShaderModule,
     bind_group_layout: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
@@ -711,7 +719,7 @@ pub(crate) fn create_fullscreen_textured_pipeline_with_sample_count(
             wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
         ),
     }
-    .create(device)
+    .create(device, cache)
 }
 
 pub fn create_unit_centered_quad_vertex_buffer(device: &wgpu::Device) -> wgpu::Buffer {

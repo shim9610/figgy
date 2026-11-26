@@ -31,6 +31,7 @@ fn rect(r: &Renderer, s: &StreamSurface, rgba: [f32; 4], rect: [u32; 4]) {
     });
     let pipeline = crate::gpu_compile::render_pipeline(
         &r.device,
+        None,
         &wgpu::RenderPipelineDescriptor {
             label: None,
             layout: None,

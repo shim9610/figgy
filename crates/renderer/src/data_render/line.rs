@@ -41,6 +41,7 @@ pub const LINE_SKETCH_VERTICES_PER_INSTANCE: u32 = 18;
 /// itself as inert filler for a baseline fill).
 pub(crate) fn create_line_area_pipeline_with_sample_count(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     shader: &wgpu::ShaderModule,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
@@ -87,7 +88,7 @@ pub(crate) fn create_line_area_pipeline_with_sample_count(
             wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
         ),
     }
-    .create(device)
+    .create(device, cache)
 }
 
 /// Vertex slots of the line entries: x_a, y_a, x_b, y_b and the arc prefix
@@ -145,6 +146,7 @@ const LINE_SLOT_ATTRIBUTES: [[wgpu::VertexAttribute; 1]; LINE_MAPPED_SLOTS] = {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_line_pipeline(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     shader: &wgpu::ShaderModule,
     layouts: &[Option<&wgpu::BindGroupLayout>],
     slots: usize,
@@ -190,7 +192,7 @@ pub(crate) fn create_line_pipeline(
             None => blended_target(target_format, blend),
         },
     }
-    .create(device)
+    .create(device, cache)
 }
 
 /// Bundle of handles for drawing one columnar line series. `pool_buffer` is

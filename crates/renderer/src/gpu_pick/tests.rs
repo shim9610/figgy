@@ -531,6 +531,7 @@ fn shared_bundle_creates_pipelines_once_for_multiple_engines() {
         queue.clone(),
         Arc::new(GpuLedger::new()),
         crate::renderer::DeviceHealth::polled_for_test(&device),
+        None,
         crate::shader_assembly::ShaderSet::Full,
         &mut |event| events.push(event),
     )
@@ -808,6 +809,7 @@ fn streamed_gates_keep_boundary_segment_and_exclude_unowned_halo() {
         queue.clone(),
         Arc::new(GpuLedger::new()),
         crate::renderer::DeviceHealth::polled_for_test(&device),
+        None,
         crate::shader_assembly::ShaderSet::Full,
         &mut |_| {},
     )

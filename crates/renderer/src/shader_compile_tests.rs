@@ -11,6 +11,7 @@ fn fullscreen_textured_builder_compiles_only_its_shader() {
     let texture = data_render::create_texture_bind_group_layout(&device);
     let _pipeline = data_render::create_fullscreen_textured_pipeline(
         &device,
+        None,
         &texture,
         wgpu::TextureFormat::Rgba8Unorm,
     );

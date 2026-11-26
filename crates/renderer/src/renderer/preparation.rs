@@ -162,6 +162,9 @@ pub struct PipelinePreparation {
     queue: wgpu::Queue,
     ledger: Arc<GpuLedger>,
     health: DeviceHealth,
+    /// The renderer's pipeline cache (#478), which the preparation compiles
+    /// through and hands back with the installed pipelines.
+    pipeline_cache: Option<wgpu::PipelineCache>,
     format: wgpu::TextureFormat,
     pipelines: TargetPipelines,
     transform: wgpu::BindGroupLayout,
@@ -213,6 +216,7 @@ macro_rules! preparation_layouts {
         PrewarmLayouts {
             precise: PreciseLayouts {
                 device: &$job.device,
+                cache: $job.pipeline_cache.as_ref(),
                 transform_bgl: &$job.transform,
                 style_bgl: &$job.style,
                 per_point_style_map_bgl: &$job.mapped,
@@ -253,6 +257,7 @@ impl PipelinePreparation {
                     self.queue.clone(),
                     self.ledger.clone(),
                     self.health.clone(),
+                    self.pipeline_cache.clone(),
                     picker_shaders!(self),
                     &self.transform,
                     &self.field,
@@ -305,6 +310,7 @@ impl PipelinePreparation {
                 parts.arc = Some(
                     data_render::line_arc::create_arc_scan_pipelines_by_set_async(
                         &self.device,
+                        self.pipeline_cache.as_ref(),
                         self.pipelines.shaders.set,
                         observer,
                     )
@@ -336,6 +342,7 @@ impl PipelinePreparation {
                     self.queue.clone(),
                     self.ledger.clone(),
                     self.health.clone(),
+                    self.pipeline_cache.clone(),
                     picker_shaders!(self),
                     &self.transform,
                     &self.field,
@@ -356,6 +363,7 @@ impl PipelinePreparation {
             if self.feature == PreparationFeature::Basic {
                 parts.arc = Some(data_render::line_arc::create_arc_scan_pipelines_by_set(
                     &self.device,
+                    self.pipeline_cache.as_ref(),
                     self.pipelines.shaders.set,
                     observer,
                 ));
@@ -368,14 +376,19 @@ impl PipelinePreparation {
     fn contour_pipelines(&self) -> crate::gpu_contour::ContourLabelPipelines {
         crate::gpu_contour::ContourLabelPipelines::new_by_set(
             &self.device,
+            self.pipeline_cache.as_ref(),
             &self.field,
             self.pipelines.shaders.set,
         )
     }
 
     fn extent_engine(&self) -> crate::gpu_extent::GpuErrorbarExtentEngine {
-        crate::gpu_extent::GpuErrorbarExtentEngine::new_tracked(&self.device, self.ledger.clone())
-            .with_health(self.health.clone())
+        crate::gpu_extent::GpuErrorbarExtentEngine::new_tracked(
+            &self.device,
+            self.pipeline_cache.as_ref(),
+            self.ledger.clone(),
+        )
+        .with_health(self.health.clone())
     }
 
     fn prepared(self, parts: CompiledParts) -> PreparedPipelines {
@@ -452,6 +465,7 @@ impl Renderer {
             queue: self.queue.clone(),
             ledger: self.gpu_ledger.clone(),
             health: self.health.clone(),
+            pipeline_cache: self.pipeline_cache.clone(),
             format: self.surface_format,
             pipelines: TargetPipelines::empty_for_preparation(&self.pipelines),
             transform: self.transform_bgl.clone(),

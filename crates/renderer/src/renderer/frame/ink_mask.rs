@@ -61,7 +61,10 @@ pub(in crate::renderer) struct InkMaskPipeline {
 }
 
 impl InkMaskPipeline {
-    pub(in crate::renderer) fn new(device: &wgpu::Device) -> Self {
+    pub(in crate::renderer) fn new(
+        device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
+    ) -> Self {
         let shader = crate::gpu_compile::shader_module(
             device,
             wgpu::ShaderModuleDescriptor {
@@ -105,7 +108,7 @@ impl InkMaskPipeline {
                 write_mask: wgpu::ColorWrites::ALL,
             },
         }
-        .create(device);
+        .create(device, cache);
         Self { layout, pipeline }
     }
 
@@ -200,7 +203,7 @@ mod tests {
     #[test]
     fn the_resolve_pass_writes_any_slot_where_the_series_inked() {
         let (device, queue) = crate::test_gpu::device();
-        let pipeline = InkMaskPipeline::new(&device);
+        let pipeline = InkMaskPipeline::new(&device, None);
         let layer = |texels: [[u8; 4]; 4]| {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: None,

@@ -599,6 +599,57 @@ atlases or result buffers, and is not a guarantee of allocation-free or
 compilation-free first drawing. The separate radial
 renderer and nonresident matrix/tile streaming pipelines are outside this prewarm scope.
 
+## Pipeline cache (native)
+
+A native host can keep the pipelines' compiled form between runs, so a
+second run creates them faster (#478). figgy never reads or writes a file:
+the host saves and loads bytes.
+
+| Call | Effect |
+| --- | --- |
+| `gpu::request_device_async` / `request_device_blocking` | Ask for `Features::PIPELINE_CACHE` whenever the adapter has it. `RendererDevice::request_async` and the window constructors open their device this way. |
+| `RendererDevice::new` / `blocking` | Start the bundle with an empty pipeline cache when the device has the feature, none otherwise. Every renderer built from the bundle creates its pipelines through it. |
+| `RendererDevice::with_pipeline_cache(Some(bytes))` | Load a cache an earlier run saved for the same adapter and driver. Bytes wgpu cannot use (another adapter, driver or wgpu version, truncated, not a cache) are discarded and the cache starts empty. No effect without the feature. |
+| `RendererDevice::without_pipeline_cache()` | Create the pipelines with no cache. |
+| `RendererDevice::pipeline_cache_data()` | The cache's current bytes to save, or `None`. |
+| `RendererDevice::pipeline_cache_key(&adapter_info)` | A file name per adapter and driver (`wgpu::util::pipeline_cache_key`), `None` where the backend has no pipeline cache. |
+
+```rust,ignore
+let key = RendererDevice::pipeline_cache_key(&adapter.get_info());
+let saved = key.as_ref().and_then(|k| std::fs::read(dir.join(k)).ok());
+let gpu = RendererDevice::new(device, queue)?.with_pipeline_cache(saved.as_deref());
+let mut renderer = Renderer::try_new(gpu.clone(), format, pool_bytes)?;
+// ... draw ...
+if let (Some(k), Some(bytes)) = (key, gpu.pipeline_cache_data()) {
+    std::fs::write(dir.join(k).with_extension("tmp"), &bytes)?;
+    std::fs::rename(dir.join(k).with_extension("tmp"), dir.join(k))?; // atomic
+}
+```
+
+- **Effect on pictures:** none. The cache decides how fast a pipeline is
+  created, never what it draws. `tests/pipeline_cache.rs` exports the
+  catalogue scenes at 1x and 2x with no cache, an empty one, a saved one and
+  unusable bytes, and compares them byte for byte.
+- **When to save:** the cache grows as pipelines are created, so save it once
+  the charts have drawn (after a first frame, on exit). A renderer keeps the
+  cache of the bundle it was built from. A renderer's
+  `renderer_device()` returns that bundle, so a window renderer's cache is
+  saved through `renderer.renderer_device().pipeline_cache_data()`.
+- **Host devices:** a host that opens its own device adds
+  `adapter.features() & wgpu::Features::PIPELINE_CACHE` to its descriptor's
+  `required_features`. `examples/egui/examples/egui_embed.rs` does this for
+  eframe's device and loads and saves the cache.
+- **Platforms:** wgpu implements pipeline caches on Vulkan only. DX12, Metal
+  and the browser keep their drivers' and browser's own caches, and the calls
+  above have no effect there. How much a driver stores varies: Mesa's
+  lavapipe stores only a header in its Vulkan pipeline cache (it relies on
+  Mesa's own disk cache), so lavapipe gains nothing from it.
+- **Not cached:** streaming pipelines (rule 8), the exact pick pipelines that
+  only streamed screens use, the standalone column pool's expansion kernel
+  (`GpuAllocCtx` carries no cache), and the standalone public constructors that
+  take a bare `wgpu::Device` (`ContourLabelPipelines::new`,
+  `GpuErrorbarExtentEngine::new_observed_async`).
+
 ## Ownership and frame validity
 
 `RendererDevice` holds `Arc` handles to a device and queue created together.

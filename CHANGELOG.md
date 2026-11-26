@@ -128,6 +128,28 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
     4.4 s → 2.7 s. On lavapipe: 5.95 s → 4.56 s, 6.77 s → 3.91 s and
     1.49 s → 1.11 s ([shader compilation](ci/shader-compilation.md)).
 
+- **Pipeline cache for native hosts**
+  ([#478](https://github.com/shim9610/figgy/issues/478)). A native host can
+  save the compiled pipelines and load them in its next run, so the second
+  run creates them faster where the driver stores them. Pictures, exports and
+  picks are unchanged.
+  - New on `RendererDevice`: `with_pipeline_cache(Option<&[u8]>)`,
+    `without_pipeline_cache()`, `pipeline_cache_data()` and
+    `pipeline_cache_key(&AdapterInfo)`. figgy never touches the file
+    system; the host saves and loads the bytes (`API.md`, "Pipeline cache").
+  - figgy's own device requests (`gpu::request_device_async`,
+    `request_device_blocking`, `RendererDevice::request_async` and the
+    window constructors) now ask for `Features::PIPELINE_CACHE` whenever
+    the adapter has it, and a bundle on such a device starts with an empty
+    cache that every renderer built from it uses. `without_pipeline_cache()`
+    turns it off.
+  - wgpu implements the cache on Vulkan only; on DX12, Metal and the browser
+    nothing changes. Streaming pipelines keep no cache (rule 8).
+  - `examples/egui/examples/egui_embed.rs` requests the feature for eframe's
+    device, loads the cache at start-up and saves it on exit.
+  - No breaking change: the new calls are additions, and a host device
+    without the feature behaves as before.
+
 - **A large categorical axis validates and places its labels in linear
   time** ([#450](https://github.com/shim9610/figgy/issues/450)). Same
   results, same errors, same pixels.

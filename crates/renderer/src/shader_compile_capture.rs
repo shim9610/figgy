@@ -9,6 +9,8 @@ pub(crate) struct Capture {
     pub sources: Vec<Value>,
     pub pipelines: Vec<Value>,
     pub timings: Vec<Value>,
+    /// The labels of the pipelines created without a pipeline cache (#478).
+    pub uncached: Vec<String>,
 }
 
 thread_local! {
@@ -47,6 +49,14 @@ pub(crate) fn counts() -> (usize, usize) {
         let c = slot.as_ref().unwrap();
         (c.timings.len(), c.pipelines.len())
     })
+}
+
+/// Record whether the pipeline `label` was created through a pipeline
+/// cache (#478).
+pub(crate) fn cache_use(label: Option<&str>, cached: bool) {
+    if !cached {
+        record(|c| c.uncached.push(label.unwrap_or_default().to_owned()));
+    }
 }
 
 /// The pipelines recorded so far in the active session.

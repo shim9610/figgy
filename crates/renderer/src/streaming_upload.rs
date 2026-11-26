@@ -971,6 +971,7 @@ mod tests {
         for samples in [1, 4] {
             let line_pipeline = create_line_pipeline(
                 &device,
+                None,
                 &shaders.line,
                 &[Some(&tbgl), Some(&sbgl)],
                 LINE_SLOTS,
@@ -983,6 +984,7 @@ mod tests {
             );
             let scatter_pipeline = create_scatter_pipeline(
                 &device,
+                None,
                 &shaders.scatter,
                 [&tbgl, &sbgl],
                 wgpu::TextureFormat::Rgba8Unorm,

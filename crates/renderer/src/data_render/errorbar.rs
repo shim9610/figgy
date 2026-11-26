@@ -57,6 +57,7 @@ fn errorbar_buffers<const SLOTS: usize>() -> [Option<wgpu::VertexBufferLayout<'s
 /// slots plus the style index at slot 6, the series' style map as group 2.
 pub(crate) fn create_errorbar_mapped_pipeline(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     shader: &wgpu::ShaderModule,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
@@ -83,7 +84,7 @@ pub(crate) fn create_errorbar_mapped_pipeline(
             wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
         ),
     }
-    .create(device)
+    .create(device, cache)
 }
 
 /// An error-bar pipeline with `(vertex entry, fragment entry, label)` and
@@ -100,6 +101,7 @@ pub(crate) fn create_errorbar_mapped_pipeline(
 /// `vs_stem_sketch`) into `fs_stem`, one quad per instance.
 pub(crate) fn create_errorbar_pipeline(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     shader: &wgpu::ShaderModule,
     [transform_bgl, style_bgl]: [&wgpu::BindGroupLayout; 2],
     target_format: wgpu::TextureFormat,
@@ -123,7 +125,7 @@ pub(crate) fn create_errorbar_pipeline(
         multisample: multisample_state(sample_count),
         target: blended_target(target_format, blend),
     }
-    .create(device)
+    .create(device, cache)
 }
 
 pub struct ColumnErrorBarDraw<'a> {

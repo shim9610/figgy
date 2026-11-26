@@ -480,6 +480,7 @@ mod tests {
         let bgl = create_texture_bind_group_layout(&device);
         let pipeline = create_fullscreen_textured_pipeline(
             &device,
+            None,
             &bgl,
             // Same non-sRGB format the surface picks at runtime.
             wgpu::TextureFormat::Bgra8Unorm,
@@ -547,6 +548,7 @@ mod tests {
         let mapped_bgls = [&transform_bgl, &style_bgl, &style_map_bgl, &value_map_bgl];
         let mapped = create_scatter_mapped_pipeline(
             &device,
+            None,
             &shaders.scatter,
             mapped_bgls,
             wgpu::TextureFormat::Bgra8Unorm,
@@ -561,6 +563,7 @@ mod tests {
         );
         let picked = create_scatter_pipeline(
             &device,
+            None,
             &shaders.scatter,
             [&transform_bgl, &style_bgl],
             wgpu::TextureFormat::Bgra8Unorm,
@@ -576,6 +579,7 @@ mod tests {
         );
         let picked_mapped = create_scatter_mapped_pipeline(
             &device,
+            None,
             &shaders.scatter,
             mapped_bgls,
             wgpu::TextureFormat::Bgra8Unorm,
@@ -590,6 +594,7 @@ mod tests {
         );
         let errorbar_mapped = create_errorbar_mapped_pipeline(
             &device,
+            None,
             &shaders.errorbar,
             &transform_bgl,
             &style_bgl,
@@ -599,6 +604,7 @@ mod tests {
         );
         let bar_mapped = create_bar_pipeline(
             &device,
+            None,
             &shaders.bar,
             &transform_bgl,
             &style_bgl,

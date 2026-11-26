@@ -51,6 +51,8 @@ impl RadialRenderer {
             return Err(RadialError::Invalid(crate::RuleKind::RadialTargetFormat));
         }
         let device = gpu.device();
+        // The bundle's pipeline cache (#478).
+        let cache = gpu.pipeline_cache();
         let layout = crate::gpu_compile::bind_group_layout(
             &device,
             &wgpu::BindGroupLayoutDescriptor {
@@ -108,6 +110,7 @@ impl RadialRenderer {
         );
         let pipeline = crate::gpu_compile::render_pipeline(
             &device,
+            cache,
             &wgpu::RenderPipelineDescriptor {
                 label: Some("radial surfaces"),
                 layout: Some(&pl),
@@ -196,6 +199,7 @@ impl RadialRenderer {
         );
         let pick_pipeline = crate::gpu_compile::compute_pipeline(
             &device,
+            cache,
             &wgpu::ComputePipelineDescriptor {
                 label: Some("radial pick"),
                 layout: Some(&pick_pipeline_layout),

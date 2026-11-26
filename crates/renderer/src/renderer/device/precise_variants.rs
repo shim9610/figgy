@@ -281,6 +281,7 @@ impl TargetPipelines {
     pub(in crate::renderer) fn ensure_precise_variants_for_items(
         &mut self,
         device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
         transform_bgl: &wgpu::BindGroupLayout,
         style_bgl: &wgpu::BindGroupLayout,
         per_point_style_map_bgl: &wgpu::BindGroupLayout,
@@ -300,6 +301,7 @@ impl TargetPipelines {
         let needs = PreciseNeeds::scan(items, products);
         let layouts = PreciseLayouts {
             device,
+            cache,
             transform_bgl,
             style_bgl,
             per_point_style_map_bgl,
@@ -323,7 +325,13 @@ impl TargetPipelines {
         }
         for pass in data_render::tri_mesh::TriMeshPass::ALL {
             if needs.tri_mesh[pass as usize] {
-                self.ensure_tri_mesh_pass(device, layouts.tri_mesh(pass), surface_format, pass);
+                self.ensure_tri_mesh_pass(
+                    device,
+                    cache,
+                    layouts.tri_mesh(pass),
+                    surface_format,
+                    pass,
+                );
             }
         }
         for kind in TernaryPipeline::ALL {
@@ -335,6 +343,7 @@ impl TargetPipelines {
             if needs.view3d[kind as usize] {
                 self.ensure_view3d_pass(
                     device,
+                    cache,
                     [
                         transform_bgl,
                         style_bgl,

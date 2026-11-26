@@ -594,6 +594,7 @@ pub fn create_field_data_bind_group(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_field_render_pipeline(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     shader: &wgpu::ShaderModule,
     [transform_bgl, style_bgl, field_bgl]: [&wgpu::BindGroupLayout; 3],
     extra_bgl: Option<&wgpu::BindGroupLayout>,
@@ -629,7 +630,7 @@ pub(crate) fn create_field_render_pipeline(
             wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
         ),
     }
-    .create(device)
+    .create(device, cache)
 }
 
 /// One columnar field (heatmap / band) series.
