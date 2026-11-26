@@ -194,6 +194,12 @@ impl Renderer {
         // ranges, layout and vector scales are fitted here, once. A
         // monotonic chart is registered `Fixed` (M4).
         if fit && !monotonic {
+            // A native first fit measures a stacked bar group's stacks
+            // (#466): the reduction is created here, by the fit, and kept.
+            #[cfg(not(target_arch = "wasm32"))]
+            if config.layout_state.is_fitted() {
+                self.ensure_category_stack_fit_for(&config, &series);
+            }
             config = self.first_fit(config, &mut series)?;
         }
         let id_value = self

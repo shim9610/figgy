@@ -536,6 +536,8 @@ impl TargetPipelines {
             // Compute pipelines: the target's format does not enter them.
             ternary_region_scan: source.ternary_region_scan.clone(),
             bar_envelope: None,
+            // A compute pipeline: the target's format does not enter it.
+            category_stack_fit: source.category_stack_fit.clone(),
         }
     }
     fn merge_preparation(&mut self, other: Self) {
@@ -583,6 +585,9 @@ impl TargetPipelines {
         }
         if self.bar_envelope.is_none() {
             self.bar_envelope = other.bar_envelope;
+        }
+        if self.category_stack_fit.is_none() {
+            self.category_stack_fit = other.category_stack_fit;
         }
         for (key, value) in other.styled {
             self.styled.entry(key).or_insert(value);

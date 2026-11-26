@@ -445,55 +445,8 @@ pub fn create_category_bar_data_bind_group(
     write: impl FnOnce(&mut dyn FnMut(u32)) -> crate::Result<()>,
     style_map: BarStyleMap,
 ) -> crate::Result<CategoryBarData> {
-    use crate::gpu_memory::{ChargeTally, charged_buffer, charged_buffer_init};
-    const LANE: usize = std::mem::size_of::<u32>();
-    let tally = ChargeTally::new();
-    let params_buf = charged_buffer_init(
-        &tally,
-        device,
-        &wgpu::util::BufferInitDescriptor {
-            label: Some("figgy category bar params"),
-            contents: bytemuck::bytes_of(params),
-            usage: wgpu::BufferUsages::UNIFORM,
-        },
-    )?;
-    let lane_bytes = (lanes.max(1) as u64).checked_mul(LANE as u64).ok_or(
-        crate::FiggyError::GpuResourceLimit {
-            resource: "category lane table",
-            requested: lanes as u64,
-            limit: u64::MAX / LANE as u64,
-        },
-    )?;
-    let lane_buf = charged_buffer(
-        &tally,
-        device,
-        &wgpu::BufferDescriptor {
-            label: Some("figgy category lane table"),
-            size: lane_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: true,
-        },
-    )?;
-    let written = {
-        let mut view = lane_buf.slice(..).get_mapped_range_mut().map_err(|error| {
-            crate::FiggyError::GpuValidation {
-                resource: "category lane table",
-                reason: error.to_string(),
-            }
-        })?;
-        let mut written = 0usize;
-        let result = write(&mut |lane| {
-            if written < lanes {
-                let at = written * LANE;
-                view.slice(at..at + LANE)
-                    .copy_from_slice(bytemuck::bytes_of(&lane));
-                written += 1;
-            }
-        });
-        result.map(|()| written)
-    };
-    lane_buf.unmap();
-    written?;
+    let tally = crate::gpu_memory::ChargeTally::new();
+    let (params_buf, lane_buf) = create_category_bar_buffers(&tally, device, params, lanes, write)?;
     let charge = crate::gpu_memory::shared_charge(
         tally,
         ledger,
@@ -522,6 +475,141 @@ pub fn create_category_bar_data_bind_group(
         style_map: style_map.bind_group,
         charge,
     })
+}
+
+/// The params uniform and the lane table of a category bar group 3, charged
+/// to `tally`: [`create_category_bar_data_bind_group`] binds them for the
+/// draw, the pick and the value labels, and the stacked fit
+/// ([`CategoryStackFit`], #466) binds them next to its result.
+///
+/// The lane table holds `lanes` entries: `write` pushes them in order and
+/// they go straight into the mapping of the table's buffer at creation, so
+/// nothing is staged on the CPU and the table is sized by what it holds.
+/// Entries `write` does not push read as zero; pushes past `lanes` are
+/// dropped. An error from `write` is returned as is.
+pub(crate) fn create_category_bar_buffers(
+    tally: &crate::gpu_memory::ChargeTally,
+    device: &wgpu::Device,
+    params: &CategoryBarParamsGpu,
+    lanes: usize,
+    write: impl FnOnce(&mut dyn FnMut(u32)) -> crate::Result<()>,
+) -> crate::Result<(wgpu::Buffer, wgpu::Buffer)> {
+    use crate::gpu_memory::{charged_buffer, charged_buffer_init};
+    const LANE: usize = std::mem::size_of::<u32>();
+    let params_buf = charged_buffer_init(
+        tally,
+        device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("figgy category bar params"),
+            contents: bytemuck::bytes_of(params),
+            usage: wgpu::BufferUsages::UNIFORM,
+        },
+    )?;
+    let lane_bytes = (lanes.max(1) as u64).checked_mul(LANE as u64).ok_or(
+        crate::FiggyError::GpuResourceLimit {
+            resource: "category lane table",
+            requested: lanes as u64,
+            limit: u64::MAX / LANE as u64,
+        },
+    )?;
+    let lane_buf = charged_buffer(
+        tally,
+        device,
+        &wgpu::BufferDescriptor {
+            label: Some("figgy category lane table"),
+            size: lane_bytes,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: true,
+        },
+    )?;
+    let written = {
+        let mut view = lane_buf.slice(..).get_mapped_range_mut().map_err(|error| {
+            crate::FiggyError::GpuValidation {
+                resource: "category lane table",
+                reason: error.to_string(),
+            }
+        })?;
+        let mut written = 0usize;
+        let result = write(&mut |lane| {
+            if written < lanes {
+                let at = written * LANE;
+                view.slice(at..at + LANE)
+                    .copy_from_slice(bytemuck::bytes_of(&lane));
+                written += 1;
+            }
+        });
+        result.map(|()| written)
+    };
+    lane_buf.unmap();
+    written?;
+    Ok((params_buf, lane_buf))
+}
+
+/// The label of the stacked category-bar fit's compute pipeline (#466).
+pub(crate) const CATEGORY_STACK_FIT_LABEL: &str = "category stack extent";
+
+/// The stacked category-bar fit's pipeline (#466): the bar module's
+/// `reduce_category_stacks` entry over group 3 only, which holds the column
+/// pool (binding 8), a group's params (9) and lane table (10) as the draw
+/// binds them, and the two-word result (11). Created on the first fit of a
+/// stacked group (`Renderer::ensure_errorbar_extent_engine` or a native
+/// fit) or by the full prewarm, never by a draw; the draw and pick
+/// pipelines are unchanged.
+#[derive(Clone)]
+pub(crate) struct CategoryStackFit {
+    pub(crate) pipeline: wgpu::ComputePipeline,
+    pub(crate) layout: wgpu::BindGroupLayout,
+}
+
+impl CategoryStackFit {
+    /// The entry point it runs.
+    pub(crate) const ENTRY: &'static str = "reduce_category_stacks";
+
+    /// The pipeline from `shader`, the bar module.
+    pub(crate) fn new(device: &wgpu::Device, shader: &wgpu::ShaderModule) -> Self {
+        let buffer = |binding, ty| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let layout = crate::gpu_compile::bind_group_layout(
+            device,
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("figgy category stack extent bgl"),
+                entries: &[
+                    buffer(8, wgpu::BufferBindingType::Storage { read_only: true }),
+                    buffer(9, wgpu::BufferBindingType::Uniform),
+                    buffer(10, wgpu::BufferBindingType::Storage { read_only: true }),
+                    buffer(11, wgpu::BufferBindingType::Storage { read_only: false }),
+                ],
+            },
+        );
+        let pipeline_layout = crate::gpu_compile::pipeline_layout(
+            device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("figgy category stack extent pipeline layout"),
+                bind_group_layouts: &[None, None, None, Some(&layout)],
+                immediate_size: 0,
+            },
+        );
+        let pipeline = crate::gpu_compile::compute_pipeline(
+            device,
+            &wgpu::ComputePipelineDescriptor {
+                label: Some(CATEGORY_STACK_FIT_LABEL),
+                layout: Some(&pipeline_layout),
+                module: shader,
+                entry_point: Some(Self::ENTRY),
+                compilation_options: Default::default(),
+                cache: None,
+            },
+        );
+        Self { pipeline, layout }
+    }
 }
 
 /// A pipeline of the bar module's category axis entries with `(vertex

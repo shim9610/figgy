@@ -17638,3 +17638,143 @@ fn registered_value_label_frames_match_the_held_path_at_1x_and_2x() {
         r.remove_chart(id).unwrap();
     }
 }
+
+/// A stacked category-bar chart over `mode` with the value columns
+/// `stack.one` and `stack.two` of `renderer` (#466).
+fn stacked_fit_chart(
+    renderer: &mut Renderer,
+    mode: crate::data_config::CategoryBarMode,
+) -> (crate::Config, Vec<SeriesConfig>) {
+    renderer
+        .add_column("stack.pos", &col_f64(vec![0.0, 1.0]))
+        .unwrap();
+    renderer
+        .add_column("stack.one", &col_f64(vec![100.0, 1.0]))
+        .unwrap();
+    renderer
+        .add_column("stack.two", &col_f64(vec![1.0, 100.0]))
+        .unwrap();
+    let mut config = crate::default::default_config();
+    config.bottom_x.categories = Some(
+        vec![
+            crate::config::Category::new("a", "A"),
+            crate::config::Category::new("b", "B"),
+        ]
+        .into(),
+    );
+    config.bar_groups = Some(crate::data_config::BarGroups {
+        mode,
+        direction: crate::data_config::CategoryBarDirection::Vertical,
+        group_width: 0.8,
+        bar_gap: 0.0,
+    });
+    let bars = |id: &str, column: &str| SeriesConfig {
+        series_id: id.into(),
+        source_id: None,
+        label: None,
+        x_column: "stack.pos".into(),
+        y_column: column.into(),
+        z_column: None,
+        render_type: DataRenderType::CategoryBars(CategoryBarSeries {
+            color: Color::BLACK,
+            style: Default::default(),
+            labels: Default::default(),
+            label_format: Default::default(),
+            overrides: None,
+        }),
+    };
+    (
+        config,
+        vec![bars("one", "stack.one"), bars("two", "stack.two")],
+    )
+}
+
+/// The stacked fit's reduction (#466) is created lazily by the first fit
+/// of a stacked group and never by a draw or a pick; a fit requests no
+/// draw or pick pipeline; percent stacks and grouped bars dispatch nothing
+/// and create no reduction.
+#[test]
+fn the_stacked_fit_reduction_is_created_by_a_fit_only() {
+    use crate::data_config::CategoryBarMode;
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    let (config, series) = stacked_fit_chart(&mut renderer, CategoryBarMode::Stacked);
+    // A draw without a fit, at 1x and 2x, creates no reduction.
+    let id = renderer
+        .register_chart_as_given(config.clone(), series.clone())
+        .unwrap();
+    let chart = crate::chart::Chart::new(config.clone());
+    for scale in [1.0, 2.0] {
+        renderer
+            .export_rgba(
+                crate::ExportSource::chart(&chart, &series),
+                crate::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+    }
+    assert!(renderer.pipelines.category_stack_fit.is_none());
+    // A whole-chart fit asks for it before submitting anything.
+    assert!(matches!(
+        renderer.begin_auto_fit_all(id, 0.0),
+        Err(crate::gpu_extent::GpuExtentError::EngineNotReady)
+    ));
+    renderer.ensure_errorbar_extent_engine_blocking().unwrap();
+    assert!(renderer.pipelines.category_stack_fit.is_some());
+    let ticket = renderer.begin_auto_fit_all(id, 0.0).unwrap();
+    // One measured group, read at its first member.
+    assert_eq!(ticket.series.len(), 1);
+    assert!(matches!(
+        ticket.series[0].extent,
+        fit::AutoFitSeriesExtent::Stacks(_)
+    ));
+    renderer
+        .commit_auto_fit_all(ticket.resolve_blocking().unwrap())
+        .unwrap();
+    let fitted = renderer.chart_config(id).unwrap();
+    assert_eq!((fitted.left_y.min, fitted.left_y.max), (0.0, 101.0));
+
+    // A fit on a fresh renderer requests no draw or pick pipeline.
+    let Some(mut fresh) = state_test_renderer() else {
+        return;
+    };
+    let (config, series) = stacked_fit_chart(&mut fresh, CategoryBarMode::Stacked);
+    let fitted = fresh.fit_config(&config, &series, 0.0).unwrap();
+    assert_eq!((fitted.left_y.min, fitted.left_y.max), (0.0, 101.0));
+    assert!(fresh.pipelines.precise.iter().all(Option::is_none));
+    assert!(fresh.pipelines.bar_envelope.is_none());
+    assert!(fresh.pipelines.styled.is_empty());
+    assert!(
+        crate::gpu_data_pick::DataPickKernel::ALL
+            .iter()
+            .all(|kernel| fresh.picker.data_kernels.get(*kernel).is_none())
+    );
+    // A registered chart's first fit creates it, and keeps it.
+    let mut config = config;
+    config.layout_state = crate::LayoutState::Fitted;
+    let id = fresh.register_chart(config, series).unwrap();
+    assert!(fresh.pipelines.category_stack_fit.is_some());
+    let stored = fresh.chart_config(id).unwrap();
+    assert!(stored.left_y.min <= 0.0 && stored.left_y.max < 200.0);
+
+    // Percent stacks and grouped bars create no reduction and measure
+    // nothing.
+    for mode in [CategoryBarMode::PercentStacked, CategoryBarMode::Grouped] {
+        let Some(mut other) = state_test_renderer() else {
+            return;
+        };
+        let (config, series) = stacked_fit_chart(&mut other, mode);
+        let id = other
+            .register_chart(config.clone(), series.clone())
+            .unwrap();
+        other.fit_config(&config, &series, 0.0).unwrap();
+        other.ensure_errorbar_extent_engine_blocking().unwrap();
+        let ticket = other.begin_auto_fit_all(id, 0.0).unwrap();
+        assert!(ticket.series.is_empty(), "{mode:?}");
+        other
+            .commit_auto_fit_all(ticket.resolve_blocking().unwrap())
+            .unwrap();
+        assert!(other.pipelines.category_stack_fit.is_none(), "{mode:?}");
+    }
+}
