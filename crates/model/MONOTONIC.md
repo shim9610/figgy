@@ -301,6 +301,118 @@ draws the columns shifted by it).
 - **A full call** reads the samples in view plus the margins, once each.
 - **An append** reads only the new samples.
 
+### Measured on Apple M4
+
+`crates/renderer/examples/monotonic_bench.rs` times a monotonic chart
+through `register_monotonic_chart`, `resize`, `set_monotonic`,
+`append_monotonic`, `prepare_monotonic` and `paint_prepared`. The numbers
+below were taken with it at commit 479f8ad
+([#286](https://github.com/shim9610/figgy/pull/286)). They are one
+machine's numbers, not a guarantee.
+
+```text
+cargo run --locked --release -p figgy-renderer --example monotonic_bench -- once  --samples 100000000 [--type i16] [--scale 2]
+cargo run --locked --release -p figgy-renderer --example monotonic_bench -- slide --window 100000000 --step 2500000 --frames 120 [--type i16] [--scale 2]
+cargo run --locked --release -p figgy-renderer --example monotonic_bench -- check --samples 100000000 --type i16 --no-grid --y-pad 3000 --sine 10000 --noise 12000 --spike-every 1000003
+```
+
+**Setup.**
+
+- Apple M4 (10-core CPU, 10-core GPU, 16 GB unified memory), on AC power.
+  macOS 27.2, wgpu 30.0.1 on Metal, rustc 1.99.0, `--release`.
+- The default config at 1280×720 logical px, major grid lines on, one
+  monotonic series, one channel. `resize` sets the display scale to 1
+  (1280×720 px) or 2 (2560×1440 px).
+- The target is an offscreen `Bgra8Unorm` texture with one sample: no
+  MSAA, no presentation, no vsync.
+- A frame is `prepare_monotonic`, `paint_prepared`, submit, then
+  `wait_idle`, run one after another. A frame time is CPU and GPU
+  together, not a display rate.
+- The data is generated before the timed calls. An append lends only its
+  new samples.
+  - **f64**: a random walk plus a slow swing, y axis
+    `MonotonicRange::Autoscale`.
+  - **i16**: ADC counts, a sine of ±20000 counts plus uniform noise of ±512
+    counts, y axis fixed at −32768..32767 counts and printed as −5..5 V
+    with `AxisUnit`.
+  - **i16 noisy**: a sine of ±10000 counts plus uniform noise of ±12000
+    counts, and a one-sample spike to +32767 or −32768 every 1,000,003
+    samples.
+- `once`: six calls in a fresh process. "First" is the first call,
+  pipeline creation included. "Warm" is the median of calls 2–6.
+  `slide`: 400 frames (50M / 250K) or 120 frames (100M / 2.5M); medians
+  per frame, and frames/s is the frame count over the wall time.
+- Three runs per cell, each in a fresh process. A range is the minimum to
+  the maximum of the three runs.
+
+**One full draw of 100,000,000 samples.**
+
+| Data | Scale | First call | Warm call | Warm `set_monotonic` alone |
+| --- | --- | ---: | ---: | ---: |
+| f64 (800 MB) | 1 | 53.5–64.5 ms | 38.5–40.0 ms | 37.7–39.0 ms |
+| f64 | 2 | 63.1–67.4 ms | 40.4–41.9 ms | 38.8–40.6 ms |
+| i16 (200 MB) | 1 | 30.2–32.1 ms | 21.8–22.0 ms | 20.9 ms |
+| i16 | 2 | 37.2–38.9 ms | 22.7–23.1 ms | 21.1–21.7 ms |
+| i16 noisy | 1 | 30.6–34.8 ms | 21.9–23.0 ms | 20.9–22.1 ms |
+| i16 noisy | 2 | 36.7–37.6 ms | 22.8–23.6 ms | 21.2–21.4 ms |
+
+Almost all of a warm call is the reduction in `set_monotonic`, which runs
+on the calling thread. The GPU wait of a warm call is 0.50–2.73 ms.
+
+**Sliding a window** (milliseconds, medians per frame).
+
+| Window / step | Data | Scale | append | prepare | GPU wait | Frame | Frame p95 | Frames/s |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 50M / 250K | f64 | 1 | 0.38–0.41 | 1.49–1.58 | 0.76–0.93 | 2.65–2.95 | 3.19–3.50 | 336–367 |
+| 50M / 250K | f64 | 2 | 0.54–0.57 | 5.42–5.67 | 1.95–2.00 | 7.97–8.27 | 8.73–9.18 | 120–125 |
+| 50M / 250K | i16 | 1 | 0.29–0.30 | 1.70–1.92 | 0.97–1.04 | 2.99–3.31 | 3.41–3.82 | 300–332 |
+| 50M / 250K | i16 | 2 | 0.46 | 5.31–5.41 | 1.95–1.97 | 7.73–7.87 | 8.49–8.88 | 126–129 |
+| 50M / 250K | i16 noisy | 1 | 0.30 | 1.69–1.93 | 1.07–1.11 | 3.08–3.39 | 3.50–3.93 | 293–321 |
+| 50M / 250K | i16 noisy | 2 | 0.46–0.47 | 5.32–5.41 | 2.19–2.20 | 7.99–8.12 | 8.56–8.74 | 123–125 |
+| 100M / 2.5M | f64 | 1 | 1.36–2.02 | — | — | 4.39–4.98 | 5.31–5.59 | 199–222 |
+| 100M / 2.5M | f64 | 2 | 1.57–1.61 | — | — | 9.50–9.70 | 10.74–10.97 | 103–104 |
+| 100M / 2.5M | i16 | 1 | 0.78–0.83 | 1.89–2.11 | 1.07–1.11 | 3.85–4.07 | 4.36–4.51 | 244–258 |
+| 100M / 2.5M | i16 | 2 | 0.95–0.99 | 5.49–5.61 | 2.00–2.06 | 8.49–8.68 | 9.18–9.94 | 114–117 |
+| 100M / 2.5M | i16 noisy | 1 | 0.78–0.87 | 1.93–2.13 | 1.12–1.23 | 3.91–4.26 | 4.42–5.15 | 228–253 |
+| 100M / 2.5M | i16 noisy | 2 | 0.97–0.98 | 5.47–5.52 | 2.27–2.31 | 8.82–8.85 | 9.25–9.57 | 112–113 |
+
+The f64 100M / 2.5M rows (3.2 GB of samples) come from a rerun that
+printed only append, frame and frames/s, hence the dashes. In the first
+batch two of its six runs were slower (frame medians of 7.2 ms at scale 1
+and 12.0 ms at scale 2); the machine reported swap in use afterwards, and
+the cause was not established.
+
+What the slide numbers show:
+
+- The append cost grows with the new samples per frame and is lower per
+  sample for i16.
+- `prepare_monotonic` does not depend on the window: it is the same for
+  50M and 100M samples.
+- At scale 2, `prepare_monotonic` is about two thirds of the frame. A
+  sliding append moves the x range every frame, so the grid and the
+  decoration layers are rastered again on the CPU and uploaded whole. A
+  profile put about half of it in tiny-skia strokes, mostly the grid, and
+  most of the rest in the `write_texture` copies of the two layers. With
+  `--no-grid`, the 50M / 250K f64 frame drops from 2.69–2.72 to
+  2.02–2.04 ms at scale 1 and from 7.81–7.90 to 5.66–5.71 ms at scale 2.
+
+**Fidelity** (`check`, i16, scale 1, `--no-grid --y-pad 3000`, a plot
+area of 1128×590 logical px). Over 1116 of the 1128 pixel columns,
+staying 4 px away from the plot frame, the check looks for the line in the
+column and its two neighbours and requires it to cover the data's min..max
+there. It also requires every one-sample spike to be a kept point.
+
+| Data | Columns missing min..max by > 1.5 px | Worst miss | Spikes kept |
+| --- | ---: | ---: | ---: |
+| i16 noisy, 100M samples | 0 | 0.00 px | 100 of 100 |
+| i16 noisy, 10M samples | 0 | 0.00 px | 10 of 10 |
+| i16 noisy, 2M samples | 0 | 0.00 px | 2 of 2 |
+| i16 with spikes, 100M samples | 0 | 0.00 px | 100 of 100 |
+
+Not measured: other adapters (Vulkan, DX12, other Apple GPUs), the
+windowed path (4x MSAA, presentation, vsync), the browser, several
+channels or charts per frame, and `check` at scale 2.
+
 ## Accuracy
 
 Compared with a chart that draws the same samples as an ordinary line:
@@ -684,6 +796,19 @@ x 축 스케일·끊기·방향이 여기에 속한다. 차트는 엔벌로프�
   컬럼 두 개를 둔다. 어느 것도 샘플 수에 따라 늘지 않는다. 여기서 플롯 너비는 장치 픽셀 단위다.
 - **전체 호출**은 보이는 샘플과 여백의 샘플을 한 번씩 읽는다.
 - **덧붙이기**는 새 샘플만 읽는다.
+
+#### Apple M4 측정
+
+`crates/renderer/examples/monotonic_bench.rs`로 잰 결과와 측정 환경은 영어 절
+[Measured on Apple M4](#measured-on-apple-m4)에 있다. 요약하면 다음과 같다(Metal, 1280×720,
+화면 배율 1, 오프스크린 타깃, 프레임은 CPU와 GPU를 합친 시간).
+
+- 1억 샘플 전체 호출(웜): f64는 38.5–40.0 ms, i16은 21.8–22.0 ms. 거의 전부가
+  `set_monotonic`의 축소 시간이다.
+- 5천만 샘플 창을 25만 샘플씩 밀기: f64 프레임 2.65–2.95 ms(336–367 프레임/초).
+  `prepare_monotonic`은 창 크기와 상관없다.
+- i16 충실도 검사: 1억 샘플에서 데이터의 min..max를 1.5 px 넘게 놓친 열은 없고, 한 샘플짜리
+  스파이크 100개를 모두 지켰다.
 
 ### 정확도
 
