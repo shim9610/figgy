@@ -19,7 +19,8 @@
 //! 6. **Draw**: a single `renderer.draw(clear, &mut items)` call — handles
 //!    surface frame acquire → encoder → render pass → paint → submit →
 //!    present internally. A failed frame is classed by
-//!    `SurfaceAcquireKind`: skipped, resized, or (lost surface or device)
+//!    `SurfaceAcquireKind`: skipped, resized, a lost surface replaced with
+//!    `replace_surface` (columns and charts kept), or a lost device
 //!    recovered by building a new renderer for the window.
 //!
 //! Controls:
@@ -144,9 +145,9 @@ impl App {
     }
 
     /// Build the renderer for `window`, upload the data and build the
-    /// panels. Called at startup and again when the surface or the device
-    /// is lost: a `WindowedRenderer` owns its surface, so a lost one is
-    /// recovered by building a new renderer for the same window.
+    /// panels. Called at startup and again when the device is lost (or a
+    /// lost surface cannot be replaced): everything on the device is gone,
+    /// so the renderer is built again for the same window.
     fn build_gpu(&mut self, window: Arc<Window>) -> renderer::Result<()> {
         let size = window.inner_size();
         // One-line setup — figgy owns surface / device / queue / pipelines.
@@ -180,6 +181,16 @@ impl App {
         Ok(())
     }
 
+    /// Drop the renderer with its columns and charts and build a new one
+    /// for `window`.
+    fn rebuild_gpu(&mut self, window: Arc<Window>) {
+        self.panels.clear();
+        self.renderer.take();
+        if let Err(e) = self.build_gpu(window) {
+            eprintln!("[rebuild] {e}");
+        }
+    }
+
     /// What a failed frame asks the host to do (#469).
     fn recover_from_draw_error(&mut self, error: FiggyError) {
         match error {
@@ -200,22 +211,33 @@ impl App {
                     window.request_redraw();
                 }
             }
-            // The surface (or the whole device) is gone: drop the renderer
-            // with its columns and charts and build a new one for the same
-            // window.
+            // The surface is gone but the device is not: create a new
+            // surface for the same window and keep the columns and charts
+            // (#474). If that fails the renderer is unchanged, so fall back
+            // to the full rebuild.
             FiggyError::SurfaceAcquireFailed {
                 kind: SurfaceAcquireKind::Lost,
                 ..
-            }
-            | FiggyError::DeviceLost { .. } => {
-                eprintln!("[draw] {error}; rebuilding the renderer");
-                let Some(window) = self.window.clone() else {
+            } => {
+                let (Some(window), Some(renderer)) = (self.window.clone(), self.renderer.as_mut())
+                else {
                     return;
                 };
-                self.panels.clear();
-                self.renderer.take();
-                if let Err(e) = self.build_gpu(window) {
-                    eprintln!("[rebuild] {e}");
+                let size = window.inner_size();
+                match renderer.replace_surface(Arc::clone(&window), (size.width, size.height)) {
+                    Ok(()) => window.request_redraw(),
+                    Err(e) => {
+                        eprintln!("[draw] {error}; replacing the surface failed: {e}");
+                        self.rebuild_gpu(window);
+                    }
+                }
+            }
+            // The whole device is gone: drop the renderer with its columns
+            // and charts and build a new one for the same window.
+            FiggyError::DeviceLost { .. } => {
+                eprintln!("[draw] {error}; rebuilding the renderer");
+                if let Some(window) = self.window.clone() {
+                    self.rebuild_gpu(window);
                 }
             }
             other => eprintln!("[draw] {other}"),

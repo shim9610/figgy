@@ -78,7 +78,7 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
     once per frame, so the bytes a redraw retires are released;
     `radial_editor` already ended its frames with
     `RadialRenderer::end_frame`.
-  - `winit_simple` handles each acquire failure and rebuilds its renderer
+  - `winit_simple` handles each acquire failure and recovers its renderer
     for a lost surface or device.
   - Docs: RADIAL.md gives `export_svg(&chart, size, options)`, and the
     headless helper names the exports' own `Rgba16Float` target.
@@ -87,7 +87,7 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
     *Migration:* a pattern `SurfaceAcquireFailed { reason }` becomes
     `SurfaceAcquireFailed { reason, .. }` or matches `kind`: skip the
     frame for `Skip`, call `resize` with the window's size for
-    `Reconfigure`, and drop and rebuild the `WindowedRenderer` for `Lost`
+    `Reconfigure`, and call `replace_surface` for `Lost` (#474)
     (API.md, "Errors"). A host that matched the strings `"lost"` or
     `"outdated"` matches `kind` instead.
   - **Breaking:** `GpuPickError` gains `DeviceLost { reason }`, which the
@@ -97,6 +97,18 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
     `GpuPickError` adds the arm; a host that looked for
     `"device lost"` in `GpuPickError::Gpu`'s string matches
     `GpuPickError::DeviceLost` (or `FiggyError::DeviceLost`) instead.
+
+- **`WindowedRenderer::replace_surface`: a lost surface no longer costs
+  the renderer** ([#474](https://github.com/shim9610/figgy/issues/474)).
+  `replace_surface(target, size)` creates a surface on the renderer's
+  instance, checks that its adapter can present to it and configures it as
+  `resize` does (MSAA target and pipelines' target follow the new format).
+  The device, the column pool, charts, views and caches are kept. On
+  `DeviceLost`, `SurfaceCreationFailed` or `SurfaceConfigurationFailed` the
+  renderer is unchanged and the old surface stays in place.
+  `SurfaceAcquireKind::Lost` now names this call as the recovery, with the
+  rebuild as the fallback. `winit_simple` replaces the surface on `Lost`
+  and keeps the full rebuild for `DeviceLost`. Additive.
 
 - **The egui examples moved out of figgy-renderer; the `egui_demo`
   feature is removed** ([#459](https://github.com/shim9610/figgy/issues/459)).

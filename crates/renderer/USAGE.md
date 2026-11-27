@@ -213,9 +213,10 @@ renderer.draw(Color::WHITE, &mut items).unwrap();   // acquire surface frame →
 
 A real loop handles `draw`'s errors instead of unwrapping them: an acquire
 failure is `FiggyError::SurfaceAcquireFailed { kind, .. }`, where `kind` says
-whether to skip the frame, resize or rebuild the renderer, and a lost device
-is `FiggyError::DeviceLost` ([Errors](API.md#errors)). `winit_simple.rs`
-handles each case.
+whether to skip the frame, resize, or replace a lost surface with
+`replace_surface` (which keeps the columns and charts). A lost device is
+`FiggyError::DeviceLost`, and the host rebuilds the renderer
+([Errors](API.md#errors)). `winit_simple.rs` handles each case.
 
 ### `ColumnSource` — the data adapter trait
 
@@ -1486,8 +1487,8 @@ renderer.draw(Color::WHITE, &mut items).unwrap();   // surface frame 획득 → 
 
 실제 루프에서는 `draw`의 오류를 unwrap하지 않고 처리한다. 화면 텍스처를 얻지 못하면
 `FiggyError::SurfaceAcquireFailed { kind, .. }`이고, `kind`가 프레임을 건너뛸지, 크기를 다시
-맞출지, 렌더러를 다시 만들지 알려 준다. 장치를 잃으면 `FiggyError::DeviceLost`다
-([오류](API.md#errors)). `winit_simple.rs`가 각 경우를 처리한다.
+맞출지, 잃어버린 surface를 `replace_surface`로 바꿀지(컬럼과 차트는 그대로) 알려 준다. 장치를
+잃으면 `FiggyError::DeviceLost`이고, 이때는 렌더러를 다시 만든다 ([오류](API.md#errors)). `winit_simple.rs`가 각 경우를 처리한다.
 
 <a id="columnsource--데이터-어댑터-trait"></a>
 <a id="columnsource--데이터-어댑터-트레이트"></a>
