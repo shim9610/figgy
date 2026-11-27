@@ -90,6 +90,12 @@ needs Node but no build, browser or GPU:
 node --experimental-vm-modules --test crates/web/tests/figgy-chart.test.mjs
 ```
 
+CI's browser job runs every WASM browser test (`tests/*_browser.rs`) in
+Chromium on SwiftShader WebGPU, headed under `xvfb-run`. A change to the
+browser tests or to the code they exercise passes there too; the
+[CI guide](ci/README.md#browser-tests) shows how to run them locally the same
+way.
+
 CI also sets `RUSTFLAGS=-D warnings` and `RUSTDOCFLAGS=-D warnings`, so compiler
 and rustdoc warnings fail the package checks. Set both variables to reproduce
 that locally.

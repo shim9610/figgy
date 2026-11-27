@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Tell CI whether a pull request changes more than standalone Markdown."""
+"""Tell CI whether a pull request needs the package checks or the browser tests.
+
+`python ci/change_scope.py` asks whether the change is more than standalone
+Markdown; `--browser` asks whether it can affect the WASM browser tests.
+"""
 import os
 from pathlib import PurePosixPath
 import subprocess
@@ -21,6 +25,25 @@ def needs_checks(paths):
     return False
 
 
+# What the `*_browser` test binaries and their runner are built from: the
+# workspace crates, the build configuration, the runner script and the job.
+BROWSER_DIRS = ("crates",)
+BROWSER_FILES = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "clippy.toml",
+                 "ci/wasm_browser_test.cjs", "ci/change_scope.py",
+                 ".github/workflows/ci.yml")
+
+
+def needs_browser_tests(paths):
+    """True if any path can change what the WASM browser tests build or run."""
+    if not paths:
+        return True
+    for path in paths:
+        name = PurePosixPath(path)
+        if name.parts[0] in BROWSER_DIRS or path in BROWSER_FILES:
+            return True
+    return False
+
+
 def changed_paths():
     # The pull_request checkout is the merge commit; its first parent is the
     # base branch. --no-renames lists both sides of a move.
@@ -30,13 +53,20 @@ def changed_paths():
     return [line for line in output.splitlines() if line]
 
 
-def main():
+def main(argv):
     paths = changed_paths()
-    checks = needs_checks(paths)
     for path in paths:
         print(path)
-    print("Run the package checks." if checks
-          else "Only standalone Markdown changed; skipping the package checks.")
+    if argv == ["--browser"]:
+        checks = needs_browser_tests(paths)
+        print("Run the browser tests." if checks
+              else "Nothing the browser tests build changed; skipping them.")
+    elif not argv:
+        checks = needs_checks(paths)
+        print("Run the package checks." if checks
+              else "Only standalone Markdown changed; skipping the package checks.")
+    else:
+        sys.exit("Usage: change_scope.py [--browser]")
     output = os.environ.get("GITHUB_OUTPUT")
     if output:
         with open(output, "a", encoding="utf-8") as handle:
@@ -45,4 +75,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

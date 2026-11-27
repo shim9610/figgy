@@ -127,8 +127,7 @@ workspace, so a root dependency bump does not refresh their `Cargo.lock`.
 2. Compilation for `wasm32-unknown-unknown`, including every browser test target
    (`cargo check --workspace --target wasm32-unknown-unknown --test '*_browser'`), and strict Rust API documentation links on
    native and WASM targets. The WASM check catches links to native-only methods.
-   CI compiles the browser tests but does not run them; running them needs a
-   WebGPU browser (see below).
+   The separate `browser` job runs them ([Browser tests](#browser-tests)).
 3. Creation and Cargo verification of both `.crate` archives, without registry upload.
    Archive contents must include source resources, font/license notices, guides,
    examples and test fixtures. Gallery assets and unsupported integrations are
@@ -219,6 +218,61 @@ The selftest PNGs are uploaded as the `playground-selftest` artifact, including
 on failure, and kept for seven days, so a rendering change can be reviewed by
 comparing them with a previous run.
 
+## Browser tests
+
+The `browser` job runs every `*_browser` WASM test target of the workspace in
+Chromium on Ubuntu, under the same triggers as the other jobs. Its scope check,
+`ci/change_scope.py --browser`, runs the tests only when the change touches
+what they build or run: anything under `crates/`, `Cargo.toml`, `Cargo.lock`,
+`rust-toolchain.toml`, `clippy.toml`, `ci/wasm_browser_test.cjs`,
+`ci/change_scope.py` or `.github/workflows/ci.yml`. Otherwise the job starts and
+passes but skips every step after the scope check.
+
+The job installs `wasm-bindgen-cli` at the `wasm-bindgen` version in
+`Cargo.lock`, and Playwright with its Chromium. It builds the targets with
+`cargo test --locked --target wasm32-unknown-unknown --no-run
+--message-format=json` and runs `xvfb-run -a node ci/wasm_browser_test.cjs`,
+which serves each binary with `wasm-bindgen-test-runner` and fails unless every
+test passes and none is ignored. The runner has no GPU, so WebGPU runs on
+SwiftShader. Headless Chromium has a SwiftShader adapter there but cannot
+create a WebGPU canvas, so the browser runs headed on an X virtual display
+(`BROWSER_HEADLESS=0`) with:
+
+```sh
+export BROWSER_ARGS='--use-webgpu-adapter=swiftshader --enable-features=Vulkan --use-vulkan=swiftshader --disable-gpu-watchdog'
+export WASM_BROWSER_TEST_TIMEOUT=900
+```
+
+SwiftShader runs on the CPU. Chromium's GPU watchdog ends a GPU process that
+is busy for 60 seconds, which the full shader set's prewarm and a draw of a
+million-point line exceed there; the GPU process then restarts and the page's
+WebGPU calls fail with "A valid external Instance reference no longer exists".
+`--disable-gpu-watchdog` keeps the GPU process alive. `WASM_BROWSER_TEST_TIMEOUT`
+is the seconds a test binary may take (default 180; the page waits a minute
+longer): `device_release_browser` takes about six minutes on SwiftShader.
+
+Two shards run at once: `slow` runs the two slowest targets,
+`shader_prewarm_full_browser` and `device_release_browser`, and `main` runs
+every other target. Each uploads its results,
+with the browser version and each target's test output, as the
+`browser-<shard>` artifact (`wasm-browser.json`), including on failure.
+
+To run them locally the same way (Playwright as under
+[Shader compilation regressions](#shader-compilation-regressions)):
+
+```sh
+cargo install --locked wasm-bindgen-cli --version 0.2.129  # Cargo.lock's version
+cargo test --locked --workspace --target wasm32-unknown-unknown --test '*_browser' \
+  --no-run --message-format=json > /tmp/figgy-wasm-build.jsonl
+export BROWSER_HEADLESS=0 WASM_BROWSER_TEST_TIMEOUT=900
+export BROWSER_ARGS='--use-webgpu-adapter=swiftshader --enable-features=Vulkan --use-vulkan=swiftshader --disable-gpu-watchdog'
+xvfb-run -a node ci/wasm_browser_test.cjs /tmp/figgy-wasm-build.jsonl
+```
+
+The runner stops at the first failing target. On a machine with a GPU, leave
+`BROWSER_ARGS`, `BROWSER_HEADLESS` and `WASM_BROWSER_TEST_TIMEOUT` unset to use
+the browser's own adapter.
+
 ## Shader compilation regressions
 
 The renderer unit suite measures the real shader and pipeline constructors with
@@ -254,8 +308,8 @@ descriptors. After changing a shader or descriptor, regenerate it once with
 `FIGGY_UPDATE_SHADER_CONTRACT=1` on the command above, then rerun **without** that
 flag. Never set the regeneration flag in CI.
 
-Browser measurements are a separate, opt-in check; the three-OS matrix does not
-claim to execute a browser. Install Playwright in a temporary tools directory and
+Browser shader-compilation measurements are a separate, opt-in check; the
+three-OS matrix does not claim to execute a browser. Install Playwright in a temporary tools directory and
 place its `node_modules` on `NODE_PATH`, or use an existing Playwright installation.
 For example:
 
@@ -374,7 +428,14 @@ selftest가 단계마다 내보낸 PNG는 실패해도 `playground-selftest`
 보안 권고, 허용 목록 밖의 라이선스, 와일드카드 버전, 알 수 없는 출처의 의존성을 막는다.
 모든 워크플로의 액션은 커밋 ID로 고정한다.
 
-세 운영체제에서 네이티브 빌드와 WASM 컴파일(브라우저 테스트 대상 포함, 실행은 하지 않음), API 문서 링크 검사, 압축을 푼 패키지의
+별도의 `browser` 작업은 워크스페이스의 모든 `*_browser` WASM 테스트를 Ubuntu의 Chromium에서
+실행한다. GPU가 없는 러너라 WebGPU는 SwiftShader로 돌리고, headless Chromium은 WebGPU 캔버스를
+만들지 못하므로 `xvfb-run` 가상 화면에서 창을 띄워 실행한다. CPU에서 도는 SwiftShader가
+GPU watchdog의 60초 제한을 넘기므로 `--disable-gpu-watchdog`을 켜고, 가장 느린
+`shader_prewarm_full_browser`와 `device_release_browser`는 `slow` 샤드에서 따로 실행한다. `ci/change_scope.py --browser`가
+`crates/`나 빌드 설정, 실행 스크립트, 워크플로가 바뀐 경우에만 테스트를 실행한다.
+
+세 운영체제에서 네이티브 빌드와 WASM 컴파일(브라우저 테스트 대상 포함), API 문서 링크 검사, 압축을 푼 패키지의
 단위·통합·문서 테스트를 실행한다. Linux는 GPU가 없을 때 lavapipe를 쓰고,
 Windows는 WARP, macOS는 러너에 노출된 Metal 장치를 쓴다. 유료 GPU 러너는 사용하지 않는다.
 macOS / Metal은 아직 불안정한 실험 단계다. 정밀 Metal 셰이더 실험과 기존 전체 검사는

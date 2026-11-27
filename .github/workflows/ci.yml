@@ -121,6 +121,88 @@ jobs:
           path: target/ci-results/
           retention-days: 7
           if-no-files-found: warn
+  browser:
+    # The WASM browser tests (`*_browser` targets) in Chromium on SwiftShader
+    # WebGPU (#482). The runner has no GPU, and headless Chromium cannot create a
+    # WebGPU canvas there, so the browser runs headed under Xvfb. SwiftShader
+    # runs on the CPU, so the GPU watchdog is off: it would end the GPU process
+    # during a long software compile or draw, and the binaries get 15 minutes.
+    if: github.event.repository.private == false && (github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false)
+    name: browser / ubuntu-24.04 / swiftshader${{ matrix.shard != 'main' && format(' / {0}', matrix.shard) || '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        # `slow` runs the two slowest targets, `shader_prewarm_full_browser`
+        # and `device_release_browser`; `main` every other `*_browser` target.
+        shard: [main, slow]
+    env:
+      BROWSER_HEADLESS: '0'
+      BROWSER_ARGS: --use-webgpu-adapter=swiftshader --enable-features=Vulkan --use-vulkan=swiftshader --disable-gpu-watchdog
+      WASM_BROWSER_TEST_TIMEOUT: '900'
+      PLAYWRIGHT_VERSION: 1.63.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Decide whether the change can affect the browser tests
+        id: scope
+        run: python ci/change_scope.py --browser
+      - name: Install Rust
+        if: steps.scope.outputs.checks == 'true'
+        run: rustup toolchain install 1.99.0 --profile minimal --target wasm32-unknown-unknown
+      - name: Restore the cargo build cache
+        if: steps.scope.outputs.checks == 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: browser
+          save-if: ${{ matrix.shard == 'main' }}
+      - name: Install wasm-bindgen-cli at the Cargo.lock version
+        if: steps.scope.outputs.checks == 'true'
+        shell: bash
+        run: |
+          version=$(python -c 'import tomllib; print(next(p["version"] for p in tomllib.load(open("Cargo.lock", "rb"))["package"] if p["name"] == "wasm-bindgen"))')
+          cargo install --locked wasm-bindgen-cli --version "$version"
+          wasm-bindgen-test-runner --version
+      - name: Install Playwright, its Chromium and Xvfb
+        if: steps.scope.outputs.checks == 'true'
+        shell: bash
+        run: |
+          tools="$RUNNER_TEMP/figgy-browser-tools"
+          npm install --prefix "$tools" --no-save --package-lock=false "playwright@$PLAYWRIGHT_VERSION"
+          "$tools/node_modules/.bin/playwright" install --with-deps chromium
+          sudo apt-get install -y xvfb
+          echo "NODE_PATH=$tools/node_modules" >> "$GITHUB_ENV"
+      - name: Build the browser tests
+        if: steps.scope.outputs.checks == 'true'
+        env:
+          SHARD: ${{ matrix.shard }}
+        shell: bash
+        run: |
+          mkdir -p target/ci-results
+          slow='"name":"(shader_prewarm_full_browser|device_release_browser)"'
+          # Cargo cannot exclude a test target, so both shards build them all
+          # and keep their own binaries' artifact lines, found by target name.
+          if [ "$SHARD" = slow ]; then keep=-E; else keep=-vE; fi
+          cargo test --locked --workspace --target wasm32-unknown-unknown \
+            --test '*_browser' --no-run --message-format=json \
+            | grep "$keep" "$slow" > target/ci-results/wasm-build.jsonl
+      - name: Run the browser tests
+        if: steps.scope.outputs.checks == 'true'
+        run: xvfb-run -a node ci/wasm_browser_test.cjs target/ci-results/wasm-build.jsonl target/ci-results/wasm-browser.json
+      - name: Upload the browser test report
+        if: always() && steps.scope.outputs.checks == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: browser-${{ matrix.shard }}
+          path: target/ci-results/wasm-browser.json
+          retention-days: 7
+          if-no-files-found: warn
   repository:
     # The repository half of the release gate (#58): the whole workspace,
     # figgy-web included, which `verify.py packages` does not package, and the
