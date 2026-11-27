@@ -124,7 +124,9 @@ jobs:
   browser:
     # The WASM browser tests (`*_browser` targets) in Chromium on SwiftShader
     # WebGPU (#482). The runner has no GPU, and headless Chromium cannot create a
-    # WebGPU canvas there, so the browser runs headed under Xvfb.
+    # WebGPU canvas there, so the browser runs headed under Xvfb. SwiftShader
+    # runs on the CPU, so the GPU watchdog is off: it would end the GPU process
+    # during a long software compile or draw, and the binaries get 15 minutes.
     if: github.event.repository.private == false && (github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false)
     name: browser / ubuntu-24.04 / swiftshader${{ matrix.shard != 'main' && format(' / {0}', matrix.shard) || '' }}
     runs-on: ubuntu-24.04
@@ -132,12 +134,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # `prewarm` is the slowest target alone (`shader_prewarm_full_browser`);
-        # `main` runs every other `*_browser` target of the workspace.
-        shard: [main, prewarm]
+        # `slow` runs the two slowest targets, `shader_prewarm_full_browser`
+        # and `device_release_browser`; `main` every other `*_browser` target.
+        shard: [main, slow]
     env:
       BROWSER_HEADLESS: '0'
-      BROWSER_ARGS: --use-webgpu-adapter=swiftshader --enable-features=Vulkan --use-vulkan=swiftshader
+      BROWSER_ARGS: --use-webgpu-adapter=swiftshader --enable-features=Vulkan --use-vulkan=swiftshader --disable-gpu-watchdog
+      WASM_BROWSER_TEST_TIMEOUT: '900'
       PLAYWRIGHT_VERSION: 1.63.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -182,18 +185,13 @@ jobs:
         shell: bash
         run: |
           mkdir -p target/ci-results
-          if [ "$SHARD" = prewarm ]; then
-            cargo test --locked -p figgy-renderer --target wasm32-unknown-unknown \
-              --test shader_prewarm_full_browser --no-run --message-format=json \
-              > target/ci-results/wasm-build.jsonl
-          else
-            # Cargo cannot exclude one test target; the runner skips the
-            # `prewarm` shard's binary, which it finds by its target name.
-            cargo test --locked --workspace --target wasm32-unknown-unknown \
-              --test '*_browser' --no-run --message-format=json \
-              | grep -v '"name":"shader_prewarm_full_browser"' \
-              > target/ci-results/wasm-build.jsonl
-          fi
+          slow='"name":"(shader_prewarm_full_browser|device_release_browser)"'
+          # Cargo cannot exclude a test target, so both shards build them all
+          # and keep their own binaries' artifact lines, found by target name.
+          if [ "$SHARD" = slow ]; then keep=-E; else keep=-vE; fi
+          cargo test --locked --workspace --target wasm32-unknown-unknown \
+            --test '*_browser' --no-run --message-format=json \
+            | grep "$keep" "$slow" > target/ci-results/wasm-build.jsonl
       - name: Run the browser tests
         if: steps.scope.outputs.checks == 'true'
         run: xvfb-run -a node ci/wasm_browser_test.cjs target/ci-results/wasm-build.jsonl target/ci-results/wasm-browser.json

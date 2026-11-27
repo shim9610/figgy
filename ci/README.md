@@ -225,11 +225,21 @@ create a WebGPU canvas, so the browser runs headed on an X virtual display
 (`BROWSER_HEADLESS=0`) with:
 
 ```sh
-export BROWSER_ARGS='--use-webgpu-adapter=swiftshader --enable-features=Vulkan --use-vulkan=swiftshader'
+export BROWSER_ARGS='--use-webgpu-adapter=swiftshader --enable-features=Vulkan --use-vulkan=swiftshader --disable-gpu-watchdog'
+export WASM_BROWSER_TEST_TIMEOUT=900
 ```
 
-Two shards run at once: `prewarm` runs `shader_prewarm_full_browser`, the
-slowest target, and `main` runs every other target. Each uploads its results,
+SwiftShader runs on the CPU. Chromium's GPU watchdog ends a GPU process that
+is busy for 60 seconds, which the full shader set's prewarm and a draw of a
+million-point line exceed there; the GPU process then restarts and the page's
+WebGPU calls fail with "A valid external Instance reference no longer exists".
+`--disable-gpu-watchdog` keeps the GPU process alive. `WASM_BROWSER_TEST_TIMEOUT`
+is the seconds a test binary may take (default 180; the page waits a minute
+longer): `device_release_browser` takes about six minutes on SwiftShader.
+
+Two shards run at once: `slow` runs the two slowest targets,
+`shader_prewarm_full_browser` and `device_release_browser`, and `main` runs
+every other target. Each uploads its results,
 with the browser version and each target's test output, as the
 `browser-<shard>` artifact (`wasm-browser.json`), including on failure.
 
@@ -240,13 +250,14 @@ To run them locally the same way (Playwright as under
 cargo install --locked wasm-bindgen-cli --version 0.2.129  # Cargo.lock's version
 cargo test --locked --workspace --target wasm32-unknown-unknown --test '*_browser' \
   --no-run --message-format=json > /tmp/figgy-wasm-build.jsonl
-export BROWSER_HEADLESS=0
-export BROWSER_ARGS='--use-webgpu-adapter=swiftshader --enable-features=Vulkan --use-vulkan=swiftshader'
+export BROWSER_HEADLESS=0 WASM_BROWSER_TEST_TIMEOUT=900
+export BROWSER_ARGS='--use-webgpu-adapter=swiftshader --enable-features=Vulkan --use-vulkan=swiftshader --disable-gpu-watchdog'
 xvfb-run -a node ci/wasm_browser_test.cjs /tmp/figgy-wasm-build.jsonl
 ```
 
 The runner stops at the first failing target. On a machine with a GPU, leave
-`BROWSER_ARGS` and `BROWSER_HEADLESS` unset to use the browser's own adapter.
+`BROWSER_ARGS`, `BROWSER_HEADLESS` and `WASM_BROWSER_TEST_TIMEOUT` unset to use
+the browser's own adapter.
 
 ## Shader compilation regressions
 
@@ -400,8 +411,9 @@ selftest를 실행한다. selftest가 단계마다 내보낸 PNG는 실패해도
 
 별도의 `browser` 작업은 워크스페이스의 모든 `*_browser` WASM 테스트를 Ubuntu의 Chromium에서
 실행한다. GPU가 없는 러너라 WebGPU는 SwiftShader로 돌리고, headless Chromium은 WebGPU 캔버스를
-만들지 못하므로 `xvfb-run` 가상 화면에서 창을 띄워 실행한다. 가장 느린
-`shader_prewarm_full_browser`는 `prewarm` 샤드에서 따로 실행한다. `ci/change_scope.py --browser`가
+만들지 못하므로 `xvfb-run` 가상 화면에서 창을 띄워 실행한다. CPU에서 도는 SwiftShader가
+GPU watchdog의 60초 제한을 넘기므로 `--disable-gpu-watchdog`을 켜고, 가장 느린
+`shader_prewarm_full_browser`와 `device_release_browser`는 `slow` 샤드에서 따로 실행한다. `ci/change_scope.py --browser`가
 `crates/`나 빌드 설정, 실행 스크립트, 워크플로가 바뀐 경우에만 테스트를 실행한다.
 
 세 운영체제에서 네이티브 빌드와 WASM 컴파일(브라우저 테스트 대상 포함), API 문서 링크 검사, 압축을 푼 패키지의
