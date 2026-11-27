@@ -158,11 +158,14 @@ with an `Error` carrying `label` and `kind` when one failed, and
 snapshot, readable while the chart is busy, and it reports `{ scope:
 "renderer.pipelines", stage: "screen complete" }` and then `"all complete"` on the
 `figgy-init-progress` event. It starts its picker prewarm once the render pipelines
-have compiled. Exports and picks always draw the whole chart; they compile what they
-need through the browser's asynchronous compiler first (an export its pipelines,
-`pick_point` and `pick_data` the picker's pipelines, the nearest-datum kernel and the
-typed data pick kernels, which a drawn chart has already queued), so neither compiles on
-the page's thread.
+have compiled. An export always draws the whole chart: it compiles its pipelines
+through the browser's asynchronous compiler first. `pick_point` and `pick_data` answer
+the ink of the last frame drawn on screen, so a series that frame left out while its
+pipelines compiled is not picked; await `chart.series_ready()` (or
+`first_frame_ready()`) before a pick that must see every series. A pick compiles what
+it needs itself through the asynchronous compiler (the picker's pipelines, the
+nearest-datum kernel and the typed data pick kernels, which a drawn chart has already
+queued), so neither an export nor a pick compiles on the page's thread.
 The chart's waits borrow it until they settle. `chart.readiness()` returns a
 `FiggyReadiness` that does not ([#315](https://github.com/shim9610/figgy/issues/315)):
 its `series_ready()` and `pipelines_ready()` wait for the same compiles without

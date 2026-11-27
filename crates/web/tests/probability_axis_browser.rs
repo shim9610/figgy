@@ -98,6 +98,9 @@ async fn a_probability_axis_round_trips_draws_picks_and_exports() {
     // One draw, on the last scale: a pick and an anchor as JSON, and an
     // export.
     chart.frame().unwrap();
+    // A pick answers the ink of the last drawn frame, and a probability axis
+    // draws its series once their pipelines have compiled.
+    chart.series_ready().await.unwrap();
     let config: Config = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
     let (index, (x, p)) = (1, POINTS[1]);
     let (px, py) = at(&config, x, p);
