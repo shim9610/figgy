@@ -288,7 +288,7 @@ on the renderer, with its own deployment and UI.
 라벨은 그대로 두며(`text_generated`, `regenerate_labels`), 옮긴 장식을 원래 자리로 돌린다
 (`reset_decoration_position`).
 
-Cargo 패키지 `figgy` 0.15.1은 렌더러와 별도로 버전을 매기며 이 저장소에서 빌드한다
+Cargo 패키지 `figgy` 0.16.0-beta.2는 렌더러와 별도로 버전을 매기며 이 저장소에서 빌드한다
 (`publish = false`, 배포 대상은 아직 정하지 않았다: [#57](https://github.com/shim9610/figgy/issues/57)).
 crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝트와 관계없다.
 브라우저 테스트(`tests/*_browser.rs`)는 CI에서 컴파일만 하고 아직 실행하지 않는다.

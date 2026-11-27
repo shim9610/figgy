@@ -20,17 +20,22 @@ The Cargo package is **`figgy-model`**; its Rust import is **`model`**.
 
 ```toml
 [dependencies]
-model = { package = "figgy-model", version = "0.12.1" }
+model = { package = "figgy-model", git = "https://github.com/shim9610/figgy" }
 ```
 
-The `version` line installs figgy-model 0.12.1 from
-[crates.io](https://crates.io/crates/figgy-model). For a local checkout, replace
-`version` with `path = "../figgy/crates/model"`. Code written for 0.11.0, the
-release that shipped with figgy-renderer 0.17.0, needs the changes in the
-[migration notes](https://github.com/shim9610/figgy/blob/master/CHANGELOG.md#migrating-from-0170).
+This README describes 0.13.0-beta.2, which is not on crates.io: the latest
+release there is [figgy-model](https://crates.io/crates/figgy-model) 0.12.1,
+which lacks types listed below, such as the monotonic-x line types. Until
+0.13.0 is published, depend on the repository's default branch, `master`, as
+above, or, for a local checkout, replace `git` with
+`path = "../figgy/crates/model"`. Code written for 0.12, the release that
+shipped with figgy-renderer 0.18, needs the changes listed in the 0.19 entry
+of the [changelog](https://github.com/shim9610/figgy/blob/master/CHANGELOG.md).
 
-Add `features = ["serde"]` only when serialization is needed. No feature is
-required for creating, editing or validating models.
+| Feature | Purpose |
+| --- | --- |
+| `helpers` (default) | Host conveniences: `Default` on the document types, the `default` builders, the series constructors (`SeriesConfig::line`, …) and `theme`. The example below uses `Default`. The crate itself builds without it. |
+| `serde` | Serialization and deserialization of the model types. Add `features = ["serde"]` only when it is needed. |
 
 ## Create and edit a chart model
 

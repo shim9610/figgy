@@ -240,7 +240,7 @@ arrow is drawn.
   - Tick labels (`Element::AxisLabel`) move in the edge frame:
     `label_offset_x` along the edge and `label_offset_y` along its normal.
   - Titles (`Element::AxisTitle`) move in screen space.
-- **Fit.** `auto_fit_layer_union` and the browser's `autoFitAll` also fit
+- **Fit.** `auto_fit_layer_union` and the browser's `auto_fit_all` also fit
   `right_y` to the union of the height columns' statistics (a mesh's
   `z_column` among them). A `Data` arrow adds the bound
   `[z_min + f·w_min, z_max + f·w_max]` of its tips (ordered for a negative

@@ -107,8 +107,8 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
 | `sector` | `Some([start, end])` shows only that angular window, at most one turn; drawing is clipped at its edges. `None` is the full circle |
 | `inner_radius_fraction` | A hole at the centre, `0.0..=0.9` of the outer radius; `left_y.min` sits on that ring |
 | `interpolation` | `Chord` (default): straight segments between samples. `Arc { pieces }` (`pieces` 1 to 64, otherwise `InvalidConfig`): each segment bends along the data in `pieces` chords, so a constant radius follows its ring and sparse samples still draw a spiral. `Arc` needs a `LineInterpolation::Linear` line: a step line (`StepPre`, `StepPost`, `StepMid`) under `Arc` is rejected with `InvalidSeriesConfig`; `Chord` accepts it |
-| `radial_label_angle_degrees` | The ray the radius axis line and its labels sit on; dragging the ray turns it. `None` (default) is chosen by the renderer's fits over category bars, the ray where the fewest labels sit over a wedge (#417), and drawn at 90 (up) until then |
-| `radius_labels_skipped` | The innermost radius labels skipped over the bars (#417); `None` (default) is filled with the ray |
+| `radial_label_angle_degrees` | The ray the radius axis line and its labels sit on; dragging the ray turns it. `None` (default) is drawn at 90 (up) until a fit over category bars chooses it ([Roses](#roses-polar-bars)) |
+| `radius_labels_skipped` | The innermost radius labels skipped over the bars; `None` (default) is chosen with the ray ([Roses](#roses-polar-bars)) |
 | `grid_shape` | `None` or `Some(GridShape::Circle)` (default): circular rings. `Some(GridShape::Polygon)` joins the rings and the outer ring at the categories of a categorical angle axis, the radar look; without one it is `InvalidConfig` |
 
 Every option has a default, so `{ "polar": {} }` in JSON turns a chart
@@ -180,6 +180,21 @@ radius; `Auto` as for bars), the pick (`PickedData::HistogramBin`, the
 category row), the picked highlight (the wedge's outline) and
 `step_selection` are the bar's. The playground's *Rose (polar bars)* scene
 is a wind rose: sixteen directions, three stacked speed bands.
+
+The radius labels' ray avoids the wedges (#417). While a document leaves
+`polar.radial_label_angle_degrees` or `radius_labels_skipped` at `None`,
+the renderer's fits choose them from the drawn stacks: the ray between
+two category slots where the fewest label boxes meet a wedge (the nearest
+to 90 on a tie), and how many of the innermost labels to skip over the
+bars. The fits that do it are `Renderer::fit_ranges`, the first fit of a
+`Fitted` chart's `register_chart`, `commit_auto_fit_all`,
+`Renderer::fit_radial_labels(&mut config, &series)` (native; call it after
+`Chart::fit_layout`) and `Renderer::fit_chart_radial_labels(chart)` for a
+registered chart. In the browser the frame that finds the GPU gather
+complete writes the result. A stored value, from an earlier release or a
+dragged ray, is kept; at a stored ray only the skip count is chosen. A
+streamed bars column is refused with `ColumnNotResident`. Until a fit runs,
+the ray is drawn at 90 (up).
 
 ### Heatmaps and contours
 
@@ -339,8 +354,8 @@ draws an antenna-like pattern and a three-leaf rose interactively
 | `sector` | `Some([start, end])`이면 그 각도 창만 보이며 경계에서 클립된다. 한 바퀴 이하. `None`은 전체 원 |
 | `inner_radius_fraction` | 중심 구멍. 바깥 반지름의 `0.0..=0.9`이며 `left_y.min`이 그 고리에 놓인다 |
 | `interpolation` | `Chord`(기본): 표본 사이를 직선으로 잇는다. `Arc { pieces }`(`pieces`는 1~64, 벗어나면 `InvalidConfig`): 각 구간을 (각도, 반지름) 공간에서 `pieces`개의 현으로 나눠 그리므로 반지름이 일정한 구간은 고리를 따르고 표본이 드물어도 나선을 그릴 수 있다. `Arc`는 `LineInterpolation::Linear` 선에만 쓸 수 있고, 계단선(`StepPre`, `StepPost`, `StepMid`)은 `InvalidSeriesConfig`로 거부한다. `Chord`는 계단선도 받는다 |
-| `radial_label_angle_degrees` | 반지름 축 선과 라벨이 놓이는 반직선. 반직선을 드래그하면 바뀐다. `None`(기본값)이면 범주 막대가 있을 때 렌더러의 맞춤이 쐐기 위에 놓이는 라벨이 가장 적은 반직선을 고르고(#417), 그전에는 90(위)으로 그린다 |
-| `radius_labels_skipped` | 막대 위에 놓여 건너뛰는 가장 안쪽 반지름 라벨 수(#417). `None`(기본값)이면 반직선과 함께 채운다 |
+| `radial_label_angle_degrees` | 반지름 축 선과 라벨이 놓이는 반직선. 반직선을 드래그하면 바뀐다. `None`(기본값)이면 범주 막대 위의 맞춤이 고를 때까지 90(위)으로 그린다([로즈](#로즈극좌표-막대)) |
+| `radius_labels_skipped` | 막대 위에 놓여 건너뛰는 가장 안쪽 반지름 라벨 수. `None`(기본값)이면 반직선과 함께 고른다([로즈](#로즈극좌표-막대)) |
 | `grid_shape` | `None` 또는 `Some(GridShape::Circle)`(기본)은 원형 고리. `Some(GridShape::Polygon)`은 고리와 바깥 고리를 범주형 각도 축의 범주 각도에서 꺾어 다각형으로 그린다(레이더 모양). 범주형 각도 축이 없으면 `InvalidConfig` |
 
 모든 옵션에 기본값이 있어 JSON에서 `{ "polar": {} }`만으로 극좌표가 켜진다. 전체 필드와 검증,
@@ -385,6 +400,17 @@ draws an antenna-like pattern and a three-leaf rose interactively
 쐐기 가운데 방향, 안쪽: 가운데 반지름, `Auto`는 막대와 같음), 피킹(`PickedData::HistogramBin`,
 범주 행), 선택 강조(쐐기 외곽선), `step_selection`은 막대와 같다. 플레이그라운드의 *Rose (polar bars)*
 장면은 열여섯 방향에 세 속도 띠를 쌓은 바람 장미다.
+
+반지름 라벨의 반직선은 쐐기를 피한다(#417). 문서가 `polar.radial_label_angle_degrees`나
+`radius_labels_skipped`를 `None`으로 두면 렌더러의 맞춤이 그린 누적에서 둘을 고른다. 반직선은
+쐐기와 겹치는 라벨 상자가 가장 적은 두 범주 칸 사이(같으면 90에 가장 가까운 쪽)에 두고, 막대 위에
+놓이는 가장 안쪽 라벨을 몇 개 건너뛸지 정한다. 이 맞춤을 하는 호출은 `Renderer::fit_ranges`,
+`Fitted` 차트의 `register_chart` 첫 맞춤, `commit_auto_fit_all`,
+`Renderer::fit_radial_labels(&mut config, &series)`(네이티브, `Chart::fit_layout` 뒤에 호출),
+등록된 차트의 `Renderer::fit_chart_radial_labels(chart)`다. 브라우저에서는 GPU 수집이 끝난 것을
+확인한 프레임이 결과를 쓴다. 이전 릴리스가 저장했거나 드래그한 값은 그대로 두며, 저장된 반직선에서는
+건너뛸 수만 고른다. 스트리밍 막대 컬럼은 `ColumnNotResident`로 거부한다. 맞춤 전에는 반직선을
+90(위)에 그린다.
 
 #### 히트맵과 등고선
 

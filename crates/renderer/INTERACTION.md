@@ -1,12 +1,11 @@
 # 상호작용 가이드 / Interaction guide
 
-원형 차트는 데이터 모델이 다르지만, 그리기 영역·제목·축·라벨·범례는
+원형 차트는 데이터 모델이 다르지만, 그리기 영역·제목·조각 라벨은
 Cartesian 차트와 같은 `HitMap → Selectable → Draggable / Resizable` 계약을 사용한다. 포인터 이벤트 전달과
 드래그 중 프레임 요청은 호스트가 담당한다. 클릭 영역이나 라벨 위치를 호스트에서 다시 계산하지 않는다.
 
 The radial chart keeps its values in its own document and takes no
-registered columns. Its plot area, title, axes, labels and legend use the
-same
+registered columns. Its plot area, title and slice labels use the same
 `HitMap → Selectable → Draggable / Resizable` contract as Cartesian charts. The
 host forwards pointer events and requests frames while dragging; it never
 recomputes hit regions or label positions.
@@ -15,7 +14,7 @@ recomputes hit regions or label positions.
   `frame.pick([x, y])` submits the pick and returns a
   `RadialPickTicket`, whose `resolve()` (`resolve_blocking()` natively) reads
   the slice back. `frame.decorations().hit_test([x, y])` picks the title,
-  axes, labels, legend and plot area, and returns `DataArea` wherever no other
+  the slice labels and the plot area, and returns `DataArea` wherever no other
   decoration is hit, including over data. The radial frame's decorations are
   a `HitMap<RadialChart>` placed from the chart: pass the chart the frame was
   prepared from (`frame.decoration_at(&chart, [x, y])`).
@@ -48,12 +47,12 @@ recomputes hit regions or label positions.
 
 - 원형 차트는 그려진 자리에서 조각을 비동기로 고른다. `frame.pick([x, y])`가 요청을 제출하고
   `RadialPickTicket`을 돌려주며, `resolve()`(네이티브는 `resolve_blocking()`)가 결과를 읽는다.
-- `frame.decorations().hit_test([x, y])`는 제목·축·라벨·범례와 그리기 영역(`DataArea`)을 고른다.
+- `frame.decorations().hit_test([x, y])`는 제목·조각 라벨과 그리기 영역(`DataArea`)을 고른다.
   원형 차트의 장식 요소는 차트에서 위치를 다시 계산하는 `HitMap<RadialChart>`이므로, 프레임을
   준비한 차트를 함께 넘긴다(`frame.decoration_at(&chart, [x, y])`).
 - 영역을 선택한 상태라면 `map.hit_resize_handle(id, [x, y])`로 리사이즈 핸들을 먼저 검사한다.
   핸들은 영역 경계 밖으로도 걸쳐 있다.
-- 그다음 제목·라벨·축·범례 같은 앞쪽 요소, 데이터, `DataArea` 순서로 호스트가 판정한다.
+- 그다음 제목·라벨 같은 앞쪽 요소, 데이터, `DataArea` 순서로 호스트가 판정한다.
   `decorations().hit_test`는 데이터 위에서도 `DataArea`를 돌려주므로, 결과가 `DataArea`라면
   `frame.hit_test`로 데이터를 먼저 확인한다. 영역 편집 모드를 켰을 때만 영역을 데이터보다 우선한다.
 - 모든 `HitMap::hit_test`(Cartesian, 원형, 주석 레이어)는 여백을 더한 히트 영역이 겹치는 곳에서 포인터가
@@ -1147,5 +1146,7 @@ moves; `Propagator(i)` sets a line's bend to the arc through its moved
 middle. A label moves in logical pixels through the value-label drag,
 `FeynmanSeries::drag_label` on the host's series, and `drag_feynman`
 refuses it. The web wrapper's `press_feynman` starts these drags, a label's
-through the same pointer as `press_value_label`. See
+through the same pointer as `press_value_label`. These drags are general
+chart calls, so a Feynman series lives on a general chart or a subplot: a
+monotonic chart refuses one (`RuleKind::MonotonicFeynman`, [API.md](API.md#entry-points-and-input-contracts)). See
 [Feynman diagrams](FEYNMAN.md).

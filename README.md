@@ -200,18 +200,24 @@ annotation layer works with both renderers.
 ## Quick start
 
 Use **Rust 1.99 or later** and a working GPU driver. The repository pins Rust 1.99.0.
-Add these dependencies to your application's `Cargo.toml`:
+
+This README and the guides describe figgy 0.19, which is not on crates.io yet.
+The latest crates.io release is [figgy-renderer](https://crates.io/crates/figgy-renderer)
+0.18.1 with figgy-model 0.12.1. The code below does not build against it: 0.18.1
+has no `Renderer::headless_blocking`, `Chart::sized`, `Renderer::fit_ranges` or
+`save_blocking`. Until 0.19.0 is published, depend on this repository. Add this
+to your application's `Cargo.toml`:
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", version = "0.18.1" }
+renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
 ```
 
-The `version` line installs [figgy-renderer](https://crates.io/crates/figgy-renderer)
-0.18.1, with figgy-model 0.12.1, from crates.io. With a local checkout, use
-`path = "../figgy/crates/renderer"` (relative to your application) instead of
-`version`. Code written for 0.17.0 needs the changes in the
-[migration notes](CHANGELOG.md#migrating-from-0170).
+This uses the default branch, `master`, which carries the current 0.19 beta.
+With a local checkout, use `path = "../figgy/crates/renderer"` (relative to your
+application) instead of `git`. Code written for 0.18 needs the changes listed in
+the 0.19 entry of the [changelog](CHANGELOG.md); each breaking change there
+names its migration.
 
 Copy this into `src/main.rs`, then run `cargo run`. It writes `line.png` without
 opening a window. `renderer` is the Rust import name of the `figgy-renderer` package.
@@ -261,7 +267,9 @@ example is the same chart with hand-set ranges and a theme.
 writes the format the file name's extension names (`.png`, `.svg` or `.pdf`).
 A host that also wants the bytes or pixels calls `export_png_blocking` or
 `export_rgba_blocking` instead. A host that embeds figgy in its own window adds a
-`wgpu = "30"` dependency and shares its device through `RendererDevice`.
+`wgpu = "30"` dependency and shares its device through `RendererDevice`; on
+Vulkan the bundle can also save and reload its
+[pipeline cache](crates/renderer/API.md#pipeline-cache-native).
 For your own data, replace the `x`/`y` vectors or implement
 [`ColumnSource`](crates/renderer/USAGE.md#columnsource--the-data-adapter-trait).
 
@@ -363,8 +371,9 @@ animations and interactive examples.
 | Fit margins, title offsets and label formats so labels and titles do not overlap | `layout::auto_layout` in the [convenience helpers](crates/renderer/API.md#direct-ssot-edits-and-convenience-helpers); `autoLayout(configJson)` in the browser |
 | Render data that does not fit in GPU memory | [Streaming and residency](crates/renderer/ARCHITECTURE.md#exact-streaming-and-residency) |
 
-The Rust renderer can share a device with a **wgpu 30** host. No GUI framework is
-required by default.
+The Rust renderer can share a device with a **wgpu 30** host. It has no GUI
+framework dependency; the egui examples are a separate crate with their own
+lockfile.
 
 ## WebAssembly and the browser
 
@@ -391,7 +400,7 @@ part of the `figgy-renderer` crate or the browser product.
 |---|---|
 | Native setup, data adapters, embedding and export | [Usage](crates/renderer/USAGE.md) |
 | Axes, labels, legends, series and color maps | [Configuration reference](crates/renderer/CONFIG.md) |
-| Pies/donuts · categorical bars · box plots · range bars · radar · polar · histograms | [Radial](crates/renderer/RADIAL.md) · [Bars](crates/renderer/CATEGORICAL.md) · [Boxes](crates/renderer/BOXPLOT.md) · [Range bars](crates/renderer/RANGEBARS.md) · [Radar](crates/renderer/RADAR.md) · [Polar](crates/renderer/POLAR.md) · [Histograms](crates/renderer/HISTOGRAM.md) 
+| Pies/donuts · categorical bars · box plots · range bars · radar · polar · histograms | [Radial](crates/renderer/RADIAL.md) · [Bars](crates/renderer/CATEGORICAL.md) · [Boxes](crates/renderer/BOXPLOT.md) · [Range bars](crates/renderer/RANGEBARS.md) · [Radar](crates/renderer/RADAR.md) · [Polar](crates/renderer/POLAR.md) · [Histograms](crates/renderer/HISTOGRAM.md) |
 | Ternary plots · 3D surfaces · triangle meshes · Feynman diagrams · monotonic-x lines | [Ternary](crates/renderer/TERNARY.md) · [Surface](crates/renderer/SURFACE.md) · [Triangle meshes](crates/renderer/TRIMESH.md) · [Feynman](crates/renderer/FEYNMAN.md) · [Monotonic-x lines](crates/model/MONOTONIC.md) |
 | Ownership, prepared frames and API compatibility | [API contracts](crates/renderer/API.md) |
 | Memory flow, caching, streaming and shader details | [Architecture](crates/renderer/ARCHITECTURE.md) |

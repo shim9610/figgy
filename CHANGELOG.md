@@ -73,8 +73,11 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
   - `Chart::apply_theme`, `apply_theme_to`, `apply_custom_theme` and
     `apply_custom_theme_to` keep a `Fixed` layout, as every other chart
     edit does; a `Fitted` layout is still fitted.
-  - Every egui example calls `end_gpu_frame` once per frame, so the bytes
-    a redraw retires are released.
+  - Every egui example built on `Renderer` (`egui_embed`, `ssot_lab`,
+    `streaming_capacity_demo`, `constellation_lab`) calls `end_gpu_frame`
+    once per frame, so the bytes a redraw retires are released;
+    `radial_editor` already ended its frames with
+    `RadialRenderer::end_frame`.
   - `winit_simple` handles each acquire failure and rebuilds its renderer
     for a lost surface or device.
   - Docs: RADIAL.md gives `export_svg(&chart, size, options)`, and the
@@ -100,8 +103,8 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
   `egui_embed`, `radial_editor`, `ssot_lab`, `streaming_capacity_demo` and
   `constellation_lab` are now in `examples/egui/`, a standalone crate with
   its own lockfile, like `tools/playground`. figgy-renderer no longer lists
-  `eframe`, `egui` or `egui-wgpu`, even as optional dependencies. The examples
-  themselves are unchanged and still use egui 0.36. CI checks them in the
+  `eframe`, `egui` or `egui-wgpu`, even as optional dependencies. The move
+  leaves the examples' code unchanged, and they still use egui 0.36. CI checks them in the
   repository job.
   *Migration:* drop `egui_demo` from any `features = [...]` list for
   figgy-renderer. To run an example, use
@@ -117,7 +120,7 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
   unchanged. No API or wire change.
   - The polar contour distance's foot-point walk (#208) moves from
     `field_columnar.wgsl` into `common/field_polar.wgsl`, and
-    `field_polar_basic.wgsl` gets a twin that ends at once. The basic set's
+    `common/field_polar_basic.wgsl` gets a twin that ends at once. The basic set's
     contour entries (`fs_contour`, `fs_contour_labelled`, `fs_floor_contour`,
     `pick_field_contour`), which a polar chart never uses, no longer compile
     it. The streaming field module assembles the full set and is unchanged.
@@ -147,7 +150,7 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
     contours 35.6 s → 36.3 s and 14.0 s → 7.0 s. TriSurface, the 3D quiver,
     the 2D vector field and the path-arrow lines change by less than run-to-run
     noise (at most 0.3 s). The polar contour fragment of the full set stayed
-    heavy in the browser; the #465 entry above reduces it.
+    heavy in the browser; the #465 entry below reduces it.
 
 - **Faster first frames for polar contours: the full set's field entries
   inline the axis transform once per call site**
@@ -408,20 +411,21 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
     other bin). It is read in the existing typed pick kernels
     (`pick_range_bar`, `pick_range_links`) and returned in their existing
     result, so there is no new readback. It is a display parameter, not data.
-    `RangeLinkSeries::drag_link_exit(index, along, limit)` takes the length
-    in logical pixels (`extent_px` divided by the display scale) and clamps
-    the stored offset to it; `None` keeps the previous unclamped drag.
+    `RangeLinkSeries::drag_link_exit(index, along, length)` takes the length
+    in logical pixels (`extent_px` divided by the display scale). Since the
+    exit is stored as a fraction of that length (the `exit_fraction` entry
+    above), a drag without a length is rejected.
     Browser product: `pick_data`'s `histogram_bin` hit carries
     `extent_px`, and `press_range_link(series_id, index, extent_px)` takes
-    it as the drag's limit (left out, only the draw stops the exit). Tests:
-    `link_exit_drags_stop_at_the_predecessors_drawn_length`,
+    it (left out, the drag moves nothing). Tests:
+    `link_exit_drags_are_fractions_of_the_drawn_length`,
     `link_picks_report_the_predecessors_drawn_length_and_the_drag_stops_there`.
     **Migration:** a `PickedData::HistogramBin { .. }` literal adds
     `extent_px: None`, and a pattern that names every field adds
     `extent_px` or `..`; `drag_link_exit(index, along)` becomes
-    `drag_link_exit(index, along, None)`, or passes the hit's length to
-    clamp. JavaScript callers of `press_range_link(series_id, index)` keep
-    working; pass `hit.extent_px` as the third argument to clamp.
+    `drag_link_exit(index, along, Some(length))` with the hit's length.
+    JavaScript callers of `press_range_link(series_id, index)` pass
+    `hit.extent_px` as the third argument.
   - Playground: a Cartesian scene draws its registered chart through
     `prepare_registered` / `prepare_monotonic` into a viewport texture at
     the chart's display placement, so the ink masks a pick reads are
@@ -2622,11 +2626,12 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
   - An export at another mapping (`ExportSource::Monotonic` at another scale, as PNG, SVG or PDF, async or blocking) that failed at a later series (no source lent, a channel the source lacks, a refused reduction, a transient column id already taken) left the earlier series' transient envelope columns and export group in the pool. Every later rescaled export was then refused with `MonotonicColumnTaken`, and the GPU memory was never freed. Every error path now removes them, so a retry with every source succeeds.
   - A sliding `append_monotonic` refused because the slide would move another group's x axis (`MonotonicSourceRequired { change: XRange }`) still slid the appended group's envelope, so draws, picks and exports then failed for a missing source. The append now runs on copies of the group's envelopes (sized by the plot width and channel count, never by the data, M3), the slid x range is reconciled against them first, and the copies replace the group's envelopes only once it succeeds: a refused append changes nothing. A refused append of a later panel's envelope also leaves the group as it was (before, the group was dropped).
   - A monotonic export past the device's texture limit reduced and uploaded the export's envelopes before the size check, and at very large or infinite scales returned a pool growth or `InvalidMapping` error instead. The export target size is now checked first, so the export fails with `GpuResourceLimit` before anything is allocated, as USAGE.md states.
-  - A general series could read a monotonic envelope column (`<id>.monotonic.x`) as ordinary data, drawing the renderer's reduction as data (rule 1, M1). Any series other than the monotonic series that owns it is now refused with `ReservedColumnId` by `register_chart`, `register_chart_as_given`, `set_chart_series`, `set_chart_state`, `begin_replace_chart_columns`, `register_monotonic_chart` and `MonotonicChart::set_series` (a reader in the same document as the owning series was already refused with `MonotonicColumnsShared`). **Behaviour change:** such a series registered before and drew the envelope rows, with NaN join markers, at its own chart's mapping; it now fails to register.
+  - A general series could read a monotonic envelope column (`<id>.monotonic.x`) as ordinary data, drawing the renderer's reduction as data (rule 1, M1). Any series other than the monotonic series that owns it is now refused with `ReservedColumnId` by `register_chart`, `register_chart_as_given`, `set_chart_series`, `set_chart_state`, `begin_replace_chart_columns`, `register_monotonic_chart` and `MonotonicChart::set_series` (a reader in the same document as the owning series was already refused with `MonotonicColumnsShared`). **Behaviour change:** such a series registered before and drew the envelope rows, with NaN join markers, at its own chart's mapping; it now fails to register. *Migration:* such a series names a column the host registered itself.
   No API or wire change. Tests (`monotonic_render`): `a_failed_rescaled_export_leaves_no_transient_state`, `a_refused_sliding_append_changes_nothing`, `an_export_past_the_texture_limit_allocates_nothing`, `a_general_series_cannot_read_an_envelope_column`, `a_slid_out_selection_draws_nothing_and_steps_back_in`.
 - **Stacked category bars fit their actual stacks** ([#466](https://github.com/shim9610/figgy/issues/466)). A stacked group's value axis was fitted to `[Σ min(0, min_i), Σ max(0, max_i)]` over its columns' statistics, a bound that is wider whenever the series peak in different categories: A = (100, 1) and B = (1, 100) both stack to 101 and fitted 0–200. The renderer's fits now measure the stacks on the GPU: a new compute entry of the bar module, `reduce_category_stacks` (next to `reduce_bar_envelope` in `bar_columnar.wgsl`), stacks each category with the draw's own arithmetic (`category_stack` in `common/category_bars.wgsl`, which the draw now calls too: positive values up, negative values down, missing cells skipped) and folds the largest positive and the smallest negative sum atomically into a two-word buffer; only those two values are read back, and the values stay in the column pool (rule 2). The axis spans them, then the padding applies as before, so the example fits 0–101. On native, `Renderer::fit_ranges`, `fit_config`, `fit_y_axes_config`, `fit_config_scoped` and `register_chart`'s first fit wait for the readback; on every target `begin_auto_fit_all` submits the reduction with its ticket, which resolves asynchronously (`resolve`) or on the thread (`resolve_blocking`), and `commit_auto_fit_all` now fits the category-bar value axis (all three modes) where it used to leave it. In a browser the synchronous fits cannot wait and keep the statistics bound. Percent stacks keep `0..=100` and grouped bars their columns' union, and neither dispatches. The pipeline is created lazily by the first fit of a stacked group (`ensure_errorbar_extent_engine`, which a whole-chart fit asks for with `EngineNotReady`, or a native fit) or by the full prewarm, never by a draw; the draw and pick entries are unchanged. There is no cap on categories or members (rule 10): past 65535 workgroups the dispatch is two dimensional. `Chart::auto_fit_layer_union` and `chart::category_bar_value_extent`, which have no device, keep the bound. First compile of the new pipeline: about 7–11 ms on lavapipe and 48–80 ms on SwiftShader in Chromium 158. The shader prewarm contract gains its pipeline. Appearance unchanged: the stack refactor draws byte for byte as before. Tests (`category_bars_render`): `a_stacked_fit_reaches_the_tallest_actual_stack` (the issue's case in both directions, through `fit_config` and `begin_auto_fit_all`, drawn at 1x and 2x), `a_stacked_fit_encloses_both_signs_from_different_categories`, `a_stacked_fit_ignores_missing_cells`, `percent_stacks_and_grouped_bars_fit_as_before`, `a_stacked_fit_reads_past_one_dispatch_dimension` (4,194,243 categories); `the_stacked_fit_reduction_is_created_by_a_fit_only` (renderer unit tests).
 - **Radial decorations snap to guides while they drag** ([#465](https://github.com/shim9610/figgy/issues/465), follow-up to [#440](https://github.com/shim9610/figgy/issues/440)). `RadialFrame::drag_decoration_snapped` moves the title or a slice label through the common `HitMap::drag_snapped` with the host's `layout::DragSnap`: its drawn box snaps to the centres of the canvas and the plot area and to the edges and centres of the other decorations, and the plot area does not snap. `RadialRenderer::prepare_with_guides` and `prepare_annotations_with_guides` draw the gesture's guides with the selected decoration's or annotation's selection box; `prepare` and `prepare_annotations` are the same calls with `SnapGuides::NONE`. Guides are not part of the chart, the frame and label-raster caches key on them, and every export prepares without them, so PNG at 1x and 2x and SVG never draw them. `RadialFrame::drag_decoration` is unchanged. No serialized form changes. Tests: `radial::snap_tests::{a_radial_title_drag_snaps_shows_its_guide_until_release_and_no_export_draws_it, a_radial_label_snaps_to_another_decoration_and_the_modifier_turns_it_off}`.
 - **Typed data picks spread over the rows and reuse their buffers** ([#445](https://github.com/shim9610/figgy/issues/445)). The typed body picks of histograms, category bars, box plots, range bars, range links, violins, value labels, parallel coordinates and triangle meshes each ran one 64-lane workgroup that walked every row. Each is now dispatched over `ceil(N / 64)` workgroups, one row per lane (two dimensions past the per-dimension limit; no row is skipped and nothing is capped, rule 10): each workgroup reduces its rows to one candidate in a partials buffer, and a second pass per series (`pick_reduce_data` in the bar module, `pick_reduce_parallel`, `pick_reduce_tri_mesh`, which also runs the mesh's contour test once) folds them into the series' answer. Every comparator is a total order on valid candidates, so the answers are those of the single-workgroup kernels, ties included. A pick's prepared work (its series' bind groups, style maps, kernels, query templates and scratch buffers) is kept by the picker per chart layer while the chart's desired revision, the renderer's visual revision, the pool layout, the font generation, the shader set and the display scale and panel are unchanged, and a pick writes only the transform and its cursor; the readback buffers are a ring of two. The field and grid vector kernels are unchanged, and streamed sources keep their own path (rule 8). The shader prewarm contract is regenerated. Timings (debug build, a 480 × 360 range bar chart, median of ten picks): native on lavapipe 0.69 → 0.44 ms at 5k rows, 2.57 → 2.07 ms at 50k, 30.6 → 26.0 ms at 50k with value labels; in headed Chromium on SwiftShader under Xvfb the pick's CPU encode drops to about 0.2 ms, but its GPU wait is unchanged (about 9 ms at 5k, 55 ms at 50k), since SwiftShader's cost there grows with the rows whatever the split. Tests: `parallel_typed_picks_answer_as_the_single_workgroup_kernels` (range bars, category bars and value labels at 1, 63, 64, 65, 5k and 70k rows with ties and missing rows, against the replaced kernels compiled as a test oracle, the 2D dispatch forced by a lowered per-dimension limit) and `repeated_typed_picks_reuse_their_buffers` (no readback buffer after the first two picks, the prepared work kept across cursors, prepared again after an edit or while a ticket holds it, dropped by the host's memory release).
+- **A registered chart's value labels bake once** ([#443](https://github.com/shim9610/figgy/issues/443)). A registered chart's value label atlas is keyed by its `ChartId`, the series id, a per-chart labels revision (it moves only when some series' label text or the categories the labels follow change), the device font size, the face, the colour and the font policy. The key holds no copy of the strings. The draw and the pick keep one entry each, share one at the same font size, and no longer evict each other, so a pan, a resize or a pick no longer bakes the labels again. The label uniform, the 16 B cell per label and their bind group stay in the atlas entry while the series and selection revisions, the scale and the uniform are unchanged. The typed pick borrows the chart's config and series instead of cloning them. An idle frame, a pick and a pan allocate nothing that grows with the label count. Host-held charts and exports keep the string-compare key. Pixels and picks are unchanged; no API or wire change. Tests: `registered_value_labels_bake_once_across_pans_resizes_and_picks`, `registered_charts_with_equal_series_ids_keep_their_atlases` (renderer unit tests), `value_label_frames_picks_and_pans_do_not_allocate_per_label` (`cpu_allocation_scaling`, 5k and 50k labels).
 
 - **Snap guides on the selection overlay** ([#440](https://github.com/shim9610/figgy/issues/440)). `Renderer::set_chart_snap_guides` (and `MonotonicChart::set_snap_guides`, `Chart::set_snap_guides`) shows the guides of a decoration drag in progress with the chart's selection box, drawn by `draw_selection_box` as thin magenta lines (`axis_render::SNAP_GUIDE_COLOR`) one device pixel wide; `SnapGuides::NONE` removes them, and a changed selection drops them. `Renderer::refresh_annotations_with_guides` does the same for the selected annotation, and `AnnotationMap::drag_snapped` snaps a text box or arrow. Guides are selection chrome: they redraw the selection overlay only, are not part of the document, and no PNG, SVG or PDF export draws them. Tests: `snap_guides::a_drag_shows_its_guide_until_release_and_no_export_draws_it` (PNG at 1x and 2x and SVG byte-equal with and without guides), `snap_guides_are_drawn_only_with_the_selection_box`, `annotation_snap_guides_draw_with_the_selection_box`.
 - **Polar bars choose a radius label ray they do not cover** ([#417](https://github.com/shim9610/figgy/issues/417)). On a 16-sector stacked wind rose the default ray ran through the N and NNW wedges and the innermost labels, the zero label included, sat over the bars. The renderer's fits now choose it where the document leaves it `None`: `Renderer::fit_ranges`, a `Fitted` chart's registration, `commit_auto_fit_all` and the new `Renderer::fit_radial_labels` (native) / `fit_chart_radial_labels` (a registered chart; a browser's frame writes it when its gather completes, `service_radial_label_fits`) gather each row's drawn stack of every polar cell's category bars on the GPU (the extent engine's new `gather_polar_bar_rows` entry, 16 bytes per row, read back once by the layout and kept nowhere) and store the ray and the innermost labels to skip in `PolarOptions` (model). A stored angle or count is kept; only the skip count is chosen at a stored ray. A streamed source is refused with `ColumnNotResident` (rule 8). There is no cap on rows, members or categories (rule 10): the choice's walk grows with the square of the categories (2000 categories: under a second in a debug build). `Renderer::begin_radial_label_fit` and `RadialLabelFitTicket` are the parts for a host that waits on its own.
@@ -3694,10 +3699,10 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
   `fonts/LICENSE-NewCMMath.txt` with the LPPL it refers to. Other math faces
   can be registered with `register_font_bytes` and named in
   `RichText.font`.
-- **New dependency.** `read-fonts 0.46` (`default-features = false`,
+- **New dependency.** `read-fonts 0.47` (`default-features = false`,
   feature `std`) reads the MATH table and the GSUB `ssty` alternates. swash
-  and egui pin read-fonts 0.41, which has no MATH table, so the lockfile
-  holds both versions until they move, when the two are unified
+  pins read-fonts 0.41, which has no MATH table, so the lockfile
+  holds both versions until it moves, when the two are unified
   ([#160](https://github.com/shim9610/figgy/issues/160)).
 - **Power tick labels** write the exponent as a text-mode `Scripts` node
   instead of superscript segments. The labels' pixels, bounds and parts are
@@ -4277,7 +4282,6 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 
 - **f32 columns upload at half the bytes** ([#317](https://github.com/shim9610/figgy/issues/317)). The browser's `Float32Array` columns (and the f32 casts of generated data) declare a single lane, so a resident upload stages and transfers 4 bytes per value instead of 8 and the GPU expands them in the pool (see the renderer entry). Streamed sources are unchanged.
 
-- **Polar category labels in the browser** ([#309](https://github.com/shim9610/figgy/issues/309)). `hit_test` answers `category_label_<i>` on a polar chart's category label and a drag moves that label alone; `decoration_bounds` returns its `ring` (`{ center, radius }`), and a press on the ring while the label is selected drags every angle label along its spoke. The hit map is rebuilt when the number of polar category labels on the chart or any subplot changes.
 - **A plain chart compiles its pipelines faster** ([#299](https://github.com/shim9610/figgy/issues/299)). The renderer compiles the cut remap of a broken axis, the probability scale and polar coordinates only once a chart has one of them (see the renderer entry): on the software GPU the measurements use, a line chart is on screen 1.2 s after `create` is called and a line and heatmap chart after 3.2 s. A chart created with a break, a probability axis or polar coordinates compiles the full pipelines it draws and is on screen after about 3 s (line) or 12 to 14 s (line and heatmap: the full heatmap pipeline alone takes several seconds there, and it is created by the draw while the basic and full sets compile in the background); with `shaders: "full"` the same charts take 2.6 s and 11.5 to 12.2 s. A chart whose config gains a break, a probability axis or polar coordinates (`set_config`) moves to the full shader set: it compiles the pipelines it draws again when it next draws or picks, and issues the rest of the full set to the browser's asynchronous compiler as `create` issued the basic one. New, all additive: `FiggyChart.create_with_options(canvas, { shaders, on_progress })` creates a chart on the `"basic"` (default) or `"full"` set, so a host that knows it needs the full set never compiles the basic one; `chart.shader_set()` reads the set and `chart.require_shader_set("full")` moves up early; `<figgy-chart shaders="full">` passes the attribute at connect, and the `shaders` property reads the set and upgrades a ready chart. An unknown option or any other `shaders` value is refused with an `Error` that names it (`TypeError` from the property). `create` and `create_with_progress` are unchanged.
 
 - **A chart fills in as its pipelines compile, the screen's first** ([#299](https://github.com/shim9610/figgy/issues/299)). A browser chart compiles its render pipelines in the background, at most as many at once as the browser reports cores (`navigator.hardwareConcurrency`, four when it reports none), and issues what the chart on screen needs before the rest; before, it issued all 61 at once, and a pipeline the screen needed waited behind every one issued before it. A frame now leaves out a series whose pipelines have not compiled and draws the rest of the chart, axes and legend included; when they resolve, `frame()` draws again on its own, so `<figgy-chart>` fills in with no host call. New: `chart.frame_complete()` tells whether the last frame drew every series; `chart.pipeline_status()` returns `{ screen, all, frame_complete }` (counts of `total`, `ready`, `compiling`, `failed` for what the screen needs and for every compile); `chart.series_ready()` and `chart.pipelines_ready()` resolve when the chart is drawn whole and when every compile has ended, rejecting with an `Error` carrying `label` and `kind` when one failed; `chart.pipeline_failures()` lists the failures. `<figgy-chart>` has the same methods (its `pipeline_status()` is the last frame's snapshot) and reports `"screen complete"` and `"all complete"` under the `renderer.pipelines` scope on `figgy-init-progress`. `first_frame_ready()` now settles with the frame that draws every series. `prewarm_all` waits for the same background compiles instead of issuing its own. A dashed line, streamline arrowheads, sketch and milkyway lines, a ternary region fill, contour labels and a histogram likewise wait for their compute passes, which compile in the background instead of on the page's thread. Exports and picks always draw the whole chart; an export compiles its pipelines and `pick_point` / `pick_data` the pick pipelines they need (since #381 the nearest-datum kernel and the chart's typed data pick kernels; the exact pick variants before it) through the browser's asynchronous compiler before they run, so neither compiles on the page's thread.
@@ -4806,6 +4810,8 @@ entries above describe the changes.
   the per-column statistics, so its columns may be uploaded in any batches.
 
 ### Tests and guards
+
+- **The static gate checks the standalone crates' lockfiles** ([#465](https://github.com/shim9610/figgy/issues/465)). `python3 ci/verify.py static` runs `cargo metadata --locked` on every crate under `tools/` and `examples/` that has its own `[workspace]` and `Cargo.lock` (`examples/egui`, `tools/loom-poller`, `tools/playground`), so a root dependency bump that leaves one of their lockfiles stale fails the gate instead of the repository job of the next master PR. Test: `ci/test_standalone_crates.py`.
 
 - **Two browser tests assert what they mean** ([#381](https://github.com/shim9610/figgy/issues/381)).
   - `selection_details_browser::offset_lines_round_trip_hit_test_and_report_unshifted_values` expected `set_config` / `get_config` to return the sent config unchanged. Since the kernel's charts keep their layout fitted (`LayoutState::Fitted`, #364), `set_config` fits the margins to the new ranges' tick labels (a left `out_margin` of 49 for the `0..12` labels where the sent config had 39), as documented: the test now expects the sent config with `auto_layout` applied. It also drew one `frame()` before picking and placed its picks with the unfitted config; it now waits for `series_ready()` (a pick hits drawn ink, #389) and places them with the fitted one. Bisected over the first-parent merges: it passes at eaf7590 and fails from 65990ab (#364) on. No product change.
@@ -5761,8 +5767,6 @@ example advances to 0.15.0 with the renderer dependency and is not published
   and for area fills and steps, value maps, vector fields, twin Y axes,
   subplots, annotations, polar and radar.
 
-<a id="migrating-from-0170"></a>
-
 ### Known limitations
 
 - macOS / Metal remains experimental. On the Apple Paravirtual adapter, a
@@ -5771,6 +5775,8 @@ example advances to 0.15.0 with the renderer dependency and is not published
   against resident style tests accept that on Metal only (at most one code
   value on at most 32 pixels) until it is investigated on Metal hardware; see
   `ci/STATUS.md`. Other backends compare exactly.
+
+<a id="migrating-from-0170"></a>
 
 ### Migrating from 0.17.0
 

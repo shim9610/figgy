@@ -117,7 +117,7 @@ Each 0.19 chart kind has a designed scene drawn by its example in a theme family
 | `gallery-grotrian.png` | [nist_grotrian_gallery.rs](examples/nist_grotrian_gallery.rs), case `he-i` (`he-i-1x.png`); the diagram is `helium` in [support/grotrian_sets.rs](examples/support/grotrian_sets.rs) | `gallery` | A Grotrian diagram of He I from NIST data: singlet and triplet term columns headed by their term symbols, transitions labelled with their wavelengths to one decimal, the unit once in a corner note, the ground state below a broken energy axis the host derives from its levels |
 | `gallery-feynman.png` | [feynman.rs](examples/feynman.rs), `render` | `warm-paper` | Six processes on cards: annihilation, Compton scattering, gluon fusion through a top loop, beta decay through a W, the electron's one-loop vertex and a three-jet event |
 
-`readme_gallery` writes the hexbin, colour image, ternary, 3D, mesh, parallel, range-bar, stem, broken-axis and Feynman images with the other images; the rest come from `polar_plot`, `radial_gallery`, `boxplot_gallery`, `overlay_axes`, `probability_paper` and `nist_grotrian_gallery`. Each example also runs on its own (`cargo run --locked -p figgy-renderer --example <name> -- target/<name>`).
+`readme_gallery` writes the hexbin, colour image, ternary, 3D, mesh, parallel, range-bar, stem, broken-axis and Feynman images with the other images; the rest come from `polar_plot`, `radial_gallery`, `boxplot_gallery`, `overlay_axes` and `nist_grotrian_gallery`. Each example also runs on its own (`cargo run --locked -p figgy-renderer --example <name> -- target/<name>`).
 
 ## Visual concepts
 
@@ -193,8 +193,10 @@ mixed into an animation.
 cargo run --locked -p figgy-renderer --example readme_gallery -- target/readme-gallery
 ```
 
-This writes 19 static PNGs and the frames `wave/000.png` … `wave/047.png` and
-`orbit/000.png` … `orbit/047.png`. The PNGs are:
+This writes 19 gallery PNGs, the frames `wave/000.png` … `wave/047.png` and
+`orbit/000.png` … `orbit/047.png`, and `range_bars`' default-look check
+`timeline.png` and `timeline@2x.png`, which are not in the README. The
+gallery PNGs are:
 - `gallery-errorbars.png`, `gallery-histogram.png` and
   `gallery-histogram-horizontal.png`;
 - `gallery-contours.png`, `gallery-hexbin.png` and `gallery-imshow.png`;
@@ -248,7 +250,7 @@ chosen for the README and says nothing about rendering throughput. If a differen
 frame count was requested, change `-frames:v` to match; duration is count / 12.
 
 To refresh the README, inspect the PNGs and the decoded animation frames, then
-copy the 19 static PNGs and the two `gallery-*.gif` files into
+copy the 19 gallery PNGs and the two `gallery-*.gif` files into
 [`assets/`](https://github.com/shim9610/figgy/tree/master/crates/renderer/assets). Keep the numbered intermediate frames outside source control.
 The source example is the authority for formulas, styles and export settings.
 
@@ -364,7 +366,7 @@ page in [`gallery/`](https://github.com/shim9610/figgy/blob/master/crates/render
 
 - **정지 이미지 19종**: 응답 곡선과 오차 막대, 구간 40개의 세로·가로 히스토그램, 81×81 행렬의 보간 히트맵과 라벨이 있는 등고선, 그리고 육각 빈, 컬러 이미지, 삼각 좌표, 3D 곡면과 3D 화살표, 삼각 메시와 3D 삼각 메시, 평행 좌표, 폭포·캔들스틱·간트, 줄기·롤리팝, 축 끊기, 파인만 도표 장면이다. 모두 예제용으로 생성한 데이터이며, 오차 막대는 예제용으로 정한 ±1σ 폭이다. 에너지 준위 도표만 저장소에 포함한 NIST ASD의 He I 자료를 그린다.
 - **애니메이션 2종**: 이동하는 파형과 2:3 위상 궤적이다. 프레임마다 컬럼 값을 갱신하고 PNG를 다시 출력한다. 축 범위는 고정하며 처음과 같은 위상이 되는 마지막 프레임은 제외한다.
-- **생성 순서**: 저장소 루트에서 `cargo run --locked -p figgy-renderer --example readme_gallery -- target/readme-gallery`를 실행하면 정지 PNG 19개와 애니메이션 프레임 96개를 만든다. 오차 막대, 히스토그램, 등고선, 애니메이션 예제와 0.19 장면 예제 8개(삼각 좌표, 3D 곡면, 삼각 메시, 평행 좌표, 범위 막대, 줄기, 축 끊기, 파인만 도표)를 장치 하나로 실행한다. 이어서 FFmpeg 명령으로 GIF 2개를 생성한다. 이전 프레임이 섞이지 않도록 빈 출력 디렉터리를 사용한다.
+- **생성 순서**: 저장소 루트에서 `cargo run --locked -p figgy-renderer --example readme_gallery -- target/readme-gallery`를 실행하면 갤러리 PNG 19개와 애니메이션 프레임 96개, 그리고 README에 없는 `range_bars`의 기본 모양 확인용 `timeline.png`, `timeline@2x.png`를 만든다. 오차 막대, 히스토그램, 등고선, 애니메이션 예제와 0.19 장면 예제 8개(삼각 좌표, 3D 곡면, 삼각 메시, 평행 좌표, 범위 막대, 줄기, 축 끊기, 파인만 도표)를 장치 하나로 실행한다. 이어서 FFmpeg 명령으로 GIF 2개를 생성한다. 이전 프레임이 섞이지 않도록 빈 출력 디렉터리를 사용한다.
 - **재생 설정**: GIF 하나당 48프레임을 초당 12프레임으로 약 4초마다 반복한다. GIF는 색을 팔레트로 줄이므로 픽셀 검사는 원본 PNG로 한다. GIF의 재생 속도는 렌더링 성능을 나타내지 않는다.
 - **검증 환경**: 일반 장비에서는 기본 GPU 선택을 따른다. 이 이미지는 실제 GPU가 없는 Linux에서 Vulkan llvmpipe로 검증했다. 예제 자체가 소프트웨어 GPU를 강제하지는 않는다. 실제 GPU의 성능이나 다른 OS에서 같은 픽셀값이 나오는지는 확인하지 않았다.
 
@@ -374,7 +376,7 @@ page in [`gallery/`](https://github.com/shim9610/figgy/blob/master/crates/render
 
 수식 갤러리(`math_gallery.rs`)는 `RichText::from_tex`로 쓴 모든 수식 구성(분수, 근호, 큰 연산자와 극한, 구분 기호, 악센트, 위아래 괄호와 화살표, 첨자, 그리스 문자)을 1200 × 1600 차트의 주석 텍스트로 그리고, 각 수식 아래에 TeX 원문을 적는다. 출력은 `math-gallery.png`, `math-gallery@2x.png`, 스케치 스타일의 `math-gallery-sketch.png`, `math-gallery-sketch@2x.png`이다. 스케치 스타일에서도 수식은 내장 수식 글꼴로 그린다.
 
-0.19에 추가된 차트(삼각 좌표, 3D 곡면과 3D 화살표, 삼각 메시와 3D 삼각 메시, 육각 빈, 컬러 이미지, 극좌표 히트맵, 장미 차트, 선버스트, 평행 좌표, 반쪽 바이올린, 레인클라우드, 폭포·캔들스틱·간트, 도형 주석, 줄기·롤리팝, 축 끊기, 에너지 준위, 파인만 도표)는 [위 표](#charts-new-in-019)의 예제가 그린다. 예제가 그리는 값(구간별 개수, 밀도, 누적 합, 플로팅 위치, 적합선, 배치)은 모두 예제가 계산하고 렌더러는 받은 데이터만 그린다. 육각 빈, 컬러 이미지, 삼각 좌표, 3D, 메시, 평행 좌표, 범위 막대, 줄기, 축 끊기, 파인만 도표 그림은 `readme_gallery`가 다른 그림과 함께 만들고, 나머지는 `polar_plot`, `radial_gallery`, `boxplot_gallery`, `overlay_axes`, `probability_paper`, `nist_grotrian_gallery`가 만든다. 예제마다 따로 실행할 수도 있다.
+0.19에 추가된 차트(삼각 좌표, 3D 곡면과 3D 화살표, 삼각 메시와 3D 삼각 메시, 육각 빈, 컬러 이미지, 극좌표 히트맵, 장미 차트, 선버스트, 평행 좌표, 반쪽 바이올린, 레인클라우드, 폭포·캔들스틱·간트, 도형 주석, 줄기·롤리팝, 축 끊기, 에너지 준위, 파인만 도표)는 [위 표](#charts-new-in-019)의 예제가 그린다. 예제가 그리는 값(구간별 개수, 밀도, 누적 합, 플로팅 위치, 적합선, 배치)은 모두 예제가 계산하고 렌더러는 받은 데이터만 그린다. 육각 빈, 컬러 이미지, 삼각 좌표, 3D, 메시, 평행 좌표, 범위 막대, 줄기, 축 끊기, 파인만 도표 그림은 `readme_gallery`가 다른 그림과 함께 만들고, 나머지는 `polar_plot`, `radial_gallery`, `boxplot_gallery`, `overlay_axes`, `nist_grotrian_gallery`가 만든다. 예제마다 따로 실행할 수도 있다.
 
 갤러리 그림은 테마 계열(`gallery`, `cool-slate`, `midnight`, `warm-paper`)이나 직접 만든 테마로 그린다([테마](USAGE.md#테마)). 예제는 계열 구성원을 `ThemeFamily::theme(kind)`(원형 차트는 `ThemeFamily::radial()`)로 얻거나, 계열에 없는 모양을 [examples/support/looks.rs](examples/support/looks.rs)에서 `Theme` 값으로 만들어 `Chart::apply_custom_theme`으로 적용한다. 팔레트 순서나 채움 불투명도처럼 그림에 맞춰 복사본을 조금 고치는 예제도 있다. 그림마다 쓴 테마는 위의 표와 종류별 페이지에 적었다.
 
