@@ -18,12 +18,12 @@ compilation and dispatch, not the public renderer API or chart quality.
   and correction pipelines are cached. Automatic placement uses five more
   dispatches than the single-entry version, with the same five field samples per
   candidate.
-- The single-invocation contour selector uses private scratch arrays instead of
-  workgroup memory. A Windows WARP comparison measured first GPU completion at
-  about 85 seconds with workgroup arrays and 0.23 seconds with private arrays;
-  repeated dispatches were fast with both. Private arrays keep WGSL's
-  initialization guarantees and the label selection order and capacity, and avoid
-  WARP's expensive workgroup initialization.
+- The single-invocation contour selector (`anchor_select`) uses no workgroup
+  memory. A Windows WARP comparison measured first GPU completion at about 85
+  seconds with workgroup arrays and 0.23 seconds with private arrays; repeated
+  dispatches were fast with both. Since #453 it keeps no scratch array at all:
+  it reads each kept label back from `anchors`
+  ([First frames on software GPUs](#first-frames-on-software-gpus-453)).
 - WASM async prewarm uses descriptors generated from the real Rust constructors,
   so binding sizes and visibility, vertex inputs, blend state and sample count
   match the pipelines the renderer creates later. A pipeline prewarmed with an
@@ -364,6 +364,14 @@ pass unchanged. Differences under about 0.3 s are run-to-run noise. The field co
 and cell kernels (up to 13 s on the full set) are not pathological in this sense and
 are unchanged.
 
+## Pipeline cache (#478)
+
+A native host can also save the compiled pipelines and load them in its next
+run (`RendererDevice::with_pipeline_cache`). wgpu implements this on Vulkan
+only, and lavapipe stores only a header in it, so it does not shorten the
+lavapipe times above. The calls and what is not cached are in
+[API.md](../crates/renderer/API.md#pipeline-cache-native).
+
 ## 한국어 요약
 
 소프트웨어 GPU(lavapipe, SwiftShader)는 파이프라인의 첫 draw나 dispatch 때 코드를 생성하므로, 실행되지 않더라도
@@ -374,7 +382,7 @@ scan의 `seg_init_3d`는 3D 차트의 선에만 만든다. 라벨이 있는 등�
 스냅샷이 없는 대체 경로가 실제로 쓰일 때만 만든다(#465). 결과 픽셀과 픽은 바이트 단위로 같다. 브라우저 첫 프레임은 2D 등고선
 필드가 12.8초에서 5.9초로, 3D 곡면이 9.4초에서 5.1초로 줄었다. lavapipe에서는 2D 등고선 필드가 8.5초에서 1.5초로,
 극좌표 히트맵이 14.0초에서 7.0초로 줄었다. 브라우저의 극좌표 히트맵(약 36초)은 full 세트의 등고선 프래그먼트가 원인이며
-다음 이슈에서 다룬다.
+아래 #465에서 줄였다.
 
 #465에서는 full 세트의 field 진입점이 축 변환(`axis_pair_to_t`, 확률 눈금과 축 끊김 포함)을 호출 자리마다 다시
 인라인하던 것을 줄였다. `axis_t`와 `boundary_t`는 분기마다 따로 호출하던 것을 호출 한 번으로 바꿨고, 표본 격자 검색은
@@ -422,3 +430,7 @@ GPU 환경에서 얻은 결과다. 실제 GPU의 실행 속도나 macOS 정밀�
 제외한다(규칙 8). 이 컴파일은 화면의 집계·대기·실패에 넣지 않는다. 테스트는
 `a_drawn_charts_first_pick_compiles_each_pipeline_once`(`crates/web/tests/compile_queue_browser.rs`)와
 `a_pick_compile_goes_first_and_stays_out_of_the_screen_counts`(`crates/renderer/src/compile_schedule.rs`)다.
+
+네이티브 호스트는 컴파일한 파이프라인을 저장했다가 다음 실행에서 불러올 수도 있다(#478,
+`RendererDevice::with_pipeline_cache`). wgpu는 이 캐시를 Vulkan에서만 구현하고 lavapipe는 헤더만 저장하므로
+위 lavapipe 측정 시간을 줄이지 않는다. 호출과 캐시하지 않는 대상은 [API.md](../crates/renderer/API.md#pipeline-cache-native)에 있다.

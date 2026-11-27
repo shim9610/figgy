@@ -21,29 +21,34 @@
 **Rust 1.99 이상**과 정상 동작하는 GPU 드라이버가 필요합니다. 저장소의 툴체인은 1.99.0으로
 고정했습니다.
 
+이 문서와 안내 문서는 아직 crates.io에 올라가지 않은 figgy 0.19를 설명합니다.
+crates.io의 최신 배포는 figgy-renderer 0.18.1(figgy-model 0.12.1)이며, 아래 예제는 0.18.1로
+빌드되지 않습니다(`Renderer::headless_blocking`, `Chart::sized`, `Renderer::fit_ranges`,
+`save_blocking`이 없습니다). 0.19.0이 배포되기 전까지는 이 저장소를 의존성으로 씁니다.
 애플리케이션의 `Cargo.toml`에 다음 의존성을 추가합니다.
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", version = "0.18.1" }
+renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
 ```
 
-`version` 줄은 [crates.io](https://crates.io/crates/figgy-renderer)에서 figgy-renderer 0.18.1과
-figgy-model 0.12.1을 설치합니다. 로컬에 받은 저장소를 쓰려면 renderer의 `version` 대신
+기본 브랜치 `master`에는 현재 0.19 베타가 있습니다. 로컬에 받은 저장소를 쓰려면 `git` 대신
 애플리케이션 기준 경로인 `path = "../figgy/crates/renderer"`를 지정합니다.
-이전 버전용 코드에서 바꿔야 할 부분은 [변경 이력](CHANGELOG.md)의 마이그레이션 안내에 있습니다.
+0.18용 코드에서 바꿔야 할 부분은 [변경 이력](CHANGELOG.md)의 0.19 항목에 있습니다.
 
-[최소 선 그래프 예제](crates/renderer/examples/line.rs)를 `src/main.rs`에 복사하고
+[영문 README의 빠른 시작](README.md#quick-start) 코드를 `src/main.rs`에 복사하고
 `cargo run`을 실행하면 창을 열지 않고 `line.png`를 만듭니다.
 `figgy-renderer`는 Cargo 패키지 이름이고 Rust 코드에서는 `renderer`로 가져옵니다.
-전체 코드는 [영문 README의 빠른 시작](README.md#quick-start)에 있습니다.
 
 예제의 흐름은 다음과 같습니다.
 
 1. `Renderer::headless_blocking()`으로 GPU 장치와 `Renderer`를 만듭니다.
 2. `x`와 `y` 컬럼을 등록합니다.
-3. 차트 제목·축 범위와 선 스타일을 설정합니다. y축 제목의 `$…$`는 수식으로 그려집니다.
+3. 차트 제목과 선 스타일을 정하고 `fit_ranges`로 축 범위를 데이터에 맞춥니다.
+   y축 제목의 `$…$`는 수식으로 그려집니다.
 4. `save_blocking`으로 저장합니다. 파일 확장자(`.png`, `.svg`, `.pdf`)가 형식을 정합니다.
+
+축 범위를 직접 정하는 같은 차트는 [최소 선 그래프 예제](crates/renderer/examples/line.rs)에 있습니다.
 
 픽셀이나 PNG 바이트가 필요하면 `export_rgba_blocking`이나 `export_png_blocking`을 씁니다.
 자기 창에 figgy를 넣는 애플리케이션은 `wgpu = "30"` 의존성을 추가하고 `RendererDevice`로 장치를 공유합니다.
@@ -61,7 +66,8 @@ cargo run --locked -p figgy-renderer --example line
 WebAssembly에서는 시스템 글꼴을 찾지 않습니다.
 
 기존 프로그램과 GPU 장치를 공유할 때는 **wgpu 30**을 사용합니다.
-기본 기능에는 특정 GUI 프레임워크가 필요하지 않습니다.
+렌더러는 GUI 프레임워크에 의존하지 않습니다. egui 예제는 자체 `Cargo.lock`을 가진 별도 크레이트
+[`examples/egui`](examples/egui/README.md)에 있습니다.
 
 ## 브라우저
 

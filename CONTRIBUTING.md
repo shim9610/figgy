@@ -68,13 +68,20 @@ python3 ci/verify.py static
 python3 ci/verify.py packages
 ```
 
-CI's repository job also tests the whole workspace, `figgy-web` included, and
-runs the playground selftest:
+CI's repository job also tests the whole workspace, the browser wrapper
+(`crates/web`, package `figgy`) included, runs the playground selftest and
+builds the egui examples:
 
 ```sh
 cargo test --locked --workspace --features figgy-renderer/serde --no-fail-fast -- --test-threads=1
 (cd tools/playground && cargo run --locked -- --selftest)
+cargo check --locked --manifest-path examples/egui/Cargo.toml --examples
 ```
+
+`tools/playground`, `examples/egui` and `tools/loom-poller` are standalone
+crates with their own `Cargo.lock`. A dependency bump in the root workspace
+does not refresh them; `ci/verify.py static` fails when one of their lockfiles
+no longer resolves with `--locked`.
 
 A change to `crates/web/figgy-chart.js` also runs the element's own test, which
 needs Node but no build, browser or GPU:
@@ -138,10 +145,11 @@ struct or constant that mirrors a changed layout, and the contract in
 implements; follow that guide's steps and run
 `cargo test --locked -p figgy-renderer --test shader_consistency`.
 
-Public, non-draft PRs run the three-OS package/rendering matrix and CodeQL. There
-are no push or scheduled triggers for those workflows. Draft PRs wait until
-marked ready for review. CI adapters are software or virtualized; macOS/Metal
-remains experimental.
+Public, non-draft PRs into `master` run the three-OS package/rendering matrix
+and the repository job; CodeQL runs on every public, non-draft PR. There are no
+push or scheduled triggers for those workflows. Draft PRs wait until marked
+ready for review. See [When CI runs](ci/README.md#when-ci-runs). CI adapters
+are software or virtualized; macOS/Metal remains experimental.
 
 ## License
 
