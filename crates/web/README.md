@@ -7,9 +7,9 @@ maintained with the renderer: every renderer feature ships its wrapper methods.
 
 The latest library packages on crates.io are `figgy-renderer` 0.18.1 and
 `figgy-model` 0.12.1. The browser product is the Cargo package `figgy`
-0.16.0-beta.2, which has its own version and is named for its generated JS/WASM
+0.16.0-beta.3, which has its own version and is named for its generated JS/WASM
 filenames. It is built from this repository against the renderer
-(0.19.0-beta.2) and model sources in the checkout through path
+(0.19.0-beta.3) and model sources in the checkout through path
 dependencies (`publish = false`; the publication target is open,
 [#57](https://github.com/shim9610/figgy/issues/57)). The `figgy` crate on crates.io and the
 `figgy` package on npm are unrelated projects. An application that reuses this
@@ -240,7 +240,8 @@ installed document or a candidate config, on this canvas or at the physical
 surface size given without resizing anything), `panel_at(x, y)` (the panel on top at a point), `data_area_rect()`
 (the active layer's exact data area), `legend_entry(series_id)` (one legend row
 as the auto legend writes it) and `render_warnings()` (every warning of the
-last frame). The free function
+last frame, including `LegendSymbolMismatch` for a legend symbol that does not
+draw the series it names, [#483](https://github.com/shim9610/figgy/issues/483)). The free function
 `inspect_config_layout(config_json, surface_width, surface_height)`
 returns that layout for a candidate without a chart, and equals what a chart
 with that surface reports ([#334](https://github.com/shim9610/figgy/issues/334)).
@@ -292,7 +293,7 @@ on the renderer, with its own deployment and UI.
 라벨은 그대로 두며(`text_generated`, `regenerate_labels`), 옮긴 장식을 원래 자리로 돌린다
 (`reset_decoration_position`).
 
-Cargo 패키지 `figgy` 0.16.0-beta.2는 렌더러와 별도로 버전을 매기며 이 저장소에서 빌드한다
+Cargo 패키지 `figgy` 0.16.0-beta.3는 렌더러와 별도로 버전을 매기며 이 저장소에서 빌드한다
 (`publish = false`, 배포 대상은 아직 정하지 않았다: [#57](https://github.com/shim9610/figgy/issues/57)).
 crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝트와 관계없다.
 브라우저 테스트(`tests/*_browser.rs`)는 CI의 `browser` 작업이 SwiftShader WebGPU를 쓰는
@@ -339,7 +340,7 @@ Chromium에서 실행한다. 로컬에서도 같은 방식으로 `ci/wasm_browse
 설치된 문서나 후보 설정의 문서 영역·배율·패널별 프레임·데이터 영역·레이어를 이 캔버스에서, 또는 캔버스를 바꾸지 않고 주어진 물리 표면 크기에서, `panel_at(x, y)`는
 그 점에서 맨 위에 있는 패널을, `data_area_rect()`는 활성 레이어의 정확한 데이터 영역을 돌려준다.
 `legend_entry(series_id)`는 자동 범례가 쓰는 한 줄을, `render_warnings()`는 마지막 프레임의 모든
-경고를 돌려준다. 원형 차트의 `FiggyBoundedChart`에도 같은 계약과 JSON의 `annotation_preview(json)`가 있으며,
+경고(이름 붙인 시리즈와 다른 범례 기호를 알리는 `LegendSymbolMismatch` 포함, #483)를 돌려준다. 원형 차트의 `FiggyBoundedChart`에도 같은 계약과 JSON의 `annotation_preview(json)`가 있으며,
 좌표는 그 차트의 문서 논리 픽셀이다([#334](https://github.com/shim9610/figgy/issues/334)).
 차트 없이 쓰는 `inspect_config_layout(config_json, surface_width, surface_height)`은 그 표면 크기의 차트와 같은 레이아웃을 돌려준다(#334).
 결과 형식과 오류 코드는 [WASM 안내](../renderer/WASM.md#editor-queries-figgychart-312)에 있다.

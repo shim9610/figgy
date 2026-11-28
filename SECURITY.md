@@ -23,7 +23,7 @@ is no guaranteed response deadline.
 | Code | Supported |
 | --- | --- |
 | Latest crates.io release: `figgy-renderer` 0.18.1 and `figgy-model` 0.12.1 | Yes |
-| Default branch (`master`), including `figgy` 0.16.0-beta.2 with `figgy-renderer` 0.19.0-beta.2 and `figgy-model` 0.13.0-beta.2 (a beta, not on crates.io), the browser product in `crates/web`, which is built from this repository and not published to a registry | Yes |
+| Default branch (`master`), including `figgy` 0.16.0-beta.3 with `figgy-renderer` 0.19.0-beta.3 and `figgy-model` 0.13.0-beta.3 (a beta, not on crates.io), the browser product in `crates/web`, which is built from this repository and not published to a registry | Yes |
 | Older releases and pinned Git revisions | No |
 
 Security fixes target the supported code above. Older releases and pinned Git

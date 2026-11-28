@@ -5,7 +5,7 @@
 figgy의 브라우저용 제품인 [`crates/web`](README.md)이 사용하는 JSON 형식이다.
 설정 타입 자체는 Rust 모델에 정의되며 `serde`로 직렬화할 수 있다.
 
-이 문서는 이 저장소의 현재 소스가 읽고 쓰는 JSON 형식을 설명한다. `crates/web`은 같은 체크아웃의 렌더러를 경로 의존성으로 빌드한다. 소스의 패키지 버전은 crates.io에 배포하지 않은 베타인 `figgy` 0.16.0-beta.2, `figgy-renderer` 0.19.0-beta.2, `figgy-model` 0.13.0-beta.2다. crates.io의 최신 배포판은 `figgy-renderer` 0.18.1, `figgy-model` 0.12.1이며, 아래에서 figgy-model 0.12.1 이하가 무시하거나 거부한다고 적은 키와 값은 crates.io에 배포된 0.12.1 이후에 추가한 것이다. Rust 호스트에서 같은 JSON을 읽고 쓰려면 렌더러의 `serde` 기능을 켠다. 아래는 crates.io 배포판을 쓰는 설정이다. 이런 키와 값까지 쓰려면 `version` 대신 `path`로 체크아웃의 `crates/renderer`를 가리킨다.
+이 문서는 이 저장소의 현재 소스가 읽고 쓰는 JSON 형식을 설명한다. `crates/web`은 같은 체크아웃의 렌더러를 경로 의존성으로 빌드한다. 소스의 패키지 버전은 crates.io에 배포하지 않은 베타인 `figgy` 0.16.0-beta.3, `figgy-renderer` 0.19.0-beta.3, `figgy-model` 0.13.0-beta.3다. crates.io의 최신 배포판은 `figgy-renderer` 0.18.1, `figgy-model` 0.12.1이며, 아래에서 figgy-model 0.12.1 이하가 무시하거나 거부한다고 적은 키와 값은 crates.io에 배포된 0.12.1 이후에 추가한 것이다. Rust 호스트에서 같은 JSON을 읽고 쓰려면 렌더러의 `serde` 기능을 켠다. 아래는 crates.io 배포판을 쓰는 설정이다. 이런 키와 값까지 쓰려면 `version` 대신 `path`로 체크아웃의 `crates/renderer`를 가리킨다.
 
 ```toml
 renderer = { package = "figgy-renderer", version = "0.18.1", features = ["serde"] }
