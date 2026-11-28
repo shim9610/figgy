@@ -717,6 +717,27 @@ A symbol from `series_symbol_segments` names its series
 `legend_entry_series_id(content, index)` pair entries with series by that id
 rather than by position; a symbol without one pairs by position.
 
+**Legend guard (#483).** A hand-made symbol can name a series and still not
+draw its mark. `legend_symbol_mismatches(content, series, colormap)` lists
+each entry whose symbol names a `series_id` that no series has
+(`LegendMismatch::UnknownSeries`), draws colours other than that series' mark
+(`ColorDiffers`, comparing every segment's `color` and `rule_band` with
+`series_symbol_segments`), or draws another mark in the same colours
+(`MarkDiffers`: glyph, rule, dash, stroke thickness, field width or segment
+count). Text styling of a symbol (font, size, bold) is not part of the mark,
+and symbols that name no series are free-form and never checked.
+`Config::legend_warnings(series)` runs it over the base legend, each
+overlay's and each subplot's (overlays included) and names the legend by its
+`LayerRef`. These are warnings, not errors: the legend draws as written,
+`validate_series` still accepts the chart, and a host may pick another colour
+on purpose. A registered chart's view reports them as
+`RenderWarning::LegendSymbolMismatch` in `ChartView::render_warnings`,
+re-derived whenever `prepare_registered` redraws it after a config or series
+edit, and the web wrapper's `render_warnings()` JSON carries them
+(`kind: "LegendSymbolMismatch"`, `legend`, `entry`, `series_id`, `reason`).
+A view of a held `Chart` (`create_chart_view`) has no series and never
+reports them; such a host calls `Config::legend_warnings` itself.
+
 ### `DataSelectionsConfig`
 
 `Config.picked_data` holds `visible` and `refs`, a list of `PickedDataRef`
@@ -1958,6 +1979,8 @@ pub struct Config {
 
 범례 기호는 `field_em`으로 너비를 고정한 텍스트 구간이다. 모양에 관계없이 `SYMBOL_FIELD_EM`, 즉 폰트 크기의 2배 너비를 차지한다. 선 기호는 `rule: true`로 구간 전체에 수평선을 그리고, 점 기호는 가운데에 `● ■ ▲ …` 같은 글리프를 놓는다. 선과 점을 함께 표시할 때도 전체 너비는 같다.
 점선·도트 패턴은 `rule_dash`에 저장하므로 범례에도 `LineStylePreset`의 선 모양이 반영된다. 선 두께는 `rule_thickness_em`(× 글자 크기)이며, 없으면 `RULE_THICKNESS_EM`(0.09em)으로 그린다. `series_symbol_segments`는 시리즈의 선 두께를 기준 범례 크기 14px에 맞춰(`두께 / 14` em, 최소 0.09em) 저장하므로 3px 시리즈의 견본은 3px로 그려진다. 자동으로 만든 항목은 `심볼 + ' ' + '\t' + 라벨` 형식이며, 탭을 기준으로 라벨이 정렬된다. 히트맵 기호는 차트 컬러맵 견본이다. `colorbar.colormap`에서 뽑은 여섯 색 띠로 같은 구간을 채우며, 색상 막대가 없으면 빈 구간이다. 직접 구성할 때는 `symbol_segments(kind, color)`, `series_symbol_segments(cfg, colormap)`, `append_legend_entry(content, symbol, label)`을 사용한다. `series_symbol_segments`가 만든 기호에는 시리즈 id(`RichSegment.series_id`)가 들어가며, 기호 갱신과 `legend_entry_of_series` / `legend_entry_series_id`는 위치 대신 이 id로 항목과 시리즈를 짝짓는다. id가 없는 기호는 위치로 짝짓는다.
+
+**범례 검사(#483).** 직접 만든 기호는 시리즈 id를 달고 있어도 그 시리즈의 마크와 다르게 그려질 수 있다. `legend_symbol_mismatches(content, series, colormap)`는 이런 항목을 찾는다. 기호가 가리키는 `series_id`를 가진 시리즈가 없으면 `LegendMismatch::UnknownSeries`, 색이 그 시리즈의 마크와 다르면 `ColorDiffers`(구간마다 `color`와 `rule_band`를 `series_symbol_segments`와 비교한다), 색은 같지만 글리프·수평선·점선·선 두께·구간 너비·구간 수가 다르면 `MarkDiffers`로 보고한다. 글꼴, 크기, 굵게 같은 글자 스타일은 마크로 보지 않으며, 시리즈 id가 없는 기호는 자유 형식이라 검사하지 않는다. `Config::legend_warnings(series)`는 기본 범례와 오버레이·서브플롯의 범례(서브플롯의 오버레이 포함)를 모두 검사하고, 각 범례를 `LayerRef`로 알려 준다. 오류가 아니라 경고다. 범례는 적힌 대로 그리고, `validate_series`도 차트를 그대로 받아들이며, 호스트가 일부러 다른 색을 골랐을 수도 있다. 등록 차트의 뷰는 이 경고를 `ChartView::render_warnings`에 `RenderWarning::LegendSymbolMismatch`로 보고하며, 설정이나 시리즈를 바꾼 뒤 `prepare_registered`가 뷰를 다시 그릴 때마다 새로 계산한다. 웹 래퍼의 `render_warnings()` JSON에도 들어간다(`kind: "LegendSymbolMismatch"`, `legend`, `entry`, `series_id`, `reason`). 보유 `Chart`의 뷰(`create_chart_view`)는 시리즈를 모르므로 이 경고를 보고하지 않는다. 그런 호스트는 `Config::legend_warnings`를 직접 호출한다.
 
 ### `DataSelectionsConfig`
 

@@ -1682,7 +1682,11 @@ impl FiggyChart {
     /// and `LogDecadeStepAdjusted` (`axis`, `requested`, `used`; a
     /// replaced spacing also has `reason` and, for `TooManyTicks`,
     /// `limit`), `MinorCountClamped` (`axis`, `requested`, `used`) and
-    /// `AnnotationSkipped` (`index`, `reason`). `axis` is the `Config`
+    /// `AnnotationSkipped` (`index`, `reason`) and `LegendSymbolMismatch`
+    /// (#483: `legend`, the legend's `Config` path such as `"legend"` or
+    /// `"overlays[0].legend"`; `entry`; `series_id`; `reason`, one of
+    /// `UnknownSeries`, `ColorDiffers` and `MarkDiffers`), a legend
+    /// symbol that names a series but does not draw its mark. `axis` is the `Config`
     /// field path (`"bottom_x"`, `"overlays[0].y_axis"`,
     /// `"subplots[1].config.left_y"`), a non-finite number is `null`, and
     /// `message` is one line naming the setting and both values. A later
