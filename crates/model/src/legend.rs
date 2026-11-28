@@ -916,6 +916,206 @@ pub fn remove_legend_entry(content: &mut RichText, entry_index: usize) -> bool {
     true
 }
 
+/// How a legend symbol that names a series differs from that series' mark
+/// ([`legend_symbol_mismatches`], #483).
+///
+/// New reasons may be added as new variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum LegendMismatch {
+    /// The symbol names a `series_id` that no series in the list has.
+    UnknownSeries,
+    /// The symbol draws a colour the series' mark does not, or leaves out
+    /// one it does (`RichSegment::color` and `RichSegment::rule_band`).
+    ColorDiffers,
+    /// The colours match, but the mark is another one: another glyph, a
+    /// rule where the mark has a glyph (or the reverse), another dash,
+    /// stroke thickness or field width, or another number of segments.
+    MarkDiffers,
+}
+
+/// One legend entry whose symbol does not match the series it names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegendSymbolMismatch {
+    /// The entry's index, as [`legend_entry_count`] counts entries.
+    pub entry: usize,
+    /// The series the symbol names.
+    pub series_id: String,
+    /// How it differs.
+    pub reason: LegendMismatch,
+}
+
+/// The colours a symbol draws: each segment's ink and rule band.
+fn symbol_colors(symbol: &[RichSegment]) -> impl Iterator<Item = Color> + '_ {
+    symbol
+        .iter()
+        .flat_map(|segment| [segment.color, segment.rule_band])
+        .flatten()
+}
+
+/// Whether every colour of `a` is one of `b`'s.
+fn colors_within(a: &[RichSegment], b: &[RichSegment]) -> bool {
+    symbol_colors(a).all(|color| symbol_colors(b).any(|other| other == color))
+}
+
+/// Whether two symbol segments draw the same mark: the same glyph or rule,
+/// dash, thickness and field width. Colours, text style and the series tag
+/// are not part of the mark.
+fn same_mark_segment(a: &RichSegment, b: &RichSegment) -> bool {
+    a.text == b.text
+        && a.rule == b.rule
+        && a.rule_dash == b.rule_dash
+        && a.rule_thickness_em == b.rule_thickness_em
+        && a.field_em == b.field_em
+}
+
+/// The entries of `content` whose symbol names a series but does not draw
+/// that series' mark (#483): a `series_id` no series in `series` has, or a
+/// symbol whose colours or mark differ from [`series_symbol_segments`] of
+/// the series it names, with `colormap` the chart's colourbar map as there.
+///
+/// Symbols that name no series (built with [`symbol_segments`], or written
+/// before symbols named their series) are free-form and never reported.
+/// Every entry is visited; nothing is changed. The result is empty when the
+/// legend matches its series, as one built by [`series_legend_entry`] or
+/// refreshed by [`update_legend_symbols_preserving_text`] does.
+pub fn legend_symbol_mismatches(
+    content: &RichText,
+    series: &[SeriesConfig],
+    colormap: Option<&ColorMap>,
+) -> Vec<LegendSymbolMismatch> {
+    let mut out = Vec::new();
+    for (entry, span) in legend_entry_spans(content).into_iter().enumerate() {
+        let Some(id) = span.series_id(content) else {
+            continue;
+        };
+        let mismatch = |reason| LegendSymbolMismatch {
+            entry,
+            series_id: id.to_owned(),
+            reason,
+        };
+        let Some(cfg) = series.iter().find(|cfg| cfg.series_id == id) else {
+            out.push(mismatch(LegendMismatch::UnknownSeries));
+            continue;
+        };
+        let drawn = &content.segments[span.symbol];
+        let expected = series_symbol_segments(cfg, colormap);
+        if !colors_within(drawn, &expected) || !colors_within(&expected, drawn) {
+            out.push(mismatch(LegendMismatch::ColorDiffers));
+        } else if drawn.len() != expected.len()
+            || !drawn
+                .iter()
+                .zip(&expected)
+                .all(|(a, b)| same_mark_segment(a, b))
+        {
+            out.push(mismatch(LegendMismatch::MarkDiffers));
+        }
+    }
+    out
+}
+
+/// A legend entry of a chart whose symbol does not match the series it
+/// names ([`crate::config::Config::legend_warnings`], #483).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegendWarning {
+    /// The layer whose legend it is: [`crate::LayerRef::Base`] for
+    /// `Config::legend`, `Overlay(i)` for `overlays[i].legend`,
+    /// `Subplot(i)` for `subplots[i].config.legend` and
+    /// `SubplotOverlay(i, j)` for that subplot's `overlays[j].legend`.
+    pub layer: crate::LayerRef,
+    /// The entry and how its symbol differs.
+    pub mismatch: LegendSymbolMismatch,
+}
+
+impl LegendWarning {
+    /// The `Config` field path of the legend (`legend`,
+    /// `overlays[0].legend`, `subplots[1].config.legend`, ...).
+    pub fn legend_path(&self) -> String {
+        match self.layer {
+            crate::LayerRef::Overlay(i) => format!("overlays[{i}].legend"),
+            crate::LayerRef::Subplot(i) => format!("subplots[{i}].config.legend"),
+            crate::LayerRef::SubplotOverlay(i, j) => {
+                format!("subplots[{i}].config.overlays[{j}].legend")
+            }
+            crate::LayerRef::Base | crate::LayerRef::Annotations => "legend".to_owned(),
+        }
+    }
+}
+
+impl std::fmt::Display for LegendWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let LegendSymbolMismatch {
+            entry,
+            series_id,
+            reason,
+        } = &self.mismatch;
+        write!(
+            f,
+            "{}.content entry {entry} names series {series_id:?} but {}",
+            self.legend_path(),
+            match reason {
+                LegendMismatch::UnknownSeries => "no series has that id",
+                LegendMismatch::ColorDiffers => "its symbol colour differs from the series' mark",
+                LegendMismatch::MarkDiffers => "its symbol is another mark than the series'",
+            }
+        )
+    }
+}
+
+impl crate::config::Config {
+    /// Every legend entry of this chart whose symbol names a series but
+    /// does not draw that series' mark (#483): the base legend, each
+    /// overlay's legend and each subplot's, overlays included, checked
+    /// against `series` with [`legend_symbol_mismatches`]. Overlay legends
+    /// use the chart's colourbar map and a subplot's legends its own, as
+    /// [`crate::config::Config::apply_palette`] redraws them.
+    ///
+    /// Warnings, not errors: a host may draw a legend in another colour on
+    /// purpose, and [`crate::config::Config::validate_series`] still accepts
+    /// the chart. Nothing is changed.
+    pub fn legend_warnings(&self, series: &[SeriesConfig]) -> Vec<LegendWarning> {
+        let mut out = Vec::new();
+        push_legend_warnings(&mut out, self, series, None);
+        out
+    }
+}
+
+/// [`crate::config::Config::legend_warnings`] of `config`, which is subplot
+/// `subplot` of the document when that is `Some`.
+fn push_legend_warnings(
+    out: &mut Vec<LegendWarning>,
+    config: &crate::config::Config,
+    series: &[SeriesConfig],
+    subplot: Option<usize>,
+) {
+    let colormap = config.colorbar.as_ref().map(|bar| &bar.colormap);
+    let own = subplot.map_or(crate::LayerRef::Base, crate::LayerRef::Subplot);
+    let legends = std::iter::once((own, Some(&config.legend))).chain(
+        config.overlays.iter().enumerate().map(|(j, overlay)| {
+            let layer = match subplot {
+                Some(i) => crate::LayerRef::SubplotOverlay(i, j),
+                None => crate::LayerRef::Overlay(j),
+            };
+            (layer, overlay.legend.as_ref())
+        }),
+    );
+    for (layer, legend) in legends {
+        let Some(legend) = legend else {
+            continue;
+        };
+        out.extend(
+            legend_symbol_mismatches(&legend.content, series, colormap)
+                .into_iter()
+                .map(|mismatch| LegendWarning { layer, mismatch }),
+        );
+    }
+    if subplot.is_none() {
+        for (i, sub) in config.subplots.iter().enumerate() {
+            push_legend_warnings(out, &sub.config, series, Some(i));
+        }
+    }
+}
+
 /// Legend box rendered in one corner of the chart's data area.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -1548,5 +1748,256 @@ mod tests {
         assert!(!plain.contains("series_id"));
         let parsed: RichSegment = serde_json::from_str(&plain).unwrap();
         assert_eq!(parsed.series_id, None);
+    }
+}
+
+#[cfg(test)]
+mod mismatch_tests {
+    //! The legend guard (#483): symbols that name a series and do not draw
+    //! its mark.
+    use super::*;
+    use crate::data_config::{DataLineStyleConfig, XySeries};
+    use crate::text::TextAlign;
+
+    fn line(id: &str, color: Color) -> SeriesConfig {
+        SeriesConfig {
+            series_id: id.into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            z_column: None,
+            render_type: DataRenderType::Xy(XySeries {
+                scatter: None,
+                line: Some(DataLineStyleConfig {
+                    line_style: LineStylePreset::Solid,
+                    line_color: color,
+                    line_width: 2.0,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: crate::data_config::LineInterpolation::Linear,
+                }),
+                errors: None,
+                stem: None,
+            }),
+        }
+    }
+
+    fn content() -> RichText {
+        RichText {
+            segments: Vec::new(),
+            color: Color::BLACK,
+            font_size: 12.0,
+            font: String::new(),
+            align: TextAlign::Left,
+        }
+    }
+
+    /// A legend of one entry per series, as `series_legend_entry` builds it.
+    fn derived(series: &[SeriesConfig]) -> RichText {
+        let mut text = content();
+        for (i, cfg) in series.iter().enumerate() {
+            if i > 0 {
+                text.segments.push(RichSegment::plain('\n'));
+            }
+            text.segments.extend(series_legend_entry(cfg, None));
+        }
+        text
+    }
+
+    /// `symbol` tagged with `series_id`, as a hand-made entry would carry it.
+    fn tagged(mut symbol: Vec<RichSegment>, series_id: &str) -> Vec<RichSegment> {
+        for segment in &mut symbol {
+            segment.series_id = Some(series_id.into());
+        }
+        symbol
+    }
+
+    const RED: Color = Color::from_rgb8(255, 0, 0);
+    const BLUE: Color = Color::from_rgb8(0, 0, 255);
+
+    #[test]
+    fn a_derived_legend_reports_nothing() {
+        let series = [line("a", RED), line("b", BLUE)];
+        assert!(legend_symbol_mismatches(&derived(&series), &series, None).is_empty());
+    }
+
+    #[test]
+    fn a_symbol_naming_no_series_is_reported() {
+        let series = [line("a", RED)];
+        let mut text = content();
+        append_legend_entry(
+            &mut text,
+            tagged(series_symbol_segments(&line("gone", RED), None), "gone"),
+            "Gone",
+        );
+        assert_eq!(
+            legend_symbol_mismatches(&text, &series, None),
+            [LegendSymbolMismatch {
+                entry: 0,
+                series_id: "gone".into(),
+                reason: LegendMismatch::UnknownSeries,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_recoloured_symbol_is_reported() {
+        let series = [line("a", RED), line("b", BLUE)];
+        let mut text = derived(&series[..1]);
+        text.segments.push(RichSegment::plain('\n'));
+        // Entry 1 names `b` but draws `b`'s mark in red.
+        text.segments
+            .extend(series_legend_entry(&line("b", RED), None));
+        assert_eq!(
+            legend_symbol_mismatches(&text, &series, None),
+            [LegendSymbolMismatch {
+                entry: 1,
+                series_id: "b".into(),
+                reason: LegendMismatch::ColorDiffers,
+            }]
+        );
+    }
+
+    #[test]
+    fn another_mark_in_the_right_colour_is_reported() {
+        let series = [line("a", RED)];
+        let mut text = content();
+        append_legend_entry(
+            &mut text,
+            tagged(symbol_segments(&LegendEntryKind::Scatter, RED), "a"),
+            "A",
+        );
+        let found = legend_symbol_mismatches(&text, &series, None);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].reason, LegendMismatch::MarkDiffers);
+        // A rule without the series' stroke thickness is another mark too.
+        let mut text = content();
+        append_legend_entry(
+            &mut text,
+            tagged(symbol_segments(&LegendEntryKind::Line, RED), "a"),
+            "A",
+        );
+        assert_eq!(
+            legend_symbol_mismatches(&text, &series, None)[0].reason,
+            LegendMismatch::MarkDiffers
+        );
+    }
+
+    #[test]
+    fn symbols_that_name_no_series_are_not_checked() {
+        let series = [line("a", RED)];
+        let mut text = content();
+        append_legend_entry(
+            &mut text,
+            symbol_segments(&LegendEntryKind::Scatter, BLUE),
+            "free-form",
+        );
+        assert!(legend_symbol_mismatches(&text, &series, None).is_empty());
+    }
+
+    #[test]
+    fn text_styling_of_a_symbol_is_not_a_mismatch() {
+        let series = [line("a", RED)];
+        let mut text = derived(&series);
+        for segment in &mut text.segments {
+            segment.font_size = Some(20.0);
+            segment.bold = true;
+        }
+        assert!(legend_symbol_mismatches(&text, &series, None).is_empty());
+    }
+
+    /// Rule 10: every entry and series is checked, past any size a fixed
+    /// array could hold.
+    #[test]
+    fn every_entry_of_a_large_legend_is_checked() {
+        const COUNT: usize = 5000;
+        let series: Vec<_> = (0..COUNT)
+            .map(|i| line(&format!("s{i}"), Color::from_rgb8((i % 251) as u8, 0, 0)))
+            .collect();
+        let mut text = derived(&series);
+        assert!(legend_symbol_mismatches(&text, &series, None).is_empty());
+        // Recolour the last entry's symbol.
+        let last = series.last().unwrap();
+        let start = text
+            .segments
+            .iter()
+            .position(|s| s.series_id.as_deref() == Some(last.series_id.as_str()))
+            .unwrap();
+        text.segments[start].color = Some(BLUE);
+        let found = legend_symbol_mismatches(&text, &series, None);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].entry, COUNT - 1);
+        assert_eq!(found[0].reason, LegendMismatch::ColorDiffers);
+    }
+
+    #[test]
+    fn config_warnings_name_every_legend() {
+        let series = [line("a", RED)];
+        let mut stale = content();
+        append_legend_entry(
+            &mut stale,
+            tagged(series_symbol_segments(&line("a", BLUE), None), "a"),
+            "A",
+        );
+        let mut config = crate::default::default_config();
+        config.legend.content = derived(&series);
+        let mut overlay = crate::layer::OverlayLayer::default();
+        let mut legend = config.legend.clone();
+        legend.content = stale.clone();
+        overlay.legend = Some(legend.clone());
+        config.overlays.push(overlay);
+        let mut sub = crate::layer::Subplot::default();
+        sub.config.legend.content = stale.clone();
+        let mut sub_overlay = crate::layer::OverlayLayer::default();
+        sub_overlay.legend = Some(legend);
+        sub.config.overlays.push(sub_overlay);
+        config.subplots.push(sub);
+
+        let warnings = config.legend_warnings(&series);
+        let layers: Vec<_> = warnings.iter().map(|w| w.layer).collect();
+        assert_eq!(
+            layers,
+            [
+                crate::LayerRef::Overlay(0),
+                crate::LayerRef::Subplot(0),
+                crate::LayerRef::SubplotOverlay(0, 0),
+            ]
+        );
+        let paths: Vec<_> = warnings.iter().map(LegendWarning::legend_path).collect();
+        assert_eq!(
+            paths,
+            [
+                "overlays[0].legend",
+                "subplots[0].config.legend",
+                "subplots[0].config.overlays[0].legend",
+            ]
+        );
+        assert_eq!(
+            warnings[0].to_string(),
+            "overlays[0].legend.content entry 0 names series \"a\" but its symbol colour \
+             differs from the series' mark"
+        );
+        // A warning, not an error: the chart is still accepted.
+        assert!(config.validate_series(&series).is_ok());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn a_mismatched_legend_round_trips_unchanged() {
+        let series = [line("a", RED)];
+        let mut config = crate::default::default_config();
+        append_legend_entry(
+            &mut config.legend.content,
+            tagged(series_symbol_segments(&line("a", BLUE), None), "a"),
+            "A",
+        );
+        let before = config.legend_warnings(&series);
+        assert_eq!(before.len(), 1);
+        let json = serde_json::to_string(&config).unwrap();
+        let back: crate::config::Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, config);
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+        assert_eq!(back.legend_warnings(&series), before);
     }
 }
