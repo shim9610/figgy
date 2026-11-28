@@ -80,7 +80,8 @@ fn registered(r: &mut Renderer) -> ChartId {
 /// The tickets taken before the loss race the device's poll thread: a
 /// readback that completed before `destroy` returns its result (the device
 /// was not lost before or during that pick), and one still pending reports
-/// `DeviceLost`. Either way no other error is allowed. The calls made after
+/// `DeviceLost` once the loss reaches the renderer (`try_resolve` may say
+/// `Pending` until then). No other error is allowed. The calls made after
 /// the loss report it deterministically.
 #[test]
 fn a_pick_on_a_lost_device_reports_device_lost() {
@@ -97,14 +98,15 @@ fn a_pick_on_a_lost_device_reports_device_lost() {
     let done_or_lost = |result: &Result<(), GpuPickError>| {
         result.as_ref().is_ok() || result.as_ref().is_err_and(lost)
     };
-    // A ticket still pending after the loss is not an answer either.
-    let tried = pending
-        .try_resolve()
-        .map(|t| matches!(t, renderer::TryResolve::Ready(_)));
-    assert!(
-        matches!(tried, Ok(true)) || tried.as_ref().is_err_and(lost),
-        "try_resolve: {tried:?}"
-    );
+    // The loss can reach the renderer after `destroy` returns (Metal
+    // reports it asynchronously), so `try_resolve` may still say
+    // `Pending`; that ticket's final answer must then be done or lost.
+    let tried = match pending.try_resolve() {
+        Ok(renderer::TryResolve::Ready(_)) => Ok(()),
+        Ok(renderer::TryResolve::Pending(ticket)) => ticket.resolve_blocking().map(|_| ()),
+        Err(error) => Err(error),
+    };
+    assert!(done_or_lost(&tried), "try_resolve: {tried:?}");
     let resolved = pending_resolve.resolve_blocking().map(|_| ());
     assert!(done_or_lost(&resolved), "resolve_blocking: {resolved:?}");
     let picked = r.pick_chart(id, centre_request());
