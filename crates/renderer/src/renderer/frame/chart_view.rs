@@ -56,7 +56,13 @@ pub struct ChartView {
     /// overlay warnings tagged `WarningAxis::OverlayY(index)` or
     /// `WarningAxis::OverlayX(index)`.
     pub(in crate::renderer) tick_warnings: Vec<crate::RenderWarning>,
-    /// `tick_warnings` followed by the annotation layer's skipped items.
+    /// Legend symbols that do not draw the series they name (#483),
+    /// derived where the renderer holds the chart's series: a registered
+    /// chart's view, when it is redrawn from the chart. Always empty on a
+    /// view of a held `Chart`.
+    pub(in crate::renderer) legend_warnings: Vec<crate::RenderWarning>,
+    /// `tick_warnings`, then the annotation layer's skipped items, then
+    /// `legend_warnings`.
     pub(in crate::renderer) render_warnings: Vec<crate::RenderWarning>,
     /// One nested single-panel view per overlay layer, in `Config::overlays`
     /// order. Each holds its own grid and decoration textures and transform
@@ -241,6 +247,7 @@ impl ChartView {
             .tick_warnings
             .iter()
             .chain(self.annotation_map.warnings())
+            .chain(&self.legend_warnings)
             .cloned()
             .collect();
     }
@@ -275,7 +282,11 @@ impl ChartView {
     ///
     /// The tick warnings are followed by the annotation layer's
     /// `AnnotationSkipped` warnings, re-derived by `refresh_annotations` and
-    /// by every `refresh_axis*` (the latter redoes the annotation raster).
+    /// by every `refresh_axis*` (the latter redoes the annotation raster),
+    /// and then by `LegendSymbolMismatch` warnings (#483). Those need the
+    /// chart's series, so only a registered chart's view reports them,
+    /// re-derived whenever `prepare_registered` redraws it (a series or
+    /// config edit does); a view of a held `Chart` never does.
     pub fn render_warnings(&self) -> &[crate::RenderWarning] {
         &self.render_warnings
     }

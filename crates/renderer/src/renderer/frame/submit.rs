@@ -223,6 +223,10 @@ impl Renderer {
                 [placed.x as f32, placed.y as f32],
             )
         };
+        // The renderer holds this chart's series, so its legend symbols are
+        // checked against them (#483), from the document config: the
+        // display scale changes no colour or mark.
+        let legend_warnings = legend_render_warnings(&state.config, &state.series);
         let mut chart = Chart::stored(config.into_owned());
         chart.set_snap_guides(guides);
         self.refresh_axis_with_selection_unreported(
@@ -232,6 +236,8 @@ impl Renderer {
             selected.as_deref(),
             scale,
         )?;
+        view.legend_warnings = legend_warnings;
+        view.rebuild_render_warnings();
         view.raster_source = Some(source);
         Ok(())
     }
@@ -966,4 +972,22 @@ fn pipeline_failure(
         kind,
         message,
     }
+}
+
+/// [`crate::Config::legend_warnings`] of a chart and its series as render
+/// warnings (#483).
+fn legend_render_warnings(
+    config: &crate::Config,
+    series: &[crate::SeriesConfig],
+) -> Vec<crate::RenderWarning> {
+    config
+        .legend_warnings(series)
+        .into_iter()
+        .map(|warning| crate::RenderWarning::LegendSymbolMismatch {
+            layer: warning.layer,
+            entry: warning.mismatch.entry,
+            series_id: warning.mismatch.series_id,
+            reason: warning.mismatch.reason,
+        })
+        .collect()
 }

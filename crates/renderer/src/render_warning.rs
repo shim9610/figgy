@@ -134,8 +134,9 @@ pub enum AnnotationSkip {
     EmptyText,
 }
 
-/// A setting the raster drew differently from how it was written, or an
-/// annotation it did not draw.
+/// A setting the raster drew differently from how it was written, an
+/// annotation it did not draw, or a legend symbol that does not draw the
+/// series it names.
 ///
 /// The tick variants name the axis, the value as written (`requested`) and
 /// the value the raster actually drew (`used`). `used` has the type of the
@@ -193,6 +194,27 @@ pub enum RenderWarning {
         /// Why it has no position.
         reason: AnnotationSkip,
     },
+    /// Entry `entry` of the legend on `layer` has a symbol that names series
+    /// `series_id` but does not draw that series' mark (#483): no series
+    /// has the id, or the symbol's colours or mark differ from the ones
+    /// `series_symbol_segments` gives the series. The legend is drawn as
+    /// written; a host may have chosen another colour on purpose.
+    ///
+    /// Reported only where the renderer holds the chart's series: charts
+    /// registered with `Renderer::register_chart` (and the web wrapper,
+    /// which registers its chart). A view of a held `Chart` has no series
+    /// and never reports it; such a host calls `Config::legend_warnings`.
+    LegendSymbolMismatch {
+        /// The layer whose legend it is: `Base` for `Config::legend`,
+        /// `Overlay(i)`, `Subplot(i)` or `SubplotOverlay(i, j)` for theirs.
+        layer: crate::LayerRef,
+        /// The entry's index, as `legend_entry_count` counts entries.
+        entry: usize,
+        /// The series the symbol names.
+        series_id: String,
+        /// How the symbol differs.
+        reason: crate::config::LegendMismatch,
+    },
 }
 
 impl RenderWarning {
@@ -202,7 +224,7 @@ impl RenderWarning {
             Self::MajorSpacingReplaced { axis, .. }
             | Self::MinorCountClamped { axis, .. }
             | Self::LogDecadeStepAdjusted { axis, .. } => Some(*axis),
-            Self::AnnotationSkipped { .. } => None,
+            Self::AnnotationSkipped { .. } | Self::LegendSymbolMismatch { .. } => None,
         }
     }
 
@@ -216,7 +238,7 @@ impl RenderWarning {
             | Self::MinorCountClamped { axis: slot, .. }
             | Self::LogDecadeStepAdjusted { axis: slot, .. } => *slot = axis,
             // Not about an axis; nothing to re-tag.
-            Self::AnnotationSkipped { .. } => {}
+            Self::AnnotationSkipped { .. } | Self::LegendSymbolMismatch { .. } => {}
         }
         self
     }
@@ -278,6 +300,20 @@ impl fmt::Display for RenderWarning {
                     AnnotationSkip::EmptyText => "it has no text",
                 }
             ),
+            Self::LegendSymbolMismatch {
+                layer,
+                entry,
+                series_id,
+                reason,
+            } => crate::config::LegendWarning {
+                layer: *layer,
+                mismatch: crate::config::LegendSymbolMismatch {
+                    entry: *entry,
+                    series_id: series_id.clone(),
+                    reason: *reason,
+                },
+            }
+            .fmt(f),
         }
     }
 }

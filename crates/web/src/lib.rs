@@ -1548,6 +1548,26 @@ fn render_warning_json(warning: &renderer::RenderWarning) -> serde_json::Value {
             "index": index,
             "reason": format!("{reason:?}"),
         }),
+        W::LegendSymbolMismatch {
+            layer,
+            entry,
+            series_id,
+            reason,
+        } => serde_json::json!({
+            "kind": "LegendSymbolMismatch",
+            "legend": renderer::config::LegendWarning {
+                layer: *layer,
+                mismatch: renderer::config::LegendSymbolMismatch {
+                    entry: *entry,
+                    series_id: series_id.clone(),
+                    reason: *reason,
+                },
+            }
+            .legend_path(),
+            "entry": entry,
+            "series_id": series_id,
+            "reason": format!("{reason:?}"),
+        }),
         // `RenderWarning` is non-exhaustive: a later kind still reports
         // its message.
         other => serde_json::json!({ "kind": "Other", "debug": format!("{other:?}") }),
@@ -3855,6 +3875,19 @@ mod tests {
         assert_eq!(skipped["index"], 3);
         assert_eq!(skipped["reason"], "EmptyText");
         assert!(skipped["message"].as_str().unwrap().contains("items[3]"));
+        let legend = RenderWarning::LegendSymbolMismatch {
+            layer: renderer::LayerRef::SubplotOverlay(1, 0),
+            entry: 2,
+            series_id: "s".into(),
+            reason: renderer::LegendMismatch::ColorDiffers,
+        };
+        let value = render_warning_json(&legend);
+        assert_eq!(value["kind"], "LegendSymbolMismatch");
+        assert_eq!(value["legend"], "subplots[1].config.overlays[0].legend");
+        assert_eq!(value["entry"], 2);
+        assert_eq!(value["series_id"], "s");
+        assert_eq!(value["reason"], "ColorDiffers");
+        assert_eq!(value["message"], legend.to_string());
     }
 }
 
