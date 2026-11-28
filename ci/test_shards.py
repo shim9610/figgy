@@ -4,7 +4,8 @@ import verify
 
 
 class ShardTargets(unittest.TestCase):
-    TARGETS = ["category_axis", "decoration_oracle", "pick_draw_agreement", "vector_export"]
+    TARGETS = ["category_axis", "decoration_oracle", "pick_draw_agreement",
+               "shader_set_scenes", "theme_matrix", "vector_export"]
 
     def test_every_binary_runs_in_exactly_one_shard(self):
         runs = {}
@@ -16,10 +17,21 @@ class ShardTargets(unittest.TestCase):
         self.assertEqual(sorted(runs), self.TARGETS)
         self.assertTrue(all(len(shards) == 1 for shards in runs.values()), runs)
 
-    def test_main_runs_the_library_and_all_runs_everything(self):
-        self.assertEqual(verify.shard_targets("main", self.TARGETS)[0], "--lib")
+    def test_the_library_runs_only_in_its_shards_and_all_runs_everything(self):
+        for shard in verify.LIB_SHARDS:
+            self.assertEqual(verify.shard_targets(shard, self.TARGETS), ["--lib"])
+        for shard in ("main", *verify.SHARDS):
+            self.assertNotIn("--lib", verify.shard_targets(shard, self.TARGETS))
         self.assertEqual(verify.shard_targets("all", self.TARGETS), ["--lib", "--tests"])
-        self.assertNotIn("--lib", verify.shard_targets("picks", self.TARGETS))
+
+    def test_the_library_shards_split_the_tests_exactly(self):
+        lib = verify.shard_filters("lib")
+        rest = verify.shard_filters("lib-rest")
+        self.assertEqual(lib, list(verify.LIB_MODULES))
+        self.assertEqual(rest[0::2], ["--skip"] * len(verify.LIB_MODULES))
+        self.assertEqual(rest[1::2], lib)
+        for shard in ("all", "main", *verify.SHARDS):
+            self.assertEqual(verify.shard_filters(shard), [])
 
     def test_a_renamed_shard_binary_cannot_drop_out(self):
         with self.assertRaises(RuntimeError):
