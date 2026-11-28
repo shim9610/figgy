@@ -17,13 +17,22 @@ from package_docs import audit_document_links, check_checkout
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGES = ("figgy-model", "figgy-renderer")
 # The package tests split across CI jobs that run at once. Each named shard
-# runs only its integration test binaries; `main` runs the library tests,
-# every other integration test, the doctests and the GPU numeric and
-# missing-GPU checks; `all` runs everything in one job.
+# runs only its integration test binaries; `main` runs every other
+# integration test, the doctests and the GPU numeric and missing-GPU checks;
+# `lib` and `lib-rest` split the library tests between them; `all` runs
+# everything in one job.
 SHARDS = {
     "picks": ("pick_draw_agreement",),
     "decorations": ("decoration_oracle", "vector_export"),
+    "scenes": ("theme_matrix", "shader_set_scenes"),
 }
+# The library test modules the `lib` shard runs (libtest name filters,
+# substrings of a test's path); `lib-rest` runs every other library test by
+# skipping the same strings, so the two cover the library exactly once.
+# `streaming_request_tests` is 58% of the library's time (666 of 1145 s on
+# lavapipe), so it runs alone.
+LIB_MODULES = ("renderer::streaming_request_tests::",)
+LIB_SHARDS = ("lib", "lib-rest")
 # The extracted workspace's profile: the root manifest's (see Cargo.toml),
 # which `cargo package` does not carry.
 TEST_PROFILE = (
@@ -325,19 +334,31 @@ def test_targets(extracted):
 
 def shard_targets(shard, targets):
     """The cargo target arguments `shard` runs out of `targets`: a named
-    shard its own binaries, `main` the library and every binary no named
-    shard owns, `all` both. A named binary missing from `targets` is an
-    error, so a renamed suite cannot drop out of CI."""
+    shard its own binaries, `main` every binary no named shard owns, a
+    library shard the library, `all` everything. A named binary missing
+    from `targets` is an error, so a renamed suite cannot drop out of CI."""
     owned = {name for names in SHARDS.values() for name in names}
     missing = sorted(owned - set(targets))
     if missing:
         raise RuntimeError(f"shard test binaries not found: {missing}")
     if shard == "all":
         return ["--lib", "--tests"]
+    if shard in LIB_SHARDS:
+        return ["--lib"]
     if shard == "main":
-        return ["--lib", *[arg for name in targets if name not in owned
-                           for arg in ("--test", name)]]
+        return [arg for name in targets if name not in owned
+                for arg in ("--test", name)]
     return [arg for name in SHARDS[shard] for arg in ("--test", name)]
+
+
+def shard_filters(shard):
+    """The libtest arguments that pick a library shard's tests: `lib` the
+    `LIB_MODULES` filters, `lib-rest` the same strings skipped."""
+    if shard == "lib":
+        return list(LIB_MODULES)
+    if shard == "lib-rest":
+        return [arg for module in LIB_MODULES for arg in ("--skip", module)]
+    return []
 
 
 def package_directory():
@@ -431,7 +452,8 @@ def packages(allow_dirty, shard="all"):
         # tests or doctests (the numeric step above is the one exception).
         # Collect failures, but keep the final exit nonzero.
         failures = []
-        runs = [[*base, "--no-fail-fast", *targets, "--", "--test-threads=1", "--nocapture"]]
+        runs = [[*base, "--no-fail-fast", *targets, "--", "--test-threads=1", "--nocapture",
+                 *shard_filters(shard)]]
         if whole:
             runs.append([*base, "--no-fail-fast", "--doc"])
         for args in runs:
@@ -460,7 +482,7 @@ def main():
     parser.add_argument("stage", choices=("static", "packages"))
     parser.add_argument("--allow-dirty", action="store_true",
                         help="allow local uncommitted sources when creating archives")
-    parser.add_argument("--shard", choices=("all", "main", *SHARDS), default="all",
+    parser.add_argument("--shard", choices=("all", "main", *LIB_SHARDS, *SHARDS), default="all",
                         help="the package tests to run (packages stage only)")
     args = parser.parse_args()
     RESULTS.mkdir(parents=True, exist_ok=True)

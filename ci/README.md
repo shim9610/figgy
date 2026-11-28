@@ -157,13 +157,17 @@ Linux and WASM; the model needs only the native default target. These builds do 
 pages from each published crate version after publication, not from master.
 Local rustdoc builds do not check what docs.rs hosts.
 
-Each backend's package tests run as three jobs at once (`--shard`, `SHARDS` in
-`verify.py`): `main` runs the library tests, every integration test no other shard
-owns, the doctests, the GPU numeric and missing-adapter checks and, before them,
-`verify.py static`; `picks` runs `pick_draw_agreement`; `decorations` runs
-`decoration_oracle` and `vector_export`. Every integration test binary runs in
-exactly one shard, and a shard binary missing from the packages fails the job, so a
-renamed suite cannot drop out. `--shard all` (the default) runs everything in one
+Each backend's checks run as seven jobs at once (`--shard`, `SHARDS` and
+`LIB_SHARDS` in `verify.py`): `static` runs `verify.py static`; `lib` runs the
+library's `renderer::streaming_request_tests` and `lib-rest` every other library
+test (the same name filter, skipped, so each library test runs once); `main` runs
+every integration test no other shard owns, the doctests and the GPU numeric and
+missing-adapter checks; `scenes` runs `theme_matrix` and `shader_set_scenes`;
+`picks` runs `pick_draw_agreement`; `decorations` runs `decoration_oracle` and
+`vector_export`. On WARP the library tests alone took 70 minutes and
+`theme_matrix` 24, one after another in one job. Every integration test binary
+runs in exactly one shard, and a shard binary missing from the packages fails the
+job, so a renamed suite cannot drop out. `--shard all` (the default) runs everything in one
 job. Test builds optimize dependencies at `opt-level = 3` and the workspace crates
 at `opt-level = 1` (`[profile.test]` in the root manifest, and the same profile in
 the extracted workspace); debug assertions and overflow checks stay on. The jobs
@@ -414,8 +418,8 @@ CI는 공개 저장소에서 `master`로 향하는 초안이 아닌 PR을 열거
 검토 준비 상태로 바꿀 때만 실행한다(수동 실행도 가능). 통합 브랜치로 향하는 PR에서는 실행하지 않는다.
 브랜치, master, 태그 push로는 시작하지 않는다. CodeQL은 대상 브랜치와 상관없이 초안이 아닌 PR에서 실행한다.
 로컬에서는 저장소 루트에서 `python3 ci/verify.py static`과 `python3 ci/verify.py packages`를
-실행한다. CI는 백엔드마다 패키지 테스트를 세 작업(`main`, `picks`, `decorations`)으로
-나눠 동시에 돌리고, 테스트 빌드는 의존성을 최적화하며 의존성 빌드 결과를 캐시한다.
+실행한다. CI는 백엔드마다 검사를 일곱 작업(`static`, `lib`, `lib-rest`, `main`, `scenes`, `picks`,
+`decorations`)으로 나눠 동시에 돌리고, 테스트 빌드는 의존성을 최적화하며 의존성 빌드 결과를 캐시한다.
 
 패키지 작업은 배포되는 압축본만 검사한다. 별도의 `repository` 작업은 Ubuntu와
 Vulkan(렌더 장치가 없으면 lavapipe)에서 체크아웃 자체를 검사한다. 브라우저 래퍼 `crates/web`(패키지

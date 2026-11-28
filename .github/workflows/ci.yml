@@ -34,11 +34,14 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-2025, macos-15]
-        # The package tests in three jobs per backend that run at once
-        # (`ci/verify.py` SHARDS): `main` the library, the other
-        # integration tests, the doctests and the static checks; `picks`
-        # and `decorations` the two slowest groups of binaries.
-        shard: [main, picks, decorations]
+        # The checks in jobs per backend that run at once (`ci/verify.py`
+        # SHARDS, LIB_SHARDS): `static` the formatting, native and WASM
+        # checks and API docs; `lib` and `lib-rest` the library tests,
+        # split by module; `main` the other integration tests, the
+        # doctests and the GPU numeric and missing-GPU checks; `scenes`,
+        # `picks` and `decorations` the slowest groups of binaries. On
+        # WARP the library alone took 70 minutes and `theme_matrix` 24.
+        shard: [main, lib, lib-rest, scenes, picks, decorations, static]
         include:
           - os: ubuntu-24.04
             backend: vulkan
@@ -103,10 +106,10 @@ jobs:
             . -> target
             ../figgy-packages -> target
       - name: Formatting, native and WASM checks, strict API documentation
-        if: steps.scope.outputs.checks == 'true' && matrix.shard == 'main'
+        if: steps.scope.outputs.checks == 'true' && matrix.shard == 'static'
         run: python ci/verify.py static
       - name: Package, extract, run rendering and pixel regressions
-        if: steps.scope.outputs.checks == 'true'
+        if: steps.scope.outputs.checks == 'true' && matrix.shard != 'static'
         env:
           SHARD: ${{ matrix.shard }}
         # bash on every OS, so `$SHARD` is the environment variable on the
