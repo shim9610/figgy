@@ -1931,6 +1931,7 @@ mod mismatch_tests {
         assert_eq!(found[0].reason, LegendMismatch::ColorDiffers);
     }
 
+    #[cfg(feature = "helpers")]
     #[test]
     fn config_warnings_name_every_legend() {
         let series = [line("a", RED)];
@@ -1982,7 +1983,7 @@ mod mismatch_tests {
         assert!(config.validate_series(&series).is_ok());
     }
 
-    #[cfg(feature = "serde")]
+    #[cfg(all(feature = "serde", feature = "helpers"))]
     #[test]
     fn a_mismatched_legend_round_trips_unchanged() {
         let series = [line("a", RED)];
