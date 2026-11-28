@@ -80,7 +80,8 @@ fn registered(r: &mut Renderer) -> ChartId {
 /// The tickets taken before the loss race the device's poll thread: a
 /// readback that completed before `destroy` returns its result (the device
 /// was not lost before or during that pick), and one still pending reports
-/// `DeviceLost`. Either way no other error is allowed. The calls made after
+/// `DeviceLost` once the loss reaches the renderer (`try_resolve` may say
+/// `Pending` until then). No other error is allowed. The calls made after
 /// the loss report it deterministically.
 #[test]
 fn a_pick_on_a_lost_device_reports_device_lost() {
@@ -97,14 +98,15 @@ fn a_pick_on_a_lost_device_reports_device_lost() {
     let done_or_lost = |result: &Result<(), GpuPickError>| {
         result.as_ref().is_ok() || result.as_ref().is_err_and(lost)
     };
-    // A ticket still pending after the loss is not an answer either.
-    let tried = pending
-        .try_resolve()
-        .map(|t| matches!(t, renderer::TryResolve::Ready(_)));
-    assert!(
-        matches!(tried, Ok(true)) || tried.as_ref().is_err_and(lost),
-        "try_resolve: {tried:?}"
-    );
+    // The loss can reach the renderer after `destroy` returns (Metal
+    // reports it asynchronously), so `try_resolve` may still say
+    // `Pending`; that ticket's final answer must then be done or lost.
+    let tried = match pending.try_resolve() {
+        Ok(renderer::TryResolve::Ready(_)) => Ok(()),
+        Ok(renderer::TryResolve::Pending(ticket)) => ticket.resolve_blocking().map(|_| ()),
+        Err(error) => Err(error),
+    };
+    assert!(done_or_lost(&tried), "try_resolve: {tried:?}");
     let resolved = pending_resolve.resolve_blocking().map(|_| ());
     assert!(done_or_lost(&resolved), "resolve_blocking: {resolved:?}");
     let picked = r.pick_chart(id, centre_request());
@@ -138,10 +140,17 @@ fn a_pick_on_a_lost_device_reports_device_lost() {
 /// frame prepares with a moved area (a drag or a window resize), which
 /// retires the previous raster, and the first prepare of the next frame
 /// calls `end_gpu_frame` for the frame already submitted. Retired bytes
-/// do not grow with the frame count (their level follows the GPU's lag),
-/// all are released once the GPU is idle, and a column that fits the budget is still taken; before
-/// the fix the examples never called it and the retired bytes grew by
-/// about 1.5 MB a frame until the budget refused the column.
+/// stay within a few frames' rasters, all are released once the GPU is
+/// idle, and a column that fits the budget is still taken; before the fix
+/// the examples never called it and the retired bytes grew by about
+/// 1.5 MB a frame until the budget refused the column.
+///
+/// Retired bytes are released when the GPU completes the frame that used
+/// them, so the loop is paced as a presenting host is: each frame's work
+/// completes before the next frame starts (`wait_idle` stands in for the
+/// swap chain's present). Unpaced, a CPU adapter such as WARP falls
+/// further behind every frame and the level measures its lag, not the
+/// release.
 #[test]
 fn an_egui_style_loop_with_end_gpu_frame_keeps_retired_bytes_bounded() {
     let mut r = renderer_on(harness::gpu());
@@ -159,11 +168,8 @@ fn an_egui_style_loop_with_end_gpu_frame_keeps_retired_bytes_bounded() {
     }];
     let live = r.gpu_memory_usage().total_bytes();
     assert_eq!(r.set_memory_budget(Some(live + 32 * 1024 * 1024)), None);
-    // Peaks of the first and second hundred frames, and the most one frame
-    // added: retired bytes wait for the GPU to complete the frame that
-    // used them, so their level depends on how far the GPU lags (about 14
-    // frames on the paravirtual Metal runner), but it must not grow.
-    let (mut early_peak, mut late_peak, mut frame_bytes, mut last) = (0, 0, 0, 0);
+    // The peak, and the most one frame added.
+    let (mut peak, mut frame_bytes, mut last) = (0, 0, 0);
     for frame in 0..200u32 {
         // The first prepare of a frame ends the previous, submitted one.
         r.end_gpu_frame();
@@ -174,26 +180,22 @@ fn an_egui_style_loop_with_end_gpu_frame_keeps_retired_bytes_bounded() {
             series: &series,
         }])
         .unwrap_or_else(|e| panic!("frame {frame}: {e}"));
+        // The frame is presented before the next one starts.
+        r.wait_idle().unwrap();
         r.service_gpu_completions().unwrap();
         let retired = r.gpu_memory_usage().retired_bytes();
         frame_bytes = frame_bytes.max(retired.saturating_sub(last));
         last = retired;
-        if frame < 100 {
-            early_peak = early_peak.max(retired);
-        } else {
-            late_peak = late_peak.max(retired);
-        }
+        peak = peak.max(retired);
     }
     r.end_gpu_frame();
     r.wait_idle().unwrap();
     r.service_gpu_completions().unwrap();
-    // Without end_gpu_frame every frame's raster stays retired, so the
-    // second hundred frames would add about a hundred frames' bytes
-    // (about 150 MB on lavapipe).
+    // Without end_gpu_frame every frame's raster stays retired: about
+    // 200 frames' bytes (over 300 MB on lavapipe).
     assert!(
-        late_peak <= early_peak + 2 * frame_bytes,
-        "retired bytes grew with end_gpu_frame once a frame: \
-         {early_peak} in frames 0..100, {late_peak} in frames 100..200 \
+        peak <= 3 * frame_bytes,
+        "retired bytes reached {peak} with end_gpu_frame once a frame \
          ({frame_bytes} at most per frame)"
     );
     assert_eq!(r.gpu_memory_usage().retired_bytes(), 0);
