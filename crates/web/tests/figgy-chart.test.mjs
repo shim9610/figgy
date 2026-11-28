@@ -3389,3 +3389,84 @@ test("the element snapshots compile status each frame, reports completion and fo
     [["series_ready"], ["pipelines_ready"]],
   );
 });
+
+test("selection_details holds the operation gate and step_selection forwards (#468)", async () => {
+  const details = deferred();
+  const kernel = makeKernel("selection-468");
+  kernel.selection_details = () => {
+    kernel.calls.push(["selection_details"]);
+    return details.promise;
+  };
+  kernel.step_selection = (dx, dy) => {
+    kernel.calls.push(["step_selection", dx, dy]);
+    return true;
+  };
+  const { Element, state } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  assert.equal(element.step_selection(1, 0), true);
+  const pending = element.selection_details();
+  assert.equal(element.busy, true, "the read holds the operation gate");
+  kernel.calls.length = 0;
+  for (const callback of [...state.rafs.values()]) callback(0);
+  await flushTasks();
+  assert.deepEqual(
+    kernel.calls.filter(([name]) => name === "frame"),
+    [],
+    "frame must not run while the read awaits its readbacks",
+  );
+  assert.throws(() => element.step_selection(1, 0), /busy/);
+  element.canvas.emit("pointerdown", { pointerId: 1, clientX: 10, clientY: 20 });
+  assert.deepEqual(kernel.calls.filter(([name]) => name === "press"), []);
+  details.resolve('{"series_id":"s"}');
+  assert.equal(await pending, '{"series_id":"s"}');
+  assert.equal(element.busy, false);
+});
+
+test("a resize while a monotonic chart is busy waits for the settle (#468)", async () => {
+  const exported = deferred();
+  const kernel = makeKernel("monotonic-busy-468", { monotonicGroups: ["daq"] });
+  kernel.export_png_monotonic = () => exported.promise;
+  kernel.resize_monotonic = (width, height) => kernel.calls.push(["resize_monotonic", width, height]);
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  const resizes = [];
+  element.addEventListener("figgy-resize", (event) => resizes.push(event.detail));
+  const before = [element.canvas.width, element.canvas.height];
+  const png = element.export_png_monotonic(2, []);
+  element.setRect(320, 200);
+  element.resize();
+  assert.deepEqual([element.canvas.width, element.canvas.height], before,
+    "the canvas keeps the kernel's size while busy");
+  assert.deepEqual(resizes, [], "nothing is dispatched while busy");
+  exported.resolve(new Uint8Array([1]));
+  await png;
+  assert.deepEqual([element.canvas.width, element.canvas.height], before);
+  assert.deepEqual(JSON.parse(JSON.stringify(resizes)), [{
+    width: 320, height: 200, cssWidth: 320, cssHeight: 200, devicePixelRatio: 1, monotonic: true,
+  }]);
+  assert.equal(kernel.calls.filter(([name]) => name === "resize").length, 0);
+});
+
+test("the upload and transaction wrappers forward free() (#468)", async () => {
+  const kernel = makeKernel("free-468");
+  const freed = [];
+  kernel.begin_column_upload = () => ({ free: () => freed.push("upload") });
+  kernel.begin_columns_transaction = () => ({ free: () => freed.push("transaction") });
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  element.begin_column_upload("y", 4, "f32", undefined, 1024).free();
+  element.begin_columns_transaction(1024).free();
+  assert.deepEqual(freed, ["upload", "transaction"]);
+});

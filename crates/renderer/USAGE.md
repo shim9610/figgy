@@ -124,15 +124,22 @@ automatic spacing. The list is re-derived only when the view is rasterized,
 never per frame. Compare it
 with the previous list to show only changes. The same list ends with the
 annotation layer's `AnnotationSkipped` warnings for items the annotation raster
-could not place. After an edit of `config.annotations.items`, `refresh_axis`
+could not place, then, on a registered chart's view, `LegendSymbolMismatch`
+warnings for legend symbols that do not draw the series they name
+([#483](https://github.com/shim9610/figgy/issues/483); a held chart's view has
+no series, so its host calls `Config::legend_warnings(series)`; see
+[CONFIG.md](CONFIG.md)). After an edit of `config.annotations.items`, `refresh_axis`
 redoes the annotation rasters together with the axes, and `refresh_annotations`
 redoes only the annotation layer (its underlay and overlay textures). Registered
 charts report that edit through `ChartRenderStamp::needs_annotation_raster_since`
 (see [the annotation layer](INTERACTION.md#annotation-layer)).
 
-Constructors initialize base resources; they do not eagerly populate every
-pipeline cache. Use explicit `prewarm_all` or detached preparation when needed,
+Constructors initialize base resources; they do not create every pipeline in
+advance. Use explicit `prewarm_all` or detached preparation when needed,
 following the [constructor/prewarm table](API.md#construction-and-prewarming).
+On native, a device bundle creates pipelines through a wgpu pipeline cache
+when the device has `Features::PIPELINE_CACHE`; a host can save its bytes and
+load them in the next run ([pipeline cache](API.md#pipeline-cache-native)).
 `set_memory_budget` is a policy for checked allocations, not a hard VRAM ceiling;
 the [budget contract](API.md#gpu-memory-accounting-and-budget-scope) lists its
 initial-pool behavior, tracked lifetime and exclusions.
@@ -207,6 +214,13 @@ let mut items = [ChartDrawItem {
 }];
 renderer.draw(Color::WHITE, &mut items).unwrap();   // acquire surface frame → prepare (redraws a stale raster) → encoder → pass → paint_prepared → submit → present
 ```
+
+A real loop handles `draw`'s errors instead of unwrapping them: an acquire
+failure is `FiggyError::SurfaceAcquireFailed { kind, .. }`, where `kind` says
+whether to skip the frame, resize, or replace a lost surface with
+`replace_surface` (which keeps the columns and charts). A lost device is
+`FiggyError::DeviceLost`, and the host rebuilds the renderer
+([Errors](API.md#errors)). `winit_simple.rs` handles each case.
 
 ### `ColumnSource` — the data adapter trait
 
@@ -422,9 +436,11 @@ The one-shot `Renderer::paint(&mut self, …)` is for hosts that own
 the renderer exclusively during their frame (winit loop, wasm wrapper): it
 runs both phases back to back.
 
-Full version: [egui_embed.rs](https://github.com/shim9610/figgy/blob/master/examples/egui/examples/egui_embed.rs). That example
-does not call `end_gpu_frame`; [tools/playground/src/main.rs](https://github.com/shim9610/figgy/blob/master/tools/playground/src/main.rs)
-is a host that calls it once after `queue.submit`.
+Full version: [egui_embed.rs](https://github.com/shim9610/figgy/blob/master/examples/egui/examples/egui_embed.rs). Every
+egui example calls `end_gpu_frame` once per frame, at the first panel prepare
+of a new egui frame (`Context::cumulative_frame_nr`), for the frame egui has
+already submitted; [tools/playground/src/main.rs](https://github.com/shim9610/figgy/blob/master/tools/playground/src/main.rs)
+is a host that calls it once after its own `queue.submit`.
 
 ### GPU results: awaited, blocking or checked
 
@@ -788,7 +804,8 @@ let series = vec![
     SeriesConfig::monotonic_line("ch1", "daq", 1).label("channel 1"),
 ];
 // A chart with monotonic series is a monotonic chart, reached only through
-// its handle: no general chart call takes it.
+// its handle: no general chart call takes it. It holds other series too, but
+// no Feynman series (`RuleKind::MonotonicFeynman`).
 let id = renderer.register_monotonic_chart(chart.config().clone(), series)?;
 // The source carries the samples, start and interval. The full call reduces
 // them in full; `Autoscale` fits the x range to the samples and each y axis
@@ -819,7 +836,8 @@ Only these four calls move the x-to-pixel mapping (the x range, the plot's
 width in device pixels, the x direction), and each takes the source. The
 general chart calls take a `ChartId`, which a monotonic chart never hands
 out, so they cannot reach it; `register_chart` and the series calls refuse a
-monotonic line series (`RuleKind::MonotonicGeneralChart`). The document
+monotonic line series (`RuleKind::MonotonicGeneralChart`), and a monotonic
+chart refuses a Feynman series (`RuleKind::MonotonicFeynman`). The document
 editor (`MonotonicConfig`) edits the legend, titles, axis titles, ticks,
 tick labels and their format, colours, annotations, the selection and
 decoration drags, and has no setter for the x range, x scale or plot area;
@@ -882,7 +900,10 @@ either direction as `DataRenderType::CategoryBars` series over a categorical
 axis, laid out by `Config.bar_groups`. Their positions and values are columns
 uploaded through `ColumnSource`; streamed sources are rejected. Per-bar
 colours, materials, rounding and outlines are per-bar overrides on the
-series, and a bar is picked and selected like a histogram bin.
+series, and a bar is picked and selected like a histogram bin. The
+renderer's fits span a stacked group to its tallest actual stack, measured on
+the GPU; a browser's synchronous fits use a wider bound from the column
+statistics ([details](API.md#entry-points-and-input-contracts)).
 `Config::from_categorical` opens a legacy `CategoricalChart` document as such
 a chart. See the [bar guide](CATEGORICAL.md) or run
 `cargo run -p figgy-renderer --example categorical_gallery -- target/categorical-gallery`.
@@ -966,7 +987,7 @@ use renderer::{Chart, Color, SeriesConfig};
 
 let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
 let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
-chart.apply_theme("midnight", &mut series)?;  // refits the layout too
+chart.apply_theme("midnight", &mut series)?;  // refits a fitted layout too
 
 // Any other look: a custom theme, here the member with one colour changed.
 let mut theme = chart.theme("midnight", &series)?;
@@ -1089,8 +1110,9 @@ chart.apply_custom_theme(&theme, &mut series)?;
   outside the scope keeps its look. `chart.apply_custom_theme_to(&theme,
   &mut series, ThemeScope::Subplots(&[0]))` themes an inset alone, whatever
   the base chart's kind.
-- **The parts on their own.** The `Chart` calls refit the layout to the new
-  text sizes (`fit_layout`). `theme.apply_chrome(&mut config, &series,
+- **The parts on their own.** The `Chart` calls refit a fitted layout to
+  the new text sizes; a `Fixed` layout (dragged, or a document drawn as
+  saved) is kept, as every other edit keeps it. `theme.apply_chrome(&mut config, &series,
   scope)` writes the chrome alone (the legend symbols follow `series`; pass
   `&[]` for a chart without series yet) and `theme.style_series(&mut series,
   index)` styles one series as the `index`-th of its chart.
@@ -1384,15 +1406,17 @@ iced 0.14는 wgpu 27을 사용하므로, wgpu 30과 호환되는 iced 버전이 
 그린 prepare 뒤에 `view.render_warnings()`를 읽는다. 각 `RenderWarning`에는 축, 설정한 값,
 실제로 그린 값이 들어 있다. 예를 들어 간격이 1000개를 넘어야 하는 `major_spacing`은 자동
 간격으로 그린다. 목록은 뷰를 래스터화할 때만 다시 만들므로 프레임마다 비용이 들지 않는다. 바뀐 경고만 보여 주려면 이전 목록과 비교한다.
-목록 끝에는 주석 층이 배치하지 못한 항목의 `AnnotationSkipped` 경고가 붙는다.
+목록 끝에는 주석 층이 배치하지 못한 항목의 `AnnotationSkipped` 경고가 붙고, 등록 차트의 뷰에서는 그 뒤에 이름 붙인 시리즈의 마크와 다른 범례 기호를 알리는 `LegendSymbolMismatch` 경고가 붙는다([#483](https://github.com/shim9610/figgy/issues/483)). 보관 차트의 뷰는 시리즈를 모르므로 호스트가 `Config::legend_warnings(series)`를 직접 부른다.
 `config.annotations.items`를 고친 뒤 `refresh_axis`를 호출하면 축과 함께 주석 래스터도 다시
 그리고, `refresh_annotations`는 주석 층(아래층·위층 텍스처)만 다시 그린다. 등록 차트에서는
 `ChartRenderStamp::needs_annotation_raster_since`로 이 편집을 확인한다
 ([주석 층](INTERACTION.md#annotation-layer)).
 
-생성자는 기본 자원만 초기화하며 모든 파이프라인 캐시를 미리 채우지는 않는다. 필요하면
+생성자는 기본 자원만 초기화하며 모든 파이프라인을 미리 만들지는 않는다. 필요하면
 `prewarm_all`이나 분리 준비 경로를 명시적으로 사용한다
-([생성자·사전 준비 표](API.md#construction-and-prewarming)). `set_memory_budget`은 검사를
+([생성자·사전 준비 표](API.md#construction-and-prewarming)). 네이티브에서 장치에
+`Features::PIPELINE_CACHE`가 있으면 장치 묶음은 wgpu 파이프라인 캐시를 거쳐 파이프라인을 만든다.
+호스트는 그 바이트를 저장했다가 다음 실행에서 불러올 수 있다([파이프라인 캐시](API.md#pipeline-cache-native)). `set_memory_budget`은 검사를
 거치는 할당에 적용하는 정책이며 VRAM의 절대 상한이 아니다. 초기 풀 처리, 추적 기간, 제외
 항목은 [예산 계약](API.md#gpu-memory-accounting-and-budget-scope)에 있다.
 
@@ -1464,6 +1488,11 @@ let mut items = [ChartDrawItem {
 }];
 renderer.draw(Color::WHITE, &mut items).unwrap();   // surface frame 획득 → prepare(오래된 래스터를 다시 그림) → encoder → pass → paint_prepared → submit → present
 ```
+
+실제 루프에서는 `draw`의 오류를 unwrap하지 않고 처리한다. 화면 텍스처를 얻지 못하면
+`FiggyError::SurfaceAcquireFailed { kind, .. }`이고, `kind`가 프레임을 건너뛸지, 크기를 다시
+맞출지, 잃어버린 surface를 `replace_surface`로 바꿀지(컬럼과 차트는 그대로) 알려 준다. 장치를
+잃으면 `FiggyError::DeviceLost`이고, 이때는 렌더러를 다시 만든다 ([오류](API.md#errors)). `winit_simple.rs`가 각 경우를 처리한다.
 
 <a id="columnsource--데이터-어댑터-trait"></a>
 <a id="columnsource--데이터-어댑터-트레이트"></a>
@@ -1617,7 +1646,7 @@ impl egui_wgpu::CallbackTrait for FiggyCallback {
 
 토큰으로 기록한 명령 버퍼는 그 토큰의 `ChartView`를 다시 바꾸기 전에 제출해야 한다. `refresh_axis`, `update_transform`, 같은 뷰로 실행하는 다음 `prepare`가 여기에 해당한다. 렌더러는 기록하기 전에 오래된 입력을 거부하지만, 호스트에 넘어간 명령 버퍼는 검사하거나 순서를 정할 수 없다.
 
-winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사용하는 호스트는 두 단계를 연속 실행하는 `Renderer::paint(&mut self, …)`를 사용하면 된다. 전체 예제는 [egui_embed.rs](https://github.com/shim9610/figgy/blob/master/examples/egui/examples/egui_embed.rs)를 참고한다. 이 예제는 `end_gpu_frame`을 호출하지 않는다. `queue.submit` 뒤에 한 번 호출하는 호스트는 [tools/playground/src/main.rs](https://github.com/shim9610/figgy/blob/master/tools/playground/src/main.rs)에서 볼 수 있다.
+winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사용하는 호스트는 두 단계를 연속 실행하는 `Renderer::paint(&mut self, …)`를 사용하면 된다. 전체 예제는 [egui_embed.rs](https://github.com/shim9610/figgy/blob/master/examples/egui/examples/egui_embed.rs)를 참고한다. egui 예제는 모두 새 egui 프레임의 첫 패널 prepare에서(`Context::cumulative_frame_nr`) egui가 이미 제출한 이전 프레임에 대해 `end_gpu_frame`을 한 번 호출한다. 자기 `queue.submit` 뒤에 한 번 호출하는 호스트는 [tools/playground/src/main.rs](https://github.com/shim9610/figgy/blob/master/tools/playground/src/main.rs)에서 볼 수 있다.
 
 ### GPU 결과: 비동기, 동기, 확인
 
@@ -1949,7 +1978,8 @@ daq.edit_config(|config| {
 x에서 픽셀로의 매핑(x 범위, 장치 픽셀 단위 플롯 너비, x 방향)을 옮기는 호출은 이 넷뿐이고
 모두 소스를 받는다. 일반 차트 호출은 `ChartId`를 받는데 단조 차트는 이를 내주지 않으므로 단조
 차트에 닿지 못한다. `register_chart`와 시리즈 호출은 단조 선 시리즈를 거부한다
-(`RuleKind::MonotonicGeneralChart`). 문서 편집기(`MonotonicConfig`)는 범례, 제목, 축 제목,
+(`RuleKind::MonotonicGeneralChart`). 단조 차트는 Feynman 시리즈를 거부한다
+(`RuleKind::MonotonicFeynman`). 문서 편집기(`MonotonicConfig`)는 범례, 제목, 축 제목,
 눈금, 눈금 라벨과 형식, 색, 주석, 선택, 꾸밈 요소 끌기를 고치며 x 범위, x 스케일, 플롯 영역을
 쓰는 메서드는 없다. 이를 옮길 수정은 거부한다(`RuleKind::MonotonicMappingEdit`). 선 굵기는
 일반 스타일 수정이다(`set_series`). 굵기가 장치 픽셀 약 120까지인 선은 가장자리를 정확히 그리고,
@@ -1997,7 +2027,9 @@ x에서 픽셀로의 매핑(x 범위, 장치 픽셀 단위 플롯 너비, x 방�
 범주형 막대는 직교 좌표 `Renderer`가 범주형 축 위에 그리는 `DataRenderType::CategoryBars` 시리즈다.
 가로·세로 묶음, 누적, 100% 누적은 `Config.bar_groups`로 정하고, 위치와 값은 `ColumnSource`로 올린
 컬럼에서 읽으며, 스트리밍 소스는 거부한다. 막대별 색·재질·둥근 모서리·외곽선은 시리즈에 막대별로
-덮어쓰는 값이고, 막대 하나는 히스토그램 구간처럼 선택한다. 예전 `CategoricalChart` 문서는
+덮어쓰는 값이고, 막대 하나는 히스토그램 구간처럼 선택한다. 렌더러의 맞춤은 누적 묶음을 GPU로 잰
+실제 누적값 중 가장 높은 것까지 맞춘다. 브라우저의 동기 맞춤은 컬럼 통계에서 얻은 더 넓은 경계를 쓴다
+([자세히](API.md#entry-points-and-input-contracts)). 예전 `CategoricalChart` 문서는
 `Config::from_categorical`로 연다.
 [API 사용법](CATEGORICAL.md#한국어-사용법)을 참고하거나
 `cargo run -p figgy-renderer --example categorical_gallery -- target/categorical-gallery`로 예제 PNG를 만든다.
@@ -2069,7 +2101,7 @@ use renderer::{Chart, Color, SeriesConfig};
 
 let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
 let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
-chart.apply_theme("midnight", &mut series)?;  // 레이아웃도 다시 맞춘다
+chart.apply_theme("midnight", &mut series)?;  // 맞춘 레이아웃이면 다시 맞춘다
 
 // 그 밖의 모양은 직접 만든 테마다. 여기서는 구성원의 색 하나를 바꾼다.
 let mut theme = chart.theme("midnight", &series)?;
@@ -2162,7 +2194,8 @@ chart.apply_custom_theme(&theme, &mut series)?;
   `BaseAnd(&[인덱스])`(기본 차트와 그 서브플롯) 중 하나다. 범위 안의 서브플롯은 자기 오버레이와 함께
   테마를 받고, 범위 밖 차트에 그려지는 시리즈는 모양을 유지한다. `chart.apply_custom_theme_to(&theme,
   &mut series, ThemeScope::Subplots(&[0]))`은 기본 차트의 종류와 관계없이 삽입 차트만 꾸민다.
-- **부분만 적용하기.** `Chart`의 호출은 바뀐 글자 크기에 맞춰 레이아웃을 다시 맞춘다(`fit_layout`).
+- **부분만 적용하기.** `Chart`의 호출은 맞춘 레이아웃을 바뀐 글자 크기에 맞춰 다시 맞춘다. 끌어 옮겼거나
+  저장된 대로 그리는 `Fixed` 레이아웃은 다른 편집과 마찬가지로 그대로 둔다.
   `theme.apply_chrome(&mut config, &series, scope)`는 크롬만 쓴다(범례 기호는 `series`를 따르며,
   아직 시리즈가 없는 차트에는 `&[]`를 넘긴다). `theme.style_series(&mut series, index)`는 시리즈
   하나를 차트의 `index`번째 시리즈로 꾸민다.

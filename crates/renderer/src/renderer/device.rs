@@ -47,6 +47,13 @@ pub struct RendererDevice {
     /// The shader set a renderer built from this bundle starts on
     /// ([`Self::with_shader_set`], #299).
     pub(super) shader_set: crate::shader_assembly::ShaderSet,
+    /// The pipeline cache every renderer built from this bundle creates its
+    /// pipelines through (#478): empty when the bundle is made on a device
+    /// with `Features::PIPELINE_CACHE`, a host's saved one after
+    /// [`Self::with_pipeline_cache`], none without the feature or after
+    /// [`Self::without_pipeline_cache`]. A cloneable handle, shared, not a
+    /// copy.
+    pub(super) pipeline_cache: Option<wgpu::PipelineCache>,
 }
 
 impl RendererDevice {
@@ -134,8 +141,69 @@ impl RendererDevice {
         self
     }
 
+    /// Create every pipeline of the renderers built from this bundle through
+    /// a pipeline cache loaded from `data` (#478): the bytes an earlier run's
+    /// [`Self::pipeline_cache_data`] returned on the same adapter and driver
+    /// ([`Self::pipeline_cache_key`] names them), or `None` for an empty
+    /// cache. Data wgpu cannot use (another adapter, another driver or wgpu
+    /// version, truncated or not a cache) is discarded and the cache starts
+    /// empty; the pipelines are the same either way, only their creation is
+    /// faster with a matching cache.
+    ///
+    /// Without `Features::PIPELINE_CACHE` on the device this returns the
+    /// bundle unchanged, with no cache. figgy's own device requests
+    /// (`request_device_async`, [`Self::request_async`] and the window
+    /// constructors) ask for the feature whenever the adapter has it; a host
+    /// device needs it in its own descriptor. wgpu implements it on Vulkan
+    /// only, so DX12, Metal and the browser keep their drivers' and
+    /// browser's own caches. Call it before building a renderer from the
+    /// bundle: a renderer keeps the cache it was built with. Streaming
+    /// pipelines do not use the cache.
+    pub fn with_pipeline_cache(mut self, data: Option<&[u8]>) -> Self {
+        self.pipeline_cache = create_pipeline_cache(&self.device, data);
+        self
+    }
+
+    /// Create the pipelines with no pipeline cache, as before #478. A bundle
+    /// on a device with `Features::PIPELINE_CACHE` starts with an empty one.
+    pub fn without_pipeline_cache(mut self) -> Self {
+        self.pipeline_cache = None;
+        self
+    }
+
+    /// The pipeline cache's contents, for a host to save and hand back to
+    /// [`Self::with_pipeline_cache`] in a later run, under
+    /// [`Self::pipeline_cache_key`]. `None` without a cache or when the
+    /// backend reports nothing. The cache grows as pipelines are created, so
+    /// save it once the charts have drawn (after a first frame, on exit).
+    /// Write it to a temporary file and rename it over the old one, so a
+    /// crash never leaves half a cache.
+    pub fn pipeline_cache_data(&self) -> Option<Vec<u8>> {
+        self.pipeline_cache.as_ref()?.get_data()
+    }
+
+    /// The name to save an adapter's pipeline cache under, so a host keeps
+    /// one per adapter and driver (`wgpu::util::pipeline_cache_key`). `None`
+    /// where the backend has no pipeline cache.
+    pub fn pipeline_cache_key(adapter_info: &wgpu::AdapterInfo) -> Option<String> {
+        wgpu::util::pipeline_cache_key(adapter_info)
+    }
+
+    /// The bundle's pipeline cache, for the renderers built from it.
+    pub(crate) fn pipeline_cache(&self) -> Option<&wgpu::PipelineCache> {
+        self.pipeline_cache.as_ref()
+    }
+
+    /// Whether the bundle creates its renderers' pipelines through a
+    /// pipeline cache.
+    #[cfg(test)]
+    pub(crate) fn has_pipeline_cache(&self) -> bool {
+        self.pipeline_cache.is_some()
+    }
+
     fn without_poller(device: wgpu::Device, queue: wgpu::Queue, origin: DeviceOrigin) -> Self {
         let health = DeviceHealth::watch(&device, origin);
+        let pipeline_cache = create_pipeline_cache(&device, None);
         Self {
             device,
             queue,
@@ -143,6 +211,7 @@ impl RendererDevice {
             // host-alloc: W1-a
             ledger: Arc::new(GpuLedger::new()),
             shader_set: crate::shader_assembly::ShaderSet::Basic,
+            pipeline_cache,
         }
     }
 
@@ -165,6 +234,30 @@ impl RendererDevice {
     pub fn ledger(&self) -> &Arc<GpuLedger> {
         &self.ledger
     }
+}
+
+/// A pipeline cache on `device` from `data`, or none without
+/// `Features::PIPELINE_CACHE` (#478).
+fn create_pipeline_cache(
+    device: &wgpu::Device,
+    data: Option<&[u8]>,
+) -> Option<wgpu::PipelineCache> {
+    if !device.features().contains(wgpu::Features::PIPELINE_CACHE) {
+        return None;
+    }
+    // SAFETY: wgpu requires `data` to be what `PipelineCache::get_data`
+    // returned for a compatible adapter. The only bytes figgy passes are a
+    // host's from `RendererDevice::pipeline_cache_data`, documented as such,
+    // and `fallback: true` has wgpu check the data's header against this
+    // adapter and its driver and start an empty cache on a mismatch.
+    let cache = unsafe {
+        device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
+            label: Some("figgy pipeline cache"),
+            data,
+            fallback: true,
+        })
+    };
+    Some(cache)
 }
 
 #[derive(Clone, Copy, Debug)]

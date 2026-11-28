@@ -442,6 +442,29 @@ fn reduce_bar_envelope(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 }
 
+// Stacked category-bar fit (#466). The pool remains the sole source of the
+// bar values: each invocation stacks one category of the group bound as
+// group 3 (`category_stack`, the draw's own stack arithmetic, over every
+// member) and folds the sums into two words, the order-preserving bits
+// (`data_pick_ordered_bits`) of the largest positive and of the smallest
+// negative sum. Only these two words are read back.
+@group(3) @binding(11) var<storage, read_write> category_stack_extent: array<atomic<u32>, 2>;
+
+@compute @workgroup_size(64)
+fn reduce_category_stacks(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let row = gid.x + gid.y * 65535u * 64u;
+    if (row >= category_params.count) { return; }
+    let stack = category_stack(row, category_params.members);
+    let positive = stack.positive.x + stack.positive.y;
+    let negative = stack.negative.x + stack.negative.y;
+    if (bar_finite(positive)) {
+        atomicMax(&category_stack_extent[0], data_pick_ordered_bits(positive));
+    }
+    if (bar_finite(negative)) {
+        atomicMin(&category_stack_extent[1], data_pick_ordered_bits(negative));
+    }
+}
+
 struct EnvelopeVertex {
     @builtin(position) pos: vec4<f32>,
     @location(0) @interpolate(flat) fill: vec4<f32>,

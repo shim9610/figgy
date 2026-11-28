@@ -38,7 +38,7 @@ JavaScript API for every renderer. [Browser product scope](https://github.com/sh
 - **Hand-drawn sketch mode (opt-in)**: `draw_style: { mode: "sketch", amplitude_px, wavelength_px, seed }` renders the chart xkcd-style — axes/ticks/grid/legend wobble on the CPU raster, line wobble/dash phase uses arc-length-scan-driven GPU variants, markers/errorbars use dedicated GPU variants, and chart text automatically switches to the bundled handwritten face (Comic Neue, OFL) with per-character fallback for glyphs it lacks: the configured family, then registered fonts, the bundled Liberation Sans and (native only) installed system fonts, so CJK keeps your registered font. Deterministic (seeded) and composes with dashes; without the field the chart draws in the precise mode. The mode draws line, scatter and errorbar series only: histogram, heatmap, contour and vector series have no sketch primitive and are skipped without an error, and `draw_style_supports(style, render_type)` reports which combinations draw.
 - **Milkyway mode (opt-in)**: `draw_style: { mode: "milkyway", ... }` renders the chart as an astrophotograph — lines become star chains over a series-colored nebula ribbon; scatter markers become ringed planets; errorbars become bipolar jets over a deep-space backdrop. Like sketch mode, it skips histogram, heatmap, contour and vector series without an error.
 - **Constellation mode (opt-in)**: `draw_style: { mode: "constellation", ... }` supports `ScatterLine` series only: PSF-rendered stars sit at scatter data positions and a translucent line connects them. Parameter ranges ship as machine-readable metadata (`draw_style_param_specs`).
-- **Single wgpu major (30)**: the renderer and active egui integration use wgpu 30. The retained iced integration source is not a build target because iced 0.14 still exposes wgpu 27 types.
+- **Single wgpu major (30)**: the renderer and the egui example crate (`examples/egui`) use wgpu 30. The retained iced integration source is not a build target because iced 0.14 still exposes wgpu 27 types.
 - **WebAssembly-ready**: pure-Rust raster stack (tiny-skia + fontdb + swash), async init/export, runtime font registration (`text_render::register_font_bytes` in Rust, `register_font` on the browser wrapper's `FiggyChart`) for CJK and custom families.
 - **Browser startup**: in a wasm browser, `create` / `create_with_progress` / `create_with_options` await no pipeline compile (#299). They create the fullscreen textured pipeline directly, start the asynchronous compile of every resident render pipeline of the starting shader set (`"basic"` by default, `"full"` through `create_with_options({ shaders: "full" })`) without waiting for it, and await the first empty-chart frame. A frame leaves out a series whose pipelines are still compiling and draws again when they finish. The vector, 3D surface and ternary region modules and the compute scans compile on demand; style and compute caches stay lazy until first use or `prewarm_all` / `prewarm_all_with_progress`. The web cold-start contract under [Memory accounting and release](#memory-accounting-and-release) gives the details.
 
@@ -183,7 +183,9 @@ render-pass boundaries.
 logical-source metadata, render/compute pipelines,
 the shared picker pipeline bundle, at most one derived active-chart picker cache,
 pending pool maintenance, renderer-level bind groups, and the shared
-`wgpu::Device` / `wgpu::Queue` (both reference-counted handles). It creates `ChartView` and `ChartStyle`
+`wgpu::Device` / `wgpu::Queue` (both reference-counted handles). It creates its
+pipelines through the wgpu pipeline cache of the `RendererDevice` it was built
+from, when that bundle has one (streaming pipelines excepted; [pipeline cache](API.md#pipeline-cache-native)). It creates `ChartView` and `ChartStyle`
 values and returns them to the host, which keeps them in its panel state (see
 [the egui host](https://github.com/shim9610/figgy/blob/master/examples/egui/examples/egui_embed.rs)). A `PreparedFrame` holds
 its own GPU handles and shared charges, so dropping a host view/style does not
@@ -631,7 +633,10 @@ contract above.
   the x range or autoscales), `append_monotonic` (only the new samples; a sliding append
   drops columns from the front), `resize` (chart area, plot area and
   display, atomically) and `fit_layout`. The document editor
-  (`MonotonicConfig`) refuses an edit that would move the mapping.
+  (`MonotonicConfig`) refuses an edit that would move the mapping. A
+  monotonic chart holds any other series but a Feynman one, whose drags are
+  general chart calls: `register_monotonic_chart` and `set_series` refuse it
+  (`RuleKind::MonotonicFeynman`).
 - Frames and picks never need the source; a pick reports the logical sample
   index of a kept point. An export at another mapping takes the sources
   (`ExportSource::Monotonic`) and reduces each group into columns that live
@@ -798,7 +803,7 @@ lines, split connectors and annotation overlay through the same sink
 - **스케치 모드**: `draw_style: { mode: "sketch", amplitude_px, wavelength_px, seed }`로 축·장식과 선·산점도·오차 막대 시리즈를 손그림처럼 표현한다. 축·눈금·격자·범례는 CPU에서, 선의 흔들림과 점선 간격은 경로 길이를 계산한 GPU에서 처리한다. 점과 오차 막대도 전용 GPU 셰이더를 쓴다. 텍스트에는 내장 손글씨 폰트 Comic Neue(OFL)를 사용한다. 이 폰트에 없는 글자는 글자 단위로 설정한 글꼴, 등록된 폰트, 내장 Liberation Sans, 설치된 시스템 폰트(네이티브 전용) 순으로 찾아 그리므로, 한중일 문자는 등록한 폰트로 그린다. 같은 시드와 입력은 같은 결과를 내며 점선과도 함께 사용할 수 있다. 이 옵션을 생략하면 기본 정밀 모드로 그린다. 히스토그램·히트맵·등고선·벡터 시리즈는 스케치용 셰이더가 없어 오류 없이 생략되므로, 그릴 수 있는 조합인지는 `draw_style_supports(style, render_type)`로 확인한다.
 - **은하수 모드**: `draw_style: { mode: "milkyway", ... }`로 선·산점도·오차 막대 시리즈에 천체사진 같은 효과를 낸다. 선은 시리즈 색의 성운 띠와 별 무리로, 산점도 기호는 고리가 있는 행성으로, 오차 막대는 양방향으로 뻗는 제트로 표현하며, 모두 깊은 우주 배경 위에 그린다. 스케치 모드와 마찬가지로 히스토그램·히트맵·등고선·벡터 시리즈는 오류 없이 생략한다.
 - **별자리 모드**: `draw_style: { mode: "constellation", ... }`는 `ScatterLine` 시리즈만 지원한다. 데이터 점 위치에 점광원 분포 함수(PSF)로 별을 그리고 반투명 선으로 잇는다. 프로그램에서 옵션 범위를 조회할 수 있도록 `draw_style_param_specs` 메타데이터를 제공한다.
-- **wgpu 30 통합**: 렌더러와 egui 통합이 같은 wgpu 주 버전을 사용한다. iced 0.14는 wgpu 27을 사용하므로 보관 중인 iced 통합 예제는 빌드 대상에서 제외한다.
+- **wgpu 30 통합**: 렌더러와 egui 예제 크레이트(`examples/egui`)가 같은 wgpu 주 버전을 사용한다. iced 0.14는 wgpu 27을 사용하므로 보관 중인 iced 통합 예제는 빌드 대상에서 제외한다.
 - **WebAssembly**: 순수 Rust로 구현된 tiny-skia·fontdb·swash와 비동기 초기화·출력 API를 사용한다. Rust의 `text_render::register_font_bytes`나 브라우저 래퍼 `FiggyChart`의 `register_font`로 실행 중에 폰트를 등록하면 한중일 문자와 사용자 지정 글꼴을 사용할 수 있다.
 - **브라우저 래퍼의 초기화**: 브라우저의 wasm에서 `create` / `create_with_progress` / `create_with_options`는 파이프라인 컴파일을 기다리지 않는다(#299). 전체 화면 텍스처 파이프라인은 바로 만들고, 시작 셰이더 세트(기본값 `"basic"`, `create_with_options({ shaders: "full" })`이면 `"full"`)의 상주 렌더링 파이프라인 전체는 비동기 컴파일을 시작만 해 둔 채 빈 차트의 첫 프레임을 기다린다. 파이프라인이 아직 컴파일 중인 시리즈는 프레임에서 빠지고, 컴파일이 끝나면 다시 그린다. 벡터·3D 곡면·삼각 좌표 영역 모듈과 컴퓨트 스캔은 필요할 때 컴파일한다. 스타일·컴퓨트 캐시는 처음 사용하거나 `prewarm_all` / `prewarm_all_with_progress`를 호출할 때 만든다. 자세한 규칙은 [메모리 계상과 회수](#메모리-계상과-회수)의 웹 초기화 표를 참고한다.
 
@@ -854,7 +859,7 @@ lines, split connectors and annotation overlay through the same sink
 
 ### 소유권과 수명 경계
 
-`Renderer`는 차트별 `Config`, 순서가 있는 `SeriesConfig`, 상주 `ColumnPool`, 비상주 소스 메타데이터, 렌더링·컴퓨트 파이프라인을 보관한다. 피킹 파이프라인은 공유하고, 현재 차트용 피킹 캐시는 최대 하나만 유지한다. 대기 중인 풀 정리 작업, 렌더러 공통 바인드 그룹, `wgpu::Device`와 `wgpu::Queue` 핸들(둘 다 참조 카운트 핸들)도 관리한다.
+`Renderer`는 차트별 `Config`, 순서가 있는 `SeriesConfig`, 상주 `ColumnPool`, 비상주 소스 메타데이터, 렌더링·컴퓨트 파이프라인을 보관한다. 피킹 파이프라인은 공유하고, 현재 차트용 피킹 캐시는 최대 하나만 유지한다. 대기 중인 풀 정리 작업, 렌더러 공통 바인드 그룹, `wgpu::Device`와 `wgpu::Queue` 핸들(둘 다 참조 카운트 핸들)도 관리한다. 파이프라인은 렌더러를 만든 장치 묶음(`RendererDevice`)에 wgpu 파이프라인 캐시가 있으면 그것을 거쳐 만든다. 스트리밍 파이프라인은 예외다([파이프라인 캐시](API.md#pipeline-cache-native)).
 
 생성해서 반환한 `ChartView`와 `ChartStyle`은 호스트가 패널 상태에 보관한다([egui 예제](https://github.com/shim9610/figgy/blob/master/examples/egui/examples/egui_embed.rs)). `PreparedFrame` 역시 GPU 핸들과 공유 할당 정보를 유지하므로 호스트가 뷰·스타일을 해제해도 자원이 즉시 사라지지는 않을 수 있다. `WindowedRenderer`는 추가로 surface·instance·adapter와 선택적인 MSAA 렌더 타깃을 보관한다. `ChartId`는 발급한 렌더러에서만 유효하다. 설정과 시리즈를 함께 편집하려면 `set_chart_state`로 둘을 검증한 뒤 한꺼번에 교체한다.
 
@@ -1144,7 +1149,9 @@ annotation_selection_dirty = false;
   x-픽셀 매핑을 옮기는 호출은 넷이며 모두 소스를 받는다. `set_monotonic`(전체 호출이며 x 범위나
   자동 맞춤을 정하는 유일한 호출), `append_monotonic`(새 샘플만 받는다. 밀어내기 추가는 앞쪽
   열을 버린다), `resize`(차트 영역, 플롯 영역, 표시를 한꺼번에), `fit_layout`이다. 문서
-  편집기(`MonotonicConfig`)는 매핑을 옮기는 편집을 거부한다.
+  편집기(`MonotonicConfig`)는 매핑을 옮기는 편집을 거부한다. 단조 차트는 다른 시리즈는 모두
+  담지만 Feynman 시리즈는 담지 않는다. 그 드래그가 일반 차트 호출이기 때문이다.
+  `register_monotonic_chart`와 `set_series`가 이를 거부한다(`RuleKind::MonotonicFeynman`).
 - 프레임과 피킹에는 소스가 필요 없고, 피킹은 남긴 점의 논리 샘플 번호를 돌려준다. 다른 매핑으로
   출력할 때는 소스를 받아(`ExportSource::Monotonic`) 묶음마다 그 출력에만 쓰는 컬럼으로 다시
   줄인다. 스트리밍 디스플레이는 이 시리즈를 거부한다.

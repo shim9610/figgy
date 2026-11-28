@@ -568,6 +568,7 @@ impl FiggyChart {
         revisions: Vec<f64>,
         sources: js_sys::Array,
     ) -> Result<StreamingStepResult, JsValue> {
+        self.refuse_streaming()?;
         let sources = js_stream_sources(&sources)?;
         let revisions = validate_stream_bindings(&ids, &revisions, &sources)?;
         let mut bindings = Vec::new();
@@ -660,6 +661,7 @@ impl FiggyChart {
         lengths: Vec<f64>,
         encodings: Vec<String>,
     ) -> Result<(), JsValue> {
+        self.refuse_streaming()?;
         let columns = stream_columns_from_metadata(&ids, &revisions, &lengths, &encodings)?;
         self.renderer
             .register_streamed_columns(columns)
@@ -676,6 +678,7 @@ impl FiggyChart {
         lengths: Vec<f64>,
         encodings: Vec<String>,
     ) -> Result<(), JsValue> {
+        self.refuse_streaming()?;
         let columns = stream_columns_from_metadata(&ids, &revisions, &lengths, &encodings)?;
         self.renderer
             .replace_streamed_columns(columns)
@@ -776,6 +779,7 @@ impl FiggyChart {
     pub fn auto_stream_chart_request_ranges(
         &mut self,
     ) -> Result<AutoStreamingRangeRequestResult, JsValue> {
+        self.refuse_streaming()?;
         let result = self
             .renderer
             .auto_stream_chart_request_ranges(self.chart_id)
@@ -797,6 +801,7 @@ impl FiggyChart {
     pub fn stream_selection_request_ranges(
         &mut self,
     ) -> Result<AutoStreamingRangeRequestResult, JsValue> {
+        self.refuse_streaming()?;
         let request = self
             .renderer
             .request_stream_selection_ranges(self.chart_id)
@@ -867,6 +872,7 @@ impl FiggyChart {
         offsets: Vec<f64>,
         sources: js_sys::Array,
     ) -> Result<(), JsValue> {
+        self.refuse_streaming()?;
         let ticket = request
             .selection_ticket
             .ok_or_else(|| js_err("not a selected-row request"))?;
@@ -908,6 +914,7 @@ impl FiggyChart {
         offsets: Vec<f64>,
         sources: js_sys::Array,
     ) -> Result<StreamingStepResult, JsValue> {
+        self.refuse_streaming()?;
         let sources = js_stream_sources(&sources)?;
         let bindings =
             stream_range_bindings(&ids, &revisions, &source_lengths, &offsets, &sources)?;
@@ -1012,6 +1019,7 @@ impl FiggyChart {
         revisions: Vec<f64>,
         sources: js_sys::Array,
     ) -> Result<(), JsValue> {
+        self.refuse_streaming()?;
         let sources = js_stream_sources(&sources)?;
         let revisions = validate_stream_bindings(&ids, &revisions, &sources)?;
         let mut columns = Vec::new();
@@ -1040,6 +1048,7 @@ impl FiggyChart {
         revisions: Vec<f64>,
         sources: js_sys::Array,
     ) -> Result<(), JsValue> {
+        self.refuse_streaming()?;
         let sources = js_stream_sources(&sources)?;
         let revisions = validate_stream_bindings(&ids, &revisions, &sources)?;
         let mut columns = Vec::new();
@@ -1070,6 +1079,7 @@ impl FiggyChart {
         revisions: Vec<f64>,
         sources: js_sys::Array,
     ) -> Result<(), JsValue> {
+        self.refuse_streaming()?;
         let sources = js_stream_sources(&sources)?;
         let revisions = validate_stream_bindings(&ids, &revisions, &sources)?;
         let mut columns = Vec::new();
@@ -1104,6 +1114,7 @@ impl FiggyChart {
     /// Start or restart this chart's exact streaming surface and renderer-
     /// owned CPU cursor. No LOD or downsampling is performed.
     pub fn begin_streaming(&mut self, max_primitives_per_chunk: f64) -> Result<(), JsValue> {
+        self.refuse_streaming()?;
         let max_primitives_per_chunk =
             js_safe_u64(max_primitives_per_chunk, "max_primitives_per_chunk")?;
         let (display_config, _, _) = self.display_config()?;
@@ -1135,6 +1146,7 @@ impl FiggyChart {
         revisions: Vec<f64>,
         sources: js_sys::Array,
     ) -> Result<StreamingStepResult, JsValue> {
+        self.refuse_streaming()?;
         let sources = js_stream_sources(&sources)?;
         let revisions = validate_stream_bindings(&ids, &revisions, &sources)?;
         let mut bindings = Vec::new();
@@ -1217,6 +1229,7 @@ impl FiggyChart {
     }
 
     pub fn set_stream_chunk_budget(&mut self, primitives: f64) -> Result<(), JsValue> {
+        self.refuse_streaming()?;
         let primitives = js_safe_u64(primitives, "stream chunk budget")?;
         self.renderer
             .set_stream_chunk_budget(self.chart_id, primitives)
@@ -1371,6 +1384,7 @@ impl FiggyChart {
             })
         });
         if streamed {
+            self.refuse_streaming()?;
             self.renderer
                 .request_stream_auto_fit(self.chart_id, padding)
                 .map_err(js_err)?;
@@ -1391,6 +1405,7 @@ impl FiggyChart {
         &mut self,
         handle: &StreamingOperationHandle,
     ) -> Result<AutoStreamingRangeRequestResult, JsValue> {
+        self.refuse_streaming()?;
         let request = self
             .renderer
             .request_stream_operation_ranges(handle.operation)
@@ -1411,6 +1426,7 @@ impl FiggyChart {
         handle: &StreamingOperationHandle,
         max_primitives: f64,
     ) -> Result<(), JsValue> {
+        self.refuse_streaming()?;
         let budget = js_safe_u64(max_primitives, "stream operation chunk budget")?;
         self.renderer
             .set_stream_operation_chunk_budget(handle.operation, budget)
@@ -1426,6 +1442,7 @@ impl FiggyChart {
         offsets: Vec<f64>,
         sources: js_sys::Array,
     ) -> Result<StreamingStepResult, JsValue> {
+        self.refuse_streaming()?;
         let sources = js_stream_sources(&sources)?;
         let bindings =
             stream_range_bindings(&ids, &revisions, &source_lengths, &offsets, &sources)?;

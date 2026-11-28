@@ -520,6 +520,13 @@ const AUTO_LAYOUT_PASSES: usize = 8;
 /// overlay axis' title against a legend right of the plot, and labels that
 /// collide with each other along an axis or at a corner.
 pub fn auto_layout(cfg: &Config, measure: &dyn MeasureText) -> Config {
+    // The passes probe the same axes again and again: they share the
+    // timestamp tick plans of one input, for this call only (#465).
+    fit(cfg, &crate::chrome::TickPlanCache::over(measure))
+}
+
+/// [`auto_layout`] measured with `measure`, which holds the call's plans.
+fn fit(cfg: &Config, measure: &dyn MeasureText) -> Config {
     let out = fit_once(cfg, measure);
     let moved = |a: &Config, b: &Config| {
         a.subplots
@@ -2227,6 +2234,86 @@ pub(super) mod tests {
             cfg.subplots[0].config.chart_area
         );
         assert_eq!(auto_layout(&out, &measure), out);
+    }
+
+    /// `axis` as an automatic calendar axis over `days` days.
+    fn calendar_axis(axis: &mut AxisOptions, days: f64) {
+        let mut format = crate::defaults::timestamp_label_format();
+        format.label = crate::format::TimestampLabelMode::Auto;
+        format.tick_policy = crate::format::TimestampTickPolicy::AutoCalendar;
+        axis.min = 1_700_000_000.0;
+        axis.max = 1_700_000_000.0 + days * 86_400.0;
+        axis.label_style.format = LabelFormat::Timestamp(format);
+    }
+
+    /// Charts with several calendar axes: a 30-day bottom axis, a 400-day
+    /// top axis and a numeric right axis, alone, with an overlay whose own
+    /// x axis is a calendar axis, and with a subplot of calendar axes; each
+    /// at 1x and 2x text.
+    fn calendar_charts() -> Vec<Config> {
+        let mut plain = with_titles("Close");
+        calendar_axis(&mut plain.bottom_x, 30.0);
+        calendar_axis(&mut plain.top_x, 400.0);
+        for axis in [&mut plain.top_x, &mut plain.right_y] {
+            axis.label_style.visible = true;
+            axis.label_style.label_visible = true;
+            axis.tick = crate::config::TickVisibility::Outside;
+        }
+        plain.right_y.min = -3.0;
+        plain.right_y.max = 1200.0;
+        let mut overlaid = plain.clone();
+        let mut overlay = crate::defaults::overlay_layer();
+        overlay.link_x = false;
+        calendar_axis(&mut overlay.x_axis, 7.0);
+        overlay.x_axis.label_style.visible = true;
+        overlay.x_axis.label_style.label_visible = true;
+        overlaid.overlays.push(overlay);
+        let mut gridded = plain.clone();
+        let mut sub = crate::defaults::subplot();
+        sub.config = plain.clone();
+        calendar_axis(&mut sub.config.bottom_x, 3.0);
+        sub.config.chart_area = ChartArea(Rect {
+            x: 1000,
+            y: 0,
+            width: 600,
+            height: 400,
+        });
+        gridded.subplots.push(sub);
+        let mut charts = vec![plain, overlaid, gridded];
+        let doubled: Vec<Config> = charts
+            .iter()
+            .map(|chart| {
+                let mut chart = chart.clone();
+                chart.scale_text_sizes(None, 2.0);
+                chart
+            })
+            .collect();
+        charts.extend(doubled);
+        charts
+    }
+
+    /// #465: the plan cache of an auto layout call changes no layout. For
+    /// charts with several calendar axes, overlays and subplots, under two
+    /// measures, the call gives the layout the same fit planning every
+    /// probe afresh gives, and probes that repeat an input hit the cache.
+    #[test]
+    fn the_plan_cache_hits_and_changes_no_layout() {
+        let measures: [&dyn MeasureText; 2] = [&Labels, &Ems];
+        for measure in measures {
+            for chart in calendar_charts() {
+                let afresh = fit(&chart, measure);
+                let cache = crate::chrome::TickPlanCache::over(measure);
+                let cached = fit(&chart, &cache);
+                assert_eq!(cached, afresh);
+                assert_eq!(auto_layout(&chart, measure), afresh);
+                assert_ne!(afresh, chart, "the chart is laid out");
+                let (hits, misses) = cache.counts();
+                assert!(misses > 0, "the calendar axes are planned");
+                assert!(hits > 2 * misses, "{hits} hits, {misses} misses");
+                // A fixed point lays out the same, from the cache too.
+                assert_eq!(auto_layout(&afresh, measure), fit(&afresh, measure));
+            }
+        }
     }
 
     /// A measure in ems: every glyph half its text's size wide, 0.8 up

@@ -2,9 +2,12 @@
 
 ## When CI runs
 
-The full three-OS matrix runs only for **public, non-draft pull requests** when
-opened, updated, reopened or marked ready for review. Branch pushes without a PR,
-master/merge pushes and tag pushes do not start it. A push to an open PR triggers
+The full three-OS matrix runs only for **public, non-draft pull requests into
+`master`** when opened, updated, reopened or marked ready for review, or when
+started by hand (`workflow_dispatch`). A pull request into another branch, such
+as an integration branch, does not start it; the work it collects runs on the
+final pull request into `master`. Branch pushes without a PR, master/merge
+pushes and tag pushes do not start it. A push to an open PR triggers
 one PR run; a newer run cancels the older run for that PR. Draft PRs wait until
 they are ready. Failed jobs can be rerun from that PR's Actions run. A master
 commit has no run of its own: its results are in the last run of the pull
@@ -25,9 +28,9 @@ packages fails the job. Test-only input adapters and inspection helpers compile
 only with `cfg(test)`; the normal native and WASM libraries do not carry those
 fixtures.
 
-Prepare changes on a public candidate branch and open a PR to request CI. All
-three backend jobs run on every such PR, including experimental Metal. The
-separate Metal precision probe is manual-only.
+Prepare changes on a public candidate branch and open a PR into `master` to
+request CI. All three backend jobs run on every such PR, including experimental
+Metal. The separate Metal precision probe is manual-only.
 
 GitHub's standard hosted runner compute is free for public repositories; artifact
 storage has its own limits.
@@ -65,8 +68,8 @@ covers the shader changes that avoid WARP's slow first-use workgroup initializat
 
 The separate `CodeQL` workflow runs only for public, non-draft pull requests,
 using the same opened/updated/reopened/ready-for-review events as the package
-matrix. It has no push, scheduled or manual trigger. It analyzes Rust, Python,
-JavaScript/TypeScript and GitHub Actions with the `security-extended` query suite
+matrix, into any branch. It has no push, scheduled or manual trigger. It
+analyzes Rust, Python, JavaScript/TypeScript and GitHub Actions with the `security-extended` query suite
 on standard Ubuntu runners. CodeQL actions, like every action in the other
 workflows, are pinned to exact commit IDs.
 
@@ -111,13 +114,20 @@ The tracked `.githooks/pre-push` runs the same checker against each outgoing
 commit's archived source, so a repaired working tree cannot hide a broken branch
 being pushed. See [hook installation](../CONTRIBUTING.md#build-and-test).
 The extracted-archive audit reuses the same link rules after packaging.
+`static` then checks that the lockfiles of the standalone crates
+(`tools/playground`, `tools/loom-poller`, `examples/egui`) still resolve, with
+`cargo metadata --locked` on each manifest: these crates are outside the root
+workspace, so a root dependency bump does not refresh their `Cargo.lock`.
 
 1. Native workspace checks with default and all optional features, including examples.
+   The model and renderer libraries (and their unit tests) also build without
+   the default `helpers` feature, native and WASM. A clippy gate fails on panic
+   paths, dropped errors and lock types in product code (`PANIC_GATE_LINTS` in
+   `verify.py`).
 2. Compilation for `wasm32-unknown-unknown`, including every browser test target
    (`cargo check --workspace --target wasm32-unknown-unknown --test '*_browser'`), and strict Rust API documentation links on
    native and WASM targets. The WASM check catches links to native-only methods.
-   CI compiles the browser tests but does not run them; running them needs a
-   WebGPU browser (see below).
+   The separate `browser` job runs them ([Browser tests](#browser-tests)).
 3. Creation and Cargo verification of both `.crate` archives, without registry upload.
    Archive contents must include source resources, font/license notices, guides,
    examples and test fixtures. Gallery assets and unsupported integrations are
@@ -142,19 +152,22 @@ images. Existing opt-in stress/probe tests remain `#[ignore]` and are reported b
 Tests run sequentially so GPU memory measurements do not overlap. These are headless
 native renderer tests; WASM compilation is not a browser execution test.
 
-The docs.rs metadata enables `serde` without GUI demo dependencies. Renderer API
-pages are built for native Linux and WASM; the model needs only the native default
-target. These builds do not initialize a graphics adapter. docs.rs builds its
+The docs.rs metadata enables `serde`. Renderer API pages are built for native
+Linux and WASM; the model needs only the native default target. These builds do not initialize a graphics adapter. docs.rs builds its
 pages from each published crate version after publication, not from master.
 Local rustdoc builds do not check what docs.rs hosts.
 
-Each backend's package tests run as three jobs at once (`--shard`, `SHARDS` in
-`verify.py`): `main` runs the library tests, every integration test no other shard
-owns, the doctests, the GPU numeric and missing-adapter checks and, before them,
-`verify.py static`; `picks` runs `pick_draw_agreement`; `decorations` runs
-`decoration_oracle` and `vector_export`. Every integration test binary runs in
-exactly one shard, and a shard binary missing from the packages fails the job, so a
-renamed suite cannot drop out. `--shard all` (the default) runs everything in one
+Each backend's checks run as seven jobs at once (`--shard`, `SHARDS` and
+`LIB_SHARDS` in `verify.py`): `static` runs `verify.py static`; `lib` runs the
+library's `renderer::streaming_request_tests` and `lib-rest` every other library
+test (the same name filter, skipped, so each library test runs once); `main` runs
+every integration test no other shard owns, the doctests and the GPU numeric and
+missing-adapter checks; `scenes` runs `theme_matrix` and `shader_set_scenes`;
+`picks` runs `pick_draw_agreement`; `decorations` runs `decoration_oracle` and
+`vector_export`. On WARP the library tests alone took 70 minutes and
+`theme_matrix` 24, one after another in one job. Every integration test binary
+runs in exactly one shard, and a shard binary missing from the packages fails the
+job, so a renamed suite cannot drop out. `--shard all` (the default) runs everything in one
 job. Test builds optimize dependencies at `opt-level = 3` and the workspace crates
 at `opt-level = 1` (`[profile.test]` in the root manifest, and the same profile in
 the extracted workspace); debug assertions and overflow checks stay on. The jobs
@@ -194,16 +207,75 @@ and scope check:
    only within the scope check: a RustSec advisory, a license outside the
    allowed list, a wildcard version or an unknown source fails it.
 1. `cargo test --locked --workspace --features figgy-renderer/serde --no-fail-fast
-   -- --test-threads=1`: every workspace member, including `figgy-web`
-   (`publish = false`, so the package jobs never build it), with the renderer's
-   workspace-only test helpers.
+   -- --test-threads=1`: every workspace member, including the browser wrapper
+   `crates/web` (package `figgy`, `publish = false`, so the package jobs never
+   build it), with the renderer's workspace-only test helpers.
 2. `cargo run --locked -- --selftest` in `tools/playground`, which is not a
    workspace member: it commits every layer edit through the registry and
    exports each step as a PNG, failing on a rejected config.
+3. `cargo check --locked --examples` in `examples/egui`, the standalone crate
+   of the egui examples.
+4. `cargo test --locked --release` in `tools/loom-poller`, which model-checks
+   the native poll thread's protocol under loom.
 
 The selftest PNGs are uploaded as the `playground-selftest` artifact, including
 on failure, and kept for seven days, so a rendering change can be reviewed by
 comparing them with a previous run.
+
+## Browser tests
+
+The `browser` job runs every `*_browser` WASM test target of the workspace in
+Chromium on Ubuntu, under the same triggers as the other jobs. Its scope check,
+`ci/change_scope.py --browser`, runs the tests only when the change touches
+what they build or run: anything under `crates/`, `Cargo.toml`, `Cargo.lock`,
+`rust-toolchain.toml`, `clippy.toml`, `ci/wasm_browser_test.cjs`,
+`ci/change_scope.py` or `.github/workflows/ci.yml`. Otherwise the job starts and
+passes but skips every step after the scope check.
+
+The job installs `wasm-bindgen-cli` at the `wasm-bindgen` version in
+`Cargo.lock`, and Playwright with its Chromium. It builds the targets with
+`cargo test --locked --target wasm32-unknown-unknown --no-run
+--message-format=json` and runs `xvfb-run -a node ci/wasm_browser_test.cjs`,
+which serves each binary with `wasm-bindgen-test-runner` and fails unless every
+test passes and none is ignored. The runner has no GPU, so WebGPU runs on
+SwiftShader. Headless Chromium has a SwiftShader adapter there but cannot
+create a WebGPU canvas, so the browser runs headed on an X virtual display
+(`BROWSER_HEADLESS=0`) with:
+
+```sh
+export BROWSER_ARGS='--use-webgpu-adapter=swiftshader --enable-features=Vulkan --use-vulkan=swiftshader --disable-gpu-watchdog'
+export WASM_BROWSER_TEST_TIMEOUT=900
+```
+
+SwiftShader runs on the CPU. Chromium's GPU watchdog ends a GPU process that
+is busy for 60 seconds, which the full shader set's prewarm and a draw of a
+million-point line exceed there; the GPU process then restarts and the page's
+WebGPU calls fail with "A valid external Instance reference no longer exists".
+`--disable-gpu-watchdog` keeps the GPU process alive. `WASM_BROWSER_TEST_TIMEOUT`
+is the seconds a test binary may take (default 180; the page waits a minute
+longer): `device_release_browser` takes about six minutes on SwiftShader.
+
+Two shards run at once: `slow` runs the two slowest targets,
+`shader_prewarm_full_browser` and `device_release_browser`, and `main` runs
+every other target. Each uploads its results,
+with the browser version and each target's test output, as the
+`browser-<shard>` artifact (`wasm-browser.json`), including on failure.
+
+To run them locally the same way (Playwright as under
+[Shader compilation regressions](#shader-compilation-regressions)):
+
+```sh
+cargo install --locked wasm-bindgen-cli --version 0.2.129  # Cargo.lock's version
+cargo test --locked --workspace --target wasm32-unknown-unknown --test '*_browser' \
+  --no-run --message-format=json > /tmp/figgy-wasm-build.jsonl
+export BROWSER_HEADLESS=0 WASM_BROWSER_TEST_TIMEOUT=900
+export BROWSER_ARGS='--use-webgpu-adapter=swiftshader --enable-features=Vulkan --use-vulkan=swiftshader --disable-gpu-watchdog'
+xvfb-run -a node ci/wasm_browser_test.cjs /tmp/figgy-wasm-build.jsonl
+```
+
+The runner stops at the first failing target. On a machine with a GPU, leave
+`BROWSER_ARGS`, `BROWSER_HEADLESS` and `WASM_BROWSER_TEST_TIMEOUT` unset to use
+the browser's own adapter.
 
 ## Shader compilation regressions
 
@@ -215,13 +287,14 @@ and boxplot renderers. A missing source or entry fails coverage. Repeating
 load only its own shader. No timing instrumentation is included in native release
 builds.
 
-The package job saves `shader-compilation-native.json` in the
-`verification-<runner>-<backend>` artifact.
+The package job's `main` shard saves `shader-compilation-native.json` in the
+`verification-<runner>-<backend>-main` artifact.
 Each individual module or pipeline must finish within 30,000 ms by default.
 `FIGGY_SHADER_COMPILE_MAX_MS` can set a positive per-operation budget. This is a
 regression ceiling, not a performance guarantee across hardware or a timeout that
 can interrupt a blocked driver. The job's overall timeout still applies. Measurements
-include validation and backend compilation; driver caches may already be warm.
+include validation and backend compilation. The tests load no saved figgy
+pipeline cache, but driver caches may already be warm.
 
 To capture a standalone run (POSIX shell):
 
@@ -239,8 +312,8 @@ descriptors. After changing a shader or descriptor, regenerate it once with
 `FIGGY_UPDATE_SHADER_CONTRACT=1` on the command above, then rerun **without** that
 flag. Never set the regeneration flag in CI.
 
-Browser measurements are a separate, opt-in check; the three-OS matrix does not
-claim to execute a browser. Install Playwright in a temporary tools directory and
+Browser shader-compilation measurements are a separate, opt-in check; the
+three-OS matrix does not claim to execute a browser. Install Playwright in a temporary tools directory and
 place its `node_modules` on `NODE_PATH`, or use an existing Playwright installation.
 For example:
 
@@ -318,8 +391,9 @@ python3 ci/verify.py static
 python3 ci/verify.py packages
 ```
 
-The repository job's checks run from the checkout root and from
-`tools/playground` as listed in [Repository checks](#repository-checks).
+The repository job's checks run from the checkout root, `tools/playground`,
+`examples/egui` and `tools/loom-poller` as listed in
+[Repository checks](#repository-checks).
 
 On Windows, use `python` if `python3` is unavailable. Select a supported native backend
 with `WGPU_BACKEND=vulkan`, `dx12` or `metal`. Without that variable, wgpu chooses from
@@ -340,22 +414,32 @@ can use their installed driver instead; the setup script is specific to GitHub r
 
 ## 한국어 안내
 
-CI는 공개 저장소에서 초안이 아닌 PR을 열거나 갱신하거나 다시 열 때, 그리고 초안 PR을
-검토 준비 상태로 바꿀 때만 실행한다. 브랜치, master, 태그 push로는 시작하지 않는다.
+CI는 공개 저장소에서 `master`로 향하는 초안이 아닌 PR을 열거나 갱신하거나 다시 열 때, 그리고 초안 PR을
+검토 준비 상태로 바꿀 때만 실행한다(수동 실행도 가능). 통합 브랜치로 향하는 PR에서는 실행하지 않는다.
+브랜치, master, 태그 push로는 시작하지 않는다. CodeQL은 대상 브랜치와 상관없이 초안이 아닌 PR에서 실행한다.
 로컬에서는 저장소 루트에서 `python3 ci/verify.py static`과 `python3 ci/verify.py packages`를
-실행한다. CI는 백엔드마다 패키지 테스트를 세 작업(`main`, `picks`, `decorations`)으로
-나눠 동시에 돌리고, 테스트 빌드는 의존성을 최적화하며 의존성 빌드 결과를 캐시한다.
+실행한다. CI는 백엔드마다 검사를 일곱 작업(`static`, `lib`, `lib-rest`, `main`, `scenes`, `picks`,
+`decorations`)으로 나눠 동시에 돌리고, 테스트 빌드는 의존성을 최적화하며 의존성 빌드 결과를 캐시한다.
 
 패키지 작업은 배포되는 압축본만 검사한다. 별도의 `repository` 작업은 Ubuntu와
-Vulkan(렌더 장치가 없으면 lavapipe)에서 체크아웃 자체를 검사한다. `figgy-web`을 포함한
-워크스페이스 전체 테스트를 실행하고, 워크스페이스에 속하지 않는 `tools/playground`의
-selftest를 실행한다. selftest가 단계마다 내보낸 PNG는 실패해도 `playground-selftest`
+Vulkan(렌더 장치가 없으면 lavapipe)에서 체크아웃 자체를 검사한다. 브라우저 래퍼 `crates/web`(패키지
+`figgy`)을 포함한 워크스페이스 전체 테스트를 실행하고, 워크스페이스에 속하지 않는 `tools/playground`의
+selftest, `examples/egui`의 egui 예제 빌드 검사, `tools/loom-poller`의 loom 검사를 실행한다.
+`static` 단계는 이 독립 크레이트들의 `Cargo.lock`이 `--locked`로 여전히 해석되는지도 확인한다.
+selftest가 단계마다 내보낸 PNG는 실패해도 `playground-selftest`
 아티팩트로 7일간 남으므로 이전 실행과 비교해 렌더링 변화를 확인할 수 있다.
 이 작업은 변경 범위와 상관없이 매번 `cargo deny check`(`deny.toml`)도 실행해서, RustSec
 보안 권고, 허용 목록 밖의 라이선스, 와일드카드 버전, 알 수 없는 출처의 의존성을 막는다.
 모든 워크플로의 액션은 커밋 ID로 고정한다.
 
-세 운영체제에서 네이티브 빌드와 WASM 컴파일(브라우저 테스트 대상 포함, 실행은 하지 않음), API 문서 링크 검사, 압축을 푼 패키지의
+별도의 `browser` 작업은 워크스페이스의 모든 `*_browser` WASM 테스트를 Ubuntu의 Chromium에서
+실행한다. GPU가 없는 러너라 WebGPU는 SwiftShader로 돌리고, headless Chromium은 WebGPU 캔버스를
+만들지 못하므로 `xvfb-run` 가상 화면에서 창을 띄워 실행한다. CPU에서 도는 SwiftShader가
+GPU watchdog의 60초 제한을 넘기므로 `--disable-gpu-watchdog`을 켜고, 가장 느린
+`shader_prewarm_full_browser`와 `device_release_browser`는 `slow` 샤드에서 따로 실행한다. `ci/change_scope.py --browser`가
+`crates/`나 빌드 설정, 실행 스크립트, 워크플로가 바뀐 경우에만 테스트를 실행한다.
+
+세 운영체제에서 네이티브 빌드와 WASM 컴파일(브라우저 테스트 대상 포함), API 문서 링크 검사, 압축을 푼 패키지의
 단위·통합·문서 테스트를 실행한다. Linux는 GPU가 없을 때 lavapipe를 쓰고,
 Windows는 WARP, macOS는 러너에 노출된 Metal 장치를 쓴다. 유료 GPU 러너는 사용하지 않는다.
 macOS / Metal은 아직 불안정한 실험 단계다. 정밀 Metal 셰이더 실험과 기존 전체 검사는

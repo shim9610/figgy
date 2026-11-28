@@ -37,6 +37,7 @@ pub struct Config {
     pub plot_background: Option<Color>,      // a fill under the data area and grid (#203); None = transparent
     pub background: Option<Color>,           // a fill over the whole chart area, under everything else (#265); None = transparent
     pub layout_state: LayoutState,           // Fixed (default: drawn as stored) | Fitted (a new chart: the chart object keeps the layout fitted, fitted when created and on chart edits, never by a draw; `register_chart` also fits its ranges and vector scales once) (#357)
+    pub snap_to_guides: Option<bool>,        // whether a decoration drag snaps to guides (#440); None (default, key absent) = on, Some(false) = off; read with `Config::snaps_while_dragging`; drawn and exported pixels do not depend on it
 }
 ```
 
@@ -68,6 +69,7 @@ pub struct Config {
 | `log_ticks` | `LogTickPolicy` | Which major ticks a logarithmic axis draws ([#42](https://github.com/shim9610/figgy/issues/42)). `Decades` (default, omitted from JSON) draws every `major_spacing`-th decade. `Adaptive` ignores `major_spacing` and plans the majors from the range alone (`tick::log_ladder`): every n-th decade over more than six decades (`n` is `tick::axis_major_spacing`), otherwise the first of whole decades, 1, 2 and 5 × 10^k, and 1 to 9 × 10^k that puts at least `tick::LOG_LADDER_MIN_MAJORS` (4) majors inside the range, or 1 to 9 × 10^k when none does. The minors are the multiples 2 to 9 that are not majors. When the labels crowd, they are demoted 1..9 → 1, 2, 5 → decades while at least two remain, then thinned to every 2nd, 5th, 10th… label; ticks and grid lines stay. No `LogDecadeStepAdjusted` warning is raised for it. Ignored on linear and categorical axes. The range helpers and a view state keep it, so a zoom re-plans the ticks; a subplot link copies it with the tick spacing |
 | `breaks` | `Option<AxisBreaks>` | Ranges cut out of the axis ([#200](https://github.com/shim9610/figgy/issues/200)): see [`AxisBreaks`](#axisbreaks). `None` (default, omitted from JSON) draws the axis whole. Allowed on `bottom_x`, `left_y` and an overlay's `x_axis` and `y_axis` of a rectangular chart; `top_x` and `right_y` take their partner's cuts at the same fractions of their own range when drawn (`layout::mirrored_breaks`), and a colourbar axis, a polar, ternary, 3D or parallel chart refuse them. The range helpers and a view state keep it, and a subplot link copies it with the range |
 | `unit` | `Option<AxisUnit>` | The unit the axis prints its values in ([#273](https://github.com/shim9610/figgy/issues/273)): `AxisUnit { scale, offset }`, a tick label reads `scale * value + offset`, so 16-bit ADC counts print as volts (`scale = 5/32768`) or kelvin as degrees Celsius (`offset = -273.15`) while the data stays raw. `min`, `max`, `breaks`, `cross_at`, annotations and picks stay in data units. The ticks are planned in shown units over `[scale·min + offset, scale·max + offset]` (`AxisOptions::shown_range`), so the labels are round numbers after the conversion (`0, 0.5, 1.0 V`), and each tick sits at `(shown − offset) / scale`; a negative scale prints values that decrease along the axis. `major_spacing` is read in shown units, and the range helpers, `auto_ticks` and a view state choose it for the shown range. The label format applies to the shown value; a log axis walks decades of the shown value. `scale` must be finite and non-zero and `offset` finite; a log axis takes only `offset = 0` and `scale > 0`; a probability axis, an axis with `Timestamp` labels and a categorical axis refuse a unit (`RuleKind::AxisUnit*`). A subplot link copies it with the tick spacing. `None` (default, omitted from JSON) prints the data values. `AxisOptions::unit(scale, offset)` (`helpers`) sets it |
+| `category_bands` | `Option<CategoryBands>` | Bands across the plot behind alternate categories (#357), for row striping: `CategoryBands { fill, every }` with `every: CategoryBandEvery::Alternate` (indices 1, 3, 5, …; the first row stays clear). Drawn on a categorical `bottom_x` or `left_y` of a rectangular chart, under the grid and the data; any other axis draws none. A `fill` channel outside `0..=1` is refused (`CategoryBandsFill`). No count limit. `None` (default, omitted from JSON) draws no bands |
 
 <a id="axisbreaks"></a>
 ### `AxisBreaks`
@@ -625,6 +627,7 @@ document so its coordinates stay non-negative. See the interaction guide's
 | `link_y` | `Option<CellRef>` | The same for `left_y`. |
 | `marker` | `Option<InsetMarker>` | What this subplot magnifies, marked on the parent ([#205](https://github.com/shim9610/figgy/issues/205)). `window: Option<[[f64; 2]; 2]>` is `[[x0, x1], [y0, y1]]` in the parent's data coordinates; `None` (default, omitted) derives it from the inset (`Config::inset_window`): its `left_y` range, and on a categorical `bottom_x` the parent slots of the categories the inset names by id, cut to the inset's own window, else the inset's `bottom_x` range. `line` (an `AnnotationLineStyle`, default a thin grey line) draws the window's border and the `connectors` (default `true`) from the window's facing corners to the inset's plot. The marker is placed on every draw (`Config::emit_inset_markers`, on the document's annotation overlay above every panel, insets included; the window is projected with the axes of the panel the inset is placed in, its anchor's parent or the panel whose plot holds its frame, and clipped to that panel's plot, #414; a window finer than the parent can show is drawn ten line widths across), so raster, SVG and PDF follow a moved, resized or zoomed inset and a parent view change. Not selectable: the inset itself is. `None` (default, omitted from JSON) marks nothing |
 | `text_scale` | `SubplotTextScale` | How the subplot's text follows its cell ([#292](https://github.com/shim9610/figgy/issues/292)). `Auto` (default, omitted from JSON): the subplot's text is drawn at its stored sizes times `Config::subplot_text_factor(i)`, see "Text scale" below. `Fixed`: at the stored sizes. |
+| `anchor` | `Option<InsetAnchor>` | Where an inset sits in its parent's plot ([#392](https://github.com/shim9610/figgy/issues/392)): `InsetAnchor { parent: CellRef, frame }`, with `frame` the frame's edges as fractions of the parent's data area, `[[left, right], [top, bottom]]`. `Some` owns the placement: `config.chart_area` is derived from it by every call that moves the parent's plot (`Config::follow_parent_areas`), grown to the size the inset's plot needs and kept inside the parent's plot. `None` (default, omitted from JSON): the frame owns the placement. The first call that moves the parent's plot writes the anchor from the frame; a frame drag or resize and `Config::set_subplot_area` write it from the placed frame and clear it for a frame outside every plot. A host that sets an anchored inset's `chart_area` itself goes through `set_subplot_area`, or clears the anchor |
 
 A link group has one value: `Config::subplot_config(i)` resolves subplot `i`
 with its linked axes copied from the root of their chain, and
@@ -713,6 +716,27 @@ A symbol from `series_symbol_segments` names its series
 `legend_entry_of_series(content, series, id)` and
 `legend_entry_series_id(content, index)` pair entries with series by that id
 rather than by position; a symbol without one pairs by position.
+
+**Legend guard (#483).** A hand-made symbol can name a series and still not
+draw its mark. `legend_symbol_mismatches(content, series, colormap)` lists
+each entry whose symbol names a `series_id` that no series has
+(`LegendMismatch::UnknownSeries`), draws colours other than that series' mark
+(`ColorDiffers`, comparing every segment's `color` and `rule_band` with
+`series_symbol_segments`), or draws another mark in the same colours
+(`MarkDiffers`: glyph, rule, dash, stroke thickness, field width or segment
+count). Text styling of a symbol (font, size, bold) is not part of the mark,
+and symbols that name no series are free-form and never checked.
+`Config::legend_warnings(series)` runs it over the base legend, each
+overlay's and each subplot's (overlays included) and names the legend by its
+`LayerRef`. These are warnings, not errors: the legend draws as written,
+`validate_series` still accepts the chart, and a host may pick another colour
+on purpose. A registered chart's view reports them as
+`RenderWarning::LegendSymbolMismatch` in `ChartView::render_warnings`,
+re-derived whenever `prepare_registered` redraws it after a config or series
+edit, and the web wrapper's `render_warnings()` JSON carries them
+(`kind: "LegendSymbolMismatch"`, `legend`, `entry`, `series_id`, `reason`).
+A view of a held `Chart` (`create_chart_view`) has no series and never
+reports them; such a host calls `Config::legend_warnings` itself.
 
 ### `DataSelectionsConfig`
 
@@ -897,7 +921,7 @@ A Feynman diagram ([#234](https://github.com/shim9610/figgy/issues/234)) is a Da
 | `style` | `FeynmanStyle` | `color`, `width`, `wave { amplitude, wavelength }`, `coil { amplitude, wavelength }`, `head_length`, `head_width`, `dot_radius`, `loop_radius`, `fan_step` (degrees, `0..=120`; a fan of many lines narrows it so its outer lines stay within 170), `picked { color, width_extra_px }` (`0..=16`, how the picked part is drawn), in logical pixels, and `label_scale` (`0.25..=4`, default `1.5`, omitted while default): the factor every vertex, propagator and momentum label is drawn, measured, picked and exported at, times its stored `RichText` size. The defaults are width `2.6`, wave `{ 7, 24 }`, coil `{ 8, 13 }`, arrowheads `12` × `9`, dots `4` and loops `24` |
 | `layout` | `FeynmanLayout` | `direction`: `LeftToRight` (default) or `BottomToTop`, where the layout puts the incoming and outgoing legs |
 
-There is no count limit. The chart is rectangular with a numeric `bottom_x`. The series is drawn over the chart's other data, and the SVG and PDF export write it as vector curves. A pick answers `FeynmanVertex`, `FeynmanPropagator` or `FeynmanLabel`; `step_selection` walks the vertices or propagators and the Feynman series; `Renderer::drag_feynman` moves a vertex, bends a line or moves a label. A streamed display refuses the series.
+There is no count limit. The chart is rectangular with a numeric `bottom_x`. The series is drawn over the chart's other data, and the SVG and PDF export write it as vector curves. A pick answers `FeynmanVertex`, `FeynmanPropagator` or `FeynmanLabel`; `step_selection` walks the vertices or propagators and the Feynman series; `Renderer::drag_feynman` moves a vertex, bends a line or moves a label. A streamed display refuses the series, and so does a monotonic chart (`register_monotonic_chart` and `MonotonicChart::set_series` fail with `InvalidSeriesConfig` and `RuleKind::MonotonicFeynman`, [#468](https://github.com/shim9610/figgy/issues/468)): the drags and `place_feynman_vertices` are general chart calls.
 
 <a id="data_config--declarative-series-schema-the-active-api"></a>
 
@@ -1581,6 +1605,7 @@ pub struct Config {
     pub plot_background: Option<Color>,      // 데이터 영역과 격자 아래를 채우는 색(#203). None이면 투명하다
     pub background: Option<Color>,           // 차트 영역 전체를 다른 모든 요소 아래에서 채우는 색(#265). None이면 투명하다
     pub layout_state: LayoutState,           // Fixed(기본값, 저장된 그대로 그린다) | Fitted(새 차트. 차트 객체가 레이아웃을 맞춘 상태로 유지한다. 만들 때와 차트 편집 때 맞추고, 그리기는 맞추지 않는다. `register_chart`는 범위와 벡터 배율도 한 번 맞춘다) (#357)
+    pub snap_to_guides: Option<bool>,        // 장식을 끌 때 가이드에 붙일지(#440). None(기본값, 키 생략)이면 붙고 Some(false)이면 붙지 않는다. `Config::snaps_while_dragging`으로 읽는다. 그림과 출력에는 영향이 없다
 }
 ```
 
@@ -1612,6 +1637,7 @@ pub struct Config {
 | `categories` | `Option<Arc<[Category]>>` | 범주형 축([API 가이드(영문)](API.md) 참고). 공유 저장소(#442)라서 복제와 표시 배치가 목록을 함께 쓴다. `.into()`나 `collect()`로 만든다. 범주의 `rich_label: Option<RichText>`(#203)는 일반 `label` 대신 그리고 측정하며, 항 기호 `$^3\mathrm{P}^o$` 같은 첨자와 TeX 수식을 쓸 수 있다. 범주의 `label_offset: [f32; 2]`(#309, 기본값 0, JSON에서 생략)는 극좌표 각도 축에서 그 라벨만 옮기며, 축의 공유 반경 오프셋 다음에 스포크 기준 `[바깥, 옆]`으로 더한다. 직선 축은 이 값을 읽지 않는다. 라벨이 겹치면 숨기지 않고 여러 줄로 엇갈려 그린다([#205](https://github.com/shim9610/figgy/issues/205)). 줄 수는 라벨을 솎아 냈을 간격만큼이고, 각 줄은 라벨 크기에 1/4 em을 더한 만큼씩 축에서 멀어지므로 모든 범주가 이름을 유지한다 |
 | `category_groups` | `Option<CategoryGroups>` | 범주형 `top_x`·`bottom_x`의 이웃한 범주 묶음 위에 다는 그룹 머리글([#203](https://github.com/shim9610/figgy/issues/203)). `CategoryGroups { groups: Vec<CategoryGroup { label: RichText, first, last, bracket }>, offset: [f32; 2] }` 형태다. 머리글은 눈금 라벨 바깥(라벨이 여러 줄로 엇갈려 있으면 가장 바깥 줄 너머, #205), `first`부터 `last`까지 범주의 가운데에 놓이고, `bracket`이면 묶음을 따라 괄호선을 긋는다. 묶음은 축 순서대로 겹치지 않아야 하며 개수 상한은 없다. 머리글 전체가 요소 하나(`Element::CategoryGroupLabel`)이고 드래그하면 `offset`에 기록된다. 수치 축과 y축에는 지정할 수 없다 |
 | `category_window` | `Option<[f64; 2]>` | 범주형 축이 보여 주는 칸의 범위([#205](https://github.com/shim9610/figgy/issues/205)). 범주 좌표의 `[from, to]`이며, 범주 `i`는 `i`에 중심을 두고 그 칸은 `i - 0.5..i + 0.5`다. `None`(기본값, JSON에서 생략)이면 모든 칸(`-0.5..n - 0.5`)을 보여 준다. 수치 축에서는 무시하며 그때는 `min` / `max`가 범위다. 뷰를 움직이는 도우미(`Chart::set_x_range` / `set_y_range`, 서브플롯·오버레이 setter, 뷰 상태, 확대·이동)가 이 값을 쓰고 전체 범위는 지운다. `auto_fit_*` 계열은 범주형 축을 바꾸지 않는다. 눈금·라벨·격자·데이터·피킹·주석은 `AxisOptions::data_range`를 통해 이 범위를 따르고, 라벨과 그룹 머리글은 범위 안의 칸에만 그린다 |
+| `category_bands` | `Option<CategoryBands>` | 하나 건너 하나의 범주 칸 뒤에 플롯을 가로지르는 띠(#357). 행 줄무늬에 쓴다. `CategoryBands { fill, every }`이고 `every`는 `CategoryBandEvery::Alternate`(인덱스 1, 3, 5, …. 첫 행은 비운다)다. 직교 차트의 범주형 `bottom_x`·`left_y`에서만 격자와 데이터 아래에 그리며 다른 축은 그리지 않는다. `fill`의 채널이 `0..=1`을 벗어나면 거부한다(`CategoryBandsFill`). 개수 상한은 없다. `None`(기본값, JSON에서 생략)이면 띠가 없다 |
 
 <a id="axisbreaks-ko"></a>
 ### `AxisBreaks`
@@ -1898,6 +1924,7 @@ pub struct Config {
 | `link_y` | `Option<CellRef>` | `left_y`에 대해 같은 규칙. |
 | `marker` | `Option<InsetMarker>` | 이 서브플롯이 확대해 보여 주는 곳을 부모에 표시한다([#205](https://github.com/shim9610/figgy/issues/205)). `window: Option<[[f64; 2]; 2]>`는 부모 데이터 좌표의 `[[x0, x1], [y0, y1]]`이며, `None`(기본값, 생략)이면 인셋에서 유도한다(`Config::inset_window`): y는 인셋의 `left_y` 범위이고, x는 범주형 `bottom_x`이면 인셋이 id로 가리키는 범주들의 부모 칸(인셋 자신의 창으로 잘라서), 아니면 인셋의 `bottom_x` 범위다. `line`(`AnnotationLineStyle`, 기본값은 가는 회색 선)은 창의 테두리와 연결선을 그리고, `connectors`(기본값 `true`)는 창의 마주보는 모서리에서 인셋의 플롯으로 가는 연결선을 그릴지 정한다. 마커는 그릴 때마다 다시 놓이므로(`Config::emit_inset_markers`, 인셋까지 모든 패널 위에 있는 문서의 주석 위 층에. 창은 인셋이 놓인 패널, 곧 앵커의 부모나 프레임을 담은 플롯의 패널의 축으로 투영하고 그 패널의 플롯에 맞춰 자른다. #414. 부모가 보여 줄 수 있는 것보다 가는 창은 선 두께의 열 배로 그린다) 래스터·SVG·PDF가 옮기거나 크기를 바꾸거나 확대한 인셋과 부모의 뷰 변화를 따른다. 선택할 수는 없다. 인셋 자체를 선택한다. `None`(기본값, JSON에서 생략)이면 아무것도 표시하지 않는다 |
 | `text_scale` | `SubplotTextScale` | 서브플롯의 글자가 셀 크기를 따르는 방식([#292](https://github.com/shim9610/figgy/issues/292)). `Auto`(기본값, JSON에서 생략)이면 서브플롯의 글자를 저장된 크기에 `Config::subplot_text_factor(i)`를 곱한 크기로 그린다(아래 "글자 배율" 참고). `Fixed`이면 저장된 크기 그대로 그린다. |
+| `anchor` | `Option<InsetAnchor>` | 인셋이 부모 플롯 안에 놓인 자리([#392](https://github.com/shim9610/figgy/issues/392)). `InsetAnchor { parent: CellRef, frame }`이고 `frame`은 부모 데이터 영역에 대한 비율로 적은 테두리의 가장자리 `[[left, right], [top, bottom]]`이다. `Some`이면 이 값이 배치를 정한다. 부모 플롯을 움직이는 호출마다(`Config::follow_parent_areas`) 여기서 `config.chart_area`를 다시 정하며, 인셋 플롯에 필요한 크기로 키우고 부모 플롯 안에 둔다. `None`(기본값, JSON에서 생략)이면 테두리가 배치를 정한다. 부모 플롯을 처음 움직이는 호출이 테두리에서 앵커를 쓰고, 테두리 드래그·크기 조절과 `Config::set_subplot_area`는 놓인 테두리에서 앵커를 쓰며 모든 플롯 밖에 놓인 테두리에서는 지운다. 앵커가 있는 인셋의 `chart_area`를 호스트가 직접 정하려면 `set_subplot_area`를 쓰거나 앵커를 지운다 |
 
 링크 묶음에는 값이 하나뿐이다. `Config::subplot_config(i)`는 링크된 축을 체인의 뿌리에서 복사해
 서브플롯 `i`를 해석하고, `Config::sync_subplot_links(previous)`는 링크된 필드를 뿌리와 같게
@@ -1952,6 +1979,8 @@ pub struct Config {
 
 범례 기호는 `field_em`으로 너비를 고정한 텍스트 구간이다. 모양에 관계없이 `SYMBOL_FIELD_EM`, 즉 폰트 크기의 2배 너비를 차지한다. 선 기호는 `rule: true`로 구간 전체에 수평선을 그리고, 점 기호는 가운데에 `● ■ ▲ …` 같은 글리프를 놓는다. 선과 점을 함께 표시할 때도 전체 너비는 같다.
 점선·도트 패턴은 `rule_dash`에 저장하므로 범례에도 `LineStylePreset`의 선 모양이 반영된다. 선 두께는 `rule_thickness_em`(× 글자 크기)이며, 없으면 `RULE_THICKNESS_EM`(0.09em)으로 그린다. `series_symbol_segments`는 시리즈의 선 두께를 기준 범례 크기 14px에 맞춰(`두께 / 14` em, 최소 0.09em) 저장하므로 3px 시리즈의 견본은 3px로 그려진다. 자동으로 만든 항목은 `심볼 + ' ' + '\t' + 라벨` 형식이며, 탭을 기준으로 라벨이 정렬된다. 히트맵 기호는 차트 컬러맵 견본이다. `colorbar.colormap`에서 뽑은 여섯 색 띠로 같은 구간을 채우며, 색상 막대가 없으면 빈 구간이다. 직접 구성할 때는 `symbol_segments(kind, color)`, `series_symbol_segments(cfg, colormap)`, `append_legend_entry(content, symbol, label)`을 사용한다. `series_symbol_segments`가 만든 기호에는 시리즈 id(`RichSegment.series_id`)가 들어가며, 기호 갱신과 `legend_entry_of_series` / `legend_entry_series_id`는 위치 대신 이 id로 항목과 시리즈를 짝짓는다. id가 없는 기호는 위치로 짝짓는다.
+
+**범례 검사(#483).** 직접 만든 기호는 시리즈 id를 달고 있어도 그 시리즈의 마크와 다르게 그려질 수 있다. `legend_symbol_mismatches(content, series, colormap)`는 이런 항목을 찾는다. 기호가 가리키는 `series_id`를 가진 시리즈가 없으면 `LegendMismatch::UnknownSeries`, 색이 그 시리즈의 마크와 다르면 `ColorDiffers`(구간마다 `color`와 `rule_band`를 `series_symbol_segments`와 비교한다), 색은 같지만 글리프·수평선·점선·선 두께·구간 너비·구간 수가 다르면 `MarkDiffers`로 보고한다. 글꼴, 크기, 굵게 같은 글자 스타일은 마크로 보지 않으며, 시리즈 id가 없는 기호는 자유 형식이라 검사하지 않는다. `Config::legend_warnings(series)`는 기본 범례와 오버레이·서브플롯의 범례(서브플롯의 오버레이 포함)를 모두 검사하고, 각 범례를 `LayerRef`로 알려 준다. 오류가 아니라 경고다. 범례는 적힌 대로 그리고, `validate_series`도 차트를 그대로 받아들이며, 호스트가 일부러 다른 색을 골랐을 수도 있다. 등록 차트의 뷰는 이 경고를 `ChartView::render_warnings`에 `RenderWarning::LegendSymbolMismatch`로 보고하며, 설정이나 시리즈를 바꾼 뒤 `prepare_registered`가 뷰를 다시 그릴 때마다 새로 계산한다. 웹 래퍼의 `render_warnings()` JSON에도 들어간다(`kind: "LegendSymbolMismatch"`, `legend`, `entry`, `series_id`, `reason`). 보유 `Chart`의 뷰(`create_chart_view`)는 시리즈를 모르므로 이 경고를 보고하지 않는다. 그런 호스트는 `Config::legend_warnings`를 직접 호출한다.
 
 ### `DataSelectionsConfig`
 
@@ -2073,7 +2102,7 @@ pub struct Config {
 | `style` | `FeynmanStyle` | 논리 픽셀 단위의 `color`, `width`, `wave { amplitude, wavelength }`, `coil { amplitude, wavelength }`, `head_length`, `head_width`, `dot_radius`, `loop_radius`, `fan_step`(도, `0..=120`, 평행선이 많으면 바깥 선이 170도 안에 들도록 좁아진다), `picked { color, width_extra_px }`(`0..=16`, 선택된 부분을 그리는 방식), `label_scale`(`0.25..=4`, 기본값 `1.5`, 기본값이면 생략): 꼭짓점·전파자·운동량 라벨을 저장된 `RichText` 크기의 몇 배로 재고 그리고 피킹하고 내보낼지 정한다. 기본값은 선 굵기 `2.6`, 파동 `{ 7, 24 }`, 코일 `{ 8, 13 }`, 화살촉 `12` × `9`, 점 `4`, 고리 `24`이다 |
 | `layout` | `FeynmanLayout` | `direction`: 들어오고 나가는 외부선을 놓는 방향. `LeftToRight`(기본값) 또는 `BottomToTop` |
 
-개수 상한은 없다. 직교 차트이고 `bottom_x`가 수치 축이어야 한다. 이 시리즈는 차트의 다른 데이터 위에 그리고, SVG와 PDF 출력은 벡터 곡선으로 기록한다. 픽은 `FeynmanVertex`, `FeynmanPropagator`, `FeynmanLabel`을 돌려주고, `step_selection`은 꼭짓점이나 전파자와 파인만 시리즈를 따라 움직인다. `Renderer::drag_feynman`은 꼭짓점을 옮기고 선을 휘고 라벨을 옮긴다. 스트리밍 디스플레이는 이 시리즈를 거부한다.
+개수 상한은 없다. 직교 차트이고 `bottom_x`가 수치 축이어야 한다. 이 시리즈는 차트의 다른 데이터 위에 그리고, SVG와 PDF 출력은 벡터 곡선으로 기록한다. 픽은 `FeynmanVertex`, `FeynmanPropagator`, `FeynmanLabel`을 돌려주고, `step_selection`은 꼭짓점이나 전파자와 파인만 시리즈를 따라 움직인다. `Renderer::drag_feynman`은 꼭짓점을 옮기고 선을 휘고 라벨을 옮긴다. 스트리밍 디스플레이와 단조 차트는 이 시리즈를 거부한다. 단조 차트에서는 `register_monotonic_chart`와 `MonotonicChart::set_series`가 `InvalidSeriesConfig`와 `RuleKind::MonotonicFeynman`으로 실패한다([#468](https://github.com/shim9610/figgy/issues/468)). 끌기와 `place_feynman_vertices`는 일반 차트 호출이기 때문이다.
 
 <a id="data_config--series-선언형-스키마-활성-api"></a>
 <a id="data_config--시리즈-선언-형식"></a>

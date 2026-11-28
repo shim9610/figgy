@@ -569,7 +569,9 @@ The code is the fragments [`data_render/common/sample_validity.wgsl`](common/sam
 
 `locate`의 `lattice` 인자는 검색할 격자를 정한다. 채움은 `Shading`에 따른 사각형 격자를, 등고선은 실제 Z값이 있는 표본 격자를 사용한다. 두 경우 모두 같은 이진 탐색을 수행한다.
 
-The binary search is three functions, `locate_begin` (the bracket, or a miss), `locate_step` (one halving) and `locate_end` (the cell and its fraction); `locate` runs them with its own loop. `contour_sample` is `locate` on each axis followed by `contour_sample_cells`, which evaluates the located cell. A caller that already loops, the polar foot-point walk below, takes the same three functions one halving per iteration of its own loop, so the search is not a loop inside it.
+The binary search is three functions, `locate_begin` (the bracket, or a miss), `locate_step` (one halving) and `locate_end` (the cell and its fraction); `locate` runs them with its own loop. `contour_sample` is `locate_sample_cells` followed by `contour_sample_cells`, which evaluates the located cell. `locate_sample_cells` searches the sample lattice along x and then y in one flat loop with one call site of each search function, so it compiles one search, not one per axis; the contour pick and the floor contour pick name the cells it returns instead of searching again (#465). A caller that already loops, the polar foot-point walk below, takes the same three functions one halving per iteration of its own loop, so the search is not a loop inside it.
+
+A compiler that inlines every call (Chromium's SwiftShader, lavapipe) compiles each call site of `axis_t` again, and in the full set `axis_t` carries the probability scales and axis breaks (`axis_pair_to_t`). So `axis_t` has one call site of `axis_pair_to_t`, its arguments chosen per axis, and `boundary_t` one call site of `axis_t`, its pair chosen per lattice (#465). The values are the ones the branches computed.
 
 `level_colors`(binding 5)는 앵커 셰이더에서 읽지 않지만 바인드 그룹 배치를 맞추기 위해 공통 블록에 둔다. WGSL은 사용하지 않는 전역 선언을 허용한다.
 
@@ -1507,7 +1509,7 @@ spliced after `material.wgsl` into the radial draw module and the radial
 pick module by `assembled!` (`radial.rs`). `radial.wgsl` marks where each
 block was taken from with a one-line comment.
 
-### 5.13 Category bars (group 3, bindings 8 to 10)
+### 5.13 Category bars (group 3, bindings 8 to 11)
 
 The bars of a `DataRenderType::CategoryBars` series: one instance per
 category (a row of the series' columns), six vertices each
@@ -1592,7 +1594,8 @@ the selection and the pick all call it:
   share of the category slot (position ± 0.5).
 - Stacked: positive and negative values stack away from zero separately,
   each from the sum of the earlier members' values of the same sign at the
-  same row, read by their lanes in a loop over `members`.
+  same row, read by their lanes in a loop over the members before it
+  (`category_stack(row, member)`).
 - Percent: every value is divided by the row's total of positive values,
   normalized by the largest value first so the total stays finite; the
   top of a stack is exactly 100. A row without a positive total, or a
@@ -1630,9 +1633,16 @@ host budgets it (`category_bars_render`'s
 `a_forty_series_group_over_fifty_categories_draws_and_picks` measures it).
 
 Nothing per bar is stored anywhere: the CPU keeps the pool lane bases and
-the group layout. The value axis fit reads only the value columns' own
-statistics (`ColumnSlot::min` / `max`); the per-category totals exist only
-in this shader, on every draw.
+the group layout. A grouped or percent group's value axis fit reads only
+the value columns' own statistics (`ColumnSlot::min` / `max`). A stacked
+group's fit (#466) runs the compute entry `reduce_category_stacks` in
+`bar_columnar.wgsl`: one invocation per category (two dimensions past
+65535 workgroups) calls `category_stack(row, members)`, the draw's own
+arithmetic over every member, and folds the positive and negative sums
+with `atomicMax` / `atomicMin` of their order-preserving bits
+(`data_pick_ordered_bits`) into `category_stack_extent`, group 3 binding
+11, two `atomic<u32>`. Only those two words are read back; the
+per-category totals are never stored.
 
 ### 5.14 Records, ragged and triangle columns in the pool
 

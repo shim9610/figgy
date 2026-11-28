@@ -17,20 +17,21 @@ The default library has no GUI framework dependency.
 ## Install and run
 
 Use Rust **1.99 or later** and a working graphics adapter/driver.
-Add these dependencies to your application's `Cargo.toml`:
+Add this dependency to your application's `Cargo.toml`:
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", version = "0.18.1" }
-wgpu = "30"
+renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figgy" }
 ```
 
 The Cargo package is **`figgy-renderer`**; the Rust import is **`renderer`**.
-The `version` line installs figgy-renderer 0.18.1, with figgy-model 0.12.1, from
-[crates.io](https://crates.io/crates/figgy-renderer). For a local checkout,
-replace `version` with `path = "../figgy/crates/renderer"`. Code written for
-0.17.0 needs the changes in the
-[migration notes](https://github.com/shim9610/figgy/blob/master/CHANGELOG.md#migrating-from-0170).
+This README describes 0.19.0-beta.3, which is not on crates.io: the latest
+release there is 0.18.1 (with figgy-model 0.12.1), whose API differs. Until
+0.19.0 is published, depend on the repository's default branch, `master`, as
+above, or, for a local checkout, replace `git` with
+`path = "../figgy/crates/renderer"`. Code written for 0.18
+needs the changes listed in the 0.19 entry of the
+[changelog](https://github.com/shim9610/figgy/blob/master/CHANGELOG.md).
 
 Copy the complete [line example](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/line.rs)
 into `src/main.rs` and run `cargo run`. It creates a headless renderer, uploads two
@@ -50,7 +51,13 @@ writes the file in the format its extension names. A host with an async executor
 awaits `Renderer::headless` and the `export_*` calls instead; on native targets
 these futures complete without the host polling the device.
 Hosts that already own a matching wgpu 30 device/queue can share them through
-`RendererDevice`. They do not need a second device or a particular GUI toolkit.
+`RendererDevice` and add their own `wgpu = "30"` dependency. They do not need a
+second device or a particular GUI toolkit. On native, a `RendererDevice` creates
+its renderers' pipelines through a wgpu pipeline cache whenever the device has
+`Features::PIPELINE_CACHE` (wgpu implements it on Vulkan only).
+`with_pipeline_cache(Some(bytes))` loads one an earlier run saved with
+`pipeline_cache_data()`, and `without_pipeline_cache()` turns it off; see
+[pipeline cache](https://github.com/shim9610/figgy/blob/master/crates/renderer/API.md#pipeline-cache-native).
 
 ## Choose a renderer
 
@@ -122,8 +129,9 @@ it returns the same encoded values for the same source revision; see the
 
 | Feature | Purpose |
 | --- | --- |
-| Default (no optional features) | Native renderer, headless output and host integration |
+| `helpers` (default) | Host conveniences: `Default` on the document types, the `default` builders and series constructors, `theme`, `Renderer::headless`/`headless_blocking` and `save_blocking`. The library itself builds without it. |
 | `serde` | Serialization of re-exported model types; no application file format |
+| `cpu-twin` | Test support: CPU twins of the shader coverage (`renderer::pick::cpu_twin`). Not for applications. |
 
 Direct GPU sharing requires **wgpu 30**. CI covers native Linux/Vulkan,
 Windows/DX12 and macOS/Metal, plus WASM compilation. Software Vulkan/WARP and
@@ -138,7 +146,7 @@ it is not an enabled renderer feature or a completed precision fix. See the
 [backend status](https://github.com/shim9610/figgy/blob/master/ci/STATUS.md).
 
 API documentation builds without a GPU. docs.rs is configured for native Linux
-and WASM with `serde`; GUI example dependencies are not needed for those builds.
+and WASM with `serde`.
 To browse locally, run `cargo doc --locked -p figgy-renderer --features serde --no-deps --open`.
 The [source repository](https://github.com/shim9610/figgy) contains the gallery and
 full native integration examples.
@@ -149,11 +157,12 @@ Code is licensed under MIT OR Apache-2.0. Bundled fonts retain their respective
 OFL and GUST notices in `fonts/`: Liberation Sans and Comic Neue under the SIL
 OFL 1.1, and New Computer Modern Math, the math face, under the GUST Font
 License (shipped unmodified). The package includes source, shaders, fonts, guides,
-runnable examples, tests and test fixtures. Gallery PNG/GIF assets and the unsupported
-iced integration source stay in the Git repository and are not installed with
-the crate. Architecture illustrations link to a fixed public source revision.
+runnable examples, tests and test fixtures. Gallery PNG/GIF assets and the egui
+examples (a separate crate) stay in the Git repository and are not installed
+with the crate. Architecture illustrations link to a fixed public source revision.
 
-Native package tests run with `cargo test --features serde`. They include GPU
+Native package tests run with `cargo test --features serde,cpu-twin`; without
+`cpu-twin` the tests that compare with the CPU twins drop out. They include GPU
 pixel, cache and memory regressions and require a working adapter and device;
 initialization errors fail the tests. Software Vulkan can be used on machines
 without a GPU. No window is required. Large stress/probe tests marked `#[ignore]`

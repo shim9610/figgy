@@ -7,7 +7,7 @@ impl Renderer {
     pub(super) fn pick_health(&self) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         self.health
             .check()
-            .map_err(|error| crate::gpu_pick::GpuPickError::Gpu(error.to_string()))
+            .map_err(crate::gpu_pick::GpuPickError::from_figgy)
     }
 
     /// Enable exact GPU picking for this renderer.
@@ -52,6 +52,7 @@ impl Renderer {
             self.queue.clone(),
             Arc::clone(&self.gpu_ledger),
             self.health.clone(),
+            self.pipeline_cache.clone(),
             crate::gpu_data_pick::DataPickShaders {
                 bar: &self.pipelines.shaders.bar,
                 field: &self.pipelines.shaders.field,
@@ -130,6 +131,7 @@ impl Renderer {
                 self.queue.clone(),
                 Arc::clone(&self.gpu_ledger),
                 self.health.clone(),
+                self.pipeline_cache.clone(),
                 crate::gpu_data_pick::DataPickShaders {
                     bar: &self.pipelines.shaders.bar,
                     field: &self.pipelines.shaders.field,

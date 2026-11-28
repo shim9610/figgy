@@ -85,6 +85,13 @@ pub enum GpuPickError {
     Internal(&'static str),
     /// The GPU reported an error during a pick.
     Gpu(String),
+    /// The wgpu device was lost before or during the pick (#469). Every
+    /// later pick on this renderer returns this error, as every other call
+    /// returns [`FiggyError::DeviceLost`](crate::FiggyError::DeviceLost);
+    /// the host recreates the device and the renderer.
+    DeviceLost {
+        reason: String,
+    },
     /// A blocking or nonblocking resolve of a pick on a streamed series:
     /// streaming keeps its asynchronous `resolve` only.
     Streamed,
@@ -96,6 +103,7 @@ impl GpuPickError {
     pub(crate) fn from_figgy(error: crate::FiggyError) -> Self {
         match error {
             crate::FiggyError::GpuPick(error) => error,
+            crate::FiggyError::DeviceLost { reason } => Self::DeviceLost { reason },
             other => Self::Gpu(other.to_string()),
         }
     }
@@ -189,6 +197,7 @@ impl fmt::Display for GpuPickError {
                 write!(f, "GPU pick internal invariant failed: {invariant}")
             }
             Self::Gpu(reason) => write!(f, "GPU pick: GPU error: {reason}"),
+            Self::DeviceLost { reason } => write!(f, "GPU pick: wgpu device lost: {reason}"),
         }
     }
 }

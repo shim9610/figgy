@@ -159,6 +159,7 @@ impl Renderer {
                 let engine = self.errorbar_extent_engine.get_or_insert_with(|| {
                     crate::gpu_extent::GpuErrorbarExtentEngine::new_tracked(
                         &self.device,
+                        None,
                         Arc::clone(&self.gpu_ledger),
                     )
                     .with_health(self.health.clone())

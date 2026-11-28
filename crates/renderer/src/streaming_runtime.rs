@@ -4391,6 +4391,7 @@ impl Renderer {
             }];
             self.pipelines.ensure_styles_for_items(
                 &self.device,
+                None,
                 &self.queue,
                 &self.transform_bgl,
                 &self.style_bgl,
@@ -4404,6 +4405,7 @@ impl Renderer {
             );
             self.pipelines.ensure_precise_variants_for_items(
                 &self.device,
+                None,
                 &self.transform_bgl,
                 &self.style_bgl,
                 &self.per_point_style_map_bgl,
@@ -4422,6 +4424,8 @@ impl Renderer {
                     chart_config: config,
                     series: &series,
                 }],
+                // Streaming keeps its plain contour pass (rule 8).
+                None,
             );
         }
         let transform = data_render::scatter_transform_from_config(config);

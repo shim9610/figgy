@@ -162,6 +162,7 @@ pub(super) enum StyleSet {
 pub(super) fn create_style_set(
     key: StyleKey,
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     queue: &wgpu::Queue,
     shaders: &data_render::ShaderModules,
     transform_bgl: &wgpu::BindGroupLayout,
@@ -174,6 +175,7 @@ pub(super) fn create_style_set(
         StyleKey::Sketch => StyleSet::Sketch {
             line: data_render::create_line_pipeline(
                 device,
+                cache,
                 &shaders.line,
                 &[Some(transform_bgl), Some(style_bgl)],
                 data_render::LINE_SLOTS,
@@ -186,6 +188,7 @@ pub(super) fn create_style_set(
             ),
             scatter: data_render::create_scatter_pipeline(
                 device,
+                cache,
                 &shaders.scatter,
                 [transform_bgl, style_bgl],
                 surface_format,
@@ -197,6 +200,7 @@ pub(super) fn create_style_set(
             ),
             errorbar: data_render::create_errorbar_pipeline(
                 device,
+                cache,
                 &shaders.errorbar,
                 [transform_bgl, style_bgl],
                 surface_format,
@@ -206,6 +210,7 @@ pub(super) fn create_style_set(
             ),
             stem: data_render::create_errorbar_pipeline(
                 device,
+                cache,
                 &shaders.errorbar,
                 [transform_bgl, style_bgl],
                 surface_format,
@@ -217,6 +222,7 @@ pub(super) fn create_style_set(
         },
         StyleKey::Milkyway => StyleSet::Milkyway(data_render::create_milkyway_set(
             device,
+            cache,
             queue,
             shaders,
             transform_bgl,
@@ -228,6 +234,7 @@ pub(super) fn create_style_set(
         StyleKey::Constellation => {
             StyleSet::Constellation(data_render::create_point_constellation_set(
                 device,
+                cache,
                 queue,
                 shaders,
                 transform_bgl,

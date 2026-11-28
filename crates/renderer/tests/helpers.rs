@@ -1417,3 +1417,48 @@ fn chart_unit_helpers_print_the_axes_in_shown_units() {
         ("left_y", RuleKind::AxisUnitOffset)
     );
 }
+
+// The reproduction of #469 item 10: a theme keeps a `Fixed` layout (a
+// dragged or saved one), as every other chart edit keeps it, and still fits
+// a `Fitted` one. Each of the three theme calls is checked.
+#[test]
+fn a_theme_keeps_a_fixed_layout_and_fits_a_fitted_one() {
+    use renderer::theme::{ChartKind, ThemeFamily, ThemeScope};
+    type Apply = fn(&mut Chart, &mut [SeriesConfig]);
+    let calls: [(&str, Apply); 3] = [
+        ("apply_theme", |chart, series| {
+            chart.apply_theme("midnight", series).unwrap()
+        }),
+        ("apply_custom_theme", |chart, series| {
+            let theme = ThemeFamily::Midnight.theme(ChartKind::Line);
+            chart.apply_custom_theme(&theme, series).unwrap()
+        }),
+        ("apply_custom_theme_to", |chart, series| {
+            let theme = ThemeFamily::Midnight.theme(ChartKind::Line);
+            chart
+                .apply_custom_theme_to(&theme, series, ThemeScope::All)
+                .unwrap()
+        }),
+    ];
+    for (name, apply) in calls {
+        let mut series = [SeriesConfig::line("s", "x", "y")];
+        let mut chart = Chart::sized(800, 600);
+        chart.config_mut().layout_state = renderer::LayoutState::Fixed;
+        chart.config_mut().left_y.out_margin = 200.0;
+        apply(&mut chart, &mut series);
+        assert_eq!(chart.config().layout_state, renderer::LayoutState::Fixed);
+        assert_eq!(
+            chart.config().left_y.out_margin,
+            200.0,
+            "{name}: a Fixed margin moved"
+        );
+
+        let mut chart = Chart::sized(800, 600);
+        chart.config_mut().left_y.out_margin = 200.0;
+        apply(&mut chart, &mut series);
+        let measure = renderer::CpuTextMeasure::for_style(&chart.config().draw_style);
+        let fitted = renderer::layout::auto_layout(chart.config(), &measure);
+        assert_eq!(chart.config(), &fitted, "{name}: a Fitted layout is fitted");
+        assert_ne!(chart.config().left_y.out_margin, 200.0, "{name}");
+    }
+}

@@ -185,6 +185,7 @@ size, so labels the host adds after the theme draw at the same scale.
 | Export | PNG at any scale; SVG and PDF write the series as vector curves, over the other data and under the value labels |
 | Serialization | The series round-trips through serde; default values are omitted |
 | Streaming | A streamed chart rejects the series |
+| Monotonic charts | `register_monotonic_chart` and `MonotonicChart::set_series` refuse the series with `FiggyError::InvalidSeriesConfig` and `RuleKind::MonotonicFeynman` ("a monotonic chart takes no Feynman series"): the drags and `place_feynman_vertices` are general chart calls, so a diagram lives on a general chart ([MONOTONIC.md](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md#the-chart)) |
 
 There is no count limit on vertices, propagators or labels. A 5,000-rung
 ladder (10,004 vertices, 15,002 propagators) lays out in about 0.5 s and

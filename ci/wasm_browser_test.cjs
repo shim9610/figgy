@@ -12,13 +12,17 @@ const assert = require('node:assert/strict');
   const artifacts = fs.readFileSync(input, 'utf8').trim().split('\n').map(JSON.parse)
     .filter(v => v.reason === 'compiler-artifact' && v.profile.test && v.executable?.endsWith('.wasm'));
   assert.ok(artifacts.length > 0, 'No WASM test binaries in Cargo output');
+  // Seconds a binary's tests may take; the page waits a minute longer.
+  // A software adapter needs more than the default (ci/README.md).
+  const timeout = Number(process.env.WASM_BROWSER_TEST_TIMEOUT || 180);
+  assert.ok(Number.isFinite(timeout) && timeout > 0, 'WASM_BROWSER_TEST_TIMEOUT must be a positive number of seconds');
   const results = [];
   fs.mkdirSync(path.dirname(output), {recursive: true});
   for (const artifact of artifacts) {
     let browser;
     let runnerOutput = '';
     const runner = spawn(process.env.WASM_BINDGEN_TEST_RUNNER || 'wasm-bindgen-test-runner', [artifact.executable], {
-      env: {...process.env, NO_HEADLESS: '1', WASM_BINDGEN_TEST_ADDRESS: '127.0.0.1:0', WASM_BINDGEN_TEST_TIMEOUT: '180'},
+      env: {...process.env, NO_HEADLESS: '1', WASM_BINDGEN_TEST_ADDRESS: '127.0.0.1:0', WASM_BINDGEN_TEST_TIMEOUT: String(timeout)},
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const exited = new Promise(resolve => runner.once('exit', resolve));
@@ -35,12 +39,12 @@ const assert = require('node:assert/strict');
         runner.once('error', error => { clearTimeout(timer); reject(error); });
         runner.once('exit', code => { clearTimeout(timer); reject(Error(`Test runner exited ${code}: ${runnerOutput}`)); });
       });
-      browser = await chromium.launch({headless: true, executablePath: process.env.BROWSER_EXECUTABLE_PATH || undefined, args: ['--enable-unsafe-webgpu', ...(process.env.BROWSER_ARGS || '').split(/\s+/).filter(Boolean)]});
+      browser = await chromium.launch({headless: process.env.BROWSER_HEADLESS !== '0', executablePath: process.env.BROWSER_EXECUTABLE_PATH || undefined, args: ['--enable-unsafe-webgpu', ...(process.env.BROWSER_ARGS || '').split(/\s+/).filter(Boolean)]});
       const page = await browser.newPage();
       const errors = [];
       page.on('pageerror', error => errors.push(error.message));
       await page.goto(url);
-      await page.waitForFunction(() => /test result: (ok|FAILED)/.test(document.querySelector('#output')?.textContent || ''), {}, {timeout: 240000});
+      await page.waitForFunction(() => /test result: (ok|FAILED)/.test(document.querySelector('#output')?.textContent || ''), {}, {timeout: (timeout + 60) * 1000});
       const text = await page.locator('#output').innerText();
       console.log(text);
       assert.deepEqual(errors, []);

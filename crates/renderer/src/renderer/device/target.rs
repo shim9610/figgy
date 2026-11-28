@@ -81,6 +81,7 @@ impl Renderer {
             health: self.health.clone(),
             ledger: Arc::clone(&self.gpu_ledger),
             shader_set: self.shader_set(),
+            pipeline_cache: self.pipeline_cache.clone(),
         }
     }
 
@@ -218,6 +219,7 @@ impl Renderer {
         let set = self.pipelines.shaders.set;
         self.pipelines = create_target_pipelines(
             &self.device,
+            self.pipeline_cache.as_ref(),
             &self.texture_bgl,
             &self.transform_bgl,
             &self.style_bgl,
@@ -228,6 +230,7 @@ impl Renderer {
         );
         let layouts = PreciseLayouts {
             device: &self.device,
+            cache: self.pipeline_cache.as_ref(),
             transform_bgl: &self.transform_bgl,
             style_bgl: &self.style_bgl,
             per_point_style_map_bgl: &self.per_point_style_map_bgl,
@@ -255,6 +258,7 @@ impl Renderer {
             if had_view3d[kind as usize] {
                 self.pipelines.ensure_view3d_pass(
                     &self.device,
+                    self.pipeline_cache.as_ref(),
                     [
                         &self.transform_bgl,
                         &self.style_bgl,
@@ -338,6 +342,7 @@ impl Renderer {
         }
         self.pipelines = create_target_pipelines(
             &self.device,
+            self.pipeline_cache.as_ref(),
             &self.texture_bgl,
             &self.transform_bgl,
             &self.style_bgl,

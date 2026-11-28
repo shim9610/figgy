@@ -196,8 +196,11 @@ impl ColumnExpand {
                     source: wgpu::ShaderSource::Wgsl(COLUMN_EXPAND_SHADER.source.into()),
                 },
             );
+            // No pipeline cache: a standalone pool is built from the public
+            // `GpuAllocCtx`, which carries none (#478).
             let pipeline = crate::gpu_compile::compute_pipeline(
                 device,
+                None,
                 &wgpu::ComputePipelineDescriptor {
                     label: Some(COLUMN_EXPAND_LABEL),
                     layout: None,

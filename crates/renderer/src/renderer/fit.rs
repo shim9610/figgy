@@ -837,7 +837,11 @@ impl Renderer {
         self.errorbar_extent_engine.is_some()
     }
 
-    /// Prepare and publish the drawable-series fit-bound engine if needed.
+    /// Prepare and publish the drawable-series fit-bound engine if needed,
+    /// and the stacked category-bar fit's reduction (#466) when a
+    /// registered chart draws a stacked group and it is missing: the bar
+    /// module's `reduce_category_stacks` entry, compiled by the first fit
+    /// that needs it and never by a draw.
     ///
     /// This is the only creation boundary. All hosts must complete it through
     /// exclusive mutable renderer access before shared extent submission. On
@@ -853,12 +857,40 @@ impl Renderer {
     async fn ensure_errorbar_extent_engine_unreported(
         &mut self,
     ) -> std::result::Result<(), crate::gpu_extent::GpuExtentError> {
-        if self.errorbar_extent_engine.is_some() {
-            return Ok(());
+        if self.errorbar_extent_engine.is_none() {
+            let warm_result =
+                crate::gpu_extent::GpuErrorbarExtentEngine::warm_device_async(&self.device).await;
+            self.finish_errorbar_extent_engine_preparation(warm_result)?;
         }
-        let warm_result =
-            crate::gpu_extent::GpuErrorbarExtentEngine::warm_device_async(&self.device).await;
-        self.finish_errorbar_extent_engine_preparation(warm_result)
+        if self.category_stack_fit_missing() {
+            #[cfg(target_arch = "wasm32")]
+            {
+                let mut observer = |_| {};
+                crate::init::prewarm_compute_entries_js(
+                    &self.device,
+                    "renderer.category_stack",
+                    data_render::BAR_SHADER_BY_SET
+                        .of(self.pipelines.shaders.set)
+                        .source,
+                    &[(
+                        data_render::CATEGORY_STACK_FIT_LABEL,
+                        data_render::CategoryStackFit::ENTRY,
+                    )],
+                    &mut observer,
+                )
+                .await
+                .map_err(crate::gpu_extent::GpuExtentError::AsyncCompileFailed)?;
+            }
+            self.pipelines
+                .ensure_category_stack_fit(&self.device, self.pipeline_cache.as_ref());
+        }
+        Ok(())
+    }
+
+    /// Whether a registered chart's fit needs the stacked category-bar
+    /// reduction and it is not created yet (#466).
+    fn category_stack_fit_missing(&self) -> bool {
+        self.pipelines.category_stack_fit.is_none() && self.any_chart_draws_stacked_bars()
     }
 
     /// [`Self::ensure_errorbar_extent_engine`], without waiting: a native
@@ -872,6 +904,10 @@ impl Renderer {
         } else {
             self.finish_errorbar_extent_engine_preparation(Ok(()))
         };
+        if result.is_ok() && self.category_stack_fit_missing() {
+            self.pipelines
+                .ensure_category_stack_fit(&self.device, self.pipeline_cache.as_ref());
+        }
         self.reported_as(result, crate::gpu_extent::GpuExtentError::from_figgy)
     }
 
@@ -883,6 +919,7 @@ impl Renderer {
         self.errorbar_extent_engine = Some(
             crate::gpu_extent::GpuErrorbarExtentEngine::new_tracked(
                 &self.device,
+                self.pipeline_cache.as_ref(),
                 Arc::clone(&self.gpu_ledger),
             )
             .with_health(self.health.clone()),
@@ -998,6 +1035,18 @@ pub(super) enum AutoFitSeriesExtent {
     Pending(crate::gpu_extent::GpuSeriesExtentTicket),
     /// The extent the last committed fit found for the same stamp.
     Known(Option<crate::gpu_extent::GpuSeriesExtent>),
+    /// The actual stacks of the stacked category-bar group this series
+    /// leads (#466), measured for this fit and never kept: they read the
+    /// other members' columns too.
+    Stacks(crate::gpu_extent::GpuCategoryStackTicket),
+}
+
+/// One series' resolved extent for a whole-chart fit.
+pub(super) enum ResolvedSeriesExtent {
+    /// A drawn extent, remembered for the next fit.
+    Drawn(Option<crate::gpu_extent::GpuSeriesExtent>),
+    /// The `[min, max]` stacks of the group the series leads (#466).
+    Stacks([f64; 2]),
 }
 
 pub(super) struct AutoFitSeries {
@@ -1028,12 +1077,7 @@ pub struct ResolvedAutoFitAll {
     padding: f64,
     kind: AutoFitAllKind,
     /// One entry per series the fitted layer draws, with its extent.
-    series: Vec<(
-        FitSeriesStamp,
-        bool,
-        bool,
-        Option<crate::gpu_extent::GpuSeriesExtent>,
-    )>,
+    series: Vec<(FitSeriesStamp, bool, bool, ResolvedSeriesExtent)>,
 }
 
 impl AutoFitAllTicket {
@@ -1043,8 +1087,10 @@ impl AutoFitAllTicket {
         mut self,
     ) -> std::result::Result<ResolvedAutoFitAll, crate::gpu_extent::GpuExtentError> {
         for job in &mut self.series {
-            if let AutoFitSeriesExtent::Pending(ticket) = &mut job.extent {
-                ticket.wait().await?;
+            match &mut job.extent {
+                AutoFitSeriesExtent::Pending(ticket) => ticket.wait().await?,
+                AutoFitSeriesExtent::Stacks(ticket) => ticket.wait().await?,
+                AutoFitSeriesExtent::Known(_) => {}
             }
         }
         self.finish()
@@ -1057,8 +1103,10 @@ impl AutoFitAllTicket {
         mut self,
     ) -> std::result::Result<ResolvedAutoFitAll, crate::gpu_extent::GpuExtentError> {
         for job in &mut self.series {
-            if let AutoFitSeriesExtent::Pending(ticket) = &mut job.extent {
-                ticket.wait_blocking()?;
+            match &mut job.extent {
+                AutoFitSeriesExtent::Pending(ticket) => ticket.wait_blocking()?,
+                AutoFitSeriesExtent::Stacks(ticket) => ticket.wait_blocking()?,
+                AutoFitSeriesExtent::Known(_) => {}
             }
         }
         self.finish()
@@ -1074,10 +1122,12 @@ impl AutoFitAllTicket {
     > {
         let mut ready = true;
         for job in &mut self.series {
-            if let AutoFitSeriesExtent::Pending(ticket) = &mut job.extent {
-                // Every one, so the first call hands every wait to the poll
-                // thread.
-                ready &= ticket.poll_ready()?;
+            // Every one, so the first call hands every wait to the poll
+            // thread.
+            match &mut job.extent {
+                AutoFitSeriesExtent::Pending(ticket) => ready &= ticket.poll_ready()?,
+                AutoFitSeriesExtent::Stacks(ticket) => ready &= ticket.poll_ready()?,
+                AutoFitSeriesExtent::Known(_) => {}
             }
         }
         if !ready {
@@ -1097,8 +1147,13 @@ impl AutoFitAllTicket {
         })?;
         for job in self.series {
             let extent = match job.extent {
-                AutoFitSeriesExtent::Pending(mut ticket) => ticket.finish()?,
-                AutoFitSeriesExtent::Known(extent) => extent,
+                AutoFitSeriesExtent::Pending(mut ticket) => {
+                    ResolvedSeriesExtent::Drawn(ticket.finish()?)
+                }
+                AutoFitSeriesExtent::Known(extent) => ResolvedSeriesExtent::Drawn(extent),
+                AutoFitSeriesExtent::Stacks(mut ticket) => {
+                    ResolvedSeriesExtent::Stacks(ticket.finish()?)
+                }
             };
             series.push((job.stamp, job.x, job.y, extent));
         }
@@ -1151,12 +1206,18 @@ impl Renderer {
     /// drawn extents (histograms from their columns' statistics, everything
     /// else from a GPU reduction, reused when the series' columns are
     /// unchanged since the last fit), and a 3D layer's z axis to its height
-    /// columns. The annotation layer fits the base axes.
+    /// columns. Category bars fit their value axis: grouped bars and percent
+    /// stacks from their columns' statistics, and a stacked group to its
+    /// actual per-category stacks (#466), which a GPU reduction measures for
+    /// every fit (read at the group's first member, two values read back).
+    /// The annotation layer fits the base axes.
     ///
     /// The ticket owns its reductions and does not borrow the renderer; await
     /// [`AutoFitAllTicket::resolve`] and pass the result to
     /// [`Self::commit_auto_fit_all`]. A series that needs a reduction requires
-    /// the extent engine: await [`Self::ensure_errorbar_extent_engine`] first.
+    /// the extent engine, and a stacked group the stack reduction (both
+    /// `EngineNotReady` while missing): await
+    /// [`Self::ensure_errorbar_extent_engine`] first.
     /// A streamed source is refused with `ColumnNotResident`.
     pub fn begin_auto_fit_all(
         &self,
@@ -1213,6 +1274,30 @@ impl Renderer {
             })?;
             for (item, stamp) in state.series.iter().zip(&token.series) {
                 let (x, y) = state.config.series_fit_roles(layer, &item.series_id);
+                // A stacked category-bar group fits its actual stacks
+                // (#466), measured at its first member; its other modes fit
+                // from their columns' statistics at commit.
+                if (x || y)
+                    && let Some(own) = leads_category_bar_group(&state.config, &state.series, item)
+                    && draws_stacked_bars(&state.config, own, &state.series)
+                {
+                    let fit = self
+                        .pipelines
+                        .category_stack_fit
+                        .as_ref()
+                        .ok_or(GpuExtentError::EngineNotReady)?;
+                    if let Some(ticket) =
+                        self.begin_category_stacks(fit, &state.config, own, &state.series)?
+                    {
+                        series.push(AutoFitSeries {
+                            stamp: stamp.clone(),
+                            x,
+                            y,
+                            extent: AutoFitSeriesExtent::Stacks(ticket),
+                        });
+                    }
+                    continue;
+                }
                 // A histogram fits from its columns' statistics at commit.
                 if !(x || y) || stamp.mode.is_none() {
                     continue;
@@ -1268,7 +1353,7 @@ impl Renderer {
                 let mut x_extent = crate::chart::FitExtent::EMPTY;
                 let mut y_extent = crate::chart::FitExtent::EMPTY;
                 for (stamp, x, y, extent) in &resolved.series {
-                    let Some(extent) = extent else {
+                    let ResolvedSeriesExtent::Drawn(Some(extent)) = extent else {
                         continue;
                     };
                     // A stem's baseline joins its value axis (#206), before
@@ -1319,6 +1404,49 @@ impl Renderer {
                         y_extent.union(&y_part);
                     }
                 }
+                // Category bars fit their value axis to their group's bars,
+                // read at the group's first member: a stacked group to the
+                // stacks this fit measured (#466), the other modes to their
+                // columns' statistics, as `Chart::auto_fit_layer_union`
+                // fits them. Their categorical axis does not move.
+                for item in &state.series {
+                    let (x, y) = state.config.series_fit_roles(layer, &item.series_id);
+                    if !(x || y) {
+                        continue;
+                    }
+                    let Some(own) = leads_category_bar_group(&state.config, &state.series, item)
+                    else {
+                        continue;
+                    };
+                    let measured =
+                        resolved
+                            .series
+                            .iter()
+                            .find_map(|(stamp, _, _, extent)| match extent {
+                                ResolvedSeriesExtent::Stacks(stacks)
+                                    if stamp.series_id == item.series_id =>
+                                {
+                                    Some(*stacks)
+                                }
+                                _ => None,
+                            });
+                    let (extent, direction) = crate::chart::category_bar_value_extent_measured(
+                        &self.pool,
+                        &state.config,
+                        own,
+                        &state.series,
+                        measured,
+                    )?;
+                    match direction {
+                        crate::data_config::CategoryBarDirection::Vertical if y => {
+                            y_extent.union(&extent)
+                        }
+                        crate::data_config::CategoryBarDirection::Horizontal if x => {
+                            x_extent.union(&extent)
+                        }
+                        _ => {}
+                    }
+                }
                 // A Feynman diagram fits its vertices' positions, committed
                 // or laid out: a display parameter read from the SSOT
                 // (#234).
@@ -1367,11 +1495,15 @@ impl Renderer {
                 resource: "auto-fit extent cache",
                 reason: error.to_string(),
             })?;
+        // Measured stacks are not kept: they read every member's columns.
         fit_extents.extend(
             resolved
                 .series
                 .into_iter()
-                .map(|(stamp, _, _, extent)| (stamp, extent)),
+                .filter_map(|(stamp, _, _, extent)| match extent {
+                    ResolvedSeriesExtent::Drawn(extent) => Some((stamp, extent)),
+                    ResolvedSeriesExtent::Stacks(_) => None,
+                }),
         );
         // Auto-scaled arrows fit their spacing in the fitted chart (#357):
         // the series are cloned only when a scale moves.
@@ -1425,7 +1557,10 @@ impl Renderer {
     /// [`Chart::auto_fit_layer_union`](crate::chart::Chart::auto_fit_layer_union)
     /// at [`FIT_RANGES_PADDING`], so its rules are the ones documented
     /// there: the fit reads the columns' cached statistics (nothing is read
-    /// back or rescanned), a linked axis fits its whole link group, a
+    /// back or rescanned) apart from a stacked category-bar group, whose
+    /// actual stacks a GPU reduction measures and reads back as two values
+    /// (#466; on native the fit waits for them, a browser keeps the
+    /// statistics bound), a linked axis fits its whole link group, a
     /// parallel chart fits each of its axes, a ternary chart and a
     /// categorical axis are left as they are, a Feynman diagram fits its
     /// vertices and an energy-level series moves no axis. Error bar ends,
@@ -1465,7 +1600,12 @@ impl Renderer {
                 self.vector_arrow_count(components)?;
             }
         }
-        chart.auto_fit_every_layer(&self.pool, series, FIT_RANGES_PADDING)?;
+        chart.auto_fit_every_layer(
+            &self.pool,
+            series,
+            FIT_RANGES_PADDING,
+            &|config, layer, series| self.fit_category_stacks(config, layer, series),
+        )?;
         self.fit_vector_scales_unreported(chart.config(), series)?;
         fit_level_slots(chart.config(), series);
         // The links' exits in the fitted layout (#357). A browser cannot
@@ -1509,7 +1649,9 @@ impl Renderer {
     /// and its overlays, and the z axis of a 3D chart, by the same code
     /// path), but with `padding` instead of [`FIT_RANGES_PADDING`]. No
     /// chart, view or column changes; the fit reads the columns' cached
-    /// statistics only.
+    /// statistics only, apart from a stacked category-bar group's actual
+    /// stacks, which a GPU reduction measures on native (#466) as
+    /// [`Self::fit_ranges`] does.
     ///
     /// `padding` is the fraction of the data span left on each side and
     /// must be finite and at least 0 (`InvalidConfig { field: "padding",
@@ -1577,8 +1719,10 @@ impl Renderer {
     /// after following overlay and subplot links) is not moved either,
     /// since a link group has one range.
     ///
-    /// Statistics only: error bar ends, heatmap cell half-widths and
-    /// arrow tips are not in the column statistics and are not included;
+    /// Statistics only, as in [`Self::fit_config`] (a stacked category-bar
+    /// group's stacks measured on native, #466): error bar ends, heatmap
+    /// cell half-widths and arrow tips are not in the column statistics and
+    /// are not included;
     /// [`Self::begin_series_fit_extent`] measures drawn extents. An axis
     /// whose series have no finite span keeps its range.
     ///
@@ -1657,6 +1801,7 @@ impl Renderer {
             include,
             axes,
             padding,
+            &|config, layer, series| self.fit_category_stacks(config, layer, series),
         )?;
         // A fit also keeps link groups in step and gives a 3D chart's z axis
         // the y range before fitting it; put back every axis outside the
@@ -1674,7 +1819,13 @@ impl Renderer {
         padding: f64,
     ) -> Result<crate::Config> {
         self.require_fit_candidate(config, series, padding)?;
-        crate::chart::Chart::fitted_every_layer(config, &self.pool, series, padding)
+        crate::chart::Chart::fitted_every_layer(
+            config,
+            &self.pool,
+            series,
+            padding,
+            &|config, layer, series| self.fit_category_stacks(config, layer, series),
+        )
     }
 
     /// The rules every candidate fit holds `config`, `series` and
@@ -2506,6 +2657,7 @@ impl Renderer {
             None => {
                 made = crate::gpu_extent::GpuErrorbarExtentEngine::new_tracked(
                     &self.device,
+                    self.pipeline_cache.as_ref(),
                     Arc::clone(&self.gpu_ledger),
                 )
                 .with_health(self.health.clone());
@@ -3016,6 +3168,7 @@ impl Renderer {
             None => {
                 made = crate::gpu_extent::GpuErrorbarExtentEngine::new_tracked(
                     &self.device,
+                    self.pipeline_cache.as_ref(),
                     Arc::clone(&self.gpu_ledger),
                 )
                 .with_health(self.health.clone());
@@ -3185,4 +3338,213 @@ impl Renderer {
         }
         Ok(changed)
     }
+}
+
+/// Whether `layer` of `config` draws a stacked (not percent) category-bar
+/// group in `series`: the group a fit measures on the GPU (#466).
+pub(super) fn draws_stacked_bars(
+    config: &Config,
+    layer: crate::LayerRef,
+    series: &[SeriesConfig],
+) -> bool {
+    config.bar_groups_of(layer).mode == crate::data_config::CategoryBarMode::Stacked
+        && series.iter().any(|item| {
+            item.render_type.category_bars().is_some()
+                && config.layer_of_series(&item.series_id) == layer
+        })
+}
+
+/// Whether a layer of `config` draws a stacked category-bar group in
+/// `series` (#466).
+fn draws_any_stacked_bars(config: &Config, series: &[SeriesConfig]) -> bool {
+    series.iter().any(|item| {
+        item.render_type.category_bars().is_some()
+            && draws_stacked_bars(config, config.layer_of_series(&item.series_id), series)
+    })
+}
+
+/// A stacked category-bar fit's GPU failure as the renderer's error (#466).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn category_stack_error(error: crate::gpu_extent::GpuExtentError) -> FiggyError {
+    use crate::gpu_extent::GpuExtentError as E;
+    match error {
+        E::ColumnNotResident { id } => FiggyError::ColumnNotResident { id },
+        E::UnknownColumn { id, .. } => FiggyError::UnknownColumn { id },
+        E::Internal { invariant } => FiggyError::Internal { invariant },
+        other => FiggyError::GpuValidation {
+            resource: "stacked category bar fit",
+            reason: other.to_string(),
+        },
+    }
+}
+
+impl Renderer {
+    /// Submit the stacked category-bar fit of `layer` of `config` over
+    /// `series` with `fit` (#466): one dispatch over the group's
+    /// categories that stacks each one as the draw does and reduces the
+    /// largest positive and the smallest negative sum, of which only those
+    /// two values are read back. `None` when the layer draws no stacked
+    /// group (grouped bars and percent stacks dispatch nothing) or its
+    /// columns hold no category yet. The group's categories are the rows
+    /// every member's value column holds (the draw refuses members of
+    /// different lengths). A streamed source is refused with
+    /// `ColumnNotResident` (rule 8), before anything is submitted.
+    pub(super) fn begin_category_stacks(
+        &self,
+        fit: &data_render::CategoryStackFit,
+        config: &Config,
+        layer: crate::LayerRef,
+        series: &[SeriesConfig],
+    ) -> std::result::Result<
+        Option<crate::gpu_extent::GpuCategoryStackTicket>,
+        crate::gpu_extent::GpuExtentError,
+    > {
+        use crate::gpu_extent::GpuExtentError;
+        if !draws_stacked_bars(config, layer, series) {
+            return Ok(None);
+        }
+        let direction = config.bar_groups_of(layer).direction;
+        let members = || {
+            series.iter().filter(move |item| {
+                item.render_type.category_bars().is_some()
+                    && config.layer_of_series(&item.series_id) == layer
+            })
+        };
+        let handle = |item: &SeriesConfig| {
+            let (_, values) = item.category_bar_columns(direction);
+            if self.streaming_sources.contains_key(values) {
+                return Err(GpuExtentError::ColumnNotResident {
+                    id: values.to_owned(),
+                });
+            }
+            current_extent_handle(&self.pool, "stacked bar values", values)
+        };
+        let mut rows = usize::MAX;
+        let mut count = 0usize;
+        for item in members() {
+            rows = rows.min(handle(item)?.len_values);
+            count += 1;
+        }
+        if count == 0 || rows == 0 {
+            return Ok(None);
+        }
+        // Every lane is checked before anything is submitted.
+        for item in members() {
+            crate::gpu_extent::category_stack_lane(self.pool.buffer(), &handle(item)?, rows)?;
+        }
+        let mut params: data_render::CategoryBarParamsGpu = bytemuck::Zeroable::zeroed();
+        params.count = u32::try_from(rows).map_err(|_| GpuExtentError::ValueCountTooLarge {
+            role: "stacked bar categories",
+            len: rows,
+        })?;
+        params.members = u32::try_from(count).map_err(|_| GpuExtentError::ValueCountTooLarge {
+            role: "stacked bar members",
+            len: count,
+        })?;
+        params.mode = data_render::CATEGORY_BAR_MODE_STACKED;
+        // Checked above: every member resolves.
+        let lanes = members().filter_map(|item| {
+            crate::gpu_extent::category_stack_lane(self.pool.buffer(), &handle(item).ok()?, rows)
+                .ok()
+        });
+        let ticket = crate::gpu_extent::begin_category_stacks(
+            &self.device,
+            &self.queue,
+            &self.gpu_ledger,
+            &self.health,
+            fit,
+            self.pool.buffer(),
+            &params,
+            lanes,
+        )?;
+        self.health.check().map_err(GpuExtentError::from_figgy)?;
+        Ok(Some(ticket))
+    }
+
+    /// The actual stacks of the stacked category-bar group of `layer` of
+    /// `config` over `series` (#466), `[min, max]`, for a synchronous fit:
+    /// on native the fit waits for the readback on this thread; with no
+    /// stacked group, or in a browser, which cannot wait, `None` (the
+    /// statistics bound of `chart::category_bar_value_extent`; a browser
+    /// fits the actual stacks with `begin_auto_fit_all`). The reduction is
+    /// the one [`Self::ensure_errorbar_extent_engine`] creates; a fit that
+    /// finds it missing creates it for this fit only, as the radius label
+    /// fit does its engine.
+    pub(super) fn fit_category_stacks(
+        &self,
+        config: &Config,
+        layer: crate::LayerRef,
+        series: &[SeriesConfig],
+    ) -> Result<Option<[f64; 2]>> {
+        if !draws_stacked_bars(config, layer, series) {
+            return Ok(None);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Ok(None)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let made;
+            let fit = match self.pipelines.category_stack_fit.as_ref() {
+                Some(fit) => fit,
+                None => {
+                    made = data_render::CategoryStackFit::new(
+                        &self.device,
+                        self.pipeline_cache.as_ref(),
+                        &self.pipelines.shaders.bar,
+                    );
+                    &made
+                }
+            };
+            let Some(mut ticket) = self
+                .begin_category_stacks(fit, config, layer, series)
+                .map_err(category_stack_error)?
+            else {
+                return Ok(None);
+            };
+            ticket.wait_blocking().map_err(category_stack_error)?;
+            ticket.finish().map(Some).map_err(category_stack_error)
+        }
+    }
+
+    /// Create the stacked category-bar fit's reduction when a fit of
+    /// `config` over `series` needs it and it is missing (#466): a fit's
+    /// lazy creation, never a draw's.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(in crate::renderer) fn ensure_category_stack_fit_for(
+        &mut self,
+        config: &Config,
+        series: &[SeriesConfig],
+    ) {
+        if self.pipelines.category_stack_fit.is_none() && draws_any_stacked_bars(config, series) {
+            self.pipelines
+                .ensure_category_stack_fit(&self.device, self.pipeline_cache.as_ref());
+        }
+    }
+
+    /// Whether a registered chart draws a stacked category-bar group, whose
+    /// fit needs the reduction (#466).
+    fn any_chart_draws_stacked_bars(&self) -> bool {
+        self.chart_states
+            .values()
+            .any(|state| draws_any_stacked_bars(&state.config, &state.series))
+    }
+}
+
+/// The layer of the category-bar group `item` is the first member of, in
+/// `series` (#466): a group's value-axis extent is one for all its
+/// members, read at its first. `None` for any other series.
+fn leads_category_bar_group(
+    config: &Config,
+    series: &[SeriesConfig],
+    item: &SeriesConfig,
+) -> Option<crate::LayerRef> {
+    item.render_type.category_bars()?;
+    let own = config.layer_of_series(&item.series_id);
+    let leader = series.iter().find(|other| {
+        other.render_type.category_bars().is_some()
+            && config.layer_of_series(&other.series_id) == own
+    })?;
+    std::ptr::eq(leader, item).then_some(own)
 }

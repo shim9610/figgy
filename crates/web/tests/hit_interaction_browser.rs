@@ -128,6 +128,11 @@ async fn colorbar_axis_labels_and_title_edit_select_and_drag_independently() {
         .bounds(&cfg, &measure)
         .expect("title bounds");
     let title_point = (title.x + title.width * 0.5, title.y + title.height * 0.5);
+    // These drags check exact pointer-delta offsets, so they hold the snap
+    // modifier: without it a drag inside a gesture snaps to guides (#440).
+    chart
+        .set_snap_modifier(true)
+        .expect("hold the snap modifier");
     assert_eq!(
         chart
             .hit_test(title_point.0, title_point.1)
@@ -370,6 +375,11 @@ async fn an_adaptive_log_axis_round_trips_and_its_2e4_label_hits_and_drags() {
     );
 
     let label = label_starting_with(&cfg, Side::Left, '2');
+    // These drags check exact pointer-delta offsets, so they hold the snap
+    // modifier: without it a drag inside a gesture snaps to guides (#440).
+    chart
+        .set_snap_modifier(true)
+        .expect("hold the snap modifier");
     let (cx, cy) = label.center();
     assert_eq!(
         chart.hit_test(cx, cy).unwrap().as_deref(),
@@ -459,6 +469,11 @@ async fn a_broken_axis_round_trips_and_its_upper_labels_hit_and_drag() {
     );
 
     let label = label_starting_with(&cfg, Side::Left, '9');
+    // These drags check exact pointer-delta offsets, so they hold the snap
+    // modifier: without it a drag inside a gesture snaps to guides (#440).
+    chart
+        .set_snap_modifier(true)
+        .expect("hold the snap modifier");
     let (cx, cy) = label.center();
     assert_eq!(
         chart.hit_test(cx, cy).unwrap().as_deref(),
@@ -506,6 +521,11 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         chart.hit_test(cx, cy).unwrap().as_deref(),
         Some("subplot_0:frame")
     );
+    // These drags check exact pointer-delta offsets, so they hold the snap
+    // modifier: without it a drag inside a gesture snaps to guides (#440).
+    chart
+        .set_snap_modifier(true)
+        .expect("hold the snap modifier");
     assert!(chart.on_press(cx, cy).expect("press the inset's plot"));
     chart.on_move(30.0, 20.0).expect("drag the frame");
     chart.on_release().expect("release the frame");

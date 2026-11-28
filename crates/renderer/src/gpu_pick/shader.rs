@@ -300,8 +300,11 @@ impl PickExactPipelines {
                 });
                 let base = crate::gpu_compile::workgroup_options(device);
                 let (constants, count) = key.constants(device);
+                // Exact queries serve only streamed screens (#381), which
+                // keep no pipeline cache (rule 8, #478).
                 let pipeline = crate::gpu_compile::compute_pipeline(
                     device,
+                    None,
                     &wgpu::ComputePipelineDescriptor {
                         label: Some("figgy GPU pick exact candidate pipeline"),
                         layout: Some(&bundle.exact_layout),
@@ -389,6 +392,9 @@ pub(crate) struct PickPipelineBundle {
     pub(super) ledger: Arc<GpuLedger>,
     /// The device's health record; every pick readback polls through it.
     pub(super) health: crate::renderer::DeviceHealth,
+    /// The renderer's pipeline cache (#478), which every pick pipeline of
+    /// the bundle is created through.
+    pub(super) pipeline_cache: Option<wgpu::PipelineCache>,
     pub(super) query_data_bgl: wgpu::BindGroupLayout,
     pub(super) query_work_bgl: wgpu::BindGroupLayout,
     pub(super) reduce_bgl: wgpu::BindGroupLayout,
@@ -419,6 +425,7 @@ pub(super) fn create_pipeline_bundle_observed(
     queue: wgpu::Queue,
     ledger: Arc<GpuLedger>,
     health: crate::renderer::DeviceHealth,
+    pipeline_cache: Option<wgpu::PipelineCache>,
     set: ShaderSet,
     observer: &mut dyn FnMut(InitEvent),
 ) -> Result<Arc<PickPipelineBundle>, GpuPickError> {
@@ -492,6 +499,7 @@ pub(super) fn create_pipeline_bundle_observed(
     let pipeline = |layout: &wgpu::PipelineLayout, entry: &str, label: &'static str| {
         crate::gpu_compile::compute_pipeline(
             &device,
+            pipeline_cache.as_ref(),
             &wgpu::ComputePipelineDescriptor {
                 label: Some(label),
                 layout: Some(layout),
@@ -511,6 +519,7 @@ pub(super) fn create_pipeline_bundle_observed(
         set,
         ledger,
         health,
+        pipeline_cache: pipeline_cache.clone(),
         gate_x: observe_value(observer, INIT_SCOPE, "pick_gate_x", || {
             pipeline(
                 &query_layout,
@@ -628,6 +637,7 @@ pub(super) async fn create_pipeline_bundle_observed_async(
     queue: wgpu::Queue,
     ledger: Arc<GpuLedger>,
     health: crate::renderer::DeviceHealth,
+    pipeline_cache: Option<wgpu::PipelineCache>,
     set: ShaderSet,
     observer: &mut dyn FnMut(InitEvent),
 ) -> Result<Arc<PickPipelineBundle>, GpuPickError> {
@@ -717,6 +727,7 @@ pub(super) async fn create_pipeline_bundle_observed_async(
     let pipeline = |layout: &wgpu::PipelineLayout, entry: &str, label: &'static str| {
         crate::gpu_compile::compute_pipeline(
             &device,
+            pipeline_cache.as_ref(),
             &wgpu::ComputePipelineDescriptor {
                 label: Some(label),
                 layout: Some(layout),
@@ -760,6 +771,7 @@ pub(super) async fn create_pipeline_bundle_observed_async(
     Ok(Arc::new(PickPipelineBundle {
         set,
         health,
+        pipeline_cache: pipeline_cache.clone(),
         gate_x,
         gate_y,
         exact_layout,
@@ -861,11 +873,20 @@ impl PickPipelineBundle {
         queue: wgpu::Queue,
         ledger: Arc<GpuLedger>,
         health: crate::renderer::DeviceHealth,
+        pipeline_cache: Option<wgpu::PipelineCache>,
         set: ShaderSet,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<Arc<Self>, GpuPickError> {
         validate_device_limits(&device)?;
-        create_pipeline_bundle_observed(device, queue, ledger, health, set, observer)
+        create_pipeline_bundle_observed(
+            device,
+            queue,
+            ledger,
+            health,
+            pipeline_cache,
+            set,
+            observer,
+        )
     }
 
     pub(crate) async fn new_observed_async(
@@ -873,10 +894,20 @@ impl PickPipelineBundle {
         queue: wgpu::Queue,
         ledger: Arc<GpuLedger>,
         health: crate::renderer::DeviceHealth,
+        pipeline_cache: Option<wgpu::PipelineCache>,
         set: ShaderSet,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<Arc<Self>, GpuPickError> {
         validate_device_limits(&device)?;
-        create_pipeline_bundle_observed_async(device, queue, ledger, health, set, observer).await
+        create_pipeline_bundle_observed_async(
+            device,
+            queue,
+            ledger,
+            health,
+            pipeline_cache,
+            set,
+            observer,
+        )
+        .await
     }
 }

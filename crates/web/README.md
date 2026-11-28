@@ -5,10 +5,11 @@
 canvas, forwards pointer events, schedules frames and adapts async calls. It is
 maintained with the renderer: every renderer feature ships its wrapper methods.
 
-The library packages are `figgy-renderer` 0.18.1 and `figgy-model` 0.12.1. The
-browser product is the Cargo package `figgy` 0.15.1, which has its own version
-and is named for its generated JS/WASM filenames. It is built from this
-repository against the renderer and model sources in the checkout through path
+The latest library packages on crates.io are `figgy-renderer` 0.18.1 and
+`figgy-model` 0.12.1. The browser product is the Cargo package `figgy`
+0.16.0-beta.3, which has its own version and is named for its generated JS/WASM
+filenames. It is built from this repository against the renderer
+(0.19.0-beta.3) and model sources in the checkout through path
 dependencies (`publish = false`; the publication target is open,
 [#57](https://github.com/shim9610/figgy/issues/57)). The `figgy` crate on crates.io and the
 `figgy` package on npm are unrelated projects. An application that reuses this
@@ -18,6 +19,10 @@ feature, which the wrapper's JSON methods need:
 ```toml
 renderer = { package = "figgy-renderer", version = "0.18.1", features = ["serde"] }
 ```
+
+The published 0.18.1 renderer predates the wrapper API this README describes,
+which needs renderer 0.19. Until 0.19 is on crates.io, such a crate depends on
+the checkout's renderer by path, as `crates/web/Cargo.toml` does.
 
 The generated module exports two classes. `FiggyChart` draws Cartesian charts,
 including polar plots (`Config.polar`; see the
@@ -104,9 +109,10 @@ The pages and [figgy-chart.js](figgy-chart.js) load the generated `pkg/` files.
 Keep the JavaScript and WASM from the same build together. `pkg/` is generated,
 not checked into the source snapshot.
 
-The browser tests (`tests/*_browser.rs`) compile in CI but do not run there yet.
-Run them locally with [`ci/wasm_browser_test.cjs`](../../ci/wasm_browser_test.cjs)
-(Playwright Chromium), as the [CI guide](../../ci/README.md) describes.
+The browser tests (`tests/*_browser.rs`) run in CI's `browser` job, in
+Chromium on SwiftShader WebGPU. Run them locally the same way with
+[`ci/wasm_browser_test.cjs`](../../ci/wasm_browser_test.cjs) (Playwright
+Chromium), as the [CI guide](../../ci/README.md#browser-tests) describes.
 
 The `<figgy-chart>` element has its own test,
 [tests/figgy-chart.test.mjs](tests/figgy-chart.test.mjs). It loads
@@ -152,11 +158,14 @@ with an `Error` carrying `label` and `kind` when one failed, and
 snapshot, readable while the chart is busy, and it reports `{ scope:
 "renderer.pipelines", stage: "screen complete" }` and then `"all complete"` on the
 `figgy-init-progress` event. It starts its picker prewarm once the render pipelines
-have compiled. Exports and picks always draw the whole chart; they compile what they
-need through the browser's asynchronous compiler first (an export its pipelines,
-`pick_point` and `pick_data` the picker's pipelines, the nearest-datum kernel and the
-typed data pick kernels, which a drawn chart has already queued), so neither compiles on
-the page's thread.
+have compiled. An export always draws the whole chart: it compiles its pipelines
+through the browser's asynchronous compiler first. `pick_point` and `pick_data` answer
+the ink of the last frame drawn on screen, so a series that frame left out while its
+pipelines compiled is not picked; await `chart.series_ready()` (or
+`first_frame_ready()`) before a pick that must see every series. A pick compiles what
+it needs itself through the asynchronous compiler (the picker's pipelines, the
+nearest-datum kernel and the typed data pick kernels, which a drawn chart has already
+queued), so neither an export nor a pick compiles on the page's thread.
 The chart's waits borrow it until they settle. `chart.readiness()` returns a
 `FiggyReadiness` that does not ([#315](https://github.com/shim9610/figgy/issues/315)):
 its `series_ready()` and `pipelines_ready()` wait for the same compiles without
@@ -204,8 +213,11 @@ value. The call reads back only the selected values, not whole columns.
 `chart.step_selection(dx, dy)` moves the selection through resident data:
 points (point-vector arrows included), histogram bins, category bars (along
 the categories and across the series of the bar group) and matrix cells
-(grid-vector cells included). These two methods are raw `FiggyChart` exports,
-not custom-element forwarders. See the
+(grid-vector cells included). `<figgy-chart>` forwards both
+([#468](https://github.com/shim9610/figgy/issues/468)): its
+`selection_details()` holds the element's operation gate until the readbacks
+resolve, so frames and pointer edits wait for it instead of racing the
+read through `element.kernel`. See the
 [selection contract](SCHEMA.md#resident-selection-details).
 
 The value labels of category bars, box plots and radar series are pick and
@@ -228,7 +240,8 @@ installed document or a candidate config, on this canvas or at the physical
 surface size given without resizing anything), `panel_at(x, y)` (the panel on top at a point), `data_area_rect()`
 (the active layer's exact data area), `legend_entry(series_id)` (one legend row
 as the auto legend writes it) and `render_warnings()` (every warning of the
-last frame). The free function
+last frame, including `LegendSymbolMismatch` for a legend symbol that does not
+draw the series it names, [#483](https://github.com/shim9610/figgy/issues/483)). The free function
 `inspect_config_layout(config_json, surface_width, surface_height)`
 returns that layout for a candidate without a chart, and equals what a chart
 with that surface reports ([#334](https://github.com/shim9610/figgy/issues/334)).
@@ -280,11 +293,11 @@ on the renderer, with its own deployment and UI.
 라벨은 그대로 두며(`text_generated`, `regenerate_labels`), 옮긴 장식을 원래 자리로 돌린다
 (`reset_decoration_position`).
 
-Cargo 패키지 `figgy` 0.15.1은 렌더러와 별도로 버전을 매기며 이 저장소에서 빌드한다
+Cargo 패키지 `figgy` 0.16.0-beta.3는 렌더러와 별도로 버전을 매기며 이 저장소에서 빌드한다
 (`publish = false`, 배포 대상은 아직 정하지 않았다: [#57](https://github.com/shim9610/figgy/issues/57)).
 crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝트와 관계없다.
-브라우저 테스트(`tests/*_browser.rs`)는 CI에서 컴파일만 하고 아직 실행하지 않는다.
-로컬에서는 `ci/wasm_browser_test.cjs`(Playwright Chromium)로 실행한다.
+브라우저 테스트(`tests/*_browser.rs`)는 CI의 `browser` 작업이 SwiftShader WebGPU를 쓰는
+Chromium에서 실행한다. 로컬에서도 같은 방식으로 `ci/wasm_browser_test.cjs`(Playwright Chromium)로 실행한다.
 `<figgy-chart>` 요소 테스트(`tests/figgy-chart.test.mjs`)는 빌드나 브라우저 없이 Node만으로
 실행한다: `node --experimental-vm-modules --test crates/web/tests/figgy-chart.test.mjs`.
 
@@ -327,7 +340,7 @@ crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝�
 설치된 문서나 후보 설정의 문서 영역·배율·패널별 프레임·데이터 영역·레이어를 이 캔버스에서, 또는 캔버스를 바꾸지 않고 주어진 물리 표면 크기에서, `panel_at(x, y)`는
 그 점에서 맨 위에 있는 패널을, `data_area_rect()`는 활성 레이어의 정확한 데이터 영역을 돌려준다.
 `legend_entry(series_id)`는 자동 범례가 쓰는 한 줄을, `render_warnings()`는 마지막 프레임의 모든
-경고를 돌려준다. 원형 차트의 `FiggyBoundedChart`에도 같은 계약과 JSON의 `annotation_preview(json)`가 있으며,
+경고(이름 붙인 시리즈와 다른 범례 기호를 알리는 `LegendSymbolMismatch` 포함, #483)를 돌려준다. 원형 차트의 `FiggyBoundedChart`에도 같은 계약과 JSON의 `annotation_preview(json)`가 있으며,
 좌표는 그 차트의 문서 논리 픽셀이다([#334](https://github.com/shim9610/figgy/issues/334)).
 차트 없이 쓰는 `inspect_config_layout(config_json, surface_width, surface_height)`은 그 표면 크기의 차트와 같은 레이아웃을 돌려준다(#334).
 결과 형식과 오류 코드는 [WASM 안내](../renderer/WASM.md#editor-queries-figgychart-312)에 있다.

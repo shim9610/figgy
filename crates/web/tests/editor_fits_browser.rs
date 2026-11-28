@@ -448,9 +448,8 @@ async fn range_fits_keep_an_explicit_percent_radius_format() {
             SeriesConfig::category_bars(id.as_str(), "directions", id.as_str())
         })
         .collect();
-    chart
-        .set_series(&serde_json::to_string(&series).unwrap())
-        .unwrap();
+    // The categorical axis first: category bars refuse an axis without
+    // categories.
     let mut config = config_of(&chart);
     config.bottom_x.categories = Some(
         (0..16)
@@ -471,6 +470,9 @@ async fn range_fits_keep_an_explicit_percent_radius_format() {
     config.left_y.label_style.format = LabelFormat::Percent;
     let installed = serde_json::to_string(&config).unwrap();
     chart.set_config(&installed).unwrap();
+    chart
+        .set_series(&serde_json::to_string(&series).unwrap())
+        .unwrap();
     let installed = chart.get_config().unwrap();
 
     let candidate: Config =

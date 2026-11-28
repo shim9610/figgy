@@ -13,11 +13,12 @@ at the time. The first crates.io publication is recorded below.
 
 <a id="unreleased"></a>
 
-## 0.19.0-beta.2 — renderer 0.19.0-beta.2 / model 0.13.0-beta.2 / figgy 0.16.0-beta.2
+## 0.19.0-beta.3 — renderer 0.19.0-beta.3 / model 0.13.0-beta.3 / figgy 0.16.0-beta.3
 
-The second beta of 0.19 on `master` for feedback, not published to crates.io
+The third beta of 0.19 on `master` for feedback, not published to crates.io
 (the latest crates.io release stays renderer 0.18.1 / model 0.12.1). It
-replaces 0.19.0-beta.1 (f18bdd5); the entries below cover both betas. The
+replaces 0.19.0-beta.2 (b058f41) and 0.19.0-beta.1 (f18bdd5); the entries
+below cover all three betas. The
 0.19.0 release entry replaces this section.
 Every breaking change below carries its migration. Serialized documents
 written by model 0.12 and earlier parse, read back as the same value after a
@@ -53,13 +54,70 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 `color` and the transition arrows' `color_by_wavelength` and
 `label_knockout`) are additive.
 
+- **Host wrapper fixes from the pre-release sweep**
+  ([#469](https://github.com/shim9610/figgy/issues/469), items 4–7 and
+  9–13).
+  - `WindowedRenderer::pick_chart_at`, `pick_chart_data_at`,
+    `compile_pick_pipelines_at` and `compile_data_pick_pipelines_at` place
+    the chart as its draws do (the display from `set_chart_display` or
+    `hold_chart_display`, or the stored document at 1x), not letterboxed to
+    the window's surface. A cursor on drawn ink now picks that datum.
+  - `WindowedRenderer::draw*` reconfigures an `Outdated` surface once at its
+    size and acquires again before it reports a failure, and the failure is
+    typed (below).
+  - The radial SVG and PDF exports on a lost device return
+    `RadialError::Gpu` instead of panicking inside wgpu, and
+    `RadialRenderer::try_new` on a lost device is refused the same way.
+  - A radial raster export at another size or scale builds its frame for
+    itself: the frame, label texture and annotation layer cached for the
+    screen stay cached, as RADIAL.md states. Pixels are unchanged.
+  - `Chart::apply_theme`, `apply_theme_to`, `apply_custom_theme` and
+    `apply_custom_theme_to` keep a `Fixed` layout, as every other chart
+    edit does; a `Fitted` layout is still fitted.
+  - Every egui example built on `Renderer` (`egui_embed`, `ssot_lab`,
+    `streaming_capacity_demo`, `constellation_lab`) calls `end_gpu_frame`
+    once per frame, so the bytes a redraw retires are released;
+    `radial_editor` already ended its frames with
+    `RadialRenderer::end_frame`.
+  - `winit_simple` handles each acquire failure and recovers its renderer
+    for a lost surface or device.
+  - Docs: RADIAL.md gives `export_svg(&chart, size, options)`, and the
+    headless helper names the exports' own `Rgba16Float` target.
+  - **Breaking:** `FiggyError::SurfaceAcquireFailed` gains
+    `kind: SurfaceAcquireKind` (`Skip`, `Reconfigure`, `Lost`).
+    *Migration:* a pattern `SurfaceAcquireFailed { reason }` becomes
+    `SurfaceAcquireFailed { reason, .. }` or matches `kind`: skip the
+    frame for `Skip`, call `resize` with the window's size for
+    `Reconfigure`, and call `replace_surface` for `Lost` (#474)
+    (API.md, "Errors"). A host that matched the strings `"lost"` or
+    `"outdated"` matches `kind` instead.
+  - **Breaking:** `GpuPickError` gains `DeviceLost { reason }`, which the
+    picks return for a lost device instead of `Gpu(String)`, and
+    `From<GpuPickError> for FiggyError` turns it into
+    `FiggyError::DeviceLost`. *Migration:* an exhaustive `match` on
+    `GpuPickError` adds the arm; a host that looked for
+    `"device lost"` in `GpuPickError::Gpu`'s string matches
+    `GpuPickError::DeviceLost` (or `FiggyError::DeviceLost`) instead.
+
+- **`WindowedRenderer::replace_surface`: a lost surface no longer costs
+  the renderer** ([#474](https://github.com/shim9610/figgy/issues/474)).
+  `replace_surface(target, size)` creates a surface on the renderer's
+  instance, checks that its adapter can present to it and configures it as
+  `resize` does (MSAA target and pipelines' target follow the new format).
+  The device, the column pool, charts, views and caches are kept. On
+  `DeviceLost`, `SurfaceCreationFailed` or `SurfaceConfigurationFailed` the
+  renderer is unchanged and the old surface stays in place.
+  `SurfaceAcquireKind::Lost` now names this call as the recovery, with the
+  rebuild as the fallback. `winit_simple` replaces the surface on `Lost`
+  and keeps the full rebuild for `DeviceLost`. Additive.
+
 - **The egui examples moved out of figgy-renderer; the `egui_demo`
   feature is removed** ([#459](https://github.com/shim9610/figgy/issues/459)).
   `egui_embed`, `radial_editor`, `ssot_lab`, `streaming_capacity_demo` and
   `constellation_lab` are now in `examples/egui/`, a standalone crate with
   its own lockfile, like `tools/playground`. figgy-renderer no longer lists
-  `eframe`, `egui` or `egui-wgpu`, even as optional dependencies. The examples
-  themselves are unchanged and still use egui 0.36. CI checks them in the
+  `eframe`, `egui` or `egui-wgpu`, even as optional dependencies. The move
+  leaves the examples' code unchanged, and they still use egui 0.36. CI checks them in the
   repository job.
   *Migration:* drop `egui_demo` from any `features = [...]` list for
   figgy-renderer. To run an example, use
@@ -75,7 +133,7 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
   unchanged. No API or wire change.
   - The polar contour distance's foot-point walk (#208) moves from
     `field_columnar.wgsl` into `common/field_polar.wgsl`, and
-    `field_polar_basic.wgsl` gets a twin that ends at once. The basic set's
+    `common/field_polar_basic.wgsl` gets a twin that ends at once. The basic set's
     contour entries (`fs_contour`, `fs_contour_labelled`, `fs_floor_contour`,
     `pick_field_contour`), which a polar chart never uses, no longer compile
     it. The streaming field module assembles the full set and is unchanged.
@@ -91,14 +149,64 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
     with a planar dashed line or path arrows no longer waits for it. The
     prewarms, the preparations and the streaming runtime still create every
     entry.
+  - A labelled contour no longer creates the plain contour pipeline next to
+    the labelled one ([#465](https://github.com/shim9610/figgy/issues/465)).
+    The plain pass draws a contour without labels, and a labelled series
+    only when it has no label snapshot (no level, or every label string
+    empty). The one pipeline-creation site of a frame and of an export now
+    runs after the contour scratches, so it knows which series take that
+    fallback. Streamed displays still create both.
   - First complete frame, median of three, before → after (4-core container;
     headed Chromium 158 on SwiftShader under Xvfb; native lavapipe, Mesa
     25.2.8): 2D field with labelled contours 12.8 s → 5.9 s and 8.5 s →
     1.5 s; 3D surface 9.4 s → 5.1 s and 1.7 s → 1.3 s; polar heatmap with
     contours 35.6 s → 36.3 s and 14.0 s → 7.0 s. TriSurface, the 3D quiver,
     the 2D vector field and the path-arrow lines change by less than run-to-run
-    noise (at most 0.3 s). The polar contour fragment of the full set stays
-    heavy in the browser; it is the next issue.
+    noise (at most 0.3 s). The polar contour fragment of the full set stayed
+    heavy in the browser; the #465 entry below reduces it.
+
+- **Faster first frames for polar contours: the full set's field entries
+  inline the axis transform once per call site**
+  ([#465](https://github.com/shim9610/figgy/issues/465), item 3). Frames,
+  exports at 1x and 2x and picks are byte-identical; later frames are
+  unchanged. No API or wire change.
+  - `axis_t` calls `axis_pair_to_t` once with its arguments chosen per
+    axis, and `boundary_t` calls `axis_t` once with the pair chosen per
+    lattice. The full set's transform carries the probability scales and
+    axis breaks, and a software GPU compiler inlines it at every call site.
+  - `locate_sample_cells` searches the sample lattice along both axes in one
+    flat loop with one call site of each search function. `contour_sample`
+    uses it, and the contour pick and the floor contour pick name the cells
+    it returns instead of searching again.
+  - Inlined copies of the transform in the full set: `fs_contour` 56 → 12,
+    `pick_field_contour` 84 → 16.
+  - First complete frame in headed Chromium 158 on SwiftShader, median of
+    three, before → after: polar heatmap with labelled contours 34.8 s →
+    14.1 s, polar contours 23.6 s → 6.9 s, 2D field with labelled contours
+    4.4 s → 2.7 s. On lavapipe: 5.95 s → 4.56 s, 6.77 s → 3.91 s and
+    1.49 s → 1.11 s ([shader compilation](ci/shader-compilation.md)).
+
+- **Pipeline cache for native hosts**
+  ([#478](https://github.com/shim9610/figgy/issues/478)). A native host can
+  save the compiled pipelines and load them in its next run, so the second
+  run creates them faster where the driver stores them. Pictures, exports and
+  picks are unchanged.
+  - New on `RendererDevice`: `with_pipeline_cache(Option<&[u8]>)`,
+    `without_pipeline_cache()`, `pipeline_cache_data()` and
+    `pipeline_cache_key(&AdapterInfo)`. figgy never touches the file
+    system; the host saves and loads the bytes (`API.md`, "Pipeline cache").
+  - figgy's own device requests (`gpu::request_device_async`,
+    `request_device_blocking`, `RendererDevice::request_async` and the
+    window constructors) now ask for `Features::PIPELINE_CACHE` whenever
+    the adapter has it, and a bundle on such a device starts with an empty
+    cache that every renderer built from it uses. `without_pipeline_cache()`
+    turns it off.
+  - wgpu implements the cache on Vulkan only; on DX12, Metal and the browser
+    nothing changes. Streaming pipelines keep no cache (rule 8).
+  - `examples/egui/examples/egui_embed.rs` requests the feature for eframe's
+    device, loads the cache at start-up and saves it on exit.
+  - No breaking change: the new calls are additions, and a host device
+    without the feature behaves as before.
 
 - **A large categorical axis validates and places its labels in linear
   time** ([#450](https://github.com/shim9610/figgy/issues/450)). Same
@@ -179,6 +287,24 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
   (`chrome/time.rs`), `a_chrome_pass_plans_each_axis_once` and
   `placing_an_axis_element_plans_each_axis_it_reads_once`
   (`chrome/tick_plan.rs`).
+
+- **Auto layout plans each calendar axis once per input**
+  ([#465](https://github.com/shim9610/figgy/issues/465), item 4). The
+  measuring passes of one `layout::auto_layout` call (and so of
+  `Chart::fit_layout` and the browser's `fit_layout`) probed the same axes
+  again and again, and each probe planned their timestamp ticks anew. The
+  call now keeps the plans it makes, each with its full input (the scale,
+  the range, the timestamp format, the label font and size, the side's
+  orientation and the axis length, compared bit for bit), and hands a probe
+  a kept plan only when that input is identical. The plans are dropped when
+  the call returns. Layouts, plans and frames are unchanged. On a chart
+  with two calendar axes and two numeric axes a call takes 1.3 ms instead
+  of 2.5 ms natively. Not breaking: `text::MeasureText` gains
+  `tick_plans`, which has a default, and the cache is the new
+  `chrome::TickPlanCache`, which only `auto_layout` makes. Tests:
+  `the_plan_cache_hands_out_a_plan_only_for_an_identical_input`
+  (`chrome/tick_plan.rs`) and `the_plan_cache_hits_and_changes_no_layout`
+  (`layout/geometry/auto_layout.rs`).
 
 - **The layout chooses each range link's exit, links draw under their bars,
   and a chart of links takes the timeline frame**
@@ -298,20 +424,21 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
     other bin). It is read in the existing typed pick kernels
     (`pick_range_bar`, `pick_range_links`) and returned in their existing
     result, so there is no new readback. It is a display parameter, not data.
-    `RangeLinkSeries::drag_link_exit(index, along, limit)` takes the length
-    in logical pixels (`extent_px` divided by the display scale) and clamps
-    the stored offset to it; `None` keeps the previous unclamped drag.
+    `RangeLinkSeries::drag_link_exit(index, along, length)` takes the length
+    in logical pixels (`extent_px` divided by the display scale). Since the
+    exit is stored as a fraction of that length (the `exit_fraction` entry
+    above), a drag without a length is rejected.
     Browser product: `pick_data`'s `histogram_bin` hit carries
     `extent_px`, and `press_range_link(series_id, index, extent_px)` takes
-    it as the drag's limit (left out, only the draw stops the exit). Tests:
-    `link_exit_drags_stop_at_the_predecessors_drawn_length`,
+    it (left out, the drag moves nothing). Tests:
+    `link_exit_drags_are_fractions_of_the_drawn_length`,
     `link_picks_report_the_predecessors_drawn_length_and_the_drag_stops_there`.
     **Migration:** a `PickedData::HistogramBin { .. }` literal adds
     `extent_px: None`, and a pattern that names every field adds
     `extent_px` or `..`; `drag_link_exit(index, along)` becomes
-    `drag_link_exit(index, along, None)`, or passes the hit's length to
-    clamp. JavaScript callers of `press_range_link(series_id, index)` keep
-    working; pass `hit.extent_px` as the third argument to clamp.
+    `drag_link_exit(index, along, Some(length))` with the hit's length.
+    JavaScript callers of `press_range_link(series_id, index)` pass
+    `hit.extent_px` as the third argument.
   - Playground: a Cartesian scene draws its registered chart through
     `prepare_registered` / `prepare_monotonic` into a viewport texture at
     the chart's display placement, so the ink masks a pick reads are
@@ -917,6 +1044,8 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 
 ### Model (`figgy-model` 0.13.0)
 
+- **Legend symbols are checked against the series they name** ([#483](https://github.com/shim9610/figgy/issues/483)). `legend::legend_symbol_mismatches(content, series, colormap)` lists each legend entry whose symbol names a `series_id` that no series has (`LegendMismatch::UnknownSeries`), draws other colours than that series' mark (`ColorDiffers`, every segment's `color` and `rule_band` against `series_symbol_segments`) or another mark in the same colours (`MarkDiffers`: glyph, rule, dash, stroke thickness, field width or segment count). Text styling is not part of the mark, and symbols that name no series are not checked. `Config::legend_warnings(series)` checks the base legend and every overlay and subplot legend and names each by its `LayerRef` (`LegendWarning`, whose `Display` is one line with the legend's `Config` path). These are warnings: `validate_series` accepts the chart as before and nothing is changed. New public types `LegendMismatch`, `LegendSymbolMismatch` and `LegendWarning`; no wire form changes.
+  Tests: `legend::mismatch_tests` (a derived legend, an unknown id, a recoloured symbol, another mark, untagged and restyled symbols, 5000 entries and series, every legend of a chart, a JSON round trip of a mismatched legend).
 - **Zooming a 3D chart in never pushes its box axes off the chart.** `Config::view_matrix` fitted the box at `view3d::REFERENCE_DISTANCE` (3) and then applied `View3d::distance` as a zoom about the data-area centre, so a distance below 3 magnified the box past the band reserved for the box axes' ticks, labels and titles, and the labels and titles placed past its edges left the chart area. A 1000 x 800 temperature surface with a right colourbar, camera azimuth -25, elevation 10 and distance 2.7 drew its z title ("Temperature (°C)") wholly off the left edge and cut its z labels. A distance below the reference is now fitted at that distance itself: the box keeps its fitted size, so every box-axis label and title stays inside the chart area. Zooming out (a distance above 3) is unchanged. Appearance change: a document with `view_3d.distance` below 3 draws its box at the size distance 3 gives. An orthographic view looks as it does at distance 3; a perspective view keeps the shorter distance's stronger foreshortening, within that fitted size. `Config::zoom_view` below 3 no longer enlarges the box. Documents keep their wire form and parse unchanged.
   Tests: `box_axis_text_stays_inside_the_chart_at_every_camera` (`surface_render`: azimuth -180 to 180 in steps of 5, elevation 5 to 60 in steps of 5, both projections, distances 1.2, 2, 2.7, 3 and 5; every box-axis tick label and title inside the chart area) and `the_z_title_is_drawn_at_a_short_camera_distance` (z title ink inside the chart at 1x and 2x at azimuth -25 / elevation 10 orthographic and azimuth -170 / elevation 5 perspective). `zoom_and_orbit_move_the_camera_and_clamp` now checks that zooming out shrinks the box and zooming in keeps its fitted size.
 - **Decorations snap to guides while they drag** ([#440](https://github.com/shim9610/figgy/issues/440)). `HitMap::drag_snapped` moves an element through its own drag policy after snapping its drawn box, within `layout::SNAP_THRESHOLD_PX` (6 px on screen, divided by the display scale), to the chart and plot centres (`layout::SnapAreas`, `Config::snap_areas`), its own axis' centre lines (an axis title on a 2D, ternary or 3D box axis) and the edges and centres of the other snapping elements of the map that it does not carry. The snapped move is stored as the element's usual offset. The gesture state is one fixed-size `layout::DragSnap` the host keeps from press to release: it absorbs the pointer's travel while the element is held on a guide (so the element leaves the guide once the pointer moves past the reach), turns off for the gesture with `set_enabled(false)` (the Alt / Option modifier) and keeps the `layout::SnapGuides` of the last move, which `SelectionBox::with_snap_guides` hands to the selection overlay. Snapping elements (`Draggable::snaps`): the chart title, axis titles and tick label bands (not a polar chart's), the legend, the colourbar strip, labels and title, parallel axis labels, category group headers, overlay legends and titles, subplot decorations and inset frames, annotation text boxes and arrows and the radial chart's decorations. A colourbar strip and an inset frame do not snap to what they carry (`Draggable::snap_carries`). `Config::snap_to_guides: Option<bool>` turns it off (`Some(false)`); `None`, the key absent in JSON, is on (`Config::snaps_while_dragging`). Guides are never stored in the document and never exported.
@@ -2505,7 +2634,22 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **A registered chart's view reports mismatched legend symbols** ([#483](https://github.com/shim9610/figgy/issues/483)). `RenderWarning` gains `LegendSymbolMismatch { layer, entry, series_id, reason }`, from `Config::legend_warnings` of the chart's config and series. It is derived when `prepare_registered` redraws a registered chart's view (a config or series edit does) and listed after the tick and annotation warnings in `ChartView::render_warnings`. A view of a held `Chart` has no series and never reports it; such a host calls `Config::legend_warnings`. `LegendMismatch` is re-exported at the crate root. Drawing, picks and exports are unchanged.
+  - **Migration:** an exhaustive match on `RenderWarning` outside the crate already needs a wildcard arm (`non_exhaustive`); nothing else.
+  Tests: `tests/legend_warnings.rs` (a recoloured symbol, a removed series and a fixed legend on a registered chart; no warning on a held chart's view; 600 entries and series).
+- **A monotonic chart refuses Feynman series** ([#468](https://github.com/shim9610/figgy/issues/468)). `register_monotonic_chart` and `MonotonicChart::set_series` refuse a Feynman series with `FiggyError::InvalidSeriesConfig` and the new `RuleKind::MonotonicFeynman` ("a monotonic chart takes no Feynman series"). A diagram's drags and `place_feynman_vertices` are general chart calls, which cannot reach a monotonic chart.
+  - **Migration:** a monotonic chart that held a Feynman series moves the diagram to a general chart (a subplot or a separate chart).
+
+- **Refused monotonic calls and exports leave no state behind** ([#469](https://github.com/shim9610/figgy/issues/469)). Four fixes on the monotonic chart handle (#271):
+  - An export at another mapping (`ExportSource::Monotonic` at another scale, as PNG, SVG or PDF, async or blocking) that failed at a later series (no source lent, a channel the source lacks, a refused reduction, a transient column id already taken) left the earlier series' transient envelope columns and export group in the pool. Every later rescaled export was then refused with `MonotonicColumnTaken`, and the GPU memory was never freed. Every error path now removes them, so a retry with every source succeeds.
+  - A sliding `append_monotonic` refused because the slide would move another group's x axis (`MonotonicSourceRequired { change: XRange }`) still slid the appended group's envelope, so draws, picks and exports then failed for a missing source. The append now runs on copies of the group's envelopes (sized by the plot width and channel count, never by the data, M3), the slid x range is reconciled against them first, and the copies replace the group's envelopes only once it succeeds: a refused append changes nothing. A refused append of a later panel's envelope also leaves the group as it was (before, the group was dropped).
+  - A monotonic export past the device's texture limit reduced and uploaded the export's envelopes before the size check, and at very large or infinite scales returned a pool growth or `InvalidMapping` error instead. The export target size is now checked first, so the export fails with `GpuResourceLimit` before anything is allocated, as USAGE.md states.
+  - A general series could read a monotonic envelope column (`<id>.monotonic.x`) as ordinary data, drawing the renderer's reduction as data (rule 1, M1). Any series other than the monotonic series that owns it is now refused with `ReservedColumnId` by `register_chart`, `register_chart_as_given`, `set_chart_series`, `set_chart_state`, `begin_replace_chart_columns`, `register_monotonic_chart` and `MonotonicChart::set_series` (a reader in the same document as the owning series was already refused with `MonotonicColumnsShared`). **Behaviour change:** such a series registered before and drew the envelope rows, with NaN join markers, at its own chart's mapping; it now fails to register. *Migration:* such a series names a column the host registered itself.
+  No API or wire change. Tests (`monotonic_render`): `a_failed_rescaled_export_leaves_no_transient_state`, `a_refused_sliding_append_changes_nothing`, `an_export_past_the_texture_limit_allocates_nothing`, `a_general_series_cannot_read_an_envelope_column`, `a_slid_out_selection_draws_nothing_and_steps_back_in`.
+- **Stacked category bars fit their actual stacks** ([#466](https://github.com/shim9610/figgy/issues/466)). A stacked group's value axis was fitted to `[Σ min(0, min_i), Σ max(0, max_i)]` over its columns' statistics, a bound that is wider whenever the series peak in different categories: A = (100, 1) and B = (1, 100) both stack to 101 and fitted 0–200. The renderer's fits now measure the stacks on the GPU: a new compute entry of the bar module, `reduce_category_stacks` (next to `reduce_bar_envelope` in `bar_columnar.wgsl`), stacks each category with the draw's own arithmetic (`category_stack` in `common/category_bars.wgsl`, which the draw now calls too: positive values up, negative values down, missing cells skipped) and folds the largest positive and the smallest negative sum atomically into a two-word buffer; only those two values are read back, and the values stay in the column pool (rule 2). The axis spans them, then the padding applies as before, so the example fits 0–101. On native, `Renderer::fit_ranges`, `fit_config`, `fit_y_axes_config`, `fit_config_scoped` and `register_chart`'s first fit wait for the readback; on every target `begin_auto_fit_all` submits the reduction with its ticket, which resolves asynchronously (`resolve`) or on the thread (`resolve_blocking`), and `commit_auto_fit_all` now fits the category-bar value axis (all three modes) where it used to leave it. In a browser the synchronous fits cannot wait and keep the statistics bound. Percent stacks keep `0..=100` and grouped bars their columns' union, and neither dispatches. The pipeline is created lazily by the first fit of a stacked group (`ensure_errorbar_extent_engine`, which a whole-chart fit asks for with `EngineNotReady`, or a native fit) or by the full prewarm, never by a draw; the draw and pick entries are unchanged. There is no cap on categories or members (rule 10): past 65535 workgroups the dispatch is two dimensional. `Chart::auto_fit_layer_union` and `chart::category_bar_value_extent`, which have no device, keep the bound. First compile of the new pipeline: about 7–11 ms on lavapipe and 48–80 ms on SwiftShader in Chromium 158. The shader prewarm contract gains its pipeline. Appearance unchanged: the stack refactor draws byte for byte as before. Tests (`category_bars_render`): `a_stacked_fit_reaches_the_tallest_actual_stack` (the issue's case in both directions, through `fit_config` and `begin_auto_fit_all`, drawn at 1x and 2x), `a_stacked_fit_encloses_both_signs_from_different_categories`, `a_stacked_fit_ignores_missing_cells`, `percent_stacks_and_grouped_bars_fit_as_before`, `a_stacked_fit_reads_past_one_dispatch_dimension` (4,194,243 categories); `the_stacked_fit_reduction_is_created_by_a_fit_only` (renderer unit tests).
+- **Radial decorations snap to guides while they drag** ([#465](https://github.com/shim9610/figgy/issues/465), follow-up to [#440](https://github.com/shim9610/figgy/issues/440)). `RadialFrame::drag_decoration_snapped` moves the title or a slice label through the common `HitMap::drag_snapped` with the host's `layout::DragSnap`: its drawn box snaps to the centres of the canvas and the plot area and to the edges and centres of the other decorations, and the plot area does not snap. `RadialRenderer::prepare_with_guides` and `prepare_annotations_with_guides` draw the gesture's guides with the selected decoration's or annotation's selection box; `prepare` and `prepare_annotations` are the same calls with `SnapGuides::NONE`. Guides are not part of the chart, the frame and label-raster caches key on them, and every export prepares without them, so PNG at 1x and 2x and SVG never draw them. `RadialFrame::drag_decoration` is unchanged. No serialized form changes. Tests: `radial::snap_tests::{a_radial_title_drag_snaps_shows_its_guide_until_release_and_no_export_draws_it, a_radial_label_snaps_to_another_decoration_and_the_modifier_turns_it_off}`.
 - **Typed data picks spread over the rows and reuse their buffers** ([#445](https://github.com/shim9610/figgy/issues/445)). The typed body picks of histograms, category bars, box plots, range bars, range links, violins, value labels, parallel coordinates and triangle meshes each ran one 64-lane workgroup that walked every row. Each is now dispatched over `ceil(N / 64)` workgroups, one row per lane (two dimensions past the per-dimension limit; no row is skipped and nothing is capped, rule 10): each workgroup reduces its rows to one candidate in a partials buffer, and a second pass per series (`pick_reduce_data` in the bar module, `pick_reduce_parallel`, `pick_reduce_tri_mesh`, which also runs the mesh's contour test once) folds them into the series' answer. Every comparator is a total order on valid candidates, so the answers are those of the single-workgroup kernels, ties included. A pick's prepared work (its series' bind groups, style maps, kernels, query templates and scratch buffers) is kept by the picker per chart layer while the chart's desired revision, the renderer's visual revision, the pool layout, the font generation, the shader set and the display scale and panel are unchanged, and a pick writes only the transform and its cursor; the readback buffers are a ring of two. The field and grid vector kernels are unchanged, and streamed sources keep their own path (rule 8). The shader prewarm contract is regenerated. Timings (debug build, a 480 × 360 range bar chart, median of ten picks): native on lavapipe 0.69 → 0.44 ms at 5k rows, 2.57 → 2.07 ms at 50k, 30.6 → 26.0 ms at 50k with value labels; in headed Chromium on SwiftShader under Xvfb the pick's CPU encode drops to about 0.2 ms, but its GPU wait is unchanged (about 9 ms at 5k, 55 ms at 50k), since SwiftShader's cost there grows with the rows whatever the split. Tests: `parallel_typed_picks_answer_as_the_single_workgroup_kernels` (range bars, category bars and value labels at 1, 63, 64, 65, 5k and 70k rows with ties and missing rows, against the replaced kernels compiled as a test oracle, the 2D dispatch forced by a lowered per-dimension limit) and `repeated_typed_picks_reuse_their_buffers` (no readback buffer after the first two picks, the prepared work kept across cursors, prepared again after an edit or while a ticket holds it, dropped by the host's memory release).
+- **A registered chart's value labels bake once** ([#443](https://github.com/shim9610/figgy/issues/443)). A registered chart's value label atlas is keyed by its `ChartId`, the series id, a per-chart labels revision (it moves only when some series' label text or the categories the labels follow change), the device font size, the face, the colour and the font policy. The key holds no copy of the strings. The draw and the pick keep one entry each, share one at the same font size, and no longer evict each other, so a pan, a resize or a pick no longer bakes the labels again. The label uniform, the 16 B cell per label and their bind group stay in the atlas entry while the series and selection revisions, the scale and the uniform are unchanged. The typed pick borrows the chart's config and series instead of cloning them. An idle frame, a pick and a pan allocate nothing that grows with the label count. Host-held charts and exports keep the string-compare key. Pixels and picks are unchanged; no API or wire change. Tests: `registered_value_labels_bake_once_across_pans_resizes_and_picks`, `registered_charts_with_equal_series_ids_keep_their_atlases` (renderer unit tests), `value_label_frames_picks_and_pans_do_not_allocate_per_label` (`cpu_allocation_scaling`, 5k and 50k labels).
 
 - **Snap guides on the selection overlay** ([#440](https://github.com/shim9610/figgy/issues/440)). `Renderer::set_chart_snap_guides` (and `MonotonicChart::set_snap_guides`, `Chart::set_snap_guides`) shows the guides of a decoration drag in progress with the chart's selection box, drawn by `draw_selection_box` as thin magenta lines (`axis_render::SNAP_GUIDE_COLOR`) one device pixel wide; `SnapGuides::NONE` removes them, and a changed selection drops them. `Renderer::refresh_annotations_with_guides` does the same for the selected annotation, and `AnnotationMap::drag_snapped` snaps a text box or arrow. Guides are selection chrome: they redraw the selection overlay only, are not part of the document, and no PNG, SVG or PDF export draws them. Tests: `snap_guides::a_drag_shows_its_guide_until_release_and_no_export_draws_it` (PNG at 1x and 2x and SVG byte-equal with and without guides), `snap_guides_are_drawn_only_with_the_selection_box`, `annotation_snap_guides_draw_with_the_selection_box`.
 - **Polar bars choose a radius label ray they do not cover** ([#417](https://github.com/shim9610/figgy/issues/417)). On a 16-sector stacked wind rose the default ray ran through the N and NNW wedges and the innermost labels, the zero label included, sat over the bars. The renderer's fits now choose it where the document leaves it `None`: `Renderer::fit_ranges`, a `Fitted` chart's registration, `commit_auto_fit_all` and the new `Renderer::fit_radial_labels` (native) / `fit_chart_radial_labels` (a registered chart; a browser's frame writes it when its gather completes, `service_radial_label_fits`) gather each row's drawn stack of every polar cell's category bars on the GPU (the extent engine's new `gather_polar_bar_rows` entry, 16 bytes per row, read back once by the layout and kept nowhere) and store the ray and the innermost labels to skip in `PolarOptions` (model). A stored angle or count is kept; only the skip count is chosen at a stored ray. A streamed source is refused with `ColumnNotResident` (rule 8). There is no cap on rows, members or categories (rule 10): the choice's walk grows with the square of the categories (2000 categories: under a second in a debug build). `Renderer::begin_radial_label_fit` and `RadialLabelFitTicket` are the parts for a host that waits on its own.
@@ -3573,10 +3717,10 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
   `fonts/LICENSE-NewCMMath.txt` with the LPPL it refers to. Other math faces
   can be registered with `register_font_bytes` and named in
   `RichText.font`.
-- **New dependency.** `read-fonts 0.46` (`default-features = false`,
+- **New dependency.** `read-fonts 0.47` (`default-features = false`,
   feature `std`) reads the MATH table and the GSUB `ssty` alternates. swash
-  and egui pin read-fonts 0.41, which has no MATH table, so the lockfile
-  holds both versions until they move, when the two are unified
+  pins read-fonts 0.41, which has no MATH table, so the lockfile
+  holds both versions until it moves, when the two are unified
   ([#160](https://github.com/shim9610/figgy/issues/160)).
 - **Power tick labels** write the exponent as a text-mode `Scripts` node
   instead of superscript segments. The labels' pixels, bounds and parts are
@@ -4056,6 +4200,28 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 
 ### Browser product (`figgy` 0.16.0)
 
+- **`render_warnings()` reports mismatched legend symbols** ([#483](https://github.com/shim9610/figgy/issues/483)): `{ kind: "LegendSymbolMismatch", legend, entry, series_id, reason, message }`, with `legend` the legend's `Config` path (`"legend"`, `"overlays[0].legend"`, `"subplots[1].config.legend"`) and `reason` one of `UnknownSeries`, `ColorDiffers` and `MarkDiffers`. Tests: `render_warnings_are_structured` (`src/lib.rs`).
+- **Web wrapper fixes before the release** ([#468](https://github.com/shim9610/figgy/issues/468)).
+  - `remove_column` edits the chart the kernel shows. On a monotonic chart it used to write the monotonic document onto the hidden general chart; now the monotonic chart's document loses the legend rows of the removed series through its editor, and the general chart keeps its own document, its legend following its own cascade. `load_demo` refuses a monotonic chart (call `clear_monotonic_document` first).
+  - Every streamed call refuses a monotonic chart: `begin_streaming`, `stream_step`, `auto_stream_chart_step`, `auto_stream_chart_request_ranges` / `_submit_ranges`, `stream_selection_request_ranges` / `_submit_ranges`, `set_stream_chunk_budget`, the stream operation range calls and budget, `register_streaming_columns`, `replace_streaming_columns`, the `_column_sources` variants, `demote_auto_resident_columns`, and `request_stream_auto_fit` when the chart reads a streamed column (rule 8, M5).
+  - `clear_monotonic_document` and a document load that ends a monotonic chart place the general chart on the surface again, so a resize made while the monotonic chart was shown no longer leaves it drawn (and picked) at the old size.
+  - `set_series` on a monotonic chart takes monotonic series before their group's first `set_monotonic`; on the general chart it refuses them with `code` `MonotonicGeneralChart` instead of an unregistered-column message.
+  - A monotonic chart takes no Feynman series: `set_monotonic_document` and `set_series` on a shown monotonic chart refuse one with `code` `MonotonicFeynman`. A Feynman drag or `place_feynman_vertices` therefore always edits the general chart, never a hidden one.
+  - The annotation selection ends when the annotation list it indexed is replaced: `set_config` or a column transaction's state with another number of annotations or another id at some index, and every document load (`set_categorical_document` and the other families). An edit of an item's content keeps it.
+  - `ColumnUploadHandle.commit(chart)` on another chart throws `"stale"` and closes the handle, as documented.
+  - `set_clear_color` reads a non-finite component (NaN, ±Infinity) as 0.
+  - `add_line_series` on an existing scatter, stem or error-bar series keeps its marker colour.
+  - A monotonic call whose transfer chunk cannot be allocated is refused; it used to reduce nothing from the data and report success. A monotonic source's `columns` must be an array or a typed array; a number used to read as that many zeros.
+  - `resize` and `resize_monotonic` refuse a side past the device's `max_texture_dimension_2d` before anything changes (a negative JavaScript number arrives as a huge `u32`), and a surface reconfiguration that fails puts the display back on the surface it still has.
+  - `on_press` ends a Feynman part drag whose release never came.
+  - `<figgy-chart>` forwards `selection_details()` (holding the operation gate while the readbacks are pending, so frames and pointer edits wait instead of racing it) and `step_selection(dx, dy)`, and its column upload and transaction wrappers forward `free()`.
+  - `<figgy-chart>`: a canvas size change while the element is busy on a monotonic chart dispatches nothing and leaves the canvas as it is; one `figgy-resize` with `monotonic: true` follows when the operation settles. Both monotonic events report `cssWidth` / `cssHeight` as the element measured them.
+  - `timestamp-demo.html` defers its edits while the chart is busy instead of throwing during a PNG export.
+  - `crates/web` builds its wasm unit tests again (`cargo build -p figgy --target wasm32-unknown-unknown --lib --tests`).
+  - **Migration:** a host that streamed while a monotonic chart was shown calls `clear_monotonic_document()` first; such calls used to drive the hidden general chart. A host that passed a non-finite clear colour component gets 0 for it. A host that kept an annotation index across `set_config` or a document load selects again by `select_annotation_by_id`. A host that relied on the second, non-monotonic `figgy-resize` during a busy monotonic operation answers the single `monotonic: true` event. A host that called `element.kernel.selection_details()` or `element.kernel.step_selection()` calls the element's methods. A host that passed `columns` as a number passes an array. A host that showed a Feynman series on a monotonic chart draws it on a general chart.
+
+- **`auto_fit_all` fits stacked category bars to their actual stacks** ([#466](https://github.com/shim9610/figgy/issues/466)). A stacked group's value axis now spans the largest positive and the smallest negative per-category stack, measured on the GPU and read back as two values, so A = (100, 1) and B = (1, 100) fit 0–101 instead of 0–200; the fit resolves asynchronously. Its pipeline compiles on the first stacked fit (`auto_fit_all` or `ensure_extent_engine`, through `createComputePipelineAsync`), never on a draw. Grouped bars and percent stacks fit as before, now also in `auto_fit_all`. The synchronous `fit_ranges`, `fit_config` and the categorical document reader cannot wait for a readback and keep the bound of the columns' statistics. Test: `auto_fit_all_fits_stacked_bars_to_their_actual_stacks` (`auto_fit_all_browser`).
+- **Radial chart drags snap to guides** ([#465](https://github.com/shim9610/figgy/issues/465)). `FiggyBoundedChart` gets the drag gesture state the Cartesian `on_press` / `on_release` path has: between `begin_drag()` and `end_drag()`, `drag` of the title or a slice label and `drag_annotation` of a text box or arrow snap within 6 px and `frame` shows the guides; `set_snap_modifier(held)` turns snapping off while the host holds Alt / Option, and `clear_selection` removes the guides. A `drag` outside a gesture moves by the pointer delta as before, and handle drags do not snap. Exports never draw the guides. Test: `radial_editor_browser::a_radial_decoration_drag_snaps_inside_a_gesture`.
 - **Drags snap to guides** ([#440](https://github.com/shim9610/figgy/issues/440)). `on_move` snaps a dragged decoration or annotation to the chart and plot centres, its axis' centre line and the other movable elements, within 6 canvas pixels, and shows the guides while the drag lasts; `on_release` and `clear_selection` remove them. `set_snap_modifier(held)` turns snapping off while the host holds Alt / Option (`chart.set_snap_modifier(event.altKey)`), and a document with `"snap_to_guides": false` never snaps.
 - **`pick_point` answers the nearest data on a miss** ([#381](https://github.com/shim9610/figgy/issues/381)). On a registered or monotonic chart, a pick with no drawn ink within `max_distance_px` used to resolve to `undefined` (`null` from `<figgy-chart>`). It now resolves to the hit's shape with the point fields `null` and `nearest` filled: `{ "source_id": null, "series_id": null, "point_index": null, "distance_px": null, "nearest": [{ "layer", "source_id", "series_id", "point_index", "distance_px" }, …] }`, `nearest` being every pickable series' datum nearest to the cursor, as a hit carries it; it is `[]` for a chart with no pickable series. A value label or DataLess hit keeps its own shape, and a streamed display's pick still resolves to `undefined` on a miss (rule 8). Test: `a_missed_pick_json_carries_the_nearest_data`.
   - **Migration:** a host that read any resolved `pick_point` value as a hit (`if (hit)`) tests `hit?.series_id != null` (or `hit.series_id !== null` after a non-null check) instead.
@@ -4135,7 +4301,6 @@ parallel options' `names_on_top` and `label_backdrop`, a transition's
 
 - **f32 columns upload at half the bytes** ([#317](https://github.com/shim9610/figgy/issues/317)). The browser's `Float32Array` columns (and the f32 casts of generated data) declare a single lane, so a resident upload stages and transfers 4 bytes per value instead of 8 and the GPU expands them in the pool (see the renderer entry). Streamed sources are unchanged.
 
-- **Polar category labels in the browser** ([#309](https://github.com/shim9610/figgy/issues/309)). `hit_test` answers `category_label_<i>` on a polar chart's category label and a drag moves that label alone; `decoration_bounds` returns its `ring` (`{ center, radius }`), and a press on the ring while the label is selected drags every angle label along its spoke. The hit map is rebuilt when the number of polar category labels on the chart or any subplot changes.
 - **A plain chart compiles its pipelines faster** ([#299](https://github.com/shim9610/figgy/issues/299)). The renderer compiles the cut remap of a broken axis, the probability scale and polar coordinates only once a chart has one of them (see the renderer entry): on the software GPU the measurements use, a line chart is on screen 1.2 s after `create` is called and a line and heatmap chart after 3.2 s. A chart created with a break, a probability axis or polar coordinates compiles the full pipelines it draws and is on screen after about 3 s (line) or 12 to 14 s (line and heatmap: the full heatmap pipeline alone takes several seconds there, and it is created by the draw while the basic and full sets compile in the background); with `shaders: "full"` the same charts take 2.6 s and 11.5 to 12.2 s. A chart whose config gains a break, a probability axis or polar coordinates (`set_config`) moves to the full shader set: it compiles the pipelines it draws again when it next draws or picks, and issues the rest of the full set to the browser's asynchronous compiler as `create` issued the basic one. New, all additive: `FiggyChart.create_with_options(canvas, { shaders, on_progress })` creates a chart on the `"basic"` (default) or `"full"` set, so a host that knows it needs the full set never compiles the basic one; `chart.shader_set()` reads the set and `chart.require_shader_set("full")` moves up early; `<figgy-chart shaders="full">` passes the attribute at connect, and the `shaders` property reads the set and upgrades a ready chart. An unknown option or any other `shaders` value is refused with an `Error` that names it (`TypeError` from the property). `create` and `create_with_progress` are unchanged.
 
 - **A chart fills in as its pipelines compile, the screen's first** ([#299](https://github.com/shim9610/figgy/issues/299)). A browser chart compiles its render pipelines in the background, at most as many at once as the browser reports cores (`navigator.hardwareConcurrency`, four when it reports none), and issues what the chart on screen needs before the rest; before, it issued all 61 at once, and a pipeline the screen needed waited behind every one issued before it. A frame now leaves out a series whose pipelines have not compiled and draws the rest of the chart, axes and legend included; when they resolve, `frame()` draws again on its own, so `<figgy-chart>` fills in with no host call. New: `chart.frame_complete()` tells whether the last frame drew every series; `chart.pipeline_status()` returns `{ screen, all, frame_complete }` (counts of `total`, `ready`, `compiling`, `failed` for what the screen needs and for every compile); `chart.series_ready()` and `chart.pipelines_ready()` resolve when the chart is drawn whole and when every compile has ended, rejecting with an `Error` carrying `label` and `kind` when one failed; `chart.pipeline_failures()` lists the failures. `<figgy-chart>` has the same methods (its `pipeline_status()` is the last frame's snapshot) and reports `"screen complete"` and `"all complete"` under the `renderer.pipelines` scope on `figgy-init-progress`. `first_frame_ready()` now settles with the frame that draws every series. `prewarm_all` waits for the same background compiles instead of issuing its own. A dashed line, streamline arrowheads, sketch and milkyway lines, a ternary region fill, contour labels and a histogram likewise wait for their compute passes, which compile in the background instead of on the page's thread. Exports and picks always draw the whole chart; an export compiles its pipelines and `pick_point` / `pick_data` the pick pipelines they need (since #381 the nearest-datum kernel and the chart's typed data pick kernels; the exact pick variants before it) through the browser's asynchronous compiler before they run, so neither compiles on the page's thread.
@@ -4664,6 +4829,8 @@ entries above describe the changes.
   the per-column statistics, so its columns may be uploaded in any batches.
 
 ### Tests and guards
+
+- **The static gate checks the standalone crates' lockfiles** ([#465](https://github.com/shim9610/figgy/issues/465)). `python3 ci/verify.py static` runs `cargo metadata --locked` on every crate under `tools/` and `examples/` that has its own `[workspace]` and `Cargo.lock` (`examples/egui`, `tools/loom-poller`, `tools/playground`), so a root dependency bump that leaves one of their lockfiles stale fails the gate instead of the repository job of the next master PR. Test: `ci/test_standalone_crates.py`.
 
 - **Two browser tests assert what they mean** ([#381](https://github.com/shim9610/figgy/issues/381)).
   - `selection_details_browser::offset_lines_round_trip_hit_test_and_report_unshifted_values` expected `set_config` / `get_config` to return the sent config unchanged. Since the kernel's charts keep their layout fitted (`LayoutState::Fitted`, #364), `set_config` fits the margins to the new ranges' tick labels (a left `out_margin` of 49 for the `0..12` labels where the sent config had 39), as documented: the test now expects the sent config with `auto_layout` applied. It also drew one `frame()` before picking and placed its picks with the unfitted config; it now waits for `series_ready()` (a pick hits drawn ink, #389) and places them with the fitted one. Bisected over the first-parent merges: it passes at eaf7590 and fails from 65990ab (#364) on. No product change.
@@ -5619,8 +5786,6 @@ example advances to 0.15.0 with the renderer dependency and is not published
   and for area fills and steps, value maps, vector fields, twin Y axes,
   subplots, annotations, polar and radar.
 
-<a id="migrating-from-0170"></a>
-
 ### Known limitations
 
 - macOS / Metal remains experimental. On the Apple Paravirtual adapter, a
@@ -5629,6 +5794,8 @@ example advances to 0.15.0 with the renderer dependency and is not published
   against resident style tests accept that on Metal only (at most one code
   value on at most 32 pixels) until it is investigated on Metal hardware; see
   `ci/STATUS.md`. Other backends compare exactly.
+
+<a id="migrating-from-0170"></a>
 
 ### Migrating from 0.17.0
 

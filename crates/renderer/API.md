@@ -132,6 +132,9 @@ can change its config, view, display, fit or stream. A monotonic line series
 lives only there: `register_chart`, `set_chart_series`, `set_chart_state`
 and `begin_replace_chart_columns` / `begin_replace_chart_sources` refuse it with
 `FiggyError::InvalidSeriesConfig { kind: RuleKind::MonotonicGeneralChart, .. }`.
+A monotonic chart takes no Feynman series: `register_monotonic_chart` and
+`MonotonicChart::set_series` refuse one with `RuleKind::MonotonicFeynman`
+(#468).
 `monotonic_chart(id) -> MonotonicChart` lends its calls:
 
 | `MonotonicChart::` | Contract |
@@ -141,9 +144,10 @@ and `begin_replace_chart_columns` / `begin_replace_chart_sources` refuse it with
 | `resize(chart_area, plot_area, surface, &[MonotonicGroupRef])` | The resize: the chart area, the plot (data area) a plot-area resize proposes (`None` keeps the margins), the display surface (`None`: no display). A group whose series move to other device pixels is reduced again from its source in the same call. Atomic: without a source a moved group needs, refused with `FiggyError::MonotonicSourceRequired`, and nothing changes; a plot rect the margins cannot place: `RuleKind::NoFeasibleLayout`. |
 | `fit_layout(&[MonotonicGroupRef])` | Applies `layout::auto_layout`, measured with the chart's font. It can move the plot's edges, so it takes the sources of the groups it moves, refused as `resize` is without them. |
 | `edit_config(\|editor\| ..) -> R` | Edits the document through a `MonotonicConfig` (read access to the whole `Config`; editors for the legend, titles, grid, annotations, selection, active layer, backgrounds, axes' titles, labels, ticks and lines, y ranges, overlays and subplots; `nudge` and `drag` for decorations; `assign` for a whole document). No setter writes the x range, x scale, breaks, direction or the chart or plot area; an edit that would move them (`monotonic::same_mapping` is false) is refused with `FiggyError::InvalidConfig { kind: RuleKind::MonotonicMappingEdit, .. }` and changes nothing. |
-| `set_series(series)` | Replaces the series; a style or width edit needs no source. |
-| `step_selection(dx, dy)`, `set_selection(hit)` | The selection: a monotonic point steps over the kept points. |
-| `pick_data(request)`, `pick(request)`, `prepare_picking()` | GPU picks; a monotonic series reports the logical sample index of a kept point. |
+| `set_series(series)` | Replaces the series; a style or width edit needs no source. A Feynman series is refused (`RuleKind::MonotonicFeynman`). |
+| `id()`, `config()`, `series()` | The handle, the document and the series, read only. |
+| `step_selection(dx, dy)`, `set_selection(hit)`, `set_snap_guides(guides)` | The selection: a monotonic point steps over the kept points. The snap guides of a decoration drag are chrome only. |
+| `pick_data(request)`, `pick(request)`, `pick_nearest(request)`, `prepare_picking()` | GPU picks; a monotonic series reports the logical sample index of a kept point. |
 | `remove()` | Removes the chart, its envelopes and their columns. |
 
 Reads take `&Renderer`: `monotonic_config`, `monotonic_series`,
@@ -210,7 +214,7 @@ field setters:
 | `set_x_range(...)` / `set_y_range(...)` | Set both axes in the pair, give the partner (`top_x`, `right_y`) the `scale` of the main axis (`bottom_x`, `left_y`), and choose each axis's major spacing, minor count, label format and precision from that scale, so a logarithmic `left_y` puts decades on both edges. The auto-fits and subplot setters do the same. A categorical partner keeps its scale, and on a 3D or ternary chart, where `right_y` is the z or c axis, the partner keeps its own scale and gets the ticks of it. A second value axis with its own scale is an overlay layer (`Config::overlays`); a view state applies each axis's scale as it carries it. The spacing is `tick::axis_major_spacing`: 0.2, 0.5 or 1 × 10^k of the span on a linear axis (5 to 10 major intervals), and on a logarithmic axis 1 decade per major tick up to 6 decades, 2 up to 12, then `ceil(decades / 6)`. On a linear axis an existing timestamp format is kept and any other format, including a polar `Degrees` or `Radians` format, becomes `Decimal`. On a polar chart `set_x_range` only chooses the angle ticks, spokes and labels drawn. Every range helper keeps `log_ticks`: an `Adaptive` logarithmic axis plans its majors from the new range and does not draw the written decade step. |
 | `auto_fit_x*` / `auto_fit_y*` / `auto_fit_colorbar*` | Derive a range from data or supplied extents with padding, then apply the associated tick and label adjustments. These leave a categorical axis (`categories` set) unchanged; `set_x_range` / `set_y_range` set its `category_window` ([#205](https://github.com/shim9610/figgy/issues/205)), the categories it shows, and the full range clears it. |
 | `Renderer::fit_config(&config, &series, padding)` / `fit_y_axes_config(...)` | Return a copy of the candidate `config`, the input and every chart untouched, with the ranges `fit_ranges` would give each layer, by the same code and at the padding given ([#312](https://github.com/shim9610/figgy/issues/312)). The Y variant returns every X axis (`bottom_x`, `top_x`, overlay `x_axis`, in subplots too) as given. A layer naming a series not in `series` is `LayerSeriesUnknown`; a bad padding `FitPadding`; streamed sources and monotonic series are refused as in `fit_ranges`. |
-| `Renderer::fit_config_scoped(&config, &series, padding, &scope)` | `fit_config` for one layer's chosen axes ([#334](https://github.com/shim9610/figgy/issues/334)): only the `FitScope::axes` (`FitAxes { x, y, z }`, `z` a 3D chart's `right_y`, parallel axes as `y`) of `FitScope::layer` move, with their link groups; every other axis comes back as given. `LinkedFitData::Group` reads every series drawn against a linked axis' group; `Target` only the target panel's (the group still shares the range). An axis in `keep` (`FitAxisRef { layer, axis }`), or linked to one, holds its range. Statistics only: error bar ends, heatmap cell half-widths and arrow tips are not included. The refusals are `fit_config`'s, plus `InvalidConfig { field: "fit_scope", kind: FitScopeLayer }` for a scope or kept layer the candidate does not have. |
+| `Renderer::fit_config_scoped(&config, &series, padding, &scope)` | `fit_config` for one layer's chosen axes ([#334](https://github.com/shim9610/figgy/issues/334)): only the `FitScope::axes` (`FitAxes { x, y, z }`, `z` a 3D chart's `right_y`, parallel axes as `y`) of `FitScope::layer` move, with their link groups; every other axis comes back as given. `LinkedFitData::Group` reads every series drawn against a linked axis' group; `Target` only the target panel's (the group still shares the range). An axis in `keep` (`FitAxisRef { layer, axis }`), or linked to one, holds its range. Column statistics only, apart from the stacks of stacked category bars (see Categorical bars below): error bar ends, heatmap cell half-widths and arrow tips are not included. The refusals are `fit_config`'s, plus `InvalidConfig { field: "fit_scope", kind: FitScopeLayer }` for a scope or kept layer the candidate does not have. |
 | `Renderer::fit_point_size_domain(&mut series)` / `fit_vector_scale(&config, &mut series, target)` | Write one series' `PointSizeMap` domain (`fit_domain`) or `VectorStyle` scale (`fit_scale`, `fit_scale_3d` for a point field `config` draws in 3D) from its columns' cached statistics, nothing read back ([#312](https://github.com/shim9610/figgy/issues/312)). An empty, non-finite or degenerate extent, a missing map, a non-vector series, a bad target and a streamed column are errors that leave the series unchanged. |
 | `with_title(...)` | Replace the title text and grow its band when the measured text is taller than the current band. The band never shrinks. `$…$` spans are TeX ([math in labels](USAGE.md#math-in-labels)). |
 | `with_x_title(...)` / `with_y_title(...)` | Replace the bottom/left axis title text, `$…$` spans as TeX; these helpers do not fit margins. |
@@ -333,10 +337,17 @@ for horizontal ones), laid out by `Config.bar_groups` (grouped, stacked or
 percent, the group width and the gap). Each reads a positions column
 `0..n` and a values column of one value per category; NaN is a missing
 bar. `AxisOptions::cross_at` puts the category axis line at a value of the
-value axis. `auto_fit_layer_union` fits the value axis from zero to the
-bars' values: a grouped series by its value range, a stacked group by the
-sum of each series' largest positive and most negative value (which can be
-wider than the tallest stack), and a percent group to 0–100. A bar is picked as
+value axis. A fit spans the value axis from zero to the bars' values: a
+grouped series by its value range, a percent group to 0–100, and a stacked
+group by its tallest positive and deepest negative stack (#466). The
+renderer measures those stacks on the GPU and reads back only the two sums:
+natively `Renderer::fit_ranges`, `fit_config`, `fit_y_axes_config`,
+`fit_config_scoped` and `register_chart`'s first fit wait for them, and on
+every target `begin_auto_fit_all` resolves them with its ticket. A browser's
+synchronous fits cannot wait, and `Chart::auto_fit_layer_union` and
+`chart::category_bar_value_extent` have no device: these use the sum of
+each series' largest positive and most negative value, which can be wider
+than the tallest stack. A bar is picked as
 `PickedData::HistogramBin` with the category row, and selected through
 `PickedDataRef::HistogramBin`. `Config::from_categorical` opens a legacy
 `CategoricalChart` document as such a chart; see the
@@ -575,6 +586,51 @@ browser product puts in a thrown error's `code`. A rule checked while JSON is
 deserialized surfaces as the deserializer's error, whose text is the same
 sentence followed by the position.
 
+`WindowedRenderer::pick_chart_at`, `pick_chart_data_at`,
+`compile_pick_pipelines_at` and `compile_data_pick_pipelines_at` place the
+chart as its draws do ([#469](https://github.com/shim9610/figgy/issues/469)):
+the display set with `set_chart_display` (fitted to that surface, or held by
+`hold_chart_display`), or the stored document at scale 1 when no display is
+set, as `chart_display_config` returns it. The window's own surface size
+plays no part, so a cursor on drawn ink picks that datum.
+
+A lost device is one typed variant on every call
+([#469](https://github.com/shim9610/figgy/issues/469)): `FiggyError::DeviceLost
+{ reason }` from the renderer's calls and `GpuPickError::DeviceLost { reason }`
+from the picks (`pick_chart`, `pick_chart_at`, a ticket's `try_resolve`,
+`resolve` and `resolve_blocking`). A pick error converted into a `FiggyError`
+(`From<GpuPickError>`, as the typed data pick returns it) is
+`FiggyError::DeviceLost` again, so a host handles the loss in one place: it
+recreates the device and the renderer. `RadialError` keeps reporting the
+loss as `RadialError::Gpu` (its message reads `wgpu device lost: ...`).
+
+`WindowedRenderer::draw` and its siblings return
+`FiggyError::SurfaceAcquireFailed { kind, reason }` when no surface texture
+can be acquired. `kind` (`SurfaceAcquireKind`) says what the host does:
+
+| `kind` | wgpu status | Host action |
+| --- | --- | --- |
+| `Skip` | `Timeout`, `Occluded`, or `Validation` (an error the device has not reported otherwise) | Skip the frame; the next draw tries again. |
+| `Reconfigure` | `Outdated` after one reconfiguration | The draw already reconfigured the surface once at its configured size and acquired again; call `resize` with the window's current size and draw again. |
+| `Lost` | `Lost` | Call `replace_surface(window, size)` with the window and its current size, then draw again. The device, the column pool, the charts, their views and caches are kept. If it fails, drop the `WindowedRenderer` and build a new one for the window (`Renderer::for_window_*`), then register its columns and charts again. |
+
+A lost device reports `FiggyError::DeviceLost` instead, before any acquire;
+the host then rebuilds the renderer.
+
+`WindowedRenderer::replace_surface(target, size)`
+([#474](https://github.com/shim9610/figgy/issues/474)) creates a surface
+from `target` on the renderer's `instance()`, checks that the renderer's
+`adapter()` can present to it, and configures it at `size` as `resize`
+does: the MSAA target and the pipelines' target follow the new surface's
+format, so a different format rebuilds the pipelines. It fails with
+`FiggyError::DeviceLost` on a lost device, `SurfaceCreationFailed` when the
+surface cannot be created or the adapter cannot present to it, and
+`SurfaceConfigurationFailed` when it cannot be configured; on each of these
+the renderer is left as it was, the old surface in place. The old surface is
+dropped only after the new one is configured. Chart areas are the host's, as
+after `resize`.
+`examples/winit_simple.rs` handles each kind.
+
 ## Construction and prewarming
 
 Construction and full Cartesian prewarming are separate operations:
@@ -598,6 +654,57 @@ Full prewarm does not prepare future chart data, views, series styles, label
 atlases or result buffers, and is not a guarantee of allocation-free or
 compilation-free first drawing. The separate radial
 renderer and nonresident matrix/tile streaming pipelines are outside this prewarm scope.
+
+## Pipeline cache (native)
+
+A native host can keep the pipelines' compiled form between runs, so a
+second run creates them faster (#478). figgy never reads or writes a file:
+the host saves and loads bytes.
+
+| Call | Effect |
+| --- | --- |
+| `gpu::request_device_async` / `request_device_blocking` | Ask for `Features::PIPELINE_CACHE` whenever the adapter has it. `RendererDevice::request_async` and the window constructors open their device this way. |
+| `RendererDevice::new` / `blocking` | Start the bundle with an empty pipeline cache when the device has the feature, none otherwise. Every renderer built from the bundle creates its pipelines through it. |
+| `RendererDevice::with_pipeline_cache(Some(bytes))` | Load a cache an earlier run saved for the same adapter and driver. Bytes wgpu cannot use (another adapter, driver or wgpu version, truncated, not a cache) are discarded and the cache starts empty. No effect without the feature. |
+| `RendererDevice::without_pipeline_cache()` | Create the pipelines with no cache. |
+| `RendererDevice::pipeline_cache_data()` | The cache's current bytes to save, or `None`. |
+| `RendererDevice::pipeline_cache_key(&adapter_info)` | A file name per adapter and driver (`wgpu::util::pipeline_cache_key`), `None` where the backend has no pipeline cache. |
+
+```rust,ignore
+let key = RendererDevice::pipeline_cache_key(&adapter.get_info());
+let saved = key.as_ref().and_then(|k| std::fs::read(dir.join(k)).ok());
+let gpu = RendererDevice::new(device, queue)?.with_pipeline_cache(saved.as_deref());
+let mut renderer = Renderer::try_new(gpu.clone(), format, pool_bytes)?;
+// ... draw ...
+if let (Some(k), Some(bytes)) = (key, gpu.pipeline_cache_data()) {
+    std::fs::write(dir.join(k).with_extension("tmp"), &bytes)?;
+    std::fs::rename(dir.join(k).with_extension("tmp"), dir.join(k))?; // atomic
+}
+```
+
+- **Effect on pictures:** none. The cache decides how fast a pipeline is
+  created, never what it draws. `tests/pipeline_cache.rs` exports the
+  catalogue scenes at 1x and 2x with no cache, an empty one, a saved one and
+  unusable bytes, and compares them byte for byte.
+- **When to save:** the cache grows as pipelines are created, so save it once
+  the charts have drawn (after a first frame, on exit). A renderer keeps the
+  cache of the bundle it was built from. A renderer's
+  `renderer_device()` returns that bundle, so a window renderer's cache is
+  saved through `renderer.renderer_device().pipeline_cache_data()`.
+- **Host devices:** a host that opens its own device adds
+  `adapter.features() & wgpu::Features::PIPELINE_CACHE` to its descriptor's
+  `required_features`. `examples/egui/examples/egui_embed.rs` does this for
+  eframe's device and loads and saves the cache.
+- **Platforms:** wgpu implements pipeline caches on Vulkan only. DX12, Metal
+  and the browser keep their drivers' and browser's own caches, and the calls
+  above have no effect there. How much a driver stores varies: Mesa's
+  lavapipe stores only a header in its Vulkan pipeline cache (it relies on
+  Mesa's own disk cache), so lavapipe gains nothing from it.
+- **Not cached:** streaming pipelines (rule 8), the exact pick pipelines that
+  only streamed screens use, the standalone column pool's expansion kernel
+  (`GpuAllocCtx` carries no cache), and the standalone public constructors that
+  take a bare `wgpu::Device` (`ContourLabelPipelines::new`,
+  `GpuErrorbarExtentEngine::new_observed_async`).
 
 ## Ownership and frame validity
 
@@ -794,9 +901,9 @@ monotonic chart and a chart with a streamed series are not warmed.
 a scheduled compile instead of starting their own, and otherwise compile, through
 `createComputePipelineAsync`, what a pick at that position needs and has not created
 yet, then create it from the browser's cache. The web `pick_point` and `pick_data` call
-them before they submit, so a first pick compiles nothing on the page's thread. Fit needs nothing of this: `fit_ranges`
-reads column statistics only, and the GPU auto-fit awaits its compute pipelines through
-`createComputePipelineAsync` already. Natively every frame is complete,
+them before they submit, so a first pick compiles nothing on the page's thread. Fit needs nothing of this: in a
+browser `fit_ranges` reads column statistics only, and the GPU auto-fit awaits its compute
+pipelines through `createComputePipelineAsync` already. Natively every frame is complete,
 the counts are zero and both waits resolve at once.
 
 Every background compile ends, and a wait on one ends with it: the browser settles

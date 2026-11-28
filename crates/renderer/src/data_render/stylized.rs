@@ -258,6 +258,7 @@ pub(super) fn bake_blackbody_lut() -> Vec<u8> {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_milkyway_set(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     queue: &wgpu::Queue,
     shaders: &ShaderModules,
     transform_bgl: &wgpu::BindGroupLayout,
@@ -420,6 +421,7 @@ pub(crate) fn create_milkyway_set(
     };
     let ribbon = create_line_pipeline(
         device,
+        cache,
         &shaders.line,
         &[Some(transform_bgl), Some(style_bgl), Some(&tex_bgl)],
         LINE_SLOTS,
@@ -454,11 +456,12 @@ pub(crate) fn create_milkyway_set(
         multisample: multisample_state(sample_count),
         target: blended_target(target_format, additive),
     }
-    .create(device);
+    .create(device, cache);
     // Planets keep the scatter builder's premultiplied blend — bodies
     // occlude the additive star field behind them.
     let planets = create_scatter_pipeline(
         device,
+        cache,
         &shaders.scatter,
         [transform_bgl, style_bgl],
         target_format,
@@ -470,6 +473,7 @@ pub(crate) fn create_milkyway_set(
     );
     let jets = create_errorbar_pipeline(
         device,
+        cache,
         &shaders.errorbar,
         [transform_bgl, style_bgl],
         target_format,
@@ -492,6 +496,7 @@ pub(crate) fn create_milkyway_set(
 /// planets, or jets are compiled for this mode.
 pub(crate) fn create_point_constellation_set(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     queue: &wgpu::Queue,
     shaders: &ShaderModules,
     transform_bgl: &wgpu::BindGroupLayout,
@@ -629,6 +634,7 @@ pub(crate) fn create_point_constellation_set(
 
     let line = create_line_pipeline(
         device,
+        cache,
         &shaders.line,
         &[Some(transform_bgl), Some(style_bgl)],
         LINE_SLOTS,
@@ -645,6 +651,7 @@ pub(crate) fn create_point_constellation_set(
     );
     let stars = create_scatter_pipeline(
         device,
+        cache,
         &shaders.scatter,
         [transform_bgl, style_bgl],
         target_format,

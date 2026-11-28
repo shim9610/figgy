@@ -1842,3 +1842,90 @@ fn a_radial_renderer_on_a_cartesian_renderers_device_shares_it() {
         result.err()
     );
 }
+
+/// The reproduction of #469 item 4: the SVG and PDF exports on a lost
+/// device return `RadialError::Gpu`, as `prepare` and the PNG export do,
+/// instead of panicking inside wgpu's `create_buffer_init`. Building a
+/// radial renderer on a lost device is refused the same way.
+#[test]
+fn a_radial_vector_export_on_a_lost_device_is_an_error_not_a_panic() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    for pdf in [false, true] {
+        let gpu = harness::fresh_gpu();
+        let device = gpu.device().clone();
+        let mut r = RadialRenderer::try_new(gpu.clone(), format).unwrap();
+        let mut c = chart();
+        c.labels = RadialLabels::Outside;
+        c.set_title_text("Title");
+        c.format_labels();
+        device.destroy();
+        // The loss is recorded when wgpu runs the device-lost callback, on
+        // the next poll, as every lost-device test observes it.
+        let _ = device.poll(wgpu::PollType::Poll);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let options = renderer::ExportOptions::document(1.0);
+            if pdf {
+                r.export_pdf_blocking(&c, (320, 320), options).map(|_| ())
+            } else {
+                r.export_svg_blocking(&c, (320, 320), options).map(|_| ())
+            }
+        }));
+        assert!(
+            matches!(&result, Ok(Err(RadialError::Gpu(message))) if message.contains("device lost")),
+            "pdf={pdf}: the vector export on a lost device returned {:?}",
+            result.as_ref().map(|r| r.as_ref().err())
+        );
+        let built = RadialRenderer::try_new(gpu, format);
+        assert!(
+            matches!(&built, Err(RadialError::Gpu(message)) if message.contains("device lost")),
+            "a radial renderer on a lost device was built"
+        );
+    }
+}
+
+/// The reproduction of #469 item 11: a raster export at another scale or
+/// size builds its frame for itself. The frame `prepare` cached for the
+/// screen, its label texture and its annotation layer stay cached, and the
+/// export draws what a prepared frame at the export's scale draws.
+#[test]
+fn a_radial_raster_export_at_another_scale_keeps_the_screen_frame_cached() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut r = renderer();
+    let mut c = chart();
+    c.labels = RadialLabels::Outside;
+    c.set_title_text("Title");
+    c.format_labels();
+    let screen = r.prepare(&c, (320, 320), 1.0).unwrap();
+    let annotations = r.prepare_annotations(&c, (320, 320), 1.0).unwrap();
+    let mut exported = Vec::new();
+    for (size, scale) in [((320, 320), 2.0f32), ((480, 400), 1.0)] {
+        let options = renderer::ExportOptions::document(scale);
+        let transparent = r
+            .export_rgba_with_background_blocking(
+                &c,
+                size,
+                options,
+                RadialExportBackground::Transparent,
+            )
+            .unwrap();
+        let image = r.export_rgba(&c, size, options).block_on().unwrap();
+        assert_ne!(transparent.rgba, image.rgba);
+        let again = r.prepare(&c, (320, 320), 1.0).unwrap();
+        assert!(Arc::ptr_eq(&screen, &again), "{size:?} at {scale}x");
+        assert!(
+            screen.shares_annotations_with(&again),
+            "{size:?} at {scale}x"
+        );
+        let layer = r.prepare_annotations(&c, (320, 320), 1.0).unwrap();
+        assert!(Arc::ptr_eq(&annotations, &layer), "{size:?} at {scale}x");
+        exported.push((size, options, image));
+    }
+    // The uncached frame draws what the cached one at that scale draws.
+    for (size, options, image) in exported {
+        r.prepare(&c, size, options.scale).unwrap();
+        let cached = r.export_rgba_blocking(&c, size, options).unwrap();
+        assert_eq!(cached.rgba, image.rgba, "{size:?} at {}x", options.scale);
+    }
+    drain(&r);
+}

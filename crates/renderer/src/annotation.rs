@@ -813,7 +813,11 @@ pub(crate) struct AnnotationPipeline {
 }
 
 impl AnnotationPipeline {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
+        format: wgpu::TextureFormat,
+    ) -> Self {
         let layout = crate::data_render::create_texture_bind_group_layout(device);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("figgy annotation sampler"),
@@ -822,7 +826,7 @@ impl AnnotationPipeline {
             ..Default::default()
         });
         let pipeline =
-            crate::data_render::create_fullscreen_textured_pipeline(device, &layout, format);
+            crate::data_render::create_fullscreen_textured_pipeline(device, cache, &layout, format);
         Self {
             layout,
             sampler,
@@ -1069,6 +1073,7 @@ impl RadialAnnotationCache {
         size: (u32, u32),
         scale: f32,
         selected: Option<usize>,
+        guides: crate::layout::SnapGuides,
     ) -> RasterKey {
         RasterKey {
             layer: {
@@ -1083,7 +1088,7 @@ impl RadialAnnotationCache {
             size,
             scale,
             selected,
-            guides: crate::layout::SnapGuides::NONE,
+            guides,
             policy: FontPolicy::Standard,
             fonts: crate::text_render::font_generation(),
         }
@@ -1098,13 +1103,18 @@ impl RadialAnnotationCache {
         size: (u32, u32),
         scale: f32,
         selected: Option<usize>,
+        guides: crate::layout::SnapGuides,
     ) -> bool {
-        let key = Self::key(layer, space, size, scale, selected);
+        let key = Self::key(layer, space, size, scale, selected, guides);
         !self.rasters.as_ref().is_some_and(|(k, _)| *k == key)
     }
 
     /// The annotation frame for `layer` in `space`. `size` is physical; the
-    /// raster is drawn at `scale` physical pixels per logical pixel.
+    /// raster is drawn at `scale` physical pixels per logical pixel. With
+    /// `keep` false (an export, #469) the cached raster and frame are reused
+    /// when they match but never replaced, so the frame drawn on screen
+    /// stays cached.
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare(
         &mut self,
         gpu: &RendererDevice,
@@ -1114,8 +1124,10 @@ impl RadialAnnotationCache {
         size: (u32, u32),
         scale: f32,
         selected: Option<usize>,
+        guides: crate::layout::SnapGuides,
+        keep: bool,
     ) -> crate::Result<Arc<BoundedAnnotationFrame>> {
-        let key = Self::key(layer, space, size, scale, selected);
+        let key = Self::key(layer, space, size, scale, selected, guides);
         if let Some((k, visible, frame)) = &self.frame
             && *k == key
             && *visible == layer.visible
@@ -1132,7 +1144,11 @@ impl RadialAnnotationCache {
                     rgba.map(|rgba| {
                         self.pipeline
                             .get_or_insert_with(|| {
-                                AnnotationPipeline::new(&gpu.device(), self.format)
+                                AnnotationPipeline::new(
+                                    &gpu.device(),
+                                    gpu.pipeline_cache(),
+                                    self.format,
+                                )
                             })
                             .upload(gpu, ledger, label, size, &rgba)
                     })
@@ -1144,7 +1160,9 @@ impl RadialAnnotationCache {
                     overlay,
                     map: raster.map,
                 });
-                self.rasters = Some((key.clone(), Arc::clone(&rasters)));
+                if keep {
+                    self.rasters = Some((key.clone(), Arc::clone(&rasters)));
+                }
                 rasters
             }
         };
@@ -1154,7 +1172,9 @@ impl RadialAnnotationCache {
             visible: layer.visible,
             size,
         });
-        self.frame = Some((key, layer.visible, Arc::clone(&frame)));
+        if keep {
+            self.frame = Some((key, layer.visible, Arc::clone(&frame)));
+        }
         Ok(frame)
     }
 }

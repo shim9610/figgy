@@ -85,6 +85,8 @@ pub(super) struct PrepareContext<'a> {
     /// preparation (a pick) evicts as before.
     pub(super) in_frame: bool,
     pub(super) device: &'a wgpu::Device,
+    /// The renderer's pipeline cache (#478).
+    pub(super) pipeline_cache: &'a Option<wgpu::PipelineCache>,
     pub(super) queue: &'a wgpu::Queue,
     pub(super) caps: &'a RendererDeviceCaps,
     pub(super) pool: &'a ColumnPool,
@@ -224,25 +226,9 @@ impl PrepareContext<'_> {
         // the target pipeline is compiled from them — so they have to exist
         // before the one place allowed to compile new pipelines runs.
         self.ensure_contour_label_pipelines(items);
-        self.pipelines.ensure_precise_variants_for_items(
-            &self.device,
-            &self.transform_bgl,
-            &self.style_bgl,
-            &self.per_point_style_map_bgl,
-            self.point_value_map_bgl,
-            [self.surface_bgl, self.view3d_value_map_bgl],
-            &self.data_selection_bgl,
-            &self.field_bgl,
-            self.vector_bgl,
-            self.star_data_bgl,
-            self.category_bar_data_bgl,
-            self.parallel_bgl,
-            self.contour_label_pipelines.as_ref(),
-            self.surface_format,
-            items,
-        );
         self.pipelines.ensure_surface_pipelines(
             &self.device,
+            self.pipeline_cache.as_ref(),
             &self.transform_bgl,
             &self.style_bgl,
             &self.field_bgl,
@@ -252,6 +238,7 @@ impl PrepareContext<'_> {
         );
         self.pipelines.ensure_ternary_region_pipelines(
             &self.device,
+            self.pipeline_cache.as_ref(),
             &self.transform_bgl,
             self.region_bgl,
             self.surface_format,
@@ -259,6 +246,7 @@ impl PrepareContext<'_> {
         );
         self.pipelines.ensure_styles_for_items(
             &self.device,
+            self.pipeline_cache.as_ref(),
             &self.queue,
             &self.transform_bgl,
             &self.style_bgl,
@@ -274,6 +262,29 @@ impl PrepareContext<'_> {
             group_sizes: &group_sizes,
         };
         let mut contour_sources = self.ensure_contour_scratches(items, 1.0, &mut panels, labels)?;
+        // The one site that compiles target pipelines (design B.6) runs once
+        // the contour scratches know which labelled series have no label
+        // snapshot, so the plain contour pass compiles only for them (#465).
+        // Nothing before this point reads a target pipeline.
+        self.pipelines.ensure_precise_variants_for_items(
+            &self.device,
+            self.pipeline_cache.as_ref(),
+            &self.transform_bgl,
+            &self.style_bgl,
+            &self.per_point_style_map_bgl,
+            self.point_value_map_bgl,
+            [self.surface_bgl, self.view3d_value_map_bgl],
+            &self.data_selection_bgl,
+            &self.field_bgl,
+            self.vector_bgl,
+            self.star_data_bgl,
+            self.category_bar_data_bgl,
+            self.parallel_bgl,
+            self.contour_label_pipelines.as_ref(),
+            self.surface_format,
+            items,
+            Some(&panels),
+        );
         grid_sources.append(&mut contour_sources);
         grid_sources.append(&mut self.ensure_mesh_scratches(items, 1.0)?);
         self.prepare_arc_items(items, &mut panels)?;
@@ -562,9 +573,9 @@ impl PrepareContext<'_> {
                 let series_list: Vec<_> = item.series.iter().map(PreparedSeries::layers).collect();
                 let own = item.own_piece_layers();
                 let all = super::composite::PieceSeries::of(&series_list, &own);
-                let pipeline = self
-                    .ink_mask_pipeline
-                    .get_or_insert_with(|| InkMaskPipeline::new(self.device));
+                let pipeline = self.ink_mask_pipeline.get_or_insert_with(|| {
+                    InkMaskPipeline::new(self.device, self.pipeline_cache.as_ref())
+                });
                 let source = pipeline.source(self.device, &layer_view);
                 let mask_view = self.ink_masks[mask]
                     .texture

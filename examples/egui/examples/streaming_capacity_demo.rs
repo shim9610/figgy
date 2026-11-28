@@ -533,6 +533,11 @@ impl CallbackTrait for DemoCallback {
         let Some(state) = resources.get_mut::<DemoState>() else {
             return Vec::new();
         };
+        // One callback per frame: report the previous frame's GPU boundary
+        // here, before this frame records anything. egui submitted that
+        // frame before it started this one (USAGE "end_gpu_frame"); without
+        // it the resources a redraw retires are never released.
+        state.renderer.end_gpu_frame();
         let surface_size = (screen.size_in_pixels[0], screen.size_in_pixels[1]);
         if let Err(error) = state.resize(self.panel_rect, surface_size) {
             state.fail(error);

@@ -253,16 +253,40 @@ impl<'a> ExportSource<'a> {
 /// `config` scaled by the (clamped) export `scale` and placed at the origin
 /// of the export target, as [`Renderer::prepare_export`] draws it: the
 /// whole document, or the parent's area alone for a panel export.
-pub(super) fn export_placed_config(config: &Config, scale: f32, scope: ExportScope) -> Config {
+/// The size in physical pixels of the target an export of `config` at
+/// `scale` (already clamped) renders into: the whole document, or the
+/// parent's chart area for a panel export.
+fn export_target_size(config: &Config, scale: f32, scope: ExportScope) -> (u32, u32) {
     let orig = match scope {
         ExportScope::Document => config.document_area(),
         ExportScope::Panel => config.chart_area.0,
     };
+    let w = ((orig.width as f32) * scale).round().max(1.0) as u32;
+    let h = ((orig.height as f32) * scale).round().max(1.0) as u32;
+    (w, h)
+}
+
+/// Fails with [`FiggyError::GpuResourceLimit`] when the export target of
+/// `config` at `scale` (already clamped) is past the device's texture limit.
+/// Every export checks it before it allocates anything: a monotonic
+/// export before it reduces or uploads its transient envelopes (#469).
+fn validate_export_extent(
+    caps: RendererDeviceCaps,
+    config: &Config,
+    scale: f32,
+    scope: ExportScope,
+) -> Result<()> {
+    let (w, h) = export_target_size(config, scale, scope);
+    validate_texture_extent(caps, "figgy export target dimension", w, h)
+}
+
+pub(super) fn export_placed_config(config: &Config, scale: f32, scope: ExportScope) -> Config {
+    let (width, height) = export_target_size(config, scale, scope);
     let target = Rect {
         x: 0,
         y: 0,
-        width: ((orig.width as f32) * scale).round().max(1.0) as u32,
-        height: ((orig.height as f32) * scale).round().max(1.0) as u32,
+        width,
+        height,
     };
     match scope {
         ExportScope::Document => place_document(config, scale, target),
@@ -720,6 +744,9 @@ impl Renderer {
     ) -> Result<(Chart, Vec<SeriesConfig>, Vec<ColumnId>)> {
         let (chart, mut series) = self.registered_export_state(id)?;
         let scale = clamp_export_scale(scale);
+        // The size check comes before the transient envelopes are reduced
+        // and uploaded, as for any other export.
+        validate_export_extent(self.caps, chart.config(), scale, scope)?;
         let placed = export_placed_config(chart.config(), scale, scope);
         let transient = self.begin_monotonic_export(id, &placed, &mut series, monotonic)?;
         Ok((chart, series, transient))
@@ -886,9 +913,8 @@ impl Renderer {
             ExportScope::Document => chart.config().document_area(),
             ExportScope::Panel => chart.config().chart_area.0,
         };
-        let w = ((orig.width as f32) * scale).round().max(1.0) as u32;
-        let h = ((orig.height as f32) * scale).round().max(1.0) as u32;
-        validate_texture_extent(self.caps, "figgy export target dimension", w, h)?;
+        let (w, h) = export_target_size(chart.config(), scale, scope);
+        validate_export_extent(self.caps, chart.config(), scale, scope)?;
         let export_format = EXPORT_FORMAT;
         let mut export_sample_count = preferred_msaa_sample_count(self.caps, export_format);
         validate_target_sample_count(self.caps, export_format, export_sample_count)?;
@@ -1009,6 +1035,7 @@ impl Renderer {
         // compile only when this export actually draws with them.
         let mut export_target_pipelines = create_target_pipelines(
             &self.device,
+            self.pipeline_cache.as_ref(),
             &self.texture_bgl,
             &self.transform_bgl,
             &self.style_bgl,
@@ -1018,8 +1045,45 @@ impl Renderer {
             self.pipelines.shaders.set,
         );
         self.ensure_contour_label_pipelines(items);
+        export_target_pipelines.ensure_surface_pipelines(
+            &self.device,
+            self.pipeline_cache.as_ref(),
+            &self.transform_bgl,
+            &self.style_bgl,
+            &self.field_bgl,
+            &self.surface_bgl,
+            export_format,
+            items,
+        );
+        export_target_pipelines.ensure_ternary_region_pipelines(
+            &self.device,
+            self.pipeline_cache.as_ref(),
+            &self.transform_bgl,
+            &self.region_bgl,
+            export_format,
+            items,
+        );
+        export_target_pipelines.ensure_styles_for_items(
+            &self.device,
+            self.pipeline_cache.as_ref(),
+            &self.queue,
+            &self.transform_bgl,
+            &self.style_bgl,
+            &self.star_data_bgl,
+            export_format,
+            items,
+        );
+        // Export renders immediately rather than handing out a token, so the
+        // receipts have nothing to be held for.
+        let _ = self.ensure_field_scratches(items)?;
+        self.ensure_value_map_scratches(items, scale)?;
+        let _ = self.ensure_vector_scratches(items, Some(scale))?;
+        let _ = self.ensure_contour_scratches(items, scale, &mut panels)?;
+        // Compiled once the contour scratches know which labelled series
+        // fall back to the plain contour pass, as in `prepare` (#465).
         export_target_pipelines.ensure_precise_variants_for_items(
             &self.device,
+            self.pipeline_cache.as_ref(),
             &self.transform_bgl,
             &self.style_bgl,
             &self.per_point_style_map_bgl,
@@ -1034,38 +1098,8 @@ impl Renderer {
             self.contour_label_pipelines.as_ref(),
             export_format,
             items,
+            Some(&panels),
         );
-        export_target_pipelines.ensure_surface_pipelines(
-            &self.device,
-            &self.transform_bgl,
-            &self.style_bgl,
-            &self.field_bgl,
-            &self.surface_bgl,
-            export_format,
-            items,
-        );
-        export_target_pipelines.ensure_ternary_region_pipelines(
-            &self.device,
-            &self.transform_bgl,
-            &self.region_bgl,
-            export_format,
-            items,
-        );
-        export_target_pipelines.ensure_styles_for_items(
-            &self.device,
-            &self.queue,
-            &self.transform_bgl,
-            &self.style_bgl,
-            &self.star_data_bgl,
-            export_format,
-            items,
-        );
-        // Export renders immediately rather than handing out a token, so the
-        // receipts have nothing to be held for.
-        let _ = self.ensure_field_scratches(items)?;
-        self.ensure_value_map_scratches(items, scale)?;
-        let _ = self.ensure_vector_scratches(items, Some(scale))?;
-        let _ = self.ensure_contour_scratches(items, scale, &mut panels)?;
         let _ = self.ensure_mesh_scratches(items, scale)?;
         self.prepare_arc_items(items, &mut panels)?;
         let (mut prepared_items, _) =

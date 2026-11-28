@@ -160,6 +160,10 @@ impl ColumnUploadHandle {
     /// `"allocation_failed"`). The handle is closed either way.
     pub fn commit(&mut self, chart: &mut FiggyChart) -> Result<(), JsValue> {
         self.open()?;
+        // Closed from here on, whatever the outcome.
+        let Some(upload) = self.upload.take() else {
+            return Err(js_err("internal: an open column upload holds its upload"));
+        };
         if chart.chart_id != self.chart_id {
             return Err(coded_error(
                 "the column upload was begun on another chart",
@@ -167,9 +171,6 @@ impl ColumnUploadHandle {
                 [],
             ));
         }
-        let Some(upload) = self.upload.take() else {
-            return Err(js_err("internal: an open column upload holds its upload"));
-        };
         chart
             .renderer
             .commit_column_upload(upload)
@@ -612,69 +613,56 @@ impl FiggyChart {
     /// Unregister a column. Series referencing it are removed too so the
     /// chart can never point at freed data. Auto-managed legends remove
     /// the corresponding rows; freely edited legends preserve their text
-    /// and only synchronize recognized series symbols.
+    /// and only synchronize recognized series symbols. The shown chart's
+    /// document is edited, a monotonic chart's through its editor (#468);
+    /// the hidden general chart's legend follows its own cascade.
     /// Returns `true` when the column existed.
     pub fn remove_column(&mut self, id: &str) -> Result<bool, JsValue> {
         if self.renderer.logical_column(id).is_none() {
             return Ok(false);
         }
-        let old_series = self.chart_series()?.to_vec();
-        let mut keep = Vec::new();
-        keep.try_reserve(old_series.len()).map_err(js_err)?;
-        keep.extend(
-            old_series
-                .iter()
-                .map(|cfg| !referenced_columns(cfg).contains(&id)),
-        );
-        let mut removed = Vec::new();
-        removed.try_reserve(old_series.len()).map_err(js_err)?;
-        removed.extend(
-            keep.iter()
-                .enumerate()
-                .filter_map(|(index, keep)| (!keep).then_some(index)),
-        );
-
-        let mut next_series = Vec::new();
-        next_series.try_reserve(old_series.len()).map_err(js_err)?;
-        next_series.extend(
-            old_series
-                .iter()
-                .zip(&keep)
-                .filter(|(_, keep)| **keep)
-                .map(|(series, _)| series.clone()),
-        );
-        let mut next_config = self.chart_config()?.clone();
-        if self.legend_auto_managed {
-            let content = &mut next_config.legend.content;
-            // The entries of the removed series: the series a symbol names,
-            // or, for a symbol that names none, the series at its position.
-            for index in (0..renderer::config::legend_entry_count(content)).rev() {
-                let gone = match renderer::config::legend_entry_series_id(content, index) {
-                    Some(series_id) => old_series
-                        .iter()
-                        .zip(&keep)
-                        .any(|(cfg, keep)| !keep && cfg.series_id == series_id),
-                    None => keep.get(index).is_some_and(|keep| !keep),
-                };
-                if gone {
-                    renderer::config::remove_legend_entry(content, index);
-                }
+        // The general chart's legend follows its cascade whether or not it
+        // is shown, so it is current when a monotonic chart ends.
+        let general = legend_after_removal(
+            self.renderer.chart_config(self.chart_id).map_err(js_err)?,
+            self.renderer.chart_series(self.chart_id).map_err(js_err)?,
+            id,
+            self.legend_auto_managed,
+        )?;
+        // A monotonic chart the kernel shows (#271) takes its document
+        // through its editor, before the cascade: the renderer removes its
+        // series that read the column with the column.
+        let mut shown = None;
+        if let Some(monotonic) = self.monotonic {
+            let previous = self.renderer.monotonic_config(monotonic).map_err(js_err)?;
+            if let Some(next) = legend_after_removal(
+                previous,
+                self.renderer.monotonic_series(monotonic).map_err(js_err)?,
+                id,
+                self.legend_auto_managed,
+            )? {
+                let previous = previous.clone();
+                self.write_chart_config(next)?;
+                shown = Some(previous);
             }
-            next_config.legend.visible = !next_config.legend.content.segments.is_empty();
-        } else {
-            renderer::config::update_legend_symbols_preserving_text(
-                &mut next_config.legend.content,
-                &next_series,
-                next_config.colorbar.as_ref().map(|bar| &bar.colormap),
-            );
         }
 
-        let removed_from_renderer = if removed.is_empty() {
-            self.renderer.remove_column(id).map_err(js_err)?
-        } else {
-            self.renderer
-                .remove_column_with_chart_config(id, self.chart_id, next_config)
-                .map_err(js_err)?
+        let removed = match general {
+            None => self.renderer.remove_column(id),
+            Some(next_config) => {
+                self.renderer
+                    .remove_column_with_chart_config(id, self.chart_id, next_config)
+            }
+        };
+        let removed_from_renderer = match removed {
+            Ok(removed) => removed,
+            Err(error) => {
+                // The shown document goes back as it was.
+                if let Some(previous) = shown {
+                    self.write_chart_config(previous)?;
+                }
+                return Err(js_err(error));
+            }
         };
         if !removed_from_renderer {
             return Ok(false);
@@ -692,6 +680,13 @@ impl FiggyChart {
     /// see a real chart without wiring data first. Repeated calls replace
     /// the demo registrations and keep the same series declarations.
     pub fn load_demo(&mut self) -> Result<(), JsValue> {
+        // The demo's line series live on the general chart; a monotonic
+        // chart shown instead takes its series through its own calls.
+        if self.monotonic.is_some() {
+            return Err(js_err(
+                "load_demo draws on the general chart: call clear_monotonic_document first",
+            ));
+        }
         let (xs, ys) = renderer::demo::sine_data(512);
         let (ts, vs) = renderer::demo::rc_data(512);
 
@@ -754,6 +749,63 @@ impl FiggyChart {
         self.color_seq = color_seq;
         Ok(())
     }
+}
+
+/// `config` after removing column `id` removes the series of `series`
+/// that read it, as `remove_column` keeps the legend: an auto-managed
+/// legend drops the rows of the removed series (the series a symbol names,
+/// or, for a symbol that names none, the series at its position); a freely
+/// edited one keeps its text and restyles its symbols. `None` when no
+/// series reads the column, so the document stays as it is.
+fn legend_after_removal(
+    config: &renderer::Config,
+    series: &[SeriesConfig],
+    id: &str,
+    auto_managed: bool,
+) -> Result<Option<renderer::Config>, JsValue> {
+    let mut keep = Vec::new();
+    keep.try_reserve(series.len()).map_err(js_err)?;
+    keep.extend(
+        series
+            .iter()
+            .map(|cfg| !referenced_columns(cfg).contains(&id)),
+    );
+    if keep.iter().all(|keep| *keep) {
+        return Ok(None);
+    }
+    let mut next_config = config.clone();
+    if auto_managed {
+        let content = &mut next_config.legend.content;
+        for index in (0..renderer::config::legend_entry_count(content)).rev() {
+            let gone = match renderer::config::legend_entry_series_id(content, index) {
+                Some(series_id) => series
+                    .iter()
+                    .zip(&keep)
+                    .any(|(cfg, keep)| !keep && cfg.series_id == series_id),
+                None => keep.get(index).is_some_and(|keep| !keep),
+            };
+            if gone {
+                renderer::config::remove_legend_entry(content, index);
+            }
+        }
+        next_config.legend.visible = !next_config.legend.content.segments.is_empty();
+    } else {
+        let mut next_series = Vec::new();
+        next_series.try_reserve(series.len()).map_err(js_err)?;
+        next_series.extend(
+            series
+                .iter()
+                .zip(&keep)
+                .filter(|(_, keep)| **keep)
+                .map(|(series, _)| series.clone()),
+        );
+        renderer::config::update_legend_symbols_preserving_text(
+            &mut next_config.legend.content,
+            &next_series,
+            next_config.colorbar.as_ref().map(|bar| &bar.colormap),
+        );
+    }
+    Ok(Some(next_config))
 }
 
 // ---- several chunked uploads and the chart state in one commit (#334) ----
@@ -1077,6 +1129,10 @@ impl FiggyChart {
                 Some((config, series))
             }
         };
+        let annotations_replaced = match &state {
+            Some((config, _)) => self.annotations_replaced_by(config).map_err(state_error)?,
+            None => false,
+        };
         self.renderer
             .commit_column_uploads(self.chart_id, uploads, state)
             .map_err(|error| match error {
@@ -1091,6 +1147,9 @@ impl FiggyChart {
         }
         if let Some(len) = new_series_len {
             self.color_seq = len.max(self.color_seq);
+        }
+        if annotations_replaced {
+            self.set_selected_annotation(None);
         }
         self.sync_hitmap()
     }

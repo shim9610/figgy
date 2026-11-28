@@ -120,6 +120,7 @@ pub(crate) const RING_SCAN_LABEL: &str = "figgy ternary ring scan pipeline";
 /// The ring-start scan's pipelines, from the region module `shader`.
 pub(crate) fn create_ring_scan_pipelines(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     shader: &wgpu::ShaderModule,
 ) -> RingScanPipelines {
     let bgl = crate::gpu_compile::bind_group_layout(
@@ -145,6 +146,7 @@ pub(crate) fn create_ring_scan_pipelines(
     let pipeline = |entry: &str| {
         crate::gpu_compile::compute_pipeline(
             &device,
+            cache,
             &wgpu::ComputePipelineDescriptor {
                 label: Some(RING_SCAN_LABEL),
                 layout: Some(&layout),
@@ -403,6 +405,7 @@ impl TernaryRegionPass {
 /// `sample_count`.
 pub(crate) fn create_ternary_region_pipeline(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     shader: &wgpu::ShaderModule,
     transform_bgl: &wgpu::BindGroupLayout,
     region_bgl: &wgpu::BindGroupLayout,
@@ -438,7 +441,7 @@ pub(crate) fn create_ternary_region_pipeline(
             write_mask,
         },
     }
-    .create(device)
+    .create(device, cache)
 }
 
 /// The region group of one series: the pool, its params and its ring
@@ -584,7 +587,7 @@ mod tests {
                 label: Some("ring scan test"),
                 source: wgpu::ShaderSource::Wgsl(TERNARY_REGION_SHADER.source.into()),
             });
-            let pipelines = create_ring_scan_pipelines(&device, &module);
+            let pipelines = create_ring_scan_pipelines(&device, None, &module);
             let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
             let params = TernaryRegionParamsGpu {
                 color_premul: [0.0; 4],

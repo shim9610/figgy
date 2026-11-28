@@ -28,6 +28,7 @@ pub struct Snapshot {
 impl Pipelines {
     pub(crate) fn new(
         device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
         shader: &wgpu::ShaderModule,
         transform: &wgpu::BindGroupLayout,
         style: &wgpu::BindGroupLayout,
@@ -82,6 +83,7 @@ impl Pipelines {
         };
         let compute = crate::gpu_compile::compute_pipeline(
             &device,
+            cache,
             &wgpu::ComputePipelineDescriptor {
                 label: Some(ENVELOPE_SCAN_LABEL),
                 layout: Some(&layout(&compute_layout)),
@@ -103,7 +105,7 @@ impl Pipelines {
             multisample: multisample_state(samples),
             target: blended_target(format, wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
         }
-        .create(device);
+        .create(device, cache);
         Self {
             compute,
             render,

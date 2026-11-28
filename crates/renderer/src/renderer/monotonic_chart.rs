@@ -37,7 +37,8 @@ pub struct MonotonicChart<'r> {
 impl Renderer {
     /// Registers a monotonic chart (#271): `config` and `series`, which may
     /// hold monotonic line series ([`SeriesConfig::monotonic_line`]) and any
-    /// other series. Its monotonic series draw nothing until their group's
+    /// other series but a Feynman one (`RuleKind::MonotonicFeynman`, #468).
+    /// Its monotonic series draw nothing until their group's
     /// first [`MonotonicChart::set_monotonic`]. Its layout is stored
     /// [`crate::LayoutState::Fixed`] whatever `config` says (#357): no draw
     /// moves its mapping (M4), and [`MonotonicChart::fit_layout`] fits it.
@@ -51,8 +52,8 @@ impl Renderer {
         // `MonotonicChart::fit_layout` fits it.
         let mut config = config;
         config.layout_state = crate::LayoutState::Fixed;
-        let result = self
-            .register_chart_unreported(config, series, true, false)
+        let result = super::registry::refuse_feynman_series(&series)
+            .and_then(|()| self.register_chart_unreported(config, series, true, false))
             .map(MonotonicChartId);
         self.reported(result)
     }
@@ -195,10 +196,11 @@ impl MonotonicChart<'_> {
     }
 
     /// Replaces the series: a style, a channel, a group, series added or
-    /// removed. A series of a group never supplied draws nothing until its
+    /// removed. A Feynman series is refused (`RuleKind::MonotonicFeynman`). A series of a group never supplied draws nothing until its
     /// first [`Self::set_monotonic`].
     pub fn set_series(&mut self, series: Vec<SeriesConfig>) -> Result<()> {
-        let result = self.renderer.set_chart_series_unreported(self.id, series);
+        let result = super::registry::refuse_feynman_series(&series)
+            .and_then(|()| self.renderer.set_chart_series_unreported(self.id, series));
         self.renderer.reported(result)
     }
 

@@ -1157,6 +1157,11 @@ export class FiggyChartElement extends HTMLElement {
       JSON.parse(kernel.monotonic_groups()).length > 0;
   }
 
+  #monotonicBeforeOperation(kernel) {
+    try { return this.#isMonotonic(kernel); }
+    catch { return false; }
+  }
+
   #resizeCanvas(notifyKernel) {
     const { width, height, cssWidth, cssHeight, dpr } = this.#measureCanvas();
     this.#dpr = dpr;
@@ -1165,7 +1170,25 @@ export class FiggyChartElement extends HTMLElement {
       return;
     }
 
-    if (notifyKernel && this.#kernel && !this.busy && this.#isMonotonic(this.#kernel)) {
+    // A busy kernel cannot be asked whether it is monotonic: the operation
+    // recorded it when it began. While busy the canvas keeps the kernel's
+    // size and nothing is dispatched; the settle sends the monotonic resize.
+    const monotonic = notifyKernel && this.#kernel && (this.busy
+      ? this.#operationToken?.monotonic === true
+      : this.#isMonotonic(this.#kernel));
+    if (monotonic) {
+      if (this.busy) {
+        this.#pendingResize = {
+          token: this.#operationToken,
+          width,
+          height,
+          cssWidth,
+          cssHeight,
+          previous: this.#pendingResize?.previous ??
+            { width: this.#canvas.width, height: this.#canvas.height },
+        };
+        return;
+      }
       dispatchFiggyEvent(this, "figgy-resize", {
         width,
         height,
@@ -1188,6 +1211,8 @@ export class FiggyChartElement extends HTMLElement {
           token: this.#operationToken,
           width,
           height,
+          cssWidth,
+          cssHeight,
           previous,
         };
       } else {
@@ -1292,6 +1317,9 @@ export class FiggyChartElement extends HTMLElement {
       generation,
       kernel,
       disposal: "attached",
+      // Read before the operation borrows the kernel: a resize while busy
+      // needs it (#271).
+      monotonic: this.#monotonicBeforeOperation(kernel),
     };
     this.#operationToken = token;
     return token;
@@ -1678,19 +1706,20 @@ export class FiggyChartElement extends HTMLElement {
     }
 
     if (this.#isCurrentOperation(token) && this.#pendingResize?.token === token) {
-      const { width, height, previous } = this.#pendingResize;
+      const { width, height, cssWidth, cssHeight, previous } = this.#pendingResize;
       this.#pendingResize = null;
       try {
         if (this.#isMonotonic(token.kernel)) {
-          // The canvas was resized while busy: it keeps the kernel's size
-          // until the host resizes the chart with its sources (#271).
-          this.#canvas.width = previous.width;
-          this.#canvas.height = previous.height;
+          // The canvas keeps the kernel's size until the host resizes the
+          // chart with its sources (#271). Assigning a size clears a
+          // canvas, so only a size that changed is put back.
+          if (this.#canvas.width !== previous.width) this.#canvas.width = previous.width;
+          if (this.#canvas.height !== previous.height) this.#canvas.height = previous.height;
           dispatchFiggyEvent(this, "figgy-resize", {
             width,
             height,
-            cssWidth: this.#canvas.clientWidth,
-            cssHeight: this.#canvas.clientHeight,
+            cssWidth,
+            cssHeight,
             devicePixelRatio: this.#dpr,
             monotonic: true,
           });
@@ -2442,6 +2471,12 @@ export class FiggyChartElement extends HTMLElement {
   // upload one column in chunks. The upload handle's `commit()` installs the
   // column on this element's chart.
   clear_selection() { return this.#mutateChart("clear_selection"); }
+  // The selected point's details (#447) await GPU readbacks, so the read
+  // holds the operation gate: frames and pointer edits wait for it.
+  async selection_details() {
+    return this.#runKernelOperation("selection-details", (kernel) => kernel.selection_details());
+  }
+  step_selection(dx, dy) { return this.#mutateChart("step_selection", dx, dy); }
   column_revision(id) { return this.#kernelForCall().column_revision(id); }
   inspect_streaming_capabilities(configJson, seriesJson) {
     return this.#kernelForCall().inspect_streaming_capabilities(configJson, seriesJson);
@@ -2460,6 +2495,9 @@ export class FiggyChartElement extends HTMLElement {
       written: () => handle.written(),
       length: () => handle.length(),
       is_open: () => handle.is_open(),
+      // Releases the wasm object (and a staging buffer still held) now
+      // instead of at garbage collection. The wrapper is unusable after.
+      free: () => handle.free(),
     };
   }
   // Several chunked columns and the next config and series in one commit
@@ -2483,6 +2521,7 @@ export class FiggyChartElement extends HTMLElement {
       length: (id) => tx.length(id),
       staged_count: () => tx.staged_count(),
       has_state: () => tx.has_state(),
+      free: () => tx.free(),
     };
   }
   // Editor queries (#312): JSON text, as the kernel returns it; nothing on

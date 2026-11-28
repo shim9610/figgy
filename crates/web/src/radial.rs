@@ -132,6 +132,15 @@ pub struct FiggyRadialChart {
     frame: Arc<RadialFrame>,
     annotations: Arc<BoundedAnnotationFrame>,
     size: (u32, u32),
+    /// The snap state of the drag gesture in progress (#440, #465), kept
+    /// from `begin_drag` to `end_drag`; off outside a gesture, so a `drag`
+    /// call outside one moves by the pointer delta as before.
+    drag_snap: renderer::layout::DragSnap,
+    /// Whether the snap modifier (Alt / Option) is held
+    /// (`set_snap_modifier`).
+    snap_modifier: bool,
+    /// Whether a drag gesture is in progress (`begin_drag`).
+    dragging: bool,
 }
 #[wasm_bindgen(js_class = FiggyBoundedChart)]
 impl FiggyRadialChart {
@@ -232,7 +241,13 @@ impl FiggyRadialChart {
             .await
             .map_err(js_err)?;
         let scale = surface_scale(&config, (width, height));
-        let (frame, annotations) = prepare(&mut renderer, &chart, (width, height), scale)?;
+        let (frame, annotations) = prepare(
+            &mut renderer,
+            &chart,
+            (width, height),
+            scale,
+            renderer::layout::SnapGuides::NONE,
+        )?;
         Ok(Self {
             surface,
             _instance: instance,
@@ -244,6 +259,9 @@ impl FiggyRadialChart {
             frame,
             annotations,
             size: (width, height),
+            drag_snap: renderer::layout::DragSnap::off(),
+            snap_modifier: false,
+            dragging: false,
         })
     }
     /// Returns JSON text (`FiggyJson`), not an object: parse it with
@@ -257,7 +275,13 @@ impl FiggyRadialChart {
         let next = parse_chart("radial", value)?;
         validate(&next, (width, height))?;
         let scale = surface_scale(&self.surface_config, (width, height));
-        let (frame, annotations) = prepare(&mut self.renderer, &next, (width, height), scale)?;
+        let (frame, annotations) = prepare(
+            &mut self.renderer,
+            &next,
+            (width, height),
+            scale,
+            self.drag_snap.guides(),
+        )?;
         self.chart = next;
         self.frame = frame;
         self.annotations = annotations;
@@ -277,7 +301,13 @@ impl FiggyRadialChart {
     }
     pub fn frame(&mut self) -> Result<(), JsValue> {
         let scale = self.surface_scale();
-        let (frame, annotations) = prepare(&mut self.renderer, &self.chart, self.size, scale)?;
+        let (frame, annotations) = prepare(
+            &mut self.renderer,
+            &self.chart,
+            self.size,
+            scale,
+            self.drag_snap.guides(),
+        )?;
         self.frame = frame;
         self.annotations = annotations;
         let surface = match self.surface.get_current_texture() {
@@ -554,19 +584,72 @@ impl FiggyRadialChart {
             .transpose()?;
         // The radial decorations edit the chart they are placed from.
         let mut next = self.chart.clone();
+        // Inside a gesture (`begin_drag`) a move snaps to guides (#440,
+        // #465) and goes through the element's own drag policy, as before;
+        // outside one, the snap state is off and the move is the pointer
+        // delta. A resize does not snap.
         let result = match handle {
             Some(h) => self.frame.resize_decoration(&mut next, id, h, dx, dy),
-            None => self.frame.drag_decoration(&mut next, id, dx, dy),
+            None => self
+                .frame
+                .drag_decoration_snapped(&mut next, id, dx, dy, &mut self.drag_snap),
         };
         if result != Some(renderer::layout::NudgeResult::Moved) {
             return Ok(false);
         }
         let scale = self.surface_scale();
-        let (frame, annotations) = prepare(&mut self.renderer, &next, self.size, scale)?;
+        let (frame, annotations) = prepare(
+            &mut self.renderer,
+            &next,
+            self.size,
+            scale,
+            self.drag_snap.guides(),
+        )?;
         self.chart = next;
         self.frame = frame;
         self.annotations = annotations;
         Ok(true)
+    }
+    /// Start a drag gesture (#440, #465): until [`Self::end_drag`], a
+    /// [`Self::drag`] of a decoration (the title or a slice label) or a
+    /// [`Self::drag_annotation`] of a text box or arrow snaps the drawn box,
+    /// within 6 px, to the centres of the canvas and the plot area and to
+    /// the edges and centres of the other decorations (or annotations), and
+    /// `frame` draws thin guides with the selection box while the drag
+    /// lasts. Call it on pointer down, before the first move. Handle drags
+    /// (resizes, polygon vertices) do not snap. A drag outside a gesture
+    /// moves by the pointer delta, as before. Guides are never stored in
+    /// the document and never exported.
+    ///
+    /// JS: `chart.begin_drag(); chart.drag(id, dx, dy, null); … chart.end_drag();`
+    pub fn begin_drag(&mut self) {
+        // The deltas are document logical pixels, shown one to one on the
+        // canvas: the reach is the same on screen at every surface scale.
+        self.dragging = true;
+        self.drag_snap = renderer::layout::DragSnap::new(1.0);
+        self.drag_snap.set_enabled(!self.snap_modifier);
+    }
+    /// End the drag gesture [`Self::begin_drag`] started: the guides go,
+    /// and later drags move by the pointer delta until the next gesture.
+    /// The next `frame` draws without guides.
+    pub fn end_drag(&mut self) {
+        self.dragging = false;
+        self.drag_snap = renderer::layout::DragSnap::off();
+    }
+    /// Hold or release the snap modifier (Alt / Option, #440): while it is
+    /// held, a drag follows the pointer exactly and shows no guide;
+    /// released, the gesture in progress snaps again. A host calls it from
+    /// its key or pointer events (`event.altKey`).
+    ///
+    /// JS: `chart.set_snap_modifier(event.altKey);`
+    pub fn set_snap_modifier(&mut self, held: bool) {
+        if self.snap_modifier == held {
+            return;
+        }
+        self.snap_modifier = held;
+        // Only a gesture in progress snaps again: outside one the state
+        // stays off.
+        self.drag_snap.set_enabled(!held && self.dragging);
     }
     /// Apply the radial member of the theme family `name` (#291, #295:
     /// `gallery`, `cool-slate`, `midnight` or `warm-paper`, as
@@ -612,7 +695,13 @@ impl FiggyRadialChart {
     fn adopt(&mut self, next: RadialChart) -> Result<(), JsValue> {
         validate(&next, self.size)?;
         let scale = self.surface_scale();
-        let (frame, annotations) = prepare(&mut self.renderer, &next, self.size, scale)?;
+        let (frame, annotations) = prepare(
+            &mut self.renderer,
+            &next,
+            self.size,
+            scale,
+            self.drag_snap.guides(),
+        )?;
         self.chart = next;
         self.frame = frame;
         self.annotations = annotations;
@@ -788,8 +877,13 @@ impl FiggyRadialChart {
                     .ok_or_else(|| js_err("unknown resize handle"))?;
                 map.resize_by(&mut next.annotations, id, h, dx, dy)
             } else {
-                map.drag_by(&mut next.annotations, id, dx, dy)
+                // Snapped inside a gesture (`begin_drag`, #440): a text box
+                // or arrow snaps, and the guides are drawn with its
+                // selection box until `end_drag`.
+                map.drag_snapped(&mut next.annotations, id, dx, dy, &mut self.drag_snap)
             };
+        // A rejected move leaves no guide (`DragSnap::settle`); the next
+        // `frame` draws without it.
         if result != Some(renderer::layout::NudgeResult::Moved) {
             return Ok(false);
         }
@@ -946,9 +1040,13 @@ impl FiggyRadialChart {
         };
         Ok(self.chart.interaction.animate_hover(hit, dt.min(0.1), 0.16))
     }
+    /// Clear the decoration and data selections. The guides of a drag in
+    /// progress go with them (#440): they belong to the element they were
+    /// shown for.
     pub fn clear_selection(&mut self) {
         self.chart.decorations.selected = None;
         self.chart.interaction.selected = None;
+        self.drag_snap.release();
     }
     pub fn step_selection(&mut self, backwards: bool) {
         self.chart.step_selection(backwards);
@@ -989,16 +1087,21 @@ impl FiggyRadialChart {
     }
 }
 
-/// The radial frame and its annotation layer for one document state.
+/// The radial frame and its annotation layer for one document state, with
+/// the snap guides of the drag in progress (#440): drawn with the selected
+/// decoration's or annotation's selection box, never stored in the chart.
 fn prepare(
     renderer: &mut RadialRenderer,
     chart: &RadialChart,
     size: (u32, u32),
     scale: f32,
+    guides: renderer::layout::SnapGuides,
 ) -> Result<(Arc<RadialFrame>, Arc<BoundedAnnotationFrame>), JsValue> {
-    let frame = renderer.prepare(chart, size, scale).map_err(js_err)?;
+    let frame = renderer
+        .prepare_with_guides(chart, size, scale, guides)
+        .map_err(js_err)?;
     let annotations = renderer
-        .prepare_annotations(chart, size, scale)
+        .prepare_annotations_with_guides(chart, size, scale, guides)
         .map_err(js_err)?;
     Ok((frame, annotations))
 }

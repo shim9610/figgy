@@ -505,6 +505,12 @@ export button. To keep a clicked slice raised, keep
 animation, copy the model at the moment you want, and do not reset
 `interaction` or set `hover_progress` to 0 before exporting.
 
+A raster export reuses the frame `prepare` cached when it was prepared for
+the same chart, size and scale. At another size or scale it builds a frame
+for that export alone and drops it afterwards: the frame drawn on screen,
+its label texture and its annotation layer stay cached, so the next
+`prepare` at the screen's size and scale returns the same frame (#469).
+
 `export_rgba_with_background(&chart, size, options, background)` and
 `export_png_with_background` (native synchronous version
 `export_rgba_with_background_blocking`) export with only the background
@@ -519,7 +525,7 @@ frame's slice table and label texture are used as they are, and a separate
 of the export. A color with a component outside 0 to 1 is rejected with
 `RadialError::Invalid`.
 
-`export_svg(&chart, size, scale)` and `export_pdf` (native synchronous
+`export_svg(&chart, size, options)` and `export_pdf` (native synchronous
 versions `export_svg_blocking` / `export_pdf_blocking`) export the same
 snapshot as SVG and PDF documents. Size and scale are checked by the same
 rules as `prepare`. The slices and background go in as one raster image. The
@@ -668,10 +674,10 @@ Release unneeded caches with `clear_cache()`. While an
 `Arc<RadialFrame>` is kept elsewhere, its resources stay alive.
 
 ```bash
-cargo test -p figgy-model --features serde
-cargo test -p figgy-renderer --test radial_render -- --test-threads=1
-cargo test -p figgy-renderer --doc
-cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
+cargo test --locked -p figgy-model --features serde
+cargo test --locked -p figgy-renderer --test radial_render -- --test-threads=1
+cargo test --locked -p figgy-renderer --doc
+cargo run --locked -p figgy-renderer --example radial_gallery -- target/radial-gallery
 ```
 
 If a native GPU cannot be requested, the pixel tests fail instead of
@@ -693,7 +699,23 @@ a moved decoration to its original place, call
 `chart.decorations.reset(&id)`. It clears the stored offset (for `DataArea`,
 it also clears the set plot area) and, unlike dragging it back, leaves no
 value behind. In the browser, `reset_decoration_position(id)` (#313) wraps
-this call. For coordinate units, per-element move rules, caching, save and
+this call.
+
+`frame.drag_decoration_snapped(&mut chart, hit, dx, dy, &mut snap)` is
+`drag_decoration` with snapping (#465). The title or a slice label snaps
+its drawn box to the centres of the canvas and the plot area and to the
+edges and centres of the other decorations, within
+`layout::SNAP_THRESHOLD_PX` (6 px on screen). The plot area does not snap.
+`snap` is a `layout::DragSnap` the host keeps from press to release
+(`DragSnap::new(display_scale)`; `set_enabled(false)` while a modifier is
+held, `release()` at the end). Pass `snap.guides()` to
+`renderer.prepare_with_guides(chart, size, scale, guides)` (and
+`prepare_annotations_with_guides` for the annotation layer) to draw the
+guides with the selection box. `prepare` and `prepare_annotations` draw no
+guides, and exports never draw them. In the browser, `FiggyBoundedChart`
+snaps `drag` and `drag_annotation` between `begin_drag()` and
+`end_drag()`; `set_snap_modifier(held)` turns snapping off while the host
+holds a modifier key. For coordinate units, per-element move rules, caching, save and
 restore, and the web bindings, see the
 [shared interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md).
 
@@ -1104,6 +1126,11 @@ let png = renderer::encode_png(&image)?;
 모양까지 남기려면 원하는 시점에 모델을 복사하고, 내보내기 전에 `interaction`을 초기화하거나
 `hover_progress`를 0으로 바꾸지 않는다.
 
+래스터 내보내기는 같은 차트, 크기, 배율로 준비해 둔 `prepare`의 캐시 프레임을 그대로 쓴다. 크기나
+배율이 다르면 그 내보내기만을 위한 프레임을 만들고 끝나면 버린다. 화면에 그리는 프레임과 그 라벨
+텍스처, 주석 레이어는 캐시에 그대로 남으므로, 화면 크기와 배율로 다시 부르는 `prepare`는 같은
+프레임을 돌려준다(#469).
+
 `export_rgba_with_background(&chart, size, options, background)`와
 `export_png_with_background`(네이티브 동기 버전 `export_rgba_with_background_blocking`)는
 배경만 바꿔 내보낸다(#313). `RadialExportBackground::Document`는 `export_rgba`와 같고,
@@ -1113,7 +1140,7 @@ let png = renderer::encode_png(&image)?;
 배경만 바꾼 112바이트 uniform을 내보내기 동안 따로 만든다. 성분이 0~1을 벗어난 색은
 `RadialError::Invalid`로 거부한다.
 
-`export_svg(&chart, size, scale)`와 `export_pdf`(네이티브 동기 버전 `export_svg_blocking` /
+`export_svg(&chart, size, options)`와 `export_pdf`(네이티브 동기 버전 `export_svg_blocking` /
 `export_pdf_blocking`)는 같은 스냅샷을 SVG와 PDF 문서로 내보낸다.
 크기와 배율은 `prepare`와 같은 규칙으로 검사한다. 조각과 배경은 래스터 이미지 한 장으로 들어간다.
 제목, 라벨과 그 지시선, 분할 원을 잇는 선, 주석은 벡터로 들어가며 글자는 글리프
@@ -1228,10 +1255,10 @@ command buffer를 모두 제출하거나 버린 뒤 `end_frame()`을 호출한�
 브라우저가 콜백을 처리한다. 불필요한 캐시는 `clear_cache()`로 놓는다. 외부에 보관한 `Arc<RadialFrame>`이 있으면 해당 자원은 계속 유지된다.
 
 ```bash
-cargo test -p figgy-model --features serde
-cargo test -p figgy-renderer --test radial_render -- --test-threads=1
-cargo test -p figgy-renderer --doc
-cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
+cargo test --locked -p figgy-model --features serde
+cargo test --locked -p figgy-renderer --test radial_render -- --test-threads=1
+cargo test --locked -p figgy-renderer --doc
+cargo run --locked -p figgy-renderer --example radial_gallery -- target/radial-gallery
 ```
 
 네이티브 GPU를 요청하지 못하면 픽셀 테스트는 통과로 처리하지 않고 실패한다.
@@ -1247,6 +1274,17 @@ cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
 옮긴 장식을 원래 자리로 돌리려면 `chart.decorations.reset(&id)`를 호출한다. 저장된 오프셋을 지우며
 (`DataArea`는 지정한 그리기 영역도 지운다) 반대 방향으로 끄는 것과 달리 아무 값도 남기지 않는다.
 브라우저에서는 `reset_decoration_position(id)`(#313)가 이 호출을 감싼다.
+
+`frame.drag_decoration_snapped(&mut chart, hit, dx, dy, &mut snap)`는 맞춤 가이드에 붙는
+`drag_decoration`이다(#465). 제목이나 조각 라벨은 그린 상자를 캔버스와 그리기 영역의 중심, 다른
+장식의 가장자리와 중심에 `layout::SNAP_THRESHOLD_PX`(화면 6 px) 안에서 붙인다. 그리기 영역은 붙지
+않는다. `snap`은 호스트가 누를 때부터 놓을 때까지 유지하는 `layout::DragSnap`이다
+(`DragSnap::new(display_scale)`, 보조 키를 누르는 동안 `set_enabled(false)`, 끝에 `release()`).
+`snap.guides()`를 `renderer.prepare_with_guides(chart, size, scale, guides)`(주석 층은
+`prepare_annotations_with_guides`)에 넘기면 선택 상자와 함께 가이드를 그린다. `prepare`와
+`prepare_annotations`는 가이드를 그리지 않으며, 내보내기도 가이드를 그리지 않는다. 브라우저에서는
+`FiggyBoundedChart`가 `begin_drag()`와 `end_drag()` 사이의 `drag`, `drag_annotation`을 붙이고,
+`set_snap_modifier(held)`가 호스트가 보조 키를 누르는 동안 붙임을 끈다.
 좌표 단위, 요소별 이동 규칙, 캐시·저장 복원 및 웹 연결은 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)를 참고한다.
 
 

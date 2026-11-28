@@ -976,6 +976,9 @@ impl FiggyChart {
     /// are not part of the route.
     pub fn on_press(&mut self, x: f32, y: f32) -> Result<bool, JsValue> {
         self.value_label_pointer = false;
+        // A Feynman part drag ends with its press: a release that never
+        // came does not carry it into this gesture.
+        self.feynman_pointer = None;
         self.plot_resize = None;
         // Borrow the renderer field alone, so the pointer state below stays
         // assignable while the placed config is in use.

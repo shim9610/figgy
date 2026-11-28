@@ -544,6 +544,7 @@ impl Renderer {
         let view = &snapshot.view;
         self.pipelines.ensure_precise_variants_for_items(
             &self.device,
+            None,
             &self.transform_bgl,
             &self.style_bgl,
             &self.per_point_style_map_bgl,
@@ -565,6 +566,8 @@ impl Renderer {
                     style,
                 }],
             }],
+            // Streaming keeps its plain contour pass (rule 8).
+            None,
         );
         let packet = {
             let (_, preparation) = self.preparation_parts();
@@ -770,6 +773,7 @@ impl Renderer {
         if auxiliary.is_none() {
             self.pipelines.ensure_precise_variants_for_items(
                 &self.device,
+                None,
                 &self.transform_bgl,
                 &self.style_bgl,
                 &self.per_point_style_map_bgl,
@@ -791,6 +795,8 @@ impl Renderer {
                         style,
                     }],
                 }],
+                // Streaming keeps its plain contour pass (rule 8).
+                None,
             );
         }
         let headroom = if entry.field.is_some() {

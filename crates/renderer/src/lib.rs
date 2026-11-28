@@ -125,7 +125,8 @@ pub use chart::{Chart, FitAxes, FitAxis, FitAxisRef, FitExtent, FitScope, Linked
 pub use color::Color;
 pub use colormap::{ColorMap, LUT_LEN};
 pub use config::{
-    BarAlign, ColorBarOptions, Config, DataSelectionsConfig, LayoutState, PickedDataRef,
+    BarAlign, ColorBarOptions, Config, DataSelectionsConfig, LayoutState, LegendMismatch,
+    PickedDataRef,
 };
 pub use data::{
     Column, ColumnLanes, ColumnPairWriter, ColumnRangeWriteError, ColumnSource, HiLoColumnSource,
@@ -148,7 +149,7 @@ pub use data_render::{
     TriangleStats,
 };
 pub use drag::Draggable;
-pub use error::{FiggyError, Result};
+pub use error::{FiggyError, Result, SurfaceAcquireKind};
 pub use gpu_data_pick::{DataPickResult, GpuDataPickTicket};
 pub use gpu_extent::{
     GpuErrorbarExtent, GpuErrorbarExtentTicket, GpuExtentError, GpuFieldExtentMode,

@@ -811,6 +811,131 @@ mod tests {
         assert!(!field.basic.source.contains("CONTOUR_POLAR_FOOT_STEPS"));
     }
 
+    /// The field shaders place each boundary through one call site of the
+    /// axis transform and search the sample lattice through one call site
+    /// of each search function (#465). A compiler that inlines every call
+    /// (Chromium's SwiftShader, lavapipe) compiles each call site again, and
+    /// the full set's transform carries the probability scales and axis
+    /// breaks.
+    #[test]
+    fn the_field_entries_inline_one_axis_transform_per_boundary() {
+        let field = crate::data_render::FIELD_SHADER_BY_SET;
+        for (set, source) in [("basic", field.basic.source), ("full", field.full.source)] {
+            let module = parse(set, source);
+            for (caller, callee) in [
+                ("axis_t", "axis_pair_to_t"),
+                ("boundary_t", "axis_t"),
+                ("locate_sample_cells", "locate_begin"),
+                ("locate_sample_cells", "locate_step"),
+                ("locate_sample_cells", "locate_end"),
+                ("contour_sample", "locate_sample_cells"),
+                ("field_pick_contour", "locate_sample_cells"),
+                ("fs_floor_contour_pick", "locate_sample_cells"),
+            ] {
+                assert_eq!(
+                    call_sites(&module, caller, callee),
+                    1,
+                    "{set}: {caller} → {callee}"
+                );
+            }
+            for caller in [
+                "contour_sample",
+                "field_pick_contour",
+                "fs_floor_contour_pick",
+            ] {
+                assert_eq!(call_sites(&module, caller, "locate"), 0, "{set}: {caller}");
+            }
+        }
+        // The full set's contour entries, in inlined copies of the
+        // transform. Before #465: 56, 60, 56 and 84.
+        let full = parse("field (full)", field.full.source);
+        for (entry, copies) in [
+            ("fs_contour", 12),
+            ("fs_contour_labelled", 16),
+            ("fs_floor_contour", 12),
+            ("pick_field_contour", 16),
+        ] {
+            assert_eq!(
+                inlined_copies(&full, entry, "axis_pair_to_t"),
+                copies,
+                "{entry}"
+            );
+        }
+    }
+
+    /// A function's or entry point's body, by name.
+    fn body_of<'m>(module: &'m wgpu::naga::Module, name: &str) -> &'m wgpu::naga::Block {
+        module
+            .functions
+            .iter()
+            .find(|(_, f)| f.name.as_deref() == Some(name))
+            .map(|(_, f)| &f.body)
+            .or_else(|| {
+                module
+                    .entry_points
+                    .iter()
+                    .find(|entry| entry.name == name)
+                    .map(|entry| &entry.function.body)
+            })
+            .unwrap_or_else(|| panic!("{name}"))
+    }
+
+    /// The call statements of a block, nested blocks included, in order.
+    fn direct_calls(
+        block: &wgpu::naga::Block,
+        out: &mut Vec<wgpu::naga::Handle<wgpu::naga::Function>>,
+    ) {
+        use wgpu::naga::Statement;
+        for statement in block.iter() {
+            match statement {
+                Statement::Call { function, .. } => out.push(*function),
+                Statement::Block(inner) => direct_calls(inner, out),
+                Statement::If { accept, reject, .. } => {
+                    direct_calls(accept, out);
+                    direct_calls(reject, out);
+                }
+                Statement::Loop {
+                    body, continuing, ..
+                } => {
+                    direct_calls(body, out);
+                    direct_calls(continuing, out);
+                }
+                Statement::Switch { cases, .. } => {
+                    for case in cases {
+                        direct_calls(&case.body, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// How many call statements in `caller`'s own body call `callee`.
+    fn call_sites(module: &wgpu::naga::Module, caller: &str, callee: &str) -> usize {
+        let mut calls = Vec::new();
+        direct_calls(body_of(module, caller), &mut calls);
+        calls
+            .into_iter()
+            .filter(|h| module.functions[*h].name.as_deref() == Some(callee))
+            .count()
+    }
+
+    /// How many copies of `callee` inlining every call into `entry` makes:
+    /// each call site counts once per copy of the function that holds it.
+    fn inlined_copies(module: &wgpu::naga::Module, entry: &str, callee: &str) -> usize {
+        let mut pending = Vec::new();
+        direct_calls(body_of(module, entry), &mut pending);
+        let mut copies = 0;
+        while let Some(handle) = pending.pop() {
+            let function = &module.functions[handle];
+            if function.name.as_deref() == Some(callee) {
+                copies += 1;
+            }
+            direct_calls(&function.body, &mut pending);
+        }
+        copies
+    }
+
     fn parse(name: &str, source: &str) -> wgpu::naga::Module {
         wgpu::naga::front::wgsl::parse_str(source)
             .unwrap_or_else(|error| panic!("{name}: {}", error.emit_to_string(source)))

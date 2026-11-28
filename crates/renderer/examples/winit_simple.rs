@@ -18,7 +18,10 @@
 //!    `create_style_for_series(...)`.
 //! 6. **Draw**: a single `renderer.draw(clear, &mut items)` call — handles
 //!    surface frame acquire → encoder → render pass → paint → submit →
-//!    present internally.
+//!    present internally. A failed frame is classed by
+//!    `SurfaceAcquireKind`: skipped, resized, a lost surface replaced with
+//!    `replace_surface` (columns and charts kept), or a lost device
+//!    recovered by building a new renderer for the window.
 //!
 //! Controls:
 //! - ESC: quit
@@ -56,7 +59,8 @@ use renderer::layout::Rect;
 use renderer::line::LineStylePreset;
 use renderer::{
     AxisPreset, Chart, ChartDrawItem, ChartStyle, ChartView, ColorCycle, ColumnSource,
-    CpuTextMeasure, HitId, HitMap, Renderer, ResizeHandle, Series, SeriesConfig, WindowedRenderer,
+    CpuTextMeasure, FiggyError, HitId, HitMap, Renderer, ResizeHandle, Series, SeriesConfig,
+    SurfaceAcquireKind, WindowedRenderer,
 };
 
 const AXIS_PRESETS: [AxisPreset; 7] = [
@@ -138,6 +142,106 @@ impl App {
         self.panels.clear();
         self.renderer.take();
         self.window.take();
+    }
+
+    /// Build the renderer for `window`, upload the data and build the
+    /// panels. Called at startup and again when the device is lost (or a
+    /// lost surface cannot be replaced): everything on the device is gone,
+    /// so the renderer is built again for the same window.
+    fn build_gpu(&mut self, window: Arc<Window>) -> renderer::Result<()> {
+        let size = window.inner_size();
+        // One-line setup — figgy owns surface / device / queue / pipelines.
+        let mut renderer = Renderer::for_window_blocking(
+            Arc::clone(&window),
+            (size.width, size.height),
+            POOL_CAPACITY,
+        )?;
+
+        let rects = compute_panel_rects(size.width, size.height);
+        let mut panels = vec![
+            build_sine_panel(&mut renderer, rects[0]),
+            build_rc_panel(&mut renderer, rects[1]),
+            build_cross_section_panel(&mut renderer, rects[2]),
+            build_field_panel(&mut renderer, rects[3]),
+        ];
+        for p in panels.iter_mut() {
+            let _ = p.chart.consume_data_dirty();
+            let _ = p.chart.consume_raster_dirty();
+        }
+
+        self.window = Some(window);
+        self.renderer = Some(renderer);
+        self.panels = panels;
+        self.selected = None;
+        self.dragging = false;
+        self.resizing = None;
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
+        }
+        Ok(())
+    }
+
+    /// Drop the renderer with its columns and charts and build a new one
+    /// for `window`.
+    fn rebuild_gpu(&mut self, window: Arc<Window>) {
+        self.panels.clear();
+        self.renderer.take();
+        if let Err(e) = self.build_gpu(window) {
+            eprintln!("[rebuild] {e}");
+        }
+    }
+
+    /// What a failed frame asks the host to do (#469).
+    fn recover_from_draw_error(&mut self, error: FiggyError) {
+        match error {
+            // A timeout or an occluded window: the next redraw tries again.
+            FiggyError::SurfaceAcquireFailed {
+                kind: SurfaceAcquireKind::Skip,
+                ..
+            } => {}
+            // The draw already reconfigured once at the current size; the
+            // window's size moved on, so resize to it and draw again.
+            FiggyError::SurfaceAcquireFailed {
+                kind: SurfaceAcquireKind::Reconfigure,
+                ..
+            } => {
+                if let Some(window) = self.window.clone() {
+                    let size = window.inner_size();
+                    self.handle_resize(size.width, size.height);
+                    window.request_redraw();
+                }
+            }
+            // The surface is gone but the device is not: create a new
+            // surface for the same window and keep the columns and charts
+            // (#474). If that fails the renderer is unchanged, so fall back
+            // to the full rebuild.
+            FiggyError::SurfaceAcquireFailed {
+                kind: SurfaceAcquireKind::Lost,
+                ..
+            } => {
+                let (Some(window), Some(renderer)) = (self.window.clone(), self.renderer.as_mut())
+                else {
+                    return;
+                };
+                let size = window.inner_size();
+                match renderer.replace_surface(Arc::clone(&window), (size.width, size.height)) {
+                    Ok(()) => window.request_redraw(),
+                    Err(e) => {
+                        eprintln!("[draw] {error}; replacing the surface failed: {e}");
+                        self.rebuild_gpu(window);
+                    }
+                }
+            }
+            // The whole device is gone: drop the renderer with its columns
+            // and charts and build a new one for the same window.
+            FiggyError::DeviceLost { .. } => {
+                eprintln!("[draw] {error}; rebuilding the renderer");
+                if let Some(window) = self.window.clone() {
+                    self.rebuild_gpu(window);
+                }
+            }
+            other => eprintln!("[draw] {other}"),
+        }
     }
 }
 
@@ -412,39 +516,9 @@ impl ApplicationHandler for App {
             .with_title("figgy demo (winit) — sine / RC / cross-section")
             .with_inner_size(LogicalSize::new(1800.0, 500.0));
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
-        let size = window.inner_size();
-
-        // One-line setup — figgy owns surface / device / queue / pipelines.
-        let mut renderer = match Renderer::for_window_blocking(
-            Arc::clone(&window),
-            (size.width, size.height),
-            POOL_CAPACITY,
-        ) {
-            Ok(renderer) => renderer,
-            Err(e) => {
-                eprintln!("[init] {e}");
-                event_loop.exit();
-                return;
-            }
-        };
-
-        let rects = compute_panel_rects(size.width, size.height);
-        let mut panels = vec![
-            build_sine_panel(&mut renderer, rects[0]),
-            build_rc_panel(&mut renderer, rects[1]),
-            build_cross_section_panel(&mut renderer, rects[2]),
-            build_field_panel(&mut renderer, rects[3]),
-        ];
-        for p in panels.iter_mut() {
-            let _ = p.chart.consume_data_dirty();
-            let _ = p.chart.consume_raster_dirty();
-        }
-
-        self.window = Some(window);
-        self.renderer = Some(renderer);
-        self.panels = panels;
-        if let Some(w) = self.window.as_ref() {
-            w.request_redraw();
+        if let Err(e) = self.build_gpu(window) {
+            eprintln!("[init] {e}");
+            event_loop.exit();
         }
     }
 
@@ -761,11 +835,13 @@ impl App {
             .collect();
 
         // ---- single draw call — surface/encoder/pass/submit/present all internal. ----
-        if let Err(e) = renderer.draw(Color::WHITE, &mut items) {
-            eprintln!("[draw] {e}");
-        }
+        let drawn = renderer.draw(Color::WHITE, &mut items);
         drop(items);
         drop(parts);
+        if let Err(e) = drawn {
+            self.recover_from_draw_error(e);
+            return;
+        }
 
         // Tick settings the new raster could not draw as written. They are
         // re-derived on every redraw (a drag redraws each frame), so log only

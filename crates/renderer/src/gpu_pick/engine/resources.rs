@@ -142,6 +142,7 @@ impl GpuPickEngine {
             queue,
             Arc::new(GpuLedger::new()),
             crate::renderer::DeviceHealth::polled_for_test(&device),
+            None,
             crate::shader_assembly::ShaderSet::Full,
             observer,
         )?;

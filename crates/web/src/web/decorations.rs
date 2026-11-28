@@ -267,7 +267,11 @@ impl FiggyChart {
     /// stored series say how long the arrows draw. Then each range link
     /// without an exit gets the one the layout chooses (#357), written by
     /// the frame that finds its GPU gather complete. A streamed source and a
-    /// monotonic chart are refused, and a refusal changes nothing.
+    /// monotonic chart are refused, and a refusal changes nothing. A
+    /// browser cannot wait for a readback here, so a stacked category-bar
+    /// group keeps the bound of its columns' statistics (the sum of each
+    /// series' extremes); `auto_fit_all` fits it to the actual stacks
+    /// (#466).
     /// `auto_fit_all(padding)` instead measures the active layer's drawn
     /// extents (error bar ends included) on the GPU.
     /// JS: `chart.fit_ranges()`
@@ -451,7 +455,13 @@ impl FiggyChart {
     /// for point-bearing modes, and enabled error endpoints. The reduction
     /// is compiled on first fit (`createComputePipelineAsync` on wasm),
     /// and the renderer reuses a series' extent while its columns are
-    /// unchanged (`begin_auto_fit_all`). Matrix-backed series use the same
+    /// unchanged (`begin_auto_fit_all`). Category bars fit their value
+    /// axis: grouped bars and percent stacks from their columns' statistics
+    /// (`0..=100` for percent stacks), and a stacked group to its actual
+    /// per-category stacks (#466), the largest positive and the smallest
+    /// negative sum, which a GPU reduction over the resident columns
+    /// measures for every fit and reads back as two values; its pipeline
+    /// compiles on the first such fit. Matrix-backed series use the same
     /// engine to return the
     /// exact cell/sample-lattice bounds; only histograms remain a metadata
     /// union because their uploaded edge column already is their geometry.
@@ -1672,7 +1682,11 @@ impl FiggyChart {
     /// and `LogDecadeStepAdjusted` (`axis`, `requested`, `used`; a
     /// replaced spacing also has `reason` and, for `TooManyTicks`,
     /// `limit`), `MinorCountClamped` (`axis`, `requested`, `used`) and
-    /// `AnnotationSkipped` (`index`, `reason`). `axis` is the `Config`
+    /// `AnnotationSkipped` (`index`, `reason`) and `LegendSymbolMismatch`
+    /// (#483: `legend`, the legend's `Config` path such as `"legend"` or
+    /// `"overlays[0].legend"`; `entry`; `series_id`; `reason`, one of
+    /// `UnknownSeries`, `ColorDiffers` and `MarkDiffers`), a legend
+    /// symbol that names a series but does not draw its mark. `axis` is the `Config`
     /// field path (`"bottom_x"`, `"overlays[0].y_axis"`,
     /// `"subplots[1].config.left_y"`), a non-finite number is `null`, and
     /// `message` is one line naming the setting and both values. A later

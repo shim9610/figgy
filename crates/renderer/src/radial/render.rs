@@ -42,8 +42,8 @@ impl RadialRenderer {
         options: crate::ExportOptions,
         background: RadialExportBackground,
     ) -> Result<RasterImage, RadialError> {
-        let frame = self.prepare(chart, size, options.scale)?;
-        let annotations = self.prepare_annotations_for(&frame, chart, options.scale)?;
+        let frame = self.export_frame(chart, size, options.scale)?;
+        let annotations = self.export_annotations(&frame, chart, options.scale)?;
         let bound = self.export_bind_group(&frame, background)?;
         let clear = export_clear(options.clear, background);
         self.render_rgba(frame.size, clear, |pass| {
@@ -83,8 +83,8 @@ impl RadialRenderer {
         options: crate::ExportOptions,
         background: RadialExportBackground,
     ) -> Result<RasterImage, RadialError> {
-        let frame = self.prepare(chart, size, options.scale)?;
-        let annotations = self.prepare_annotations_for(&frame, chart, options.scale)?;
+        let frame = self.export_frame(chart, size, options.scale)?;
+        let annotations = self.export_annotations(&frame, chart, options.scale)?;
         let bound = self.export_bind_group(&frame, background)?;
         let clear = export_clear(options.clear, background);
         self.render_rgba_blocking(frame.size, clear, |pass| {

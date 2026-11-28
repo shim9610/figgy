@@ -62,11 +62,11 @@ impl ReplayTransfer {
             let layout = |bgl: &wgpu::BindGroupLayout| crate::gpu_compile::pipeline_layout(&device, &wgpu::PipelineLayoutDescriptor {
                 label: Some("stream replay"), bind_group_layouts: &[Some(bgl)], immediate_size: 0,
             });
-            let compute = crate::gpu_compile::compute_pipeline(&device, &wgpu::ComputePipelineDescriptor {
+            let compute = crate::gpu_compile::compute_pipeline(&device, None, &wgpu::ComputePipelineDescriptor {
                 label: Some("stream replay mask"), layout: Some(&layout(&compute_layout)),
                 module: &compute_shader, entry_point: Some("mask"), compilation_options: Default::default(), cache: None,
             });
-            let restore = crate::gpu_compile::render_pipeline(&device, &wgpu::RenderPipelineDescriptor {
+            let restore = crate::gpu_compile::render_pipeline(&device, None, &wgpu::RenderPipelineDescriptor {
                 label: Some("stream replay restore"), layout: Some(&layout(&restore_layout)),
                 vertex: wgpu::VertexState { module: &restore_shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
                 primitive: Default::default(), depth_stencil: None,

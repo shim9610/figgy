@@ -185,6 +185,7 @@ impl Renderer {
     ) -> Result<ChartId> {
         crate::chart::validate_renderer_config(&config)?;
         validate_renderer_series(&(&self.pool, &self.streaming_sources), &config, &series)?;
+        self.monotonic.refuse_envelope_readers(&series)?;
         self.require_resident_overlay_series(&config, &series)?;
         config.set_active_layer(config.active_layer);
         // Linked subplot axes are stored equal to their targets.
@@ -193,6 +194,12 @@ impl Renderer {
         // ranges, layout and vector scales are fitted here, once. A
         // monotonic chart is registered `Fixed` (M4).
         if fit && !monotonic {
+            // A native first fit measures a stacked bar group's stacks
+            // (#466): the reduction is created here, by the fit, and kept.
+            #[cfg(not(target_arch = "wasm32"))]
+            if config.layout_state.is_fitted() {
+                self.ensure_category_stack_fit_for(&config, &series);
+            }
             config = self.first_fit(config, &mut series)?;
         }
         let id_value = self
@@ -726,6 +733,7 @@ impl Renderer {
             &state.config,
             &series,
         )?;
+        self.monotonic.refuse_envelope_readers(&series)?;
         self.require_resident_overlay_series(&state.config, &series)?;
         let touched =
             self.reconcile_monotonic(id, None, Some(&series), Placement::Current, &mut lend_none)?;
@@ -831,6 +839,22 @@ pub(in crate::renderer) fn refuse_monotonic_series(series: &[SeriesConfig]) -> R
         Some(series) => Err(FiggyError::InvalidSeriesConfig {
             series_id: series.series_id.clone(),
             kind: crate::RuleKind::MonotonicGeneralChart,
+        }),
+        None => Ok(()),
+    }
+}
+
+/// A monotonic chart holds no Feynman series (#468): its handle edits only
+/// series that need no general chart call, and a diagram's drags are
+/// general chart calls.
+pub(in crate::renderer) fn refuse_feynman_series(series: &[SeriesConfig]) -> Result<()> {
+    match series
+        .iter()
+        .find(|series| series.render_type.feynman().is_some())
+    {
+        Some(series) => Err(FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            kind: crate::RuleKind::MonotonicFeynman,
         }),
         None => Ok(()),
     }

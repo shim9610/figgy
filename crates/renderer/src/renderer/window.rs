@@ -7,6 +7,7 @@ use super::*;
 /// surface config, encoder, or render pass — just calls `draw` per frame.
 ///
 /// This type owns what the surface needs: its size and format (`resize`),
+/// its replacement after a loss (`replace_surface`),
 /// the frame draws (`draw`, `draw_registered`, `draw_prepared`,
 /// `first_frame_ready`) and the picks placed in the surface
 /// (`pick_chart_at`, `pick_chart_data_at`). Everything else is the
@@ -46,23 +47,22 @@ impl<'w> WindowedRenderer<'w> {
         self.surface_config.format
     }
 
-    /// Pick one chart using this window's current physical surface size.
+    /// Pick chart `id` at a surface pixel, through the placement the
+    /// window's draws give it (#469): the display set with
+    /// [`Renderer::set_chart_display`] (fitted to its surface, or held with
+    /// [`Renderer::hold_chart_display`]), or the stored document at scale 1
+    /// when no display is set. The surface's own size plays no part, so a
+    /// pick lands on the ink [`Self::draw_registered`] drew under the cursor.
     pub fn pick_chart_at(
         &mut self,
         id: ChartId,
         canvas_position_px: [f32; 2],
         max_distance_px: f32,
     ) -> std::result::Result<crate::gpu_pick::GpuPickTicket, crate::gpu_pick::GpuPickError> {
-        let config = self
+        let (display_scale, display_panel_px) = self
             .inner
-            .chart_states
-            .get(&id)
+            .window_pick_placement(id)
             .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?;
-        let logical = config.config.document_area();
-        let (display_scale, display_panel_px) = fit_display_panel(
-            (logical.width, logical.height),
-            (self.surface_config.width, self.surface_config.height),
-        );
         self.inner.pick_chart(
             id,
             GpuPickRequest {
@@ -88,16 +88,10 @@ impl<'w> WindowedRenderer<'w> {
         canvas_position_px: [f32; 2],
         max_distance_px: f32,
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
-        let config = self
+        let (display_scale, display_panel_px) = self
             .inner
-            .chart_states
-            .get(&id)
+            .window_pick_placement(id)
             .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?;
-        let logical = config.config.document_area();
-        let (display_scale, display_panel_px) = fit_display_panel(
-            (logical.width, logical.height),
-            (self.surface_config.width, self.surface_config.height),
-        );
         let request = GpuPickRequest {
             canvas_position_px,
             display_panel_px,
@@ -118,16 +112,10 @@ impl<'w> WindowedRenderer<'w> {
         canvas_position_px: [f32; 2],
         max_distance_px: f32,
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
-        let config = self
+        let (display_scale, display_panel_px) = self
             .inner
-            .chart_states
-            .get(&id)
+            .window_pick_placement(id)
             .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?;
-        let logical = config.config.document_area();
-        let (display_scale, display_panel_px) = fit_display_panel(
-            (logical.width, logical.height),
-            (self.surface_config.width, self.surface_config.height),
-        );
         let request = GpuPickRequest {
             canvas_position_px,
             display_panel_px,
@@ -139,23 +127,18 @@ impl<'w> WindowedRenderer<'w> {
             .await
     }
 
-    /// Typed data pick using this window's current physical surface size.
+    /// Typed data pick of chart `id` at a surface pixel, through the
+    /// placement the window's draws give it, as [`Self::pick_chart_at`].
     pub fn pick_chart_data_at(
         &mut self,
         id: ChartId,
         canvas_position_px: [f32; 2],
         max_distance_px: f32,
     ) -> Result<crate::GpuDataPickTicket> {
-        let config = self
+        let (display_scale, display_panel_px) = self
             .inner
-            .chart_states
-            .get(&id)
+            .window_pick_placement(id)
             .ok_or(FiggyError::UnknownChart { id })?;
-        let logical = config.config.document_area();
-        let (display_scale, display_panel_px) = fit_display_panel(
-            (logical.width, logical.height),
-            (self.surface_config.width, self.surface_config.height),
-        );
         self.inner.pick_chart_data(
             id,
             GpuPickRequest {
@@ -180,26 +163,51 @@ impl<'w> WindowedRenderer<'w> {
             w.max(1),
             h.max(1),
         )?;
-        let preferred_sample_count =
-            preferred_msaa_sample_count(self.inner.caps, self.surface_config.format);
-        let (target_sample_count, msaa_target) = match create_msaa_target(
-            self.inner.device(),
-            self.inner.gpu_ledger(),
-            self.inner.caps,
-            "figgy frame msaa target",
-            self.surface_config.width,
-            self.surface_config.height,
-            self.surface_config.format,
-            preferred_sample_count,
-        ) {
-            Ok(target) => (preferred_sample_count, target),
-            Err(_) if preferred_sample_count > 1 => (1, None),
-            Err(e) => return Err(e),
-        };
-        self.inner
-            .ensure_target(self.surface_config.format, target_sample_count)?;
-        self.msaa_target = msaa_target;
+        self.msaa_target = self.inner.frame_target(&self.surface_config)?;
         // An error the reconfiguration sent to the uncaptured-error handler.
+        self.inner.health.check()
+    }
+
+    /// Replace a lost surface (#474) with one created from `target` on this
+    /// renderer's [`Self::instance`], configured at `size` for this
+    /// renderer's device, without rebuilding the device, the column pool or
+    /// any chart. Columns, charts, views and caches are kept.
+    ///
+    /// Call it when a draw returns [`FiggyError::SurfaceAcquireFailed`] with
+    /// [`SurfaceAcquireKind::Lost`]. The new surface is configured as
+    /// [`Self::resize`] configures one, so the MSAA target and the
+    /// pipelines' target follow its format; a format other than the old
+    /// surface's rebuilds the pipelines for it.
+    ///
+    /// It fails with [`FiggyError::DeviceLost`] on a lost device (the host
+    /// rebuilds the renderer then), with [`FiggyError::SurfaceCreationFailed`]
+    /// when the surface cannot be created or this renderer's adapter cannot
+    /// present to it, and with [`FiggyError::SurfaceConfigurationFailed`]
+    /// when it cannot be configured. On any of these the renderer is left as
+    /// it was, the old surface in place. The old surface is dropped only once
+    /// the new one is configured.
+    pub fn replace_surface(
+        &mut self,
+        target: impl Into<wgpu::SurfaceTarget<'w>>,
+        size: (u32, u32),
+    ) -> Result<()> {
+        self.inner.health.check()?;
+        let surface = create_window_surface(&self._instance, target)?;
+        if !self._adapter.is_surface_supported(&surface) {
+            return Err(unpresentable_surface());
+        }
+        let surface_config = data_render::try_configure_surface(
+            &surface,
+            &self._adapter,
+            self.inner.device(),
+            size.0.max(1),
+            size.1.max(1),
+        )?;
+        let msaa_target = self.inner.frame_target(&surface_config)?;
+        self.surface = surface;
+        self.surface_config = surface_config;
+        self.msaa_target = msaa_target;
+        // An error the configuration sent to the uncaptured-error handler.
         self.inner.health.check()
     }
 
@@ -255,21 +263,20 @@ impl<'w> WindowedRenderer<'w> {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            wgpu::CurrentSurfaceTexture::Lost => {
-                return Err(FiggyError::SurfaceAcquireFailed {
-                    reason: "lost".into(),
-                });
-            }
+            // The surface changed under its configuration: configure it
+            // again at its current size, through `resize` so the MSAA
+            // target and the pipelines follow whatever the new
+            // configuration chose, and acquire once more (#469).
             wgpu::CurrentSurfaceTexture::Outdated => {
-                return Err(FiggyError::SurfaceAcquireFailed {
-                    reason: "outdated".into(),
-                });
+                let (width, height) = self.surface_size();
+                self.resize(width, height)?;
+                match self.surface.get_current_texture() {
+                    wgpu::CurrentSurfaceTexture::Success(t)
+                    | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+                    other => return Err(self.surface_acquire_error(other)),
+                }
             }
-            other => {
-                return Err(FiggyError::SurfaceAcquireFailed {
-                    reason: format!("{other:?}"),
-                });
-            }
+            other => return Err(self.surface_acquire_error(other)),
         };
         let target = frame
             .texture
@@ -318,6 +325,22 @@ impl<'w> WindowedRenderer<'w> {
         self.inner.queue().present(frame);
         // An error this frame's work sent to the uncaptured-error handler.
         self.inner.health.check()
+    }
+
+    /// A surface texture that could not be acquired, as the typed error a
+    /// host branches on (#469). A validation error wgpu reported through
+    /// the device is returned as that error.
+    fn surface_acquire_error(&self, status: wgpu::CurrentSurfaceTexture) -> FiggyError {
+        if matches!(status, wgpu::CurrentSurfaceTexture::Validation)
+            && let Err(error) = self.inner.health.check()
+        {
+            return error;
+        }
+        let (kind, reason) = surface_status(&status);
+        FiggyError::SurfaceAcquireFailed {
+            kind,
+            reason: reason.into(),
+        }
     }
 
     /// Submit one frame and wait until that GPU work has finished executing.
@@ -385,6 +408,46 @@ impl Drop for WindowedRenderer<'_> {
 }
 
 impl Renderer {
+    /// The display scale and where chart `id`'s whole document lands on the
+    /// surface, as [`Self::prepare_registered`] draws it
+    /// ([`Self::chart_display_config`]): the window picks' placement
+    /// (#469). `None` for an unknown chart.
+    pub(super) fn window_pick_placement(&self, id: ChartId) -> Option<(f32, Rect)> {
+        let (placed, _, scale) = self.chart_display_config(id).ok()?;
+        Some((scale, placed.document_area()))
+    }
+
+    /// The frame's MSAA target for a surface configured as `config`, with
+    /// the pipelines' target set to its format and sample count: the step
+    /// [`WindowedRenderer::resize`] and [`WindowedRenderer::replace_surface`]
+    /// share (#474). The preferred sample count falls back to one when its
+    /// target cannot be created. On an error the pipelines' target is left as
+    /// it was; a lost device fails with [`FiggyError::DeviceLost`] before
+    /// anything is created.
+    pub(super) fn frame_target(
+        &mut self,
+        config: &wgpu::SurfaceConfiguration,
+    ) -> Result<Option<MsaaTarget>> {
+        self.health.check()?;
+        let preferred_sample_count = preferred_msaa_sample_count(self.caps, config.format);
+        let (target_sample_count, msaa_target) = match create_msaa_target(
+            self.device(),
+            self.gpu_ledger(),
+            self.caps,
+            "figgy frame msaa target",
+            config.width,
+            config.height,
+            config.format,
+            preferred_sample_count,
+        ) {
+            Ok(target) => (preferred_sample_count, target),
+            Err(_) if preferred_sample_count > 1 => (1, None),
+            Err(e) => return Err(e),
+        };
+        self.ensure_target(config.format, target_sample_count)?;
+        Ok(msaa_target)
+    }
+
     /// `result`, or the GPU error the call that produced it raised: an `Ok`
     /// value is returned only when no GPU error is pending (#158). An `Err`
     /// is returned as it is; a GPU error pending beside it stays counted for
@@ -596,6 +659,23 @@ impl Renderer {
     }
 }
 
+/// What a host does after a surface status that carries no texture, and
+/// the status's name (#469). A status that does carry one never reaches
+/// it; it is classed as a skip so the function stays total.
+pub(super) fn surface_status(
+    status: &wgpu::CurrentSurfaceTexture,
+) -> (SurfaceAcquireKind, &'static str) {
+    match status {
+        wgpu::CurrentSurfaceTexture::Success(_) => (SurfaceAcquireKind::Skip, "success"),
+        wgpu::CurrentSurfaceTexture::Suboptimal(_) => (SurfaceAcquireKind::Skip, "suboptimal"),
+        wgpu::CurrentSurfaceTexture::Timeout => (SurfaceAcquireKind::Skip, "timeout"),
+        wgpu::CurrentSurfaceTexture::Occluded => (SurfaceAcquireKind::Skip, "occluded"),
+        wgpu::CurrentSurfaceTexture::Validation => (SurfaceAcquireKind::Skip, "validation"),
+        wgpu::CurrentSurfaceTexture::Outdated => (SurfaceAcquireKind::Reconfigure, "outdated"),
+        wgpu::CurrentSurfaceTexture::Lost => (SurfaceAcquireKind::Lost, "lost"),
+    }
+}
+
 /// A window's instance and surface: the first step of every windowed
 /// constructor.
 fn window_surface<'w>(
@@ -606,13 +686,31 @@ fn window_surface<'w>(
     // wgpu reports surface failures as `CreateSurfaceError`; there is no
     // device yet whose error scopes could capture anything else.
     let surface = observe_result(observer, "window", "surface", || {
-        data_render::create_surface_for_window(&instance, target).map_err(|e| {
-            FiggyError::SurfaceCreationFailed {
-                reason: format!("{e}"),
-            }
-        })
+        create_window_surface(&instance, target)
     })?;
     Ok((instance, surface))
+}
+
+/// A surface for `target` on `instance`, for a new windowed renderer or a
+/// replacement surface (#474).
+fn create_window_surface<'w>(
+    instance: &wgpu::Instance,
+    target: impl Into<wgpu::SurfaceTarget<'w>>,
+) -> Result<wgpu::Surface<'w>> {
+    data_render::create_surface_for_window(instance, target).map_err(|e| {
+        FiggyError::SurfaceCreationFailed {
+            reason: format!("{e}"),
+        }
+    })
+}
+
+/// A replacement surface the renderer's adapter cannot present to (#474):
+/// the device was requested from that adapter, so the host rebuilds the
+/// renderer for the window instead.
+pub(super) fn unpresentable_surface() -> FiggyError {
+    FiggyError::SurfaceCreationFailed {
+        reason: "the renderer's adapter cannot present to the new surface".into(),
+    }
 }
 
 /// What a windowed renderer is built on once its device exists: the device
@@ -688,3 +786,7 @@ impl<'w> std::ops::DerefMut for WindowedRenderer<'w> {
         &mut self.inner
     }
 }
+
+#[cfg(test)]
+#[path = "window_tests.rs"]
+mod window_tests;

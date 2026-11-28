@@ -1,8 +1,11 @@
 # figgy playground
 
 An interactive debug bench for every figgy chart family. It is a standalone
-Cargo workspace that only uses the public API of `crates/renderer`. It is not a
-workspace member, not a renderer feature, and not part of any published package.
+Cargo workspace with its own `Cargo.lock` that only uses the public API of
+`crates/renderer`. It is not a workspace member, not a renderer feature, and
+not part of any published package. A root dependency bump does not refresh its
+lockfile; `python3 ci/verify.py static` fails when the lockfile no longer
+resolves with `--locked`.
 
 The scene catalogue (the synthetic data and the starting model of every scene)
 is `crates/renderer/tests/support/playground_scenes.rs`, which the playground
@@ -20,14 +23,14 @@ are rendered offscreen and shown as an egui image.
 From the repository root:
 
 ```sh
-cargo run --manifest-path tools/playground/Cargo.toml
+cargo run --locked --manifest-path tools/playground/Cargo.toml
 ```
 
 With `--selftest` the playground opens no window, but it still needs a GPU
 adapter:
 
 ```sh
-cargo run --manifest-path tools/playground/Cargo.toml -- --selftest
+cargo run --locked --manifest-path tools/playground/Cargo.toml -- --selftest
 ```
 
 It writes its output to `target/playground/selftest/` under the working
@@ -46,7 +49,8 @@ directory:
 - the long-label scene after `layout::auto_layout`, committed the same way,
   at 1x and 2x, and a check that a second `auto_layout` changes nothing.
 
-It prints `selftest passed` at the end. A rejected config, a failed export or
+It prints `selftest passed` at the end. CI's repository job runs it too; see
+[repository checks](../../ci/README.md#repository-checks). A rejected config, a failed export or
 a failed check prints `selftest FAILED` with the reason and stops the run with
 exit status 1.
 

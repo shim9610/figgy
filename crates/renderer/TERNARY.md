@@ -96,7 +96,7 @@ The three axes span the whole triangle: each has `min` 0 and the same
 `max`, 1 or 100 (which only scales the labels). The axes must be linear,
 not inverted and not categorical. The renderer checks these rules when it
 draws the chart, as for a polar chart. A fit (`auto_fit_layer_union`,
-`auto_fit_x_extent`, the browser's `autoFitAll`) leaves the axes as they
+`auto_fit_x_extent`, the browser's `auto_fit_all`) leaves the axes as they
 are: their range is the triangle, not a data extent.
 
 ## Series

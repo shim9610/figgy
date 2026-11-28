@@ -5751,6 +5751,103 @@ fn surface_prepare_renderer(planar: bool) -> Option<Renderer> {
     Some(renderer)
 }
 
+/// A labelled contour chart compiles its labelled pass only. The plain pass
+/// is the fallback for a series that wants labels but has no label snapshot,
+/// here one without levels, and it compiles on the frame that takes that
+/// fallback (#465).
+#[test]
+fn a_labelled_contour_compiles_the_plain_pass_only_for_its_fallback() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    add_state_test_contour_grid(&mut renderer);
+    let chart = state_test_contour_chart(
+        Rect {
+            x: 0,
+            y: 0,
+            width: 240,
+            height: 180,
+        },
+        (0.0, 1.0),
+    );
+    let mut view = renderer
+        .create_chart_view(&chart, chart.config().chart_area.0)
+        .unwrap();
+    let labelled = state_test_labelled_contour(60.0, Vec::new());
+    let style = renderer.create_style_for_series(&labelled).unwrap();
+    let series = [Series {
+        config: &labelled,
+        style: &style,
+    }];
+    let mut items = [ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
+        series: &series,
+    }];
+    renderer.prepare(&mut items).unwrap();
+    for kind in [
+        PrecisePipeline::ContourLabelled,
+        PrecisePipeline::ContourLabel,
+    ] {
+        assert!(renderer.pipelines.precise(kind).is_some(), "{kind:?}");
+    }
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Contour)
+            .is_none()
+    );
+    // An export of the same chart draws through its own pipeline set.
+    renderer
+        .export_rgba(
+            crate::ExportSource::chart(&chart, &[labelled.clone()]),
+            crate::ExportOptions::panel(2.0),
+        )
+        .block_on()
+        .unwrap();
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Contour)
+            .is_none()
+    );
+
+    // Labels still wanted, but no level to bake one for: no label snapshot.
+    let mut fallback = labelled.clone();
+    let DataRenderType::Field(crate::data_config::FieldSeries {
+        contour: Some(contour),
+        ..
+    }) = &mut fallback.render_type
+    else {
+        unreachable!();
+    };
+    contour.levels.clear();
+    let style = renderer.create_style_for_series(&fallback).unwrap();
+    let series = [Series {
+        config: &fallback,
+        style: &style,
+    }];
+    let mut items = [ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
+        series: &series,
+    }];
+    renderer.prepare(&mut items).unwrap();
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Contour)
+            .is_some()
+    );
+    renderer
+        .export_rgba(
+            crate::ExportSource::chart(&chart, &[fallback]),
+            crate::ExportOptions::panel(2.0),
+        )
+        .block_on()
+        .unwrap();
+}
+
 /// A 3D chart draws its heatmap as a surface, its contours on the floor and
 /// its height-column line and markers through the 3D entries, so it compiles
 /// none of the planar field, contour, line or scatter pipelines; the same
@@ -17540,4 +17637,240 @@ fn registered_value_label_frames_match_the_held_path_at_1x_and_2x() {
         }
         r.remove_chart(id).unwrap();
     }
+}
+
+/// A stacked category-bar chart over `mode` with the value columns
+/// `stack.one` and `stack.two` of `renderer` (#466).
+fn stacked_fit_chart(
+    renderer: &mut Renderer,
+    mode: crate::data_config::CategoryBarMode,
+) -> (crate::Config, Vec<SeriesConfig>) {
+    renderer
+        .add_column("stack.pos", &col_f64(vec![0.0, 1.0]))
+        .unwrap();
+    renderer
+        .add_column("stack.one", &col_f64(vec![100.0, 1.0]))
+        .unwrap();
+    renderer
+        .add_column("stack.two", &col_f64(vec![1.0, 100.0]))
+        .unwrap();
+    let mut config = crate::default::default_config();
+    config.bottom_x.categories = Some(
+        vec![
+            crate::config::Category::new("a", "A"),
+            crate::config::Category::new("b", "B"),
+        ]
+        .into(),
+    );
+    config.bar_groups = Some(crate::data_config::BarGroups {
+        mode,
+        direction: crate::data_config::CategoryBarDirection::Vertical,
+        group_width: 0.8,
+        bar_gap: 0.0,
+    });
+    let bars = |id: &str, column: &str| SeriesConfig {
+        series_id: id.into(),
+        source_id: None,
+        label: None,
+        x_column: "stack.pos".into(),
+        y_column: column.into(),
+        z_column: None,
+        render_type: DataRenderType::CategoryBars(CategoryBarSeries {
+            color: Color::BLACK,
+            style: Default::default(),
+            labels: Default::default(),
+            label_format: Default::default(),
+            overrides: None,
+        }),
+    };
+    (
+        config,
+        vec![bars("one", "stack.one"), bars("two", "stack.two")],
+    )
+}
+
+/// The stacked fit's reduction (#466) is created lazily by the first fit
+/// of a stacked group and never by a draw or a pick; a fit requests no
+/// draw or pick pipeline; percent stacks and grouped bars dispatch nothing
+/// and create no reduction.
+#[test]
+fn the_stacked_fit_reduction_is_created_by_a_fit_only() {
+    use crate::data_config::CategoryBarMode;
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    let (config, series) = stacked_fit_chart(&mut renderer, CategoryBarMode::Stacked);
+    // A draw without a fit, at 1x and 2x, creates no reduction.
+    let id = renderer
+        .register_chart_as_given(config.clone(), series.clone())
+        .unwrap();
+    let chart = crate::chart::Chart::new(config.clone());
+    for scale in [1.0, 2.0] {
+        renderer
+            .export_rgba(
+                crate::ExportSource::chart(&chart, &series),
+                crate::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+    }
+    assert!(renderer.pipelines.category_stack_fit.is_none());
+    // A whole-chart fit asks for it before submitting anything.
+    assert!(matches!(
+        renderer.begin_auto_fit_all(id, 0.0),
+        Err(crate::gpu_extent::GpuExtentError::EngineNotReady)
+    ));
+    renderer.ensure_errorbar_extent_engine_blocking().unwrap();
+    assert!(renderer.pipelines.category_stack_fit.is_some());
+    let ticket = renderer.begin_auto_fit_all(id, 0.0).unwrap();
+    // One measured group, read at its first member.
+    assert_eq!(ticket.series.len(), 1);
+    assert!(matches!(
+        ticket.series[0].extent,
+        fit::AutoFitSeriesExtent::Stacks(_)
+    ));
+    renderer
+        .commit_auto_fit_all(ticket.resolve_blocking().unwrap())
+        .unwrap();
+    let fitted = renderer.chart_config(id).unwrap();
+    assert_eq!((fitted.left_y.min, fitted.left_y.max), (0.0, 101.0));
+
+    // A fit on a fresh renderer requests no draw or pick pipeline.
+    let Some(mut fresh) = state_test_renderer() else {
+        return;
+    };
+    let (config, series) = stacked_fit_chart(&mut fresh, CategoryBarMode::Stacked);
+    let fitted = fresh.fit_config(&config, &series, 0.0).unwrap();
+    assert_eq!((fitted.left_y.min, fitted.left_y.max), (0.0, 101.0));
+    assert!(fresh.pipelines.precise.iter().all(Option::is_none));
+    assert!(fresh.pipelines.bar_envelope.is_none());
+    assert!(fresh.pipelines.styled.is_empty());
+    assert!(
+        crate::gpu_data_pick::DataPickKernel::ALL
+            .iter()
+            .all(|kernel| fresh.picker.data_kernels.get(*kernel).is_none())
+    );
+    // A registered chart's first fit creates it, and keeps it.
+    let mut config = config;
+    config.layout_state = crate::LayoutState::Fitted;
+    let id = fresh.register_chart(config, series).unwrap();
+    assert!(fresh.pipelines.category_stack_fit.is_some());
+    let stored = fresh.chart_config(id).unwrap();
+    assert!(stored.left_y.min <= 0.0 && stored.left_y.max < 200.0);
+
+    // Percent stacks and grouped bars create no reduction and measure
+    // nothing.
+    for mode in [CategoryBarMode::PercentStacked, CategoryBarMode::Grouped] {
+        let Some(mut other) = state_test_renderer() else {
+            return;
+        };
+        let (config, series) = stacked_fit_chart(&mut other, mode);
+        let id = other
+            .register_chart(config.clone(), series.clone())
+            .unwrap();
+        other.fit_config(&config, &series, 0.0).unwrap();
+        other.ensure_errorbar_extent_engine_blocking().unwrap();
+        let ticket = other.begin_auto_fit_all(id, 0.0).unwrap();
+        assert!(ticket.series.is_empty(), "{mode:?}");
+        other
+            .commit_auto_fit_all(ticket.resolve_blocking().unwrap())
+            .unwrap();
+        assert!(other.pipelines.category_stack_fit.is_none(), "{mode:?}");
+    }
+}
+
+/// Every pipeline a renderer creates goes through its bundle's pipeline
+/// cache (#478): the prewarm's render, arc, extent and contour label
+/// pipelines, the picking pipelines, every resident typed pick kernel and the
+/// radial renderer's. The streamed pick reductions keep none (rule 8). A
+/// backend without `Features::PIPELINE_CACHE` (wgpu implements it on Vulkan
+/// only) has nothing to check.
+#[test]
+fn every_renderer_pipeline_goes_through_the_bundles_pipeline_cache() {
+    use crate::gpu_compile::capture;
+    use crate::gpu_data_pick::DataPickKernel;
+    let bundle = figgy_requested_bundle();
+    if !bundle.has_pipeline_cache() {
+        eprintln!("the device has no PIPELINE_CACHE feature: nothing to check");
+        return;
+    }
+    let session = capture::Session::begin();
+    let mut renderer =
+        Renderer::try_new(bundle.clone(), wgpu::TextureFormat::Rgba8Unorm, 1024 * 1024)
+            .expect("required GPU test: renderer initialization failed");
+    renderer.prewarm_all_blocking().unwrap();
+    renderer.enable_gpu_picking().unwrap();
+    let PickerPipelineState::Ready { data, .. } = &renderer.picker.pipeline_state else {
+        panic!("picking is enabled");
+    };
+    let data = Arc::clone(data);
+    for kernel in DataPickKernel::ALL {
+        if matches!(
+            kernel,
+            DataPickKernel::StreamReduceData | DataPickKernel::StreamReducePoint
+        ) {
+            continue;
+        }
+        renderer.picker.data_kernels.ensure(&data, kernel).unwrap();
+    }
+    crate::radial::RadialRenderer::try_new(bundle, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let captured = session.finish();
+    assert!(
+        captured.pipelines.len() > 100,
+        "the renderer created its pipelines: {}",
+        captured.pipelines.len()
+    );
+    assert_eq!(
+        captured.uncached,
+        Vec::<String>::new(),
+        "pipelines created without the bundle's cache"
+    );
+}
+
+/// A bundle starts with an empty pipeline cache on a device with the
+/// feature, takes a saved one, ignores bytes that are not a cache and can
+/// turn the cache off (#478).
+#[test]
+fn a_bundle_loads_ignores_and_drops_its_pipeline_cache() {
+    let bundle = figgy_requested_bundle();
+    if !bundle.has_pipeline_cache() {
+        assert!(bundle.pipeline_cache_data().is_none());
+        assert!(
+            !bundle
+                .with_pipeline_cache(Some(b"not a cache"))
+                .has_pipeline_cache()
+        );
+        return;
+    }
+    let mut renderer =
+        Renderer::try_new(bundle.clone(), wgpu::TextureFormat::Rgba8Unorm, 1024 * 1024)
+            .expect("required GPU test: renderer initialization failed");
+    renderer.prewarm_all_blocking().unwrap();
+    let saved = renderer
+        .renderer_device()
+        .pipeline_cache_data()
+        .expect("a Vulkan cache reports its data");
+    assert!(!saved.is_empty());
+    let loaded = bundle.clone().with_pipeline_cache(Some(&saved));
+    assert!(loaded.has_pipeline_cache());
+    let garbage = bundle.clone().with_pipeline_cache(Some(b"not a cache"));
+    assert!(
+        garbage.has_pipeline_cache(),
+        "unusable data starts an empty cache"
+    );
+    let off = bundle.without_pipeline_cache();
+    assert!(!off.has_pipeline_cache());
+    assert!(off.pipeline_cache_data().is_none());
+}
+
+/// A bundle on a device opened by figgy's own request, which asks for
+/// `Features::PIPELINE_CACHE` where the adapter has it (#478). The shared
+/// test device is opened with wgpu's default descriptor and has no cache.
+fn figgy_requested_bundle() -> RendererDevice {
+    let instance = crate::test_gpu::instance();
+    let adapter = crate::test_gpu::adapter(&instance);
+    let (device, queue) = crate::data_render::request_device_async(&adapter)
+        .block_on()
+        .expect("required GPU test: device initialization failed");
+    RendererDevice::new(device, queue).expect("figgy poll thread")
 }

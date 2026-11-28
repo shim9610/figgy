@@ -877,6 +877,12 @@ impl DataPickKernels {
                 ))?;
         if slot.is_none() {
             let device = &bundle.device;
+            // The streamed reductions keep no cache: streaming is not
+            // extended (rule 8, #478).
+            let cache = match kernel {
+                DataPickKernel::StreamReduceData | DataPickKernel::StreamReducePoint => None,
+                _ => bundle.pipeline_cache.as_ref(),
+            };
             let (layout, module) = match kernel {
                 DataPickKernel::Histogram => (&bundle.histogram_layout, &bundle.bar),
                 DataPickKernel::FieldContour | DataPickKernel::FieldCell => {
@@ -937,6 +943,7 @@ impl DataPickKernels {
                 );
                 *slot = Some(crate::gpu_compile::compute_pipeline(
                     device,
+                    cache,
                     &wgpu::ComputePipelineDescriptor {
                         label: Some(kernel.label()),
                         layout: Some(layout),
@@ -950,6 +957,7 @@ impl DataPickKernels {
             if slot.is_none() {
                 *slot = Some(crate::gpu_compile::compute_pipeline(
                     device,
+                    cache,
                     &wgpu::ComputePipelineDescriptor {
                         label: Some(kernel.label()),
                         layout: Some(layout),
@@ -996,6 +1004,9 @@ pub(crate) struct DataPickPipelineBundle {
     ledger: Arc<GpuLedger>,
     /// The device's health record; every typed pick readback polls through it.
     health: crate::renderer::DeviceHealth,
+    /// The renderer's pipeline cache (#478). The streamed reduction kernels
+    /// do not use it (rule 8).
+    pipeline_cache: Option<wgpu::PipelineCache>,
     /// Group 0 of every resident kernel: the pick's display transform.
     transform_bgl: wgpu::BindGroupLayout,
     query_bgl: wgpu::BindGroupLayout,
@@ -1042,6 +1053,7 @@ impl DataPickPipelineBundle {
         queue: wgpu::Queue,
         ledger: Arc<GpuLedger>,
         health: crate::renderer::DeviceHealth,
+        pipeline_cache: Option<wgpu::PipelineCache>,
         shaders: DataPickShaders<'_>,
         transform_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
@@ -1211,6 +1223,7 @@ impl DataPickPipelineBundle {
             queue,
             ledger,
             health,
+            pipeline_cache,
             transform_bgl: transform_bgl.clone(),
             query_bgl,
             partials_query_bgl,
@@ -2894,6 +2907,7 @@ mod stream_tests {
             queue,
             Arc::new(GpuLedger::new()),
             crate::renderer::DeviceHealth::polled_for_test(&device),
+            None,
             DataPickShaders {
                 bar: &bar,
                 field: &field,

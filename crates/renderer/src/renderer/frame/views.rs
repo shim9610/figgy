@@ -147,6 +147,7 @@ impl Renderer {
             display_scale: scale,
             grid_space_gen: None,
             tick_warnings,
+            legend_warnings: Vec::new(),
             render_warnings: Vec::new(),
             overlay_views: Vec::new(),
             raster_key: Some(PanelRasterKey::new(
