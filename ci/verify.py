@@ -29,7 +29,9 @@ SHARDS = {
 # The library test modules the `lib` shard runs (libtest name filters,
 # substrings of a test's path); `lib-rest` runs every other library test by
 # skipping the same strings, so the two cover the library exactly once.
-LIB_MODULES = ("renderer::tests::", "renderer::streaming_request_tests::")
+# `streaming_request_tests` is 58% of the library's time (666 of 1145 s on
+# lavapipe), so it runs alone.
+LIB_MODULES = ("renderer::streaming_request_tests::",)
 LIB_SHARDS = ("lib", "lib-rest")
 # The extracted workspace's profile: the root manifest's (see Cargo.toml),
 # which `cargo package` does not carry.
