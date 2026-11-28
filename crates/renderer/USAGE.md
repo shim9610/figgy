@@ -124,7 +124,11 @@ automatic spacing. The list is re-derived only when the view is rasterized,
 never per frame. Compare it
 with the previous list to show only changes. The same list ends with the
 annotation layer's `AnnotationSkipped` warnings for items the annotation raster
-could not place. After an edit of `config.annotations.items`, `refresh_axis`
+could not place, then, on a registered chart's view, `LegendSymbolMismatch`
+warnings for legend symbols that do not draw the series they name
+([#483](https://github.com/shim9610/figgy/issues/483); a held chart's view has
+no series, so its host calls `Config::legend_warnings(series)`; see
+[CONFIG.md](CONFIG.md)). After an edit of `config.annotations.items`, `refresh_axis`
 redoes the annotation rasters together with the axes, and `refresh_annotations`
 redoes only the annotation layer (its underlay and overlay textures). Registered
 charts report that edit through `ChartRenderStamp::needs_annotation_raster_since`
@@ -1402,7 +1406,7 @@ iced 0.14는 wgpu 27을 사용하므로, wgpu 30과 호환되는 iced 버전이 
 그린 prepare 뒤에 `view.render_warnings()`를 읽는다. 각 `RenderWarning`에는 축, 설정한 값,
 실제로 그린 값이 들어 있다. 예를 들어 간격이 1000개를 넘어야 하는 `major_spacing`은 자동
 간격으로 그린다. 목록은 뷰를 래스터화할 때만 다시 만들므로 프레임마다 비용이 들지 않는다. 바뀐 경고만 보여 주려면 이전 목록과 비교한다.
-목록 끝에는 주석 층이 배치하지 못한 항목의 `AnnotationSkipped` 경고가 붙는다.
+목록 끝에는 주석 층이 배치하지 못한 항목의 `AnnotationSkipped` 경고가 붙고, 등록 차트의 뷰에서는 그 뒤에 이름 붙인 시리즈의 마크와 다른 범례 기호를 알리는 `LegendSymbolMismatch` 경고가 붙는다([#483](https://github.com/shim9610/figgy/issues/483)). 보관 차트의 뷰는 시리즈를 모르므로 호스트가 `Config::legend_warnings(series)`를 직접 부른다.
 `config.annotations.items`를 고친 뒤 `refresh_axis`를 호출하면 축과 함께 주석 래스터도 다시
 그리고, `refresh_annotations`는 주석 층(아래층·위층 텍스처)만 다시 그린다. 등록 차트에서는
 `ChartRenderStamp::needs_annotation_raster_since`로 이 편집을 확인한다

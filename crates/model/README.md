@@ -23,7 +23,7 @@ The Cargo package is **`figgy-model`**; its Rust import is **`model`**.
 model = { package = "figgy-model", git = "https://github.com/shim9610/figgy" }
 ```
 
-This README describes 0.13.0-beta.2, which is not on crates.io: the latest
+This README describes 0.13.0-beta.3, which is not on crates.io: the latest
 release there is [figgy-model](https://crates.io/crates/figgy-model) 0.12.1,
 which lacks types listed below, such as the monotonic-x line types. Until
 0.13.0 is published, depend on the repository's default branch, `master`, as

@@ -10,13 +10,13 @@ Rust 라이브러리가 모든 차트를 JavaScript API로 제공한다는 뜻�
 
 The [streaming contract](#streaming-contract) and the [radial chart host](#bounded-chart-host) sections of this guide are in English.
 
-이 문서는 이 저장소의 현재 소스를 설명한다. 소스의 패키지 버전은 crates.io에 배포하지 않은 베타인 브라우저 패키지 `figgy` 0.16.0-beta.2, `figgy-renderer` 0.19.0-beta.2, `figgy-model` 0.13.0-beta.2다. `figgy`는 crates.io에 배포하지 않으므로 이 저장소에서 빌드하며, 같은 체크아웃의 렌더러를 경로 의존성으로 쓴다. crates.io의 최신 배포판은 `figgy-renderer` 0.18.1 / `figgy-model` 0.12.1이다. Rust 호스트는 아래처럼 crates.io의 렌더러를 의존성으로 지정한다. 웹 래퍼처럼 설정을 JSON으로 주고받으려면 `serde` 기능을 켠다.
+이 문서는 이 저장소의 현재 소스를 설명한다. 소스의 패키지 버전은 crates.io에 배포하지 않은 베타인 브라우저 패키지 `figgy` 0.16.0-beta.3, `figgy-renderer` 0.19.0-beta.3, `figgy-model` 0.13.0-beta.3다. `figgy`는 crates.io에 배포하지 않으므로 이 저장소에서 빌드하며, 같은 체크아웃의 렌더러를 경로 의존성으로 쓴다. crates.io의 최신 배포판은 `figgy-renderer` 0.18.1 / `figgy-model` 0.12.1이다. Rust 호스트는 아래처럼 crates.io의 렌더러를 의존성으로 지정한다. 웹 래퍼처럼 설정을 JSON으로 주고받으려면 `serde` 기능을 켠다.
 
 ```toml
 renderer = { package = "figgy-renderer", version = "0.18.1", features = ["serde"] }
 ```
 
-렌더러 없이 모델 타입만 쓰는 크레이트는 `model = { package = "figgy-model", version = "0.12.1" }`을 지정한다. 이 문서의 API 중 0.18.1 이후에 추가하거나 바꾼 것을 쓰려면 `version` 대신 `path`로 체크아웃의 `crates/renderer`를 가리킨다. 0.18.1용으로 작성한 Rust 코드는 [0.19.0-beta.2 변경 기록](https://github.com/shim9610/figgy/blob/master/CHANGELOG.md#unreleased)의 항목별 마이그레이션에 따라, 0.17.0용 코드는 먼저 [0.17.0 마이그레이션 안내](https://github.com/shim9610/figgy/blob/master/CHANGELOG.md#migrating-from-0170)에 따라 고친다.
+렌더러 없이 모델 타입만 쓰는 크레이트는 `model = { package = "figgy-model", version = "0.12.1" }`을 지정한다. 이 문서의 API 중 0.18.1 이후에 추가하거나 바꾼 것을 쓰려면 `version` 대신 `path`로 체크아웃의 `crates/renderer`를 가리킨다. 0.18.1용으로 작성한 Rust 코드는 [0.19.0-beta.3 변경 기록](https://github.com/shim9610/figgy/blob/master/CHANGELOG.md#unreleased)의 항목별 마이그레이션에 따라, 0.17.0용 코드는 먼저 [0.17.0 마이그레이션 안내](https://github.com/shim9610/figgy/blob/master/CHANGELOG.md#migrating-from-0170)에 따라 고친다.
 
 `model`과 `renderer`는 모두 `wasm32-unknown-unknown`으로 빌드할 수 있다. 이 문서는 네이티브와 웹의 차이, 브라우저 초기화, 데이터 입력, 이벤트 처리와 이미지 출력을 설명한다.
 
@@ -2035,10 +2035,15 @@ document pixels (the coordinates of `get_config`).
   a host-written legend keeps its text. An unknown series is refused with code
   `series`.
 - `render_warnings()` returns every warning of the last drawn frame, on any
-  axis of any panel and for skipped annotations, as `[{ kind, ..., message }]`.
+  axis of any panel, for skipped annotations and for legend symbols that do
+  not draw the series they name, as `[{ kind, ..., message }]`.
   `MajorSpacingReplaced` and `LogDecadeStepAdjusted` carry `axis`,
   `requested` and `used`; a replaced spacing also has `reason`, and `limit`
   for `TooManyTicks`. `MinorCountClamped` carries the same three fields, and
-  `AnnotationSkipped` carries `index` and `reason`. `axis` is the `Config`
+  `AnnotationSkipped` carries `index` and `reason`. `LegendSymbolMismatch`
+  ([#483](https://github.com/shim9610/figgy/issues/483)) carries `legend`
+  (the legend's `Config` path, such as `"overlays[0].legend"`), `entry`,
+  `series_id` and `reason` (`UnknownSeries`, `ColorDiffers` or
+  `MarkDiffers`); the legend is drawn as written. `axis` is the `Config`
   field path, such as `"subplots[1].config.left_y"`, and a non-finite number
   is `null`. `annotation_warnings()` is the annotation part of this list.

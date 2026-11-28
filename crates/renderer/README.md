@@ -25,7 +25,7 @@ renderer = { package = "figgy-renderer", git = "https://github.com/shim9610/figg
 ```
 
 The Cargo package is **`figgy-renderer`**; the Rust import is **`renderer`**.
-This README describes 0.19.0-beta.2, which is not on crates.io: the latest
+This README describes 0.19.0-beta.3, which is not on crates.io: the latest
 release there is 0.18.1 (with figgy-model 0.12.1), whose API differs. Until
 0.19.0 is published, depend on the repository's default branch, `master`, as
 above, or, for a local checkout, replace `git` with
